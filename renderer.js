@@ -17,6 +17,7 @@ let autoSyncInterval = null;
 
 // UI references
 let contextMenuEl = null;
+let isResizing = false;
 
 // Server communication
 async function sendToServer(action, data = {}) {
@@ -74,12 +75,10 @@ async function loadServerSettings() {
 // Check if rclone is available
 async function checkRcloneAvailability() {
   try {
-    // Get rclone executable path (same as used for execution)
     let rcloneExecutable = serverSettings.rclonePath || 'rclone';
     
     // Fix rclone path if it's a directory (same logic as in syncWithServer)
     if (rcloneExecutable) {
-      // Check if path ends with directory separator
       if (rcloneExecutable.endsWith('\\') || rcloneExecutable.endsWith('/')) {
         // Add rclone.exe to directory path
         rcloneExecutable += 'rclone.exe';
@@ -87,15 +86,12 @@ async function checkRcloneAvailability() {
         // Check if it's a directory (ends with rclone folder name)
         const lastPart = rcloneExecutable.split(/[/\\]/).pop();
         if (lastPart.toLowerCase() === 'rclone') {
-          // It's a directory, add .exe
           rcloneExecutable += '.exe';
         }
       }
     }
-    
     // Use the same path for checking as for execution
     const checkResult = await window.api.executeRclone(`${rcloneExecutable} --version`);
-    
     if (checkResult.success) {
       updateRunOutput(`rclone available: ${checkResult.stdout.split('\n')[0]}`);
     } else {
@@ -119,7 +115,6 @@ async function syncWithServer() {
   try {
     const projectName = workspaceRoot.split(/[/\\]/).pop();
     
-    // Check if folder exists on server
     const checkResult = await sendToServer('checkFolder', { folderName: projectName });
     if (!checkResult) {
       updateRunOutput('Error checking folder on server');
@@ -304,7 +299,251 @@ require(['vs/editor/editor.main'], function () {
   });
 
   document.getElementById('workspace-label').textContent = 'No folder opened';
+  
+  // Setup output resizer
+  setupOutputResizer();
+  
+  // Setup syntax checking
+  setupSyntaxChecking();
 });
+
+// Setup syntax checking for Monaco Editor
+function setupSyntaxChecking() {
+  // Listen for model changes to trigger syntax checking
+  monaco.editor.onDidCreateModel((model) => {
+    model.onDidChangeContent(() => {
+      performSyntaxCheck(model);
+    });
+    // Initial check
+    performSyntaxCheck(model);
+  });
+}
+
+// Perform syntax checking based on language
+function performSyntaxCheck(model) {
+  const language = model.getLanguageId();
+  const content = model.getValue();
+  const markers = [];
+  
+  // Basic syntax checking for different languages
+  switch (language) {
+    case 'python':
+      markers.push(...checkPythonSyntax(content));
+      break;
+    case 'java':
+      markers.push(...checkJavaSyntax(content));
+      break;
+    case 'cpp':
+    case 'c':
+      markers.push(...checkCppSyntax(content));
+      break;
+    case 'go':
+      markers.push(...checkGoSyntax(content));
+      break;
+    case 'rust':
+      markers.push(...checkRustSyntax(content));
+      break;
+    // Add more languages as needed
+  }
+  
+  // Apply markers to the model
+  monaco.editor.setModelMarkers(model, 'syntax', markers);
+}
+
+// Basic Python syntax checking
+function checkPythonSyntax(content) {
+  const markers = [];
+  const lines = content.split('\n');
+  
+  lines.forEach((line, index) => {
+    const lineNum = index + 1;
+    
+    // Check for missing colons
+    if ((line.trim().startsWith('if ') || line.trim().startsWith('elif ') || 
+         line.trim().startsWith('else') || line.trim().startsWith('for ') || 
+         line.trim().startsWith('while ') || line.trim().startsWith('try') || 
+         line.trim().startsWith('except ') || line.trim().startsWith('finally') || 
+         line.trim().startsWith('with ') || line.trim().startsWith('def ') || 
+         line.trim().startsWith('class ')) && 
+        !line.trim().endsWith(':') && !line.trim().endsWith('#')) {
+      markers.push({
+        startLineNumber: lineNum,
+        endLineNumber: lineNum,
+        startColumn: line.length,
+        endColumn: line.length + 1,
+        message: 'Missing colon at end of line',
+        severity: monaco.MarkerSeverity.Error
+      });
+    }
+  });
+  
+  return markers;
+}
+
+// Basic Java syntax checking
+function checkJavaSyntax(content) {
+  const markers = [];
+  const lines = content.split('\n');
+  
+  lines.forEach((line, index) => {
+    const lineNum = index + 1;
+    
+    // Check for missing semicolons
+    if (line.trim() && !line.trim().endsWith(';') && !line.trim().endsWith('{') && 
+        !line.trim().endsWith('}') && !line.trim().startsWith('if') && 
+        !line.trim().startsWith('else') && !line.trim().startsWith('for') && 
+        !line.trim().startsWith('while') && !line.trim().startsWith('try') && 
+        !line.trim().startsWith('catch') && !line.trim().startsWith('finally') && 
+        !line.trim().startsWith('public') && !line.trim().startsWith('private') && 
+        !line.trim().startsWith('protected') && !line.trim().startsWith('class') && 
+        !line.trim().startsWith('interface') && !line.trim().startsWith('import') && 
+        !line.trim().startsWith('package') && !line.trim().startsWith('//') && 
+        !line.trim().startsWith('/*') && !line.trim().endsWith('*/')) {
+      markers.push({
+        startLineNumber: lineNum,
+        endLineNumber: lineNum,
+        startColumn: line.length,
+        endColumn: line.length + 1,
+        message: 'Missing semicolon',
+        severity: monaco.MarkerSeverity.Error
+      });
+    }
+  });
+  
+  return markers;
+}
+
+// Basic C/C++ syntax checking
+function checkCppSyntax(content) {
+  const markers = [];
+  const lines = content.split('\n');
+  
+  lines.forEach((line, index) => {
+    const lineNum = index + 1;
+    
+    // Check for missing semicolons
+    if (line.trim() && !line.trim().endsWith(';') && !line.trim().endsWith('{') && 
+        !line.trim().endsWith('}') && !line.trim().startsWith('#') && 
+        !line.trim().startsWith('if') && !line.trim().startsWith('else') && 
+        !line.trim().startsWith('for') && !line.trim().startsWith('while') && 
+        !line.trim().startsWith('do') && !line.trim().startsWith('switch') && 
+        !line.trim().startsWith('case') && !line.trim().startsWith('default') && 
+        !line.trim().startsWith('try') && !line.trim().startsWith('catch') && 
+        !line.trim().startsWith('finally') && !line.trim().startsWith('//') && 
+        !line.trim().startsWith('/*') && !line.trim().endsWith('*/')) {
+      markers.push({
+        startLineNumber: lineNum,
+        endLineNumber: lineNum,
+        startColumn: line.length,
+        endColumn: line.length + 1,
+        message: 'Missing semicolon',
+        severity: monaco.MarkerSeverity.Error
+      });
+    }
+  });
+  
+  return markers;
+}
+
+// Basic Go syntax checking
+function checkGoSyntax(content) {
+  const markers = [];
+  const lines = content.split('\n');
+  
+  lines.forEach((line, index) => {
+    const lineNum = index + 1;
+    
+    // Check for missing braces
+    if (line.trim().startsWith('func ') || line.trim().startsWith('if ') || 
+        line.trim().startsWith('else') || line.trim().startsWith('for ') || 
+        line.trim().startsWith('switch') || line.trim().startsWith('select')) {
+      if (!line.trim().endsWith('{')) {
+        markers.push({
+          startLineNumber: lineNum,
+          endLineNumber: lineNum,
+          startColumn: line.length,
+          endColumn: line.length + 1,
+          message: 'Missing opening brace',
+          severity: monaco.MarkerSeverity.Error
+        });
+      }
+    }
+  });
+  
+  return markers;
+}
+
+// Basic Rust syntax checking
+function checkRustSyntax(content) {
+  const markers = [];
+  const lines = content.split('\n');
+  
+  lines.forEach((line, index) => {
+    const lineNum = index + 1;
+    
+    // Check for missing semicolons
+    if (line.trim() && !line.trim().endsWith(';') && !line.trim().endsWith('{') && 
+        !line.trim().endsWith('}') && !line.trim().startsWith('fn ') && 
+        !line.trim().startsWith('if ') && !line.trim().startsWith('else') && 
+        !line.trim().startsWith('for ') && !line.trim().startsWith('while ') && 
+        !line.trim().startsWith('loop') && !line.trim().startsWith('match') && 
+        !line.trim().startsWith('let ') && !line.trim().startsWith('const ') && 
+        !line.trim().startsWith('static ') && !line.trim().startsWith('//') && 
+        !line.trim().startsWith('/*') && !line.trim().endsWith('*/')) {
+      markers.push({
+        startLineNumber: lineNum,
+        endLineNumber: lineNum,
+        startColumn: line.length,
+        endColumn: line.length + 1,
+        message: 'Missing semicolon',
+        severity: monaco.MarkerSeverity.Error
+      });
+    }
+  });
+  
+  return markers;
+}
+
+// Setup output resizer functionality
+function setupOutputResizer() {
+  const resizer = document.getElementById('output-resizer');
+  const layout = document.getElementById('layout');
+  
+  if (!resizer || !layout) return;
+  
+  resizer.addEventListener('mousedown', (e) => {
+    isResizing = true;
+    document.body.style.cursor = 'ns-resize';
+    
+    const handleMouseMove = (e) => {
+      if (!isResizing) return;
+      
+      const rect = layout.getBoundingClientRect();
+      const y = e.clientY - rect.top;
+      const totalHeight = rect.height;
+      
+      // Calculate new heights for editor and output
+      const editorHeight = y - 36 - 32; // titlebar + tabbar height
+      const outputHeight = totalHeight - y - 4; // resizer height
+      
+      // Set minimum heights
+      if (editorHeight < 100 || outputHeight < 50) return;
+      
+      // Update grid template rows
+      layout.style.gridTemplateRows = `36px 32px ${editorHeight}px 4px ${outputHeight}px`;
+    };
+    
+    const handleMouseUp = () => {
+      isResizing = false;
+      document.body.style.cursor = '';
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+    
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  });
+}
 
 // ===== Workspace & Tree =====
 async function applyWorkspace(rootPath, tree) {
@@ -642,11 +881,15 @@ function detectLanguage(filename, content) {
   if (f.endsWith('.html')) return 'html';
   if (f.endsWith('.css')) return 'css';
   if (f.endsWith('.sh')) return 'shell';
+  if (f.endsWith('.go')) return 'go';
+  if (f.endsWith('.rs')) return 'rust';
   // shebang check
   if (content && content.startsWith('#!')) {
     if (content.includes('python')) return 'python';
     if (content.includes('node')) return 'javascript';
     if (content.includes('bash') || content.includes('sh')) return 'shell';
+    if (content.includes('go')) return 'go';
+    if (content.includes('rust')) return 'rust';
   }
   return 'plaintext';
 }
@@ -736,42 +979,3 @@ function syncWorkspace() {
   syncWithServer();
 }
 
-// Lightweight completion providers for non-TS/JS languages
-function registerCompletionProviders() {
-  // Python
-  monaco.languages.registerCompletionItemProvider('python', {
-    triggerCharacters: ['.', '_'],
-    provideCompletionItems: () => {
-      const suggestions = [
-        { label: 'def', kind: monaco.languages.CompletionItemKind.Keyword, insertText: 'def ${1:name}(${2:args}):\n\t${0}', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
-        { label: 'class', kind: monaco.languages.CompletionItemKind.Keyword, insertText: 'class ${1:Name}:\n\tdef __init__(self${2}):\n\t\t${0}', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
-        { label: 'print', kind: monaco.languages.CompletionItemKind.Function, insertText: 'print(${1})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
-        { label: 'ifmain', kind: monaco.languages.CompletionItemKind.Snippet, insertText: "if __name__ == '__main__':\n\t${0}", insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet }
-      ];
-      return { suggestions };
-    }
-  });
-
-  // C/C++
-  monaco.languages.registerCompletionItemProvider('cpp', {
-    triggerCharacters: ['#', '.', '>'],
-    provideCompletionItems: () => {
-      const suggestions = [
-        { label: '#include <iostream>', kind: monaco.languages.CompletionItemKind.Snippet, insertText: '#include <iostream>\nusing namespace std;\n', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
-        { label: 'main', kind: monaco.languages.CompletionItemKind.Snippet, insertText: 'int main(){\n\t${0}\n\treturn 0;\n}', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet }
-      ];
-      return { suggestions };
-    }
-  });
-
-  // Java
-  monaco.languages.registerCompletionItemProvider('java', {
-    triggerCharacters: ['.'],
-    provideCompletionItems: () => {
-      const suggestions = [
-        { label: 'main', kind: monaco.languages.CompletionItemKind.Snippet, insertText: 'public static void main(String[] args){\n\t${0}\n}', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet }
-      ];
-      return { suggestions };
-    }
-  });
-}

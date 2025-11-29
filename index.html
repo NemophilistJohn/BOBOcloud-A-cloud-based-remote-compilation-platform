@@ -26,7 +26,7 @@
     #layout {
       display: grid;
       grid-template-columns: 280px 1fr;
-      grid-template-rows: 36px 32px 1fr;
+      grid-template-rows: 36px 32px 1fr 4px 150px;
       height: 100%;
       width: 100%;
     }
@@ -85,7 +85,33 @@
       position: relative;
       grid-row: 3;
       grid-column: 2;
+      overflow: hidden;
     }
+    
+    #output-resizer {
+      grid-row: 4;
+      grid-column: 2;
+      background: #3a3a3a;
+      cursor: ns-resize;
+      border-top: 1px solid #00000033;
+      border-bottom: 1px solid #00000033;
+    }
+    
+    #output-resizer:hover {
+      background: #4a4a4a;
+    }
+    
+    #run-output {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      overflow: auto;
+      border-top: 1px solid #00000033;
+      padding: 8px;
+      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    
     #container {
       position: absolute;
       inset: 0;
@@ -160,9 +186,14 @@
     <div id="editor">
       <div id="container"></div>
     </div>
+    <div id="output-resizer"></div>
+    <div id="run-output">
+      <div id="run-log" style="white-space:pre-wrap; word-wrap:break-word;">[Run output will appear here]</div>
+    </div>
   </div>
 
   <script src="./node_modules/monaco-editor/min/vs/loader.js"></script>
+  <script src="./completion-rules.js"></script>
   <script src="./renderer.js"></script>
   <!-- Server Settings Modal -->
 <div id="server-modal" style="display:none; position:fixed; top:20%; left:30%; width:400px; background:#2d2d2d; color:#fff; padding:20px; border-radius:8px; z-index:2000;">
@@ -176,10 +207,7 @@
   <button id="server-close">Cancel</button>
 </div>
 
-<!-- Run Result Output -->
-<div id="run-output" style="position:absolute; bottom:0; left:280px; right:0; height:150px; background:#1e1e1e; color:#d4d4d4; overflow:auto; border-top:1px solid #00000033; padding:8px; font-family:'Consolas', 'Monaco', 'Courier New', monospace; font-size:13px; line-height:1.5;">
-  <div id="run-log" style="white-space:pre-wrap; word-wrap:break-word;">[Run output will appear here]</div>
-</div>
+
 
 </body>
 </html>

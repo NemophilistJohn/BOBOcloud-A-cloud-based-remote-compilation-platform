@@ -71,7 +71,6 @@ async function updateRcloneConfig(settings) {
         // Add rclone.exe to directory path
         rcloneExecutable += 'rclone.exe';
       } else if (rcloneExecutable.includes('\\') || rcloneExecutable.includes('/')) {
-        // Check if it's a directory (ends with rclone folder name)
         const lastPart = rcloneExecutable.split(/[/\\]/).pop();
         if (lastPart.toLowerCase() === 'rclone') {
           // It's a directory, add .exe
@@ -82,8 +81,6 @@ async function updateRcloneConfig(settings) {
         rcloneExecutable += '.exe';
       }
     }
-
-    // Use rclone config create command to generate config
     const configName = 'cloud-compiler-sftp';
     const command = `${rcloneExecutable} config create ${configName} sftp ` +
       `host="${settings.ip}" ` +
