@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Electron + Monaco Editor</title>
+  <style>
+    :root {
+      --bg: #1e1e1e;
+      --panel: #252526;
+      --text: #d4d4d4;
+      --accent: #3c3c3c;
+      --green: #6A9955;
+      --blue: #4FC1FF;
+      --red: #F44747;
+      --yellow: #DCDCAA;
+    }
+    html, body {
+      margin: 0;
+      height: 100%;
+      width: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Segoe UI, system-ui, sans-serif;
+    }
+    #layout {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      grid-template-rows: 36px 32px 1fr;
+      height: 100%;
+      width: 100%;
+    }
+    #titlebar {
+      grid-column: 1 / -1;
+      background: var(--panel);
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      gap: 8px;
+      border-bottom: 1px solid #00000033;
+    }
+    #titlebar button {
+      background: var(--accent);
+      color: var(--text);
+      border: none;
+      padding: 6px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    #tabbar {
+      grid-column: 2 / -1;
+      background: #2a2a2a;
+      border-bottom: 1px solid #00000033;
+      display: flex;
+      align-items: center;
+      overflow: hidden;
+    }
+    .tab {
+      display: flex;
+      align-items: center;
+      max-width: 220px;
+      padding: 6px 10px;
+      gap: 8px;
+      cursor: default;
+      border-right: 1px solid #00000022;
+      color: #cccccc;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      overflow: hidden;
+    }
+    .tab.active {
+      background: #3a3a3a;
+      color: #ffffff;
+    }
+    .tab .close {
+      color: #aaaaaa;
+      cursor: pointer;
+    }
+    #sidebar {
+      background: var(--panel);
+      overflow: auto;
+      grid-row: 2 / -1;
+    }
+    #editor {
+      position: relative;
+      grid-row: 3;
+      grid-column: 2;
+    }
+    #container {
+      position: absolute;
+      inset: 0;
+    }
+    .tree {
+      user-select: none;
+      padding: 8px;
+    }
+    .tree ul {
+      list-style: none;
+      padding-left: 12px;
+      margin: 0;
+    }
+    .tree .item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 4px;
+      border-radius: 4px;
+      cursor: default;
+    }
+    .tree .item:hover {
+      background: #ffffff10;
+    }
+    .tree .folder {
+      color: var(--green);
+    }
+    .tree .file {
+      color: var(--text);
+    }
+    .inline-input {
+      width: calc(100% - 12px);
+      background: #00000040;
+      color: var(--text);
+      border: 1px solid #00000055;
+      border-radius: 3px;
+      padding: 2px 4px;
+      font: inherit;
+      margin: 4px 6px;
+    }
+    .context-menu {
+      position: fixed;
+      background: #2d2d2d;
+      border: 1px solid #00000055;
+      border-radius: 6px;
+      box-shadow: 0 6px 20px #00000055;
+      min-width: 180px;
+      z-index: 1000;
+    }
+    .context-menu .action {
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    .context-menu .action:hover {
+      background: #3a3a3a;
+    }
+  </style>
+</head>
+<body>
+  <div id="layout">
+    <div id="titlebar">
+      <button id="open-folder">Open Folder...</button>
+      <div id="workspace-label" style="opacity:.8"></div>
+      <div style="flex:1"></div>
+      <button id="save-file">Save (Ctrl+S)</button>
+      <button id="run-code">Run ▶</button>
+    </div>
+    <div id="tabbar"></div>
+    <div id="sidebar">
+      <div class="tree" id="file-tree"></div>
+    </div>
+    <div id="editor">
+      <div id="container"></div>
+    </div>
+  </div>
+
+  <script src="./node_modules/monaco-editor/min/vs/loader.js"></script>
+  <script src="./renderer.js"></script>
+  <!-- Server Settings Modal -->
+<div id="server-modal" style="display:none; position:fixed; top:20%; left:30%; width:400px; background:#2d2d2d; color:#fff; padding:20px; border-radius:8px; z-index:2000;">
+  <h3>Server Settings</h3>
+  <label>Server IP: <input id="server-ip" type="text" style="width:100%"></label><br><br>
+  <label>Root User: <input id="server-user" type="text" style="width:100%"></label><br><br>
+  <label>Password: <input id="server-pass" type="password" style="width:100%"></label><br><br>
+  <label>Rclone Path: <input id="rclone-path" type="text" placeholder="Example: F:\rclone\rclone.exe (leave empty to use system PATH)" style="width:100%"></label><br><br>
+  <label>Auto Sync Interval (seconds): <input id="sync-interval" type="number" min="5" max="3600" value="30" style="width:100%"></label><br><br>
+  <button id="server-save">Save & Connect</button>
+  <button id="server-close">Cancel</button>
+</div>
+
+<!-- Run Result Output -->
+<div id="run-output" style="position:absolute; bottom:0; left:280px; right:0; height:150px; background:#1e1e1e; color:#d4d4d4; overflow:auto; border-top:1px solid #00000033; padding:8px; font-family:'Consolas', 'Monaco', 'Courier New', monospace; font-size:13px; line-height:1.5;">
+  <div id="run-log" style="white-space:pre-wrap; word-wrap:break-word;">[Run output will appear here]</div>
+</div>
+
+</body>
+</html>

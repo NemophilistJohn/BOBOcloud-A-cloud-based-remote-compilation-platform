@@ -1,0 +1,73 @@
+{
+  "name": "bobocloud-editer",
+  "version": "1.0.0",
+  "description": "BOBOCLOUD CODE EDITOR",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win --x64",
+    "dev": "electron ."
+  },
+  "keywords": [
+    "electron",
+    "code-editor",
+    "cloud-sync",
+    "bobocloud"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^39.2.4",
+    "electron-builder": "^25.1.7"
+  },
+  "dependencies": {
+    "monaco-editor": "^0.55.1",
+    "ssh2-sftp-client": "^9.0.5"
+  },
+  "build": {
+    "appId": "com.bobocloud.editor",
+    "productName": "BOBOCloudEditer",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "index.html",
+      "server-settings.json",
+      "node_modules/",
+      "rclone/"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "ico/bobocloud.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": true,
+      "runAfterFinish": true,
+      "installerIcon": "ico/bobocloud.ico",
+      "uninstallerIcon": "ico/bobocloud.ico"
+    },
+    "extraResources": [
+      {
+        "from": "rclone/",
+        "to": "rclone/",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "afterPack": "./scripts/afterPack.js"
+  }
+}
