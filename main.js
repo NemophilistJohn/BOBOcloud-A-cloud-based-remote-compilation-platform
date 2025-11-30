@@ -273,6 +273,7 @@ ipcMain.handle('pick-workspace', async (_e, path) => {
   let folder;
   if (path !== undefined) {
     folder = path;
+    // 如果提供了路径，只读取文件树，不弹出对话框
   } else {
     const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
     if (result.canceled || !result.filePaths[0]) return null;
@@ -290,18 +291,54 @@ ipcMain.handle('read-file', async (_e, filePath) => {
 
 ipcMain.handle('save-file', async (_e, { filePath, content }) => {
   fs.writeFileSync(filePath, content, 'utf-8');
+  // 发送workspace-refresh事件，通知渲染进程刷新文件树
+  if (win) {
+    const rootPath = workspaceRoot || path.dirname(filePath);
+    const tree = readTree(rootPath);
+    win.webContents.send('workspace-refresh', { rootPath, tree });
+  }
   return true;
+});
+
+ipcMain.handle('save-binary-file', async (_e, { filePath, content }) => {
+  const buffer = Buffer.from(content, 'base64');
+  fs.writeFileSync(filePath, buffer);
+  // 发送workspace-refresh事件，通知渲染进程刷新文件树
+  if (win) {
+    const rootPath = workspaceRoot || path.dirname(filePath);
+    const tree = readTree(rootPath);
+    win.webContents.send('workspace-refresh', { rootPath, tree });
+  }
+  return true;
+});
+
+ipcMain.handle('read-tree', async (_e, path) => {
+  if (!path) return null;
+  // 直接读取文件树，不弹出对话框
+  return readTree(path);
 });
 
 ipcMain.handle('create-file', async (_e, { parentDir, name }) => {
   const full = path.join(parentDir, name);
   fs.writeFileSync(full, '', 'utf-8');
+  // 发送workspace-refresh事件，通知渲染进程刷新文件树
+  if (win) {
+    const rootPath = workspaceRoot || parentDir;
+    const tree = readTree(rootPath);
+    win.webContents.send('workspace-refresh', { rootPath, tree });
+  }
   return { path: full };
 });
 
 ipcMain.handle('create-folder', async (_e, { parentDir, name }) => {
   const full = path.join(parentDir, name);
   fs.mkdirSync(full, { recursive: true });
+  // 发送workspace-refresh事件，通知渲染进程刷新文件树
+  if (win) {
+    const rootPath = workspaceRoot || parentDir;
+    const tree = readTree(rootPath);
+    win.webContents.send('workspace-refresh', { rootPath, tree });
+  }
   return { path: full };
 });
 
@@ -309,6 +346,12 @@ ipcMain.handle('rename-entry', async (_e, { oldPath, newName }) => {
   const dir = path.dirname(oldPath);
   const newPath = path.join(dir, newName);
   fs.renameSync(oldPath, newPath);
+  // 发送workspace-refresh事件，通知渲染进程刷新文件树
+  if (win) {
+    const rootPath = workspaceRoot || dir;
+    const tree = readTree(rootPath);
+    win.webContents.send('workspace-refresh', { rootPath, tree });
+  }
   return { path: newPath };
 });
 
@@ -319,6 +362,12 @@ ipcMain.handle('delete-entry', async (_e, { entryPath }) => {
     fs.rmSync(entryPath, { recursive: true, force: true });
   } else {
     fs.unlinkSync(entryPath);
+  }
+  // 发送workspace-refresh事件，通知渲染进程刷新文件树
+  if (win) {
+    const rootPath = workspaceRoot || path.dirname(entryPath);
+    const tree = readTree(rootPath);
+    win.webContents.send('workspace-refresh', { rootPath, tree });
   }
   return true;
 });

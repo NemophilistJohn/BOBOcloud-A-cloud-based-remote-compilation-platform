@@ -1,34 +1,25 @@
 require.config({ paths: { 'vs': './node_modules/monaco-editor/min/vs' } });
 
 let editor;
-
-// Workspace and explorer state
 let workspaceRoot = null;
 let expandedPaths = new Set();
 const ALWAYS_COLLAPSED = new Set(['node_modules', '.git', '.venv', 'venv', '__pycache__']);
-
-// Tabs state
 let tabs = []; // { path, name, model, language, dirty }
 let activeTabPath = null;
 
-// Server settings
 let serverSettings = {};
 let autoSyncInterval = null;
-
 // UI references
 let contextMenuEl = null;
 let isResizing = false;
-
 // Server communication
 async function sendToServer(action, data = {}) {
   if (!serverSettings.ip) {
     updateRunOutput('Error: Server IP not configured');
     return null;
   }
-
   const url = `http://${serverSettings.ip}:3100`;
   const payload = { action, ...data };
-
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -37,11 +28,9 @@ async function sendToServer(action, data = {}) {
       },
       body: JSON.stringify(payload)
     });
-
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
-
     const result = await response.json();
     return result;
   } catch (error) {
@@ -50,7 +39,6 @@ async function sendToServer(action, data = {}) {
   }
 }
 
-// Update run output
 function updateRunOutput(message) {
   const outputEl = document.getElementById('run-log');
   const timestamp = new Date().toLocaleTimeString();
@@ -58,7 +46,6 @@ function updateRunOutput(message) {
   outputEl.scrollTop = outputEl.scrollHeight;
 }
 
-// Load server settings from file
 async function loadServerSettings() {
   try {
     serverSettings = await window.api.readServerSettings();
@@ -76,7 +63,6 @@ async function loadServerSettings() {
 async function checkRcloneAvailability() {
   try {
     let rcloneExecutable = serverSettings.rclonePath || 'rclone';
-    
     // Fix rclone path if it's a directory (same logic as in syncWithServer)
     if (rcloneExecutable) {
       if (rcloneExecutable.endsWith('\\') || rcloneExecutable.endsWith('/')) {
@@ -104,23 +90,36 @@ async function checkRcloneAvailability() {
     updateRunOutput(`Error checking rclone: ${error.message}`);
   }
 }
-
 // Sync with server using rclone
-async function syncWithServer() {
+async function syncWithServer(deletedFiles = []) {
   if (!workspaceRoot || !serverSettings.ip || !serverSettings.user) {
     updateRunOutput('Error: Workspace not opened or server settings not configured');
     return false;
   }
-
   try {
     const projectName = workspaceRoot.split(/[/\\]/).pop();
+    
+    // Handle deleted files first
+    if (deletedFiles && deletedFiles.length > 0) {
+      updateRunOutput(`Deleting ${deletedFiles.length} file(s) from server...`);
+      for (const filePath of deletedFiles) {
+        const deleteResult = await sendToServer('deleteFile', {
+          folderName: projectName,
+          filePath: filePath
+        });
+        if (deleteResult && deleteResult.success) {
+          updateRunOutput(`Deleted ${filePath} from server`);
+        } else {
+          updateRunOutput(`Error deleting ${filePath} from server: ${deleteResult.error}`);
+        }
+      }
+    }
     
     const checkResult = await sendToServer('checkFolder', { folderName: projectName });
     if (!checkResult) {
       updateRunOutput('Error checking folder on server');
       return false;
-    }
-    
+    }  
     // Display check result
     if (checkResult.success) {
       updateRunOutput(`Server folder ready: ${checkResult.folderPath}`);
@@ -147,9 +146,7 @@ async function syncWithServer() {
         }
       }
     }
-    
     // Use rclone to sync local to server - ensure all files are synced
-    // Use --include "*" to ensure all files are synced, and --progress for detailed output
     const remotePath = `/shareOnling/${projectName}`;
     const rcloneCommand = `${rcloneExecutable} sync "${workspaceRoot}" "cloud-compiler-sftp:${remotePath}" ` +
       `--progress`;
@@ -162,8 +159,6 @@ async function syncWithServer() {
     if (result.error) {
       updateRunOutput(`Sync error: ${result.error}`);
       
-      // Check if error is about rclone executable not found
-      // This should only match errors like "command not found" or "系统找不到指定的文件"
       const isRcloneNotFound = (result.error.includes('系统找不到指定的文件') || 
                               result.error.includes('command not found') || 
                               result.error.includes('The system cannot find')) &&
@@ -181,8 +176,7 @@ async function syncWithServer() {
         updateRunOutput('3. Verify that the server has SFTP enabled');
         updateRunOutput('4. Check if the remote directory exists on the server');
         updateRunOutput('5. Ensure your network connection is stable');
-      }
-      
+      } 
       return false;
     }
     
@@ -305,6 +299,9 @@ require(['vs/editor/editor.main'], function () {
   
   // Setup syntax checking
   setupSyntaxChecking();
+  
+  // Initialize image preview controls
+  initImagePreviewControls();
 });
 
 // Setup syntax checking for Monaco Editor
@@ -673,9 +670,7 @@ function promptCreate(parentDir, type) {
         } else {
           await window.api.createFolder({ parentDir, name });
         }
-        // Refresh file tree by re-reading the workspace without opening dialog
-        const res = await window.api.pickWorkspace(workspaceRoot);
-        if (res && res.rootPath === workspaceRoot) renderTree(res.tree);
+        // 不再手动刷新文件树，依赖主进程发送的workspace-refresh事件
       } finally {
         cleanup();
       }
@@ -719,11 +714,9 @@ function promptRename(oldPath) {
           updateTabbar();
           updateTitlebar();
         }
+        // 不再手动刷新文件树，依赖主进程发送的workspace-refresh事件
       } finally {
         cleanup();
-        // Refresh file tree by re-reading the workspace without opening dialog
-        const res = await window.api.pickWorkspace(workspaceRoot);
-        if (res && res.rootPath === workspaceRoot) renderTree(res.tree);
       }
     } else if (e.key === 'Escape') {
       cleanup();
@@ -738,13 +731,46 @@ function promptRename(oldPath) {
 async function promptDelete(entryPath, type) {
   const ok = confirm(`Delete ${type}:\n${entryPath}\nThis cannot be undone.`);
   if (!ok) return;
-  await window.api.deleteEntry({ entryPath });
-  const res = await window.api.pickWorkspace();
-  if (res && res.rootPath === workspaceRoot) renderTree(res.tree);
+  
+  // Check if it's a file (we only sync file deletions, not folders)
+  if (type === 'file') {
+    const relativeFilePath = entryPath.replace(workspaceRoot, '').replace(/^[/\\]/, '');
+    // Delete local file first
+    await window.api.deleteEntry({ entryPath });
+    // Sync with server, passing the deleted file path
+    await syncWithServer([relativeFilePath]);
+  } else {
+    // For folders, just delete locally and sync normally
+    await window.api.deleteEntry({ entryPath });
+    await syncWithServer();
+  }
+  
+  // 不再手动刷新文件树，依赖主进程发送的workspace-refresh事件
 }
 
 // ===== Tabs =====
 async function openFile(filePath, name) {
+  // Check if it's an image file
+  if (isImageFile(name)) {
+    showImagePreview(filePath, name);
+    
+    // Add to tabs for consistency
+    const existing = tabs.find(t => t.path === filePath);
+    if (existing) {
+      activateTab(existing.path);
+      return;
+    }
+    
+    // Create a dummy model for image files
+    const uri = monaco.Uri.file(filePath);
+    const model = monaco.editor.createModel('', 'plaintext', uri);
+    const tab = { path: filePath, name, model, language: 'image', dirty: false };
+    tabs.push(tab);
+    activateTab(filePath);
+    updateTabbar();
+    return;
+  }
+
   const existing = tabs.find(t => t.path === filePath);
   if (existing) {
     activateTab(existing.path);
@@ -774,7 +800,16 @@ function activateTab(filePath) {
   const tab = tabs.find(t => t.path === filePath);
   if (!tab) return;
   activeTabPath = filePath;
-  editor.setModel(tab.model);
+  
+  // Check if it's an image file tab
+  if (tab.language === 'image') {
+    showImagePreview(tab.path, tab.name);
+  } else {
+    // Close image preview if open
+    closeImagePreview();
+    editor.setModel(tab.model);
+  }
+  
   updateTabbar();
   updateTitlebar();
   bindGlobalKeys();
@@ -865,6 +900,13 @@ function bindGlobalKeys() {
   };
 }
 
+// Check if a file is an image
+function isImageFile(filename) {
+  const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.webp'];
+  const ext = filename.toLowerCase().substring(filename.lastIndexOf('.'));
+  return imageExtensions.includes(ext);
+}
+
 // Language detection: by extension + shebang
 function detectLanguage(filename, content) {
   const f = filename.toLowerCase();
@@ -892,6 +934,129 @@ function detectLanguage(filename, content) {
     if (content.includes('rust')) return 'rust';
   }
   return 'plaintext';
+}
+
+// Image preview state
+let currentImagePath = null;
+let imageRotation = 0;
+let imageScale = 1;
+
+// Show image preview
+function showImagePreview(filePath, name) {
+  currentImagePath = filePath;
+  imageRotation = 0;
+  imageScale = 1;
+  
+  // Update title
+  document.getElementById('image-preview-title').textContent = name;
+  
+  // Create object URL for the image
+  const imageUrl = `file://${filePath}`;
+  const imgElement = document.getElementById('preview-image');
+  imgElement.src = imageUrl;
+  
+  // Reset transform
+  imgElement.style.transform = '';
+  
+  // Show image preview
+  document.getElementById('image-preview').classList.remove('hidden');
+  
+  // Hide Monaco editor
+  document.getElementById('container').style.display = 'none';
+}
+
+// Close image preview
+function closeImagePreview() {
+  currentImagePath = null;
+  imageRotation = 0;
+  imageScale = 1;
+  
+  // Hide image preview
+  document.getElementById('image-preview').classList.add('hidden');
+  
+  // Show Monaco editor
+  document.getElementById('container').style.display = 'block';
+  
+  // Reset image element
+  const imgElement = document.getElementById('preview-image');
+  imgElement.src = '';
+  imgElement.style.transform = '';
+}
+
+// Rotate image
+function rotateImage(degrees) {
+  imageRotation += degrees;
+  updateImageTransform();
+}
+
+// Zoom image
+function zoomImage(factor) {
+  imageScale *= factor;
+  // Limit zoom range
+  imageScale = Math.max(0.1, Math.min(5, imageScale));
+  updateImageTransform();
+}
+
+// Reset image transform
+function resetImageTransform() {
+  imageRotation = 0;
+  imageScale = 1;
+  updateImageTransform();
+}
+
+// Update image transform
+function updateImageTransform() {
+  const imgElement = document.getElementById('preview-image');
+  imgElement.style.transform = `rotate(${imageRotation}deg) scale(${imageScale})`;
+}
+
+// Initialize image preview controls
+function initImagePreviewControls() {
+  // Close button
+  document.getElementById('close-image-preview').addEventListener('click', closeImagePreview);
+  
+  // Rotate buttons
+  document.getElementById('rotate-left').addEventListener('click', () => rotateImage(-90));
+  document.getElementById('rotate-right').addEventListener('click', () => rotateImage(90));
+  
+  // Zoom buttons
+  document.getElementById('zoom-out').addEventListener('click', () => zoomImage(0.8));
+  document.getElementById('zoom-in').addEventListener('click', () => zoomImage(1.25));
+  document.getElementById('zoom-reset').addEventListener('click', resetImageTransform);
+}
+
+// Save new files generated by server
+async function saveNewFiles(newFiles) {
+  if (!newFiles || Object.keys(newFiles).length === 0) {
+    return;
+  }
+  
+  updateRunOutput(`\n=== SAVING NEW FILES ===`);
+  updateRunOutput(`Found ${Object.keys(newFiles).length} new file(s) generated by server`);
+  
+  for (const fileName in newFiles) {
+    const filePath = `${workspaceRoot}/${fileName}`;
+    const fileData = newFiles[fileName];
+    
+    try {
+      if (fileData.type === 'binary') {
+        // 二进制文件，需要解码base64并保存为二进制文件
+        await window.api.saveBinaryFile({ filePath, content: fileData.content });
+      } else {
+        // 文本文件，直接保存
+        await window.api.saveFile({ filePath, content: fileData.content });
+      }
+      updateRunOutput(`Saved new file: ${fileName}`);
+      
+      // 不再手动刷新文件树，依赖主进程发送的workspace-refresh事件
+      // 但是saveFile和saveBinaryFile没有触发主进程的workspace-refresh事件，所以需要手动刷新
+      // 使用readTree函数直接读取文件树，不调用pickWorkspace
+      const tree = await window.api.readTree(workspaceRoot);
+      renderTree(tree);
+    } catch (error) {
+      updateRunOutput(`Error saving new file ${fileName}: ${error.message}`);
+    }
+  }
 }
 
 // Run code on server
@@ -942,6 +1107,11 @@ async function runCodeOnServer(filePath, content) {
         if (runResult.returncode !== undefined) {
           updateRunOutput(`Return code: ${runResult.returncode}`);
         }
+      }
+      
+      // Handle new files generated by server
+      if (runResult.newFiles && Object.keys(runResult.newFiles).length > 0) {
+        await saveNewFiles(runResult.newFiles);
       }
     } else {
       updateRunOutput('Error: Failed to get run result from server');

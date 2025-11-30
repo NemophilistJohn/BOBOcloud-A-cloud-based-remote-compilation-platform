@@ -3,12 +3,14 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('api', {
   // Workspace
   pickWorkspace: () => ipcRenderer.invoke('pick-workspace'),
+  readTree: (path) => ipcRenderer.invoke('read-tree', path),
   onWorkspaceOpened: (cb) => ipcRenderer.on('workspace-opened', (_e, data) => cb(data)),
   onWorkspaceRefresh: (cb) => ipcRenderer.on('workspace-refresh', (_e, data) => cb(data)),
 
   // Files
   readFile: (filePath) => ipcRenderer.invoke('read-file', filePath),
   saveFile: (payload) => ipcRenderer.invoke('save-file', payload),
+  saveBinaryFile: (payload) => ipcRenderer.invoke('save-binary-file', payload),
 
   // FS operations
   createFile: (payload) => ipcRenderer.invoke('create-file', payload),

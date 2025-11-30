@@ -1,6 +1,6 @@
 {
   "name": "bobocloud-editer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "BOBOCLOUD CODE EDITOR",
   "main": "main.js",
   "scripts": {
@@ -37,6 +37,7 @@
       "renderer.js",
       "index.html",
       "server-settings.json",
+      "completion-rules.js",
       "node_modules/",
       "rclone/"
     ],
