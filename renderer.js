@@ -40,10 +40,34 @@ async function sendToServer(action, data = {}) {
 }
 
 function updateRunOutput(message) {
+  const runOutputEl = document.getElementById('run-output');
   const outputEl = document.getElementById('run-log');
   const timestamp = new Date().toLocaleTimeString();
-  outputEl.innerHTML += `[${timestamp}] ${message}\n`;
-  outputEl.scrollTop = outputEl.scrollHeight;
+  
+  // Determine output type and color class
+  let typeClass = 'output-info';
+  if (message.startsWith('Error:')) {
+    typeClass = 'output-error';
+  } else if (message.startsWith('Warning:')) {
+    typeClass = 'output-warning';
+  } else if (message.startsWith('Sync completed successfully') || message.startsWith('Saved new file:')) {
+    typeClass = 'output-success';
+  } else if (message.startsWith('Starting sync:') || message.startsWith('Running code:')) {
+    typeClass = 'output-command';
+  } else if (message.startsWith('=== ')) {
+    typeClass = 'output-header';
+  }
+  
+  // Check if user has scrolled away from bottom
+  const isAtBottom = runOutputEl.scrollTop + runOutputEl.clientHeight >= runOutputEl.scrollHeight - 10;
+  
+  // Add new message with appropriate styling
+  outputEl.innerHTML += `<div class="output-line"><span class="output-timestamp">[${timestamp}]</span> <span class="${typeClass}">${message}</span></div>`;
+  
+  // Auto-scroll only if user was at bottom
+  if (isAtBottom) {
+    runOutputEl.scrollTop = runOutputEl.scrollHeight;
+  }
 }
 
 async function loadServerSettings() {
@@ -297,6 +321,9 @@ require(['vs/editor/editor.main'], function () {
   // Setup output resizer
   setupOutputResizer();
   
+  // Setup sidebar resizer
+  setupSidebarResizer();
+  
   // Setup syntax checking
   setupSyntaxChecking();
   
@@ -542,6 +569,47 @@ function setupOutputResizer() {
   });
 }
 
+// Setup sidebar resizer functionality
+function setupSidebarResizer() {
+  const resizer = document.getElementById('sidebar-resizer');
+  const layout = document.getElementById('layout');
+  
+  if (!resizer || !layout) return;
+  
+  resizer.addEventListener('mousedown', (e) => {
+    isResizing = true;
+    document.body.style.cursor = 'ew-resize';
+    
+    const handleMouseMove = (e) => {
+      if (!isResizing) return;
+      
+      const rect = layout.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const totalWidth = rect.width;
+      
+      // Calculate new widths for sidebar and editor
+      const sidebarWidth = x;
+      const editorWidth = totalWidth - x - 4; // resizer width
+      
+      // Set minimum widths
+      if (sidebarWidth < 100 || editorWidth < 200) return;
+      
+      // Update grid template columns
+      layout.style.gridTemplateColumns = `${sidebarWidth}px 4px ${editorWidth}px`;
+    };
+    
+    const handleMouseUp = () => {
+      isResizing = false;
+      document.body.style.cursor = '';
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+    
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  });
+}
+
 // ===== Workspace & Tree =====
 async function applyWorkspace(rootPath, tree) {
   workspaceRoot = rootPath;
@@ -670,6 +738,8 @@ function promptCreate(parentDir, type) {
         } else {
           await window.api.createFolder({ parentDir, name });
         }
+        // Sync with server immediately after creating file or folder
+        await syncWithServer();
         // 不再手动刷新文件树，依赖主进程发送的workspace-refresh事件
       } finally {
         cleanup();
@@ -714,6 +784,8 @@ function promptRename(oldPath) {
           updateTabbar();
           updateTitlebar();
         }
+        // Sync with server immediately after renaming file or folder
+        await syncWithServer();
         // 不再手动刷新文件树，依赖主进程发送的workspace-refresh事件
       } finally {
         cleanup();

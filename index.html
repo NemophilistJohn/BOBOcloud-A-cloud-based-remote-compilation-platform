@@ -25,7 +25,7 @@
     }
     #layout {
       display: grid;
-      grid-template-columns: 280px 1fr;
+      grid-template-columns: 280px 4px 1fr;
       grid-template-rows: 36px 32px 1fr 4px 150px;
       height: 100%;
       width: 100%;
@@ -48,7 +48,7 @@
       cursor: pointer;
     }
     #tabbar {
-      grid-column: 2 / -1;
+      grid-column: 3 / -1;
       background: #2a2a2a;
       border-bottom: 1px solid #00000033;
       display: flex;
@@ -81,21 +81,34 @@
       overflow: auto;
       grid-row: 2 / -1;
     }
+    
+    #sidebar-resizer {
+      grid-row: 2 / -1;
+      background: #3a3a3a;
+      cursor: ew-resize;
+      border-left: 1px solid #00000033;
+      border-right: 1px solid #00000033;
+    }
+    
+    #sidebar-resizer:hover {
+      background: #4a4a4a;
+    }
     #editor {
       position: relative;
       grid-row: 3;
-      grid-column: 2;
+      grid-column: 3;
       overflow: hidden;
     }
     
     #output-resizer {
       grid-row: 4;
-      grid-column: 2;
+      grid-column: 3;
       background: #3a3a3a;
       cursor: ns-resize;
       border-top: 1px solid #00000033;
       border-bottom: 1px solid #00000033;
     }
+    
     
     #output-resizer:hover {
       background: #4a4a4a;
@@ -110,6 +123,43 @@
       font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
       font-size: 13px;
       line-height: 1.5;
+      grid-column: 3;
+    }
+    
+    /* Output styles */
+    .output-line {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    
+    .output-timestamp {
+      color: #888888;
+      font-weight: normal;
+    }
+    
+    .output-info {
+      color: #d4d4d4;
+    }
+    
+    .output-success {
+      color: var(--green);
+    }
+    
+    .output-warning {
+      color: var(--yellow);
+    }
+    
+    .output-error {
+      color: var(--red);
+    }
+    
+    .output-command {
+      color: var(--blue);
+    }
+    
+    .output-header {
+      color: #ffffff;
+      font-weight: bold;
     }
     
     #container {
@@ -276,6 +326,7 @@
     <div id="sidebar">
       <div class="tree" id="file-tree"></div>
     </div>
+    <div id="sidebar-resizer"></div>
     <div id="editor">
       <div id="container"></div>
         <div id="image-preview" class="hidden">
