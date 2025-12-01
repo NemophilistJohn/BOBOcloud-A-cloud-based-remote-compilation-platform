@@ -9,15 +9,5 @@ A cloud-based remote compilation platform that breathes new life into your idle 
 I understand this project is not unprecedented—there are many excellent similar products like Code-Server and Eclipse Che. However, I still intend to "reinvent the wheel" to offer a more customized option through this product.
 
 here is some shows about diffrent languages:
-CPP:
-<img width="2086" height="1328" alt="image" src="https://github.com/user-attachments/assets/d1762de8-4850-441a-91a0-71c1e622b4f3" />
-Python:
-<img width="2095" height="1338" alt="image" src="https://github.com/user-attachments/assets/fd29a26d-4119-4f4a-8e3d-af000d98a88f" />
-Java:
-<img width="2090" height="1347" alt="image" src="https://github.com/user-attachments/assets/df72c056-d475-4a6c-87cd-bacb1a7834f6" />
-Go：
-<img width="2084" height="1350" alt="image" src="https://github.com/user-attachments/assets/e3683a0c-929a-45b3-9ea2-f7a67882fc6a" />
 
-
-
-
+<img width="400" height="1044" alt="merged-images-20251201224605 Merge-JPG net" src="https://github.com/user-attachments/assets/c3a0c90f-bfca-4aa5-b4e9-c0009900652b" />
