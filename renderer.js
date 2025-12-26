@@ -39,33 +39,43 @@ async function sendToServer(action, data = {}) {
   }
 }
 
-function updateRunOutput(message) {
-  const runOutputEl = document.getElementById('run-output');
+// Output management
+let shouldAutoScroll = true;
+
+function updateRunOutput(message, type = 'info') {
   const outputEl = document.getElementById('run-log');
+  const runOutputEl = document.getElementById('run-output');
   const timestamp = new Date().toLocaleTimeString();
   
-  // Determine output type and color class
-  let typeClass = 'output-info';
-  if (message.startsWith('Error:')) {
-    typeClass = 'output-error';
-  } else if (message.startsWith('Warning:')) {
-    typeClass = 'output-warning';
-  } else if (message.startsWith('Sync completed successfully') || message.startsWith('Saved new file:')) {
-    typeClass = 'output-success';
-  } else if (message.startsWith('Starting sync:') || message.startsWith('Running code:')) {
-    typeClass = 'output-command';
-  } else if (message.startsWith('=== ')) {
-    typeClass = 'output-header';
+  // Determine output class based on type
+  let outputClass = 'output-info';
+  switch (type) {
+    case 'success':
+      outputClass = 'output-success';
+      break;
+    case 'warning':
+      outputClass = 'output-warning';
+      break;
+    case 'error':
+      outputClass = 'output-error';
+      break;
+    case 'log':
+      outputClass = 'output-log';
+      break;
+    default:
+      outputClass = 'output-info';
   }
   
-  // Check if user has scrolled away from bottom
-  const isAtBottom = runOutputEl.scrollTop + runOutputEl.clientHeight >= runOutputEl.scrollHeight - 10;
+  // Create output line with proper styling
+  const line = document.createElement('div');
+  line.className = `output-line ${outputClass}`;
+  line.innerHTML = `<span class="output-timestamp">[${timestamp}]</span> ${message}`;
   
-  // Add new message with appropriate styling
-  outputEl.innerHTML += `<div class="output-line"><span class="output-timestamp">[${timestamp}]</span> <span class="${typeClass}">${message}</span></div>`;
+  // Append to output
+  outputEl.appendChild(line);
   
-  // Auto-scroll only if user was at bottom
-  if (isAtBottom) {
+  // Smart scroll: only scroll if user hasn't manually scrolled away
+  if (shouldAutoScroll) {
     runOutputEl.scrollTop = runOutputEl.scrollHeight;
   }
 }
@@ -117,7 +127,7 @@ async function checkRcloneAvailability() {
 // Sync with server using rclone
 async function syncWithServer(deletedFiles = []) {
   if (!workspaceRoot || !serverSettings.ip || !serverSettings.user) {
-    updateRunOutput('Error: Workspace not opened or server settings not configured');
+    updateRunOutput('Workspace not opened or server settings not configured', 'error');
     return false;
   }
   try {
@@ -125,30 +135,32 @@ async function syncWithServer(deletedFiles = []) {
     
     // Handle deleted files first
     if (deletedFiles && deletedFiles.length > 0) {
-      updateRunOutput(`Deleting ${deletedFiles.length} file(s) from server...`);
+      updateRunOutput(`Deleting ${deletedFiles.length} file(s) from server...`, 'info');
+      let deleteErrors = 0;
       for (const filePath of deletedFiles) {
         const deleteResult = await sendToServer('deleteFile', {
           folderName: projectName,
           filePath: filePath
         });
-        if (deleteResult && deleteResult.success) {
-          updateRunOutput(`Deleted ${filePath} from server`);
-        } else {
-          updateRunOutput(`Error deleting ${filePath} from server: ${deleteResult.error}`);
+        if (!deleteResult || !deleteResult.success) {
+          deleteErrors++;
         }
+      }
+      if (deleteErrors > 0) {
+        updateRunOutput(`Failed to delete ${deleteErrors} file(s)`, 'warning');
+      } else {
+        updateRunOutput(`Successfully deleted ${deletedFiles.length} file(s)`, 'success');
       }
     }
     
     const checkResult = await sendToServer('checkFolder', { folderName: projectName });
     if (!checkResult) {
-      updateRunOutput('Error checking folder on server');
+      updateRunOutput('Failed to check server folder', 'error');
       return false;
     }  
-    // Display check result
-    if (checkResult.success) {
-      updateRunOutput(`Server folder ready: ${checkResult.folderPath}`);
-    } else {
-      updateRunOutput(`Error preparing server folder: ${checkResult.error}`);
+    
+    if (!checkResult.success) {
+      updateRunOutput(`Server folder error: ${checkResult.error}`, 'error');
       return false;
     }
 
@@ -170,18 +182,18 @@ async function syncWithServer(deletedFiles = []) {
         }
       }
     }
-    // Use rclone to sync local to server - ensure all files are synced
+    // Use rclone to sync local to server
     const remotePath = `/shareOnling/${projectName}`;
     const rcloneCommand = `${rcloneExecutable} sync "${workspaceRoot}" "cloud-compiler-sftp:${remotePath}" ` +
       `--progress`;
     
-    updateRunOutput(`Starting sync: ${rcloneCommand}`);
+    updateRunOutput('Starting file sync...', 'info');
     
     // Use the new API to execute rclone command via main process
     const result = await window.api.executeRclone(rcloneCommand);
     
     if (result.error) {
-      updateRunOutput(`Sync error: ${result.error}`);
+      updateRunOutput(`Sync failed: ${result.error}`, 'error');
       
       const isRcloneNotFound = (result.error.includes('系统找不到指定的文件') || 
                               result.error.includes('command not found') || 
@@ -189,39 +201,26 @@ async function syncWithServer(deletedFiles = []) {
                              !result.error.includes('didn\'t find section');
       
       if (isRcloneNotFound) {
-        updateRunOutput('Error: rclone executable not found. Please specify the full path to rclone.exe in server settings.');
-        updateRunOutput('Example: F:\\rclone\\rclone.exe');
-        updateRunOutput('Download rclone from: https://rclone.org/downloads/');
-      } else {
-        // Add troubleshooting tips for other errors
-        updateRunOutput('\nTroubleshooting tips:');
-        updateRunOutput('1. Check if server IP, username, and password are correct');
-        updateRunOutput('2. Ensure SFTP port 22 is open on the server');
-        updateRunOutput('3. Verify that the server has SFTP enabled');
-        updateRunOutput('4. Check if the remote directory exists on the server');
-        updateRunOutput('5. Ensure your network connection is stable');
-      } 
+        updateRunOutput('rclone executable not found. Please check the path in server settings.', 'error');
+      }
       return false;
     }
     
     if (result.stderr) {
-      // Filter out rclone progress messages if needed, but keep important error messages
+      // Filter out rclone progress messages, keep only important errors
       const filteredStderr = result.stderr.split('\n')
-        .filter(line => !line.startsWith('Transferred:') && !line.startsWith('Elapsed time:') && !line.startsWith('Checking:'))
+        .filter(line => !line.startsWith('Transferred:') && !line.startsWith('Elapsed time:') && 
+                        !line.startsWith('Checking:') && !line.startsWith(' * ') && !line.startsWith('\t'))
         .join('\n');
       if (filteredStderr) {
-        updateRunOutput(`Sync stderr: ${filteredStderr}`);
+        updateRunOutput(`Sync warnings: ${filteredStderr}`, 'warning');
       }
     }
     
-    if (result.stdout) {
-      updateRunOutput(`Sync stdout: ${result.stdout}`);
-    }
-    
-    updateRunOutput('Sync completed successfully - all files synced');
+    updateRunOutput('File sync completed successfully', 'success');
     return true;
   } catch (error) {
-    updateRunOutput(`Sync exception: ${error.message}`);
+    updateRunOutput(`Sync error: ${error.message}`, 'error');
     return false;
   }
 }
@@ -268,7 +267,7 @@ require(['vs/editor/editor.main'], function () {
   document.getElementById('run-code').addEventListener('click', () => {
     const active = tabs.find(t => t.path === activeTabPath);
     if (!active) return;
-    runCodeOnServer(active.path, active.model.getValue());
+    runCodeOnServer(active.path);
   });
 
   // Server Settings 弹窗
@@ -321,14 +320,22 @@ require(['vs/editor/editor.main'], function () {
   // Setup output resizer
   setupOutputResizer();
   
-  // Setup sidebar resizer
-  setupSidebarResizer();
-  
   // Setup syntax checking
   setupSyntaxChecking();
   
   // Initialize image preview controls
   initImagePreviewControls();
+  
+  // Setup scroll event listener for run log auto-scroll
+  const runOutputEl = document.getElementById('run-output');
+  if (runOutputEl) {
+    runOutputEl.addEventListener('scroll', () => {
+      const { scrollTop, scrollHeight, clientHeight } = runOutputEl;
+      // If user scrolls manually, disable auto-scroll
+      // Re-enable auto-scroll when near the bottom (within 100px)
+      shouldAutoScroll = scrollHeight - scrollTop - clientHeight < 100;
+    });
+  }
 });
 
 // Setup syntax checking for Monaco Editor
@@ -569,47 +576,6 @@ function setupOutputResizer() {
   });
 }
 
-// Setup sidebar resizer functionality
-function setupSidebarResizer() {
-  const resizer = document.getElementById('sidebar-resizer');
-  const layout = document.getElementById('layout');
-  
-  if (!resizer || !layout) return;
-  
-  resizer.addEventListener('mousedown', (e) => {
-    isResizing = true;
-    document.body.style.cursor = 'ew-resize';
-    
-    const handleMouseMove = (e) => {
-      if (!isResizing) return;
-      
-      const rect = layout.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const totalWidth = rect.width;
-      
-      // Calculate new widths for sidebar and editor
-      const sidebarWidth = x;
-      const editorWidth = totalWidth - x - 4; // resizer width
-      
-      // Set minimum widths
-      if (sidebarWidth < 100 || editorWidth < 200) return;
-      
-      // Update grid template columns
-      layout.style.gridTemplateColumns = `${sidebarWidth}px 4px ${editorWidth}px`;
-    };
-    
-    const handleMouseUp = () => {
-      isResizing = false;
-      document.body.style.cursor = '';
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-    
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-  });
-}
-
 // ===== Workspace & Tree =====
 async function applyWorkspace(rootPath, tree) {
   workspaceRoot = rootPath;
@@ -662,29 +628,93 @@ function createTreeItem(node) {
   if (node.type === 'file') {
     row.onclick = () => openFile(node.path, node.name);
   } else {
+    // Add a children container for folders
+    const childrenContainer = document.createElement('ul');
+    childrenContainer.style.paddingLeft = '14px';
+    childrenContainer.style.display = isExpanded ? 'block' : 'none';
+    li.appendChild(childrenContainer);
+    
+    // Add a loading indicator
+    const loadingIndicator = document.createElement('div');
+    loadingIndicator.className = 'loading-indicator';
+    loadingIndicator.textContent = 'Loading...';
+    loadingIndicator.style.display = 'none';
+    childrenContainer.appendChild(loadingIndicator);
+
     row.onclick = () => {
       const expanded = expandedPaths.has(node.path);
       if (expanded && !isAlwaysCollapsed) {
+        // Collapse folder
         expandedPaths.delete(node.path);
+        childrenContainer.style.display = 'none';
+        icon.textContent = '▸';
       } else {
+        // Expand folder
         expandedPaths.add(node.path);
+        icon.textContent = '▾';
+        childrenContainer.style.display = 'block';
+        
+        // Load children if not already loaded
+        if (childrenContainer.children.length <= 1) { // Only loading indicator exists
+          loadFolderChildren(node, childrenContainer, loadingIndicator);
+        }
       }
-      const updated = createTreeItem(node);
-      li.replaceWith(updated);
     };
-
-    const childrenContainer = document.createElement('ul');
-    childrenContainer.style.paddingLeft = '14px';
-    li.appendChild(childrenContainer);
-
-    if (isExpanded && node.children && node.children.length) {
-      for (const child of node.children) {
-        childrenContainer.appendChild(createTreeItem(child));
-      }
+    
+    // Load children if folder is expanded initially
+    if (isExpanded) {
+      loadFolderChildren(node, childrenContainer, loadingIndicator);
     }
   }
 
   return li;
+}
+
+// Load folder children dynamically
+async function loadFolderChildren(node, childrenContainer, loadingIndicator) {
+  try {
+    // Show loading indicator
+    loadingIndicator.style.display = 'block';
+    
+    // Get children from main process
+    const tree = await window.api.readTree(node.path);
+    
+    // Clear existing children except loading indicator
+    while (childrenContainer.firstChild) {
+      childrenContainer.removeChild(childrenContainer.firstChild);
+    }
+    
+    // Hide loading indicator
+    loadingIndicator.style.display = 'none';
+    
+    // Render children if any
+    if (tree && tree.children && tree.children.length > 0) {
+      for (const child of tree.children) {
+        const childItem = createTreeItem(child);
+        childrenContainer.appendChild(childItem);
+      }
+    } else {
+      // Show empty folder message
+      const emptyMessage = document.createElement('li');
+      emptyMessage.textContent = '(empty)';
+      emptyMessage.style.color = '#6A6A6A';
+      emptyMessage.style.fontStyle = 'italic';
+      childrenContainer.appendChild(emptyMessage);
+    }
+  } catch (error) {
+    console.error('Error loading folder children:', error);
+    updateRunOutput(`Error loading folder: ${node.name}`, 'error');
+    
+    // Hide loading indicator
+    loadingIndicator.style.display = 'none';
+    
+    // Show error message
+    const errorMessage = document.createElement('li');
+    errorMessage.textContent = '(error loading)';
+    errorMessage.style.color = '#F44747';
+    errorMessage.style.fontStyle = 'italic';
+    childrenContainer.appendChild(errorMessage);
+  }
 }
 
 function openContextMenu(x, y, node) {
@@ -738,8 +768,6 @@ function promptCreate(parentDir, type) {
         } else {
           await window.api.createFolder({ parentDir, name });
         }
-        // Sync with server immediately after creating file or folder
-        await syncWithServer();
         // 不再手动刷新文件树，依赖主进程发送的workspace-refresh事件
       } finally {
         cleanup();
@@ -784,8 +812,6 @@ function promptRename(oldPath) {
           updateTabbar();
           updateTitlebar();
         }
-        // Sync with server immediately after renaming file or folder
-        await syncWithServer();
         // 不再手动刷新文件树，依赖主进程发送的workspace-refresh事件
       } finally {
         cleanup();
@@ -1103,8 +1129,8 @@ async function saveNewFiles(newFiles) {
     return;
   }
   
-  updateRunOutput(`\n=== SAVING NEW FILES ===`);
-  updateRunOutput(`Found ${Object.keys(newFiles).length} new file(s) generated by server`);
+  updateRunOutput(`Saving ${Object.keys(newFiles).length} new file(s)...`, 'info');
+  let saveErrors = 0;
   
   for (const fileName in newFiles) {
     const filePath = `${workspaceRoot}/${fileName}`;
@@ -1118,23 +1144,27 @@ async function saveNewFiles(newFiles) {
         // 文本文件，直接保存
         await window.api.saveFile({ filePath, content: fileData.content });
       }
-      updateRunOutput(`Saved new file: ${fileName}`);
-      
-      // 不再手动刷新文件树，依赖主进程发送的workspace-refresh事件
-      // 但是saveFile和saveBinaryFile没有触发主进程的workspace-refresh事件，所以需要手动刷新
-      // 使用readTree函数直接读取文件树，不调用pickWorkspace
-      const tree = await window.api.readTree(workspaceRoot);
-      renderTree(tree);
     } catch (error) {
-      updateRunOutput(`Error saving new file ${fileName}: ${error.message}`);
+      saveErrors++;
+      updateRunOutput(`Failed to save: ${fileName}`, 'warning');
     }
   }
+  
+  if (saveErrors > 0) {
+    updateRunOutput(`Saved ${Object.keys(newFiles).length - saveErrors}/${Object.keys(newFiles).length} files`, 'warning');
+  } else {
+    updateRunOutput(`Successfully saved all ${Object.keys(newFiles).length} files`, 'success');
+  }
+  
+  // Refresh file tree to show new files
+  const tree = await window.api.readTree(workspaceRoot);
+  renderTree(tree);
 }
 
 // Run code on server
-async function runCodeOnServer(filePath, content) {
+async function runCodeOnServer(filePath) {
   if (!workspaceRoot || !serverSettings.ip) {
-    updateRunOutput('Error: Workspace not opened or server not configured');
+    updateRunOutput('Workspace not opened or server not configured', 'error');
     return;
   }
 
@@ -1142,42 +1172,40 @@ async function runCodeOnServer(filePath, content) {
     // Sync with server before running
     const syncSuccess = await syncWithServer();
     if (!syncSuccess) {
-      updateRunOutput('Error: Failed to sync with server before running');
+      updateRunOutput('Failed to sync with server before running', 'error');
       return;
     }
 
     const projectName = workspaceRoot.split(/[/\\]/).pop();
     const relativeFilePath = filePath.replace(workspaceRoot, '').replace(/^[/\\]/, '');
     
-    updateRunOutput(`Running code: ${relativeFilePath}`);
+    updateRunOutput(`Running: ${relativeFilePath}`, 'info');
     
-    // Send run request to server
+    // Send run request to server - only send file path, not content
     const runResult = await sendToServer('runCode', {
       folderName: projectName,
-      filePath: relativeFilePath,
-      content: content
+      filePath: relativeFilePath
     });
     
     if (runResult) {
       if (runResult.success) {
-        updateRunOutput('\n=== RUN SUCCESS ===');
+        updateRunOutput('Execution completed successfully', 'success');
         if (runResult.output) {
-          updateRunOutput('Output:');
-          updateRunOutput(runResult.output);
+          updateRunOutput(runResult.output, 'log');
         }
         if (runResult.error) {
-          updateRunOutput('Warnings:');
-          updateRunOutput(runResult.error);
-        }
-        updateRunOutput(`Return code: ${runResult.returncode}`);
-      } else {
-        updateRunOutput('\n=== RUN FAILED ===');
-        if (runResult.error) {
-          updateRunOutput('Error:');
-          updateRunOutput(runResult.error);
+          updateRunOutput(runResult.error, 'warning');
         }
         if (runResult.returncode !== undefined) {
-          updateRunOutput(`Return code: ${runResult.returncode}`);
+          updateRunOutput(`Return code: ${runResult.returncode}`, 'log');
+        }
+      } else {
+        updateRunOutput('Execution failed', 'error');
+        if (runResult.error) {
+          updateRunOutput(runResult.error, 'error');
+        }
+        if (runResult.returncode !== undefined) {
+          updateRunOutput(`Return code: ${runResult.returncode}`, 'log');
         }
       }
       
@@ -1186,10 +1214,10 @@ async function runCodeOnServer(filePath, content) {
         await saveNewFiles(runResult.newFiles);
       }
     } else {
-      updateRunOutput('Error: Failed to get run result from server');
+      updateRunOutput('Failed to get run result from server', 'error');
     }
   } catch (error) {
-    updateRunOutput(`Run error: ${error.message}`);
+    updateRunOutput(`Execution error: ${error.message}`, 'error');
   }
 }
 

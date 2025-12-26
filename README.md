@@ -9,7 +9,15 @@ A cloud-based remote compilation platform that breathes new life into your idle 
 I understand this project is not unprecedented—there are many excellent similar products like Code-Server and Eclipse Che. However, I still intend to "reinvent the wheel" to offer a more customized option through this product.
 
 here is some shows about diffrent languages:
-<img width="2096" height="1372" alt="rust" src="https://github.com/user-attachments/assets/0041f5a6-2b05-4763-8087-fe41420745f0" />
-<img width="2096" height="1372" alt="py" src="https://github.com/user-attachments/assets/cfa85a51-892d-44bc-9b42-f88c19c93181" />
-<img width="2096" height="1372" alt="go" src="https://github.com/user-attachments/assets/1298c44f-aff2-43ce-ba89-653cac35dbd9" />
-<img width="2096" height="1372" alt="java" src="https://github.com/user-attachments/assets/5aeb9256-3ec1-47e3-ab0c-f64dda8ff645" />
+CPP:
+<img width="2086" height="1328" alt="image" src="https://github.com/user-attachments/assets/d1762de8-4850-441a-91a0-71c1e622b4f3" />
+Python:
+<img width="2095" height="1338" alt="image" src="https://github.com/user-attachments/assets/fd29a26d-4119-4f4a-8e3d-af000d98a88f" />
+Java:
+<img width="2090" height="1347" alt="image" src="https://github.com/user-attachments/assets/df72c056-d475-4a6c-87cd-bacb1a7834f6" />
+Go：
+<img width="2084" height="1350" alt="image" src="https://github.com/user-attachments/assets/e3683a0c-929a-45b3-9ea2-f7a67882fc6a" />
+
+
+
+
