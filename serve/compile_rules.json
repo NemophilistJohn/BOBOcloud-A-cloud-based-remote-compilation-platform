@@ -1,0 +1,225 @@
+{
+  "rules": [
+    {
+      "name": "pthread",
+      "description": "POSIX Threads Library",
+      "detect": {
+        "type": "include_regex",
+        "patterns": [
+          "^\\s*#include\\s+[<\"]pthread\\.h[>\"]"
+        ]
+      },
+      "flags": {
+        "gcc": ["-pthread"],
+        "g++": ["-pthread"]
+      }
+    },
+    {
+      "name": "math",
+      "description": "C Math Library (libm)",
+      "detect": {
+        "type": "include_regex",
+        "patterns": [
+          "^\\s*#include\\s+[<\"]math\\.h[>\"]"
+        ]
+      },
+      "flags": {
+        "gcc": ["-lm"],
+        "g++": ["-lm"]
+      }
+    },
+    {
+      "name": "rt",
+      "description": "POSIX Real-time Extension Library",
+      "detect": {
+        "type": "include_regex",
+        "patterns": [
+          "^\\s*#include\\s+[<\"]aio\\.h[>\"]",
+          "^\\s*#include\\s+[<\"]mqueue\\.h[>\"]",
+          "^\\s*#include\\s+[<\"]semaphore\\.h[>\"]"
+        ]
+      },
+      "flags": {
+        "gcc": ["-lrt"],
+        "g++": ["-lrt"]
+      }
+    },
+    {
+      "name": "openssl_crypto",
+      "description": "OpenSSL Cryptography Library",
+      "detect": {
+        "type": "include_regex",
+        "patterns": [
+          "^\\s*#include\\s+[<\"]openssl/"
+        ]
+      },
+      "flags": {
+        "gcc": ["-lssl", "-lcrypto"],
+        "g++": ["-lssl", "-lcrypto"]
+      }
+    },
+    {
+      "name": "curl",
+      "description": "libcurl URL Transfer Library",
+      "detect": {
+        "type": "include_regex",
+        "patterns": [
+          "^\\s*#include\\s+[<\"]curl/"
+        ]
+      },
+      "flags": {
+        "gcc": ["-lcurl"],
+        "g++": ["-lcurl"]
+      }
+    },
+    {
+      "name": "zlib",
+      "description": "Zlib Compression Library",
+      "detect": {
+        "type": "include_regex",
+        "patterns": [
+          "^\\s*#include\\s+[<\"]zlib\\.h[>\"]"
+        ]
+      },
+      "flags": {
+        "gcc": ["-lz"],
+        "g++": ["-lz"]
+      }
+    },
+    {
+      "name": "cpp_thread",
+      "description": "C++11 Standard Thread Library",
+      "detect": {
+        "type": "include_regex",
+        "patterns": [
+          "^\\s*#include\\s+[<\"]thread[>\"]",
+          "^\\s*#include\\s+[<\"]mutex[>\"]",
+          "^\\s*#include\\s+[<\"]condition_variable[>\"]",
+          "^\\s*#include\\s+[<\"]future[>\"]",
+          "^\\s*#include\\s+[<\"]atomic[>\"]"
+        ]
+      },
+      "flags": {
+        "gcc": ["-pthread", "-std=c11"],
+        "g++": ["-pthread", "-std=c++11"]
+      }
+    },
+    {
+      "name": "dl",
+      "description": "Dynamic Linking Library (dlopen/dlsym)",
+      "detect": {
+        "type": "include_regex",
+        "patterns": [
+          "^\\s*#include\\s+[<\"]dlfcn\\.h[>\"]"
+        ]
+      },
+      "flags": {
+        "gcc": ["-ldl"],
+        "g++": ["-ldl"]
+      }
+    },
+    {
+      "name": "readline",
+      "description": "GNU Readline Library",
+      "detect": {
+        "type": "include_regex",
+        "patterns": [
+          "^\\s*#include\\s+[<\"]readline/",
+          "^\\s*#include\\s+[<\"]history\\.h[>\"]"
+        ]
+      },
+      "flags": {
+        "gcc": ["-lreadline"],
+        "g++": ["-lreadline"]
+      }
+    },
+    {
+      "name": "ncurses",
+      "description": "NCurses Terminal UI Library",
+      "detect": {
+        "type": "include_regex",
+        "patterns": [
+          "^\\s*#include\\s+[<\"]ncurses\\.h[>\"]",
+          "^\\s*#include\\s+[<\"]curses\\.h[>\"]"
+        ]
+      },
+      "flags": {
+        "gcc": ["-lncurses"],
+        "g++": ["-lncurses"]
+      }
+    },
+    {
+      "name": "sqlite3",
+      "description": "SQLite3 Embedded Database",
+      "detect": {
+        "type": "include_regex",
+        "patterns": [
+          "^\\s*#include\\s+[<\"]sqlite3\\.h[>\"]"
+        ]
+      },
+      "flags": {
+        "gcc": ["-lsqlite3"],
+        "g++": ["-lsqlite3"]
+      }
+    },
+    {
+      "name": "crypto_sys",
+      "description": "System Cryptography (crypt.h)",
+      "detect": {
+        "type": "include_regex",
+        "patterns": [
+          "^\\s*#include\\s+[<\"]crypt\\.h[>\"]"
+        ]
+      },
+      "flags": {
+        "gcc": ["-lcrypt"],
+        "g++": ["-lcrypt"]
+      }
+    },
+    {
+      "name": "gtk",
+      "description": "GTK+ GUI Toolkit",
+      "detect": {
+        "type": "include_regex",
+        "patterns": [
+          "^\\s*#include\\s+[<\"]gtk/"
+        ]
+      },
+      "flags": {
+        "gcc": ["`pkg-config --cflags --libs gtk+-3.0`"],
+        "g++": ["`pkg-config --cflags --libs gtk+-3.0`"]
+      }
+    },
+    {
+      "name": "socket_network",
+      "description": "Network Socket Programming Headers",
+      "detect": {
+        "type": "include_regex",
+        "patterns": [
+          "^\\s*#include\\s+[<\"]sys/socket\\.h[>\"]",
+          "^\\s*#include\\s+[<\"]netinet/",
+          "^\\s*#include\\s+[<\"]arpa/inet\\.h[>\"]",
+          "^\\s*#include\\s+[<\"]netdb\\.h[>\"]"
+        ]
+      },
+      "flags": {
+        "gcc": [],
+        "g++": []
+      }
+    },
+    {
+      "name": "unistd_posix",
+      "description": "POSIX System Calls (unistd.h)",
+      "detect": {
+        "type": "include_regex",
+        "patterns": [
+          "^\\s*#include\\s+[<\"]unistd\\.h[>\"]"
+        ]
+      },
+      "flags": {
+        "gcc": [],
+        "g++": []
+      }
+    }
+  ]
+}

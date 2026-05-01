@@ -39,44 +39,17 @@ async function sendToServer(action, data = {}) {
   }
 }
 
-// Output management
-let shouldAutoScroll = true;
+let autoScrollEnabled = true;
 
-function updateRunOutput(message, type = 'info') {
+function updateRunOutput(message) {
   const outputEl = document.getElementById('run-log');
-  const runOutputEl = document.getElementById('run-output');
+  const containerEl = document.getElementById('run-output');
   const timestamp = new Date().toLocaleTimeString();
+  outputEl.innerHTML += `[${timestamp}] ${message}\n`;
   
-  // Determine output class based on type
-  let outputClass = 'output-info';
-  switch (type) {
-    case 'success':
-      outputClass = 'output-success';
-      break;
-    case 'warning':
-      outputClass = 'output-warning';
-      break;
-    case 'error':
-      outputClass = 'output-error';
-      break;
-    case 'log':
-      outputClass = 'output-log';
-      break;
-    default:
-      outputClass = 'output-info';
-  }
-  
-  // Create output line with proper styling
-  const line = document.createElement('div');
-  line.className = `output-line ${outputClass}`;
-  line.innerHTML = `<span class="output-timestamp">[${timestamp}]</span> ${message}`;
-  
-  // Append to output
-  outputEl.appendChild(line);
-  
-  // Smart scroll: only scroll if user hasn't manually scrolled away
-  if (shouldAutoScroll) {
-    runOutputEl.scrollTop = runOutputEl.scrollHeight;
+  const isAtBottom = containerEl.scrollHeight - containerEl.scrollTop - containerEl.clientHeight < 50;
+  if (isAtBottom || autoScrollEnabled) {
+    containerEl.scrollTop = containerEl.scrollHeight;
   }
 }
 
@@ -127,7 +100,7 @@ async function checkRcloneAvailability() {
 // Sync with server using rclone
 async function syncWithServer(deletedFiles = []) {
   if (!workspaceRoot || !serverSettings.ip || !serverSettings.user) {
-    updateRunOutput('Workspace not opened or server settings not configured', 'error');
+    updateRunOutput('Error: Workspace not opened or server settings not configured');
     return false;
   }
   try {
@@ -135,32 +108,30 @@ async function syncWithServer(deletedFiles = []) {
     
     // Handle deleted files first
     if (deletedFiles && deletedFiles.length > 0) {
-      updateRunOutput(`Deleting ${deletedFiles.length} file(s) from server...`, 'info');
-      let deleteErrors = 0;
+      updateRunOutput(`Deleting ${deletedFiles.length} file(s) from server...`);
       for (const filePath of deletedFiles) {
         const deleteResult = await sendToServer('deleteFile', {
           folderName: projectName,
           filePath: filePath
         });
-        if (!deleteResult || !deleteResult.success) {
-          deleteErrors++;
+        if (deleteResult && deleteResult.success) {
+          updateRunOutput(`Deleted ${filePath} from server`);
+        } else {
+          updateRunOutput(`Error deleting ${filePath} from server: ${deleteResult.error}`);
         }
-      }
-      if (deleteErrors > 0) {
-        updateRunOutput(`Failed to delete ${deleteErrors} file(s)`, 'warning');
-      } else {
-        updateRunOutput(`Successfully deleted ${deletedFiles.length} file(s)`, 'success');
       }
     }
     
     const checkResult = await sendToServer('checkFolder', { folderName: projectName });
     if (!checkResult) {
-      updateRunOutput('Failed to check server folder', 'error');
+      updateRunOutput('Error checking folder on server');
       return false;
     }  
-    
-    if (!checkResult.success) {
-      updateRunOutput(`Server folder error: ${checkResult.error}`, 'error');
+    // Display check result
+    if (checkResult.success) {
+      updateRunOutput(`Server folder ready: ${checkResult.folderPath}`);
+    } else {
+      updateRunOutput(`Error preparing server folder: ${checkResult.error}`);
       return false;
     }
 
@@ -182,18 +153,18 @@ async function syncWithServer(deletedFiles = []) {
         }
       }
     }
-    // Use rclone to sync local to server
+    // Use rclone to sync local to server - ensure all files are synced
     const remotePath = `/shareOnling/${projectName}`;
     const rcloneCommand = `${rcloneExecutable} sync "${workspaceRoot}" "cloud-compiler-sftp:${remotePath}" ` +
       `--progress`;
     
-    updateRunOutput('Starting file sync...', 'info');
+    updateRunOutput(`Starting sync: ${rcloneCommand}`);
     
     // Use the new API to execute rclone command via main process
     const result = await window.api.executeRclone(rcloneCommand);
     
     if (result.error) {
-      updateRunOutput(`Sync failed: ${result.error}`, 'error');
+      updateRunOutput(`Sync error: ${result.error}`);
       
       const isRcloneNotFound = (result.error.includes('系统找不到指定的文件') || 
                               result.error.includes('command not found') || 
@@ -201,26 +172,39 @@ async function syncWithServer(deletedFiles = []) {
                              !result.error.includes('didn\'t find section');
       
       if (isRcloneNotFound) {
-        updateRunOutput('rclone executable not found. Please check the path in server settings.', 'error');
-      }
+        updateRunOutput('Error: rclone executable not found. Please specify the full path to rclone.exe in server settings.');
+        updateRunOutput('Example: F:\\rclone\\rclone.exe');
+        updateRunOutput('Download rclone from: https://rclone.org/downloads/');
+      } else {
+        // Add troubleshooting tips for other errors
+        updateRunOutput('\nTroubleshooting tips:');
+        updateRunOutput('1. Check if server IP, username, and password are correct');
+        updateRunOutput('2. Ensure SFTP port 22 is open on the server');
+        updateRunOutput('3. Verify that the server has SFTP enabled');
+        updateRunOutput('4. Check if the remote directory exists on the server');
+        updateRunOutput('5. Ensure your network connection is stable');
+      } 
       return false;
     }
     
     if (result.stderr) {
-      // Filter out rclone progress messages, keep only important errors
+      // Filter out rclone progress messages if needed, but keep important error messages
       const filteredStderr = result.stderr.split('\n')
-        .filter(line => !line.startsWith('Transferred:') && !line.startsWith('Elapsed time:') && 
-                        !line.startsWith('Checking:') && !line.startsWith(' * ') && !line.startsWith('\t'))
+        .filter(line => !line.startsWith('Transferred:') && !line.startsWith('Elapsed time:') && !line.startsWith('Checking:'))
         .join('\n');
       if (filteredStderr) {
-        updateRunOutput(`Sync warnings: ${filteredStderr}`, 'warning');
+        updateRunOutput(`Sync stderr: ${filteredStderr}`);
       }
     }
     
-    updateRunOutput('File sync completed successfully', 'success');
+    if (result.stdout) {
+      updateRunOutput(`Sync stdout: ${result.stdout}`);
+    }
+    
+    updateRunOutput('Sync completed successfully - all files synced');
     return true;
   } catch (error) {
-    updateRunOutput(`Sync error: ${error.message}`, 'error');
+    updateRunOutput(`Sync exception: ${error.message}`);
     return false;
   }
 }
@@ -320,22 +304,18 @@ require(['vs/editor/editor.main'], function () {
   // Setup output resizer
   setupOutputResizer();
   
+  // Track user's manual scroll in output area
+  const runOutputEl = document.getElementById('run-output');
+  runOutputEl.addEventListener('scroll', () => {
+    const isAtBottom = runOutputEl.scrollHeight - runOutputEl.scrollTop - runOutputEl.clientHeight < 50;
+    autoScrollEnabled = isAtBottom;
+  });
+  
   // Setup syntax checking
   setupSyntaxChecking();
   
   // Initialize image preview controls
   initImagePreviewControls();
-  
-  // Setup scroll event listener for run log auto-scroll
-  const runOutputEl = document.getElementById('run-output');
-  if (runOutputEl) {
-    runOutputEl.addEventListener('scroll', () => {
-      const { scrollTop, scrollHeight, clientHeight } = runOutputEl;
-      // If user scrolls manually, disable auto-scroll
-      // Re-enable auto-scroll when near the bottom (within 100px)
-      shouldAutoScroll = scrollHeight - scrollTop - clientHeight < 100;
-    });
-  }
 });
 
 // Setup syntax checking for Monaco Editor
@@ -539,6 +519,7 @@ function checkRustSyntax(content) {
 function setupOutputResizer() {
   const resizer = document.getElementById('output-resizer');
   const layout = document.getElementById('layout');
+  const outputContainer = document.getElementById('run-output');
   
   if (!resizer || !layout) return;
   
@@ -628,93 +609,29 @@ function createTreeItem(node) {
   if (node.type === 'file') {
     row.onclick = () => openFile(node.path, node.name);
   } else {
-    // Add a children container for folders
-    const childrenContainer = document.createElement('ul');
-    childrenContainer.style.paddingLeft = '14px';
-    childrenContainer.style.display = isExpanded ? 'block' : 'none';
-    li.appendChild(childrenContainer);
-    
-    // Add a loading indicator
-    const loadingIndicator = document.createElement('div');
-    loadingIndicator.className = 'loading-indicator';
-    loadingIndicator.textContent = 'Loading...';
-    loadingIndicator.style.display = 'none';
-    childrenContainer.appendChild(loadingIndicator);
-
     row.onclick = () => {
       const expanded = expandedPaths.has(node.path);
       if (expanded && !isAlwaysCollapsed) {
-        // Collapse folder
         expandedPaths.delete(node.path);
-        childrenContainer.style.display = 'none';
-        icon.textContent = '▸';
       } else {
-        // Expand folder
         expandedPaths.add(node.path);
-        icon.textContent = '▾';
-        childrenContainer.style.display = 'block';
-        
-        // Load children if not already loaded
-        if (childrenContainer.children.length <= 1) { // Only loading indicator exists
-          loadFolderChildren(node, childrenContainer, loadingIndicator);
-        }
       }
+      const updated = createTreeItem(node);
+      li.replaceWith(updated);
     };
-    
-    // Load children if folder is expanded initially
-    if (isExpanded) {
-      loadFolderChildren(node, childrenContainer, loadingIndicator);
+
+    const childrenContainer = document.createElement('ul');
+    childrenContainer.style.paddingLeft = '14px';
+    li.appendChild(childrenContainer);
+
+    if (isExpanded && node.children && node.children.length) {
+      for (const child of node.children) {
+        childrenContainer.appendChild(createTreeItem(child));
+      }
     }
   }
 
   return li;
-}
-
-// Load folder children dynamically
-async function loadFolderChildren(node, childrenContainer, loadingIndicator) {
-  try {
-    // Show loading indicator
-    loadingIndicator.style.display = 'block';
-    
-    // Get children from main process
-    const tree = await window.api.readTree(node.path);
-    
-    // Clear existing children except loading indicator
-    while (childrenContainer.firstChild) {
-      childrenContainer.removeChild(childrenContainer.firstChild);
-    }
-    
-    // Hide loading indicator
-    loadingIndicator.style.display = 'none';
-    
-    // Render children if any
-    if (tree && tree.children && tree.children.length > 0) {
-      for (const child of tree.children) {
-        const childItem = createTreeItem(child);
-        childrenContainer.appendChild(childItem);
-      }
-    } else {
-      // Show empty folder message
-      const emptyMessage = document.createElement('li');
-      emptyMessage.textContent = '(empty)';
-      emptyMessage.style.color = '#6A6A6A';
-      emptyMessage.style.fontStyle = 'italic';
-      childrenContainer.appendChild(emptyMessage);
-    }
-  } catch (error) {
-    console.error('Error loading folder children:', error);
-    updateRunOutput(`Error loading folder: ${node.name}`, 'error');
-    
-    // Hide loading indicator
-    loadingIndicator.style.display = 'none';
-    
-    // Show error message
-    const errorMessage = document.createElement('li');
-    errorMessage.textContent = '(error loading)';
-    errorMessage.style.color = '#F44747';
-    errorMessage.style.fontStyle = 'italic';
-    childrenContainer.appendChild(errorMessage);
-  }
 }
 
 function openContextMenu(x, y, node) {
@@ -1129,8 +1046,8 @@ async function saveNewFiles(newFiles) {
     return;
   }
   
-  updateRunOutput(`Saving ${Object.keys(newFiles).length} new file(s)...`, 'info');
-  let saveErrors = 0;
+  updateRunOutput(`\n=== SAVING NEW FILES ===`);
+  updateRunOutput(`Found ${Object.keys(newFiles).length} new file(s) generated by server`);
   
   for (const fileName in newFiles) {
     const filePath = `${workspaceRoot}/${fileName}`;
@@ -1144,27 +1061,23 @@ async function saveNewFiles(newFiles) {
         // 文本文件，直接保存
         await window.api.saveFile({ filePath, content: fileData.content });
       }
+      updateRunOutput(`Saved new file: ${fileName}`);
+      
+      // 不再手动刷新文件树，依赖主进程发送的workspace-refresh事件
+      // 但是saveFile和saveBinaryFile没有触发主进程的workspace-refresh事件，所以需要手动刷新
+      // 使用readTree函数直接读取文件树，不调用pickWorkspace
+      const tree = await window.api.readTree(workspaceRoot);
+      renderTree(tree);
     } catch (error) {
-      saveErrors++;
-      updateRunOutput(`Failed to save: ${fileName}`, 'warning');
+      updateRunOutput(`Error saving new file ${fileName}: ${error.message}`);
     }
   }
-  
-  if (saveErrors > 0) {
-    updateRunOutput(`Saved ${Object.keys(newFiles).length - saveErrors}/${Object.keys(newFiles).length} files`, 'warning');
-  } else {
-    updateRunOutput(`Successfully saved all ${Object.keys(newFiles).length} files`, 'success');
-  }
-  
-  // Refresh file tree to show new files
-  const tree = await window.api.readTree(workspaceRoot);
-  renderTree(tree);
 }
 
 // Run code on server
 async function runCodeOnServer(filePath) {
   if (!workspaceRoot || !serverSettings.ip) {
-    updateRunOutput('Workspace not opened or server not configured', 'error');
+    updateRunOutput('Error: Workspace not opened or server not configured');
     return;
   }
 
@@ -1172,16 +1085,16 @@ async function runCodeOnServer(filePath) {
     // Sync with server before running
     const syncSuccess = await syncWithServer();
     if (!syncSuccess) {
-      updateRunOutput('Failed to sync with server before running', 'error');
+      updateRunOutput('Error: Failed to sync with server before running');
       return;
     }
 
     const projectName = workspaceRoot.split(/[/\\]/).pop();
     const relativeFilePath = filePath.replace(workspaceRoot, '').replace(/^[/\\]/, '');
     
-    updateRunOutput(`Running: ${relativeFilePath}`, 'info');
+    updateRunOutput(`Running code: ${relativeFilePath}`);
     
-    // Send run request to server - only send file path, not content
+    // Send run request to server (content not needed - file already synced via rclone)
     const runResult = await sendToServer('runCode', {
       folderName: projectName,
       filePath: relativeFilePath
@@ -1189,23 +1102,24 @@ async function runCodeOnServer(filePath) {
     
     if (runResult) {
       if (runResult.success) {
-        updateRunOutput('Execution completed successfully', 'success');
+        updateRunOutput('\n=== RUN SUCCESS ===');
         if (runResult.output) {
-          updateRunOutput(runResult.output, 'log');
+          updateRunOutput('Output:');
+          updateRunOutput(runResult.output);
         }
         if (runResult.error) {
-          updateRunOutput(runResult.error, 'warning');
+          updateRunOutput('Warnings:');
+          updateRunOutput(runResult.error);
         }
-        if (runResult.returncode !== undefined) {
-          updateRunOutput(`Return code: ${runResult.returncode}`, 'log');
-        }
+        updateRunOutput(`Return code: ${runResult.returncode}`);
       } else {
-        updateRunOutput('Execution failed', 'error');
+        updateRunOutput('\n=== RUN FAILED ===');
         if (runResult.error) {
-          updateRunOutput(runResult.error, 'error');
+          updateRunOutput('Error:');
+          updateRunOutput(runResult.error);
         }
         if (runResult.returncode !== undefined) {
-          updateRunOutput(`Return code: ${runResult.returncode}`, 'log');
+          updateRunOutput(`Return code: ${runResult.returncode}`);
         }
       }
       
@@ -1214,10 +1128,10 @@ async function runCodeOnServer(filePath) {
         await saveNewFiles(runResult.newFiles);
       }
     } else {
-      updateRunOutput('Failed to get run result from server', 'error');
+      updateRunOutput('Error: Failed to get run result from server');
     }
   } catch (error) {
-    updateRunOutput(`Execution error: ${error.message}`, 'error');
+    updateRunOutput(`Run error: ${error.message}`);
   }
 }
 
