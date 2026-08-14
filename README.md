@@ -4,8 +4,7 @@ BOBOCLOUD 是一个 Electron 桌面开发环境：本地用 Monaco 编辑项目�
 
 > **BOBOCLOUD cloud compilation workbench** - edit locally, synchronize deliberately, and run in reproducible Docker runtimes.
 
-当前代码版本：客户端 **2.6.0**，服务端 **2.4.0**。本文以仓库中的实现和自动化测试为准，不再沿用旧 README 的模块、版本或部署假设。
-
+客户端 **2.6.0**，服务端 **2.4.0**。
 ![BOBOCLOUD 工作台](docs/screenshots/workbench.png)
 
 *真实 Electron 界面；示例工作区和输出由本地固定 fixture 注入，截图过程不连接云端。*
