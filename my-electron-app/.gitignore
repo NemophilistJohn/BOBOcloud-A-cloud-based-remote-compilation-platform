@@ -1,0 +1,36 @@
+node_modules/
+
+# Local credentials and agent-generated workspace context
+.mcp.json
+.claude/
+CLAUDE.md
+server-settings.json
+.env
+.env.*
+
+# Generated application and test output
+renderer-dist/
+test-results/
+server/release/
+coverage/
+.cache/
+__pycache__/
+*.py[cod]
+
+# electron构建产物
+dist/
+release/
+dist‑rclone‑test/
+*.exe
+*.asar
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+*.msi
+*.pkg

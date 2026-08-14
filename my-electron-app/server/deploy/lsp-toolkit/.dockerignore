@@ -1,0 +1,14 @@
+*
+!Dockerfile
+!Dockerfile.incremental
+!package.json
+!package-lock.json
+!jdtls.sh
+!clangd.sh
+!pyright-python.sh
+!prepare-clangd-cdb.js
+!clangd-flags.js
+!verify.sh
+!lsp-smoke.js
+!downloads/
+!downloads/**

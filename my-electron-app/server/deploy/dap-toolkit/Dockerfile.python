@@ -1,0 +1,8 @@
+ARG BASE_IMAGE=python:3.11-slim
+FROM ${BASE_IMAGE}
+ARG DEBUGPY_VERSION=1.8.16
+LABEL bobocloud.dap.adapter="debugpy" bobocloud.dap.version="${DEBUGPY_VERSION}"
+RUN python -m pip install --no-cache-dir "debugpy==${DEBUGPY_VERSION}" \
+    && python -c "import debugpy; assert debugpy.__version__ == '${DEBUGPY_VERSION}'"
+WORKDIR /workspace
+CMD ["python", "-m", "debugpy.adapter"]

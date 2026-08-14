@@ -1,0 +1,146 @@
+{
+  "name": "bobocloud-editer",
+  "version": "2.6.0",
+  "description": "BOBOCLOUD CODE EDITOR",
+  "main": "main.js",
+  "scripts": {
+    "start": "npm run build:renderer:dev && electron .",
+    "postinstall": "node scripts/build-renderer.js --mode=development",
+    "build:renderer": "node scripts/build-renderer.js --mode=production",
+    "build:renderer:dev": "node scripts/build-renderer.js --mode=development",
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "pretest:ui": "npm run build:renderer:dev",
+    "test:ui": "playwright test tests/lsp-ui.spec.js tests/environment-center-ui.spec.js tests/workspace-scale-ui.spec.js tests/workspace-context-menu-ui.spec.js tests/workspace-lifecycle-ui.spec.js tests/workspace-sync-status-ui.spec.js tests/project-tasks-ui.spec.js tests/settings-editor-visual-ui.spec.js tests/ai-settings-ui.spec.js tests/ai-transport-ui.spec.js tests/onboarding-ai-rendering-ui.spec.js tests/account-profile-ui.spec.js tests/dap-ui.spec.js --workers=1",
+    "pretest:ui:environment": "npm run build:renderer:dev",
+    "test:ui:environment": "playwright test tests/environment-center-ui.spec.js --workers=1",
+    "predocs:screenshots": "npm run build:renderer:dev",
+    "docs:screenshots": "node scripts/capture-readme-screenshots.js",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:mac:cross": "node scripts/package-mac-zip.js",
+    "build:linux": "electron-builder --linux",
+    "audit:release": "node scripts/audit-release.js",
+    "dev": "npm run build:renderer:dev && electron ."
+  },
+  "keywords": [
+    "electron",
+    "code-editor",
+    "cloud-sync",
+    "bobocloud"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "electron": "^39.2.4",
+    "electron-builder": "^25.1.7",
+    "esbuild": "^0.28.2",
+    "temml": "^0.13.3"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "jsonc-parser": "^3.3.1",
+    "monaco-editor": "^0.55.1",
+    "ssh2-sftp-client": "^9.0.5"
+  },
+  "build": {
+    "appId": "com.bobocloud.editor",
+    "productName": "BOBOCloudEditer",
+    "beforePack": "scripts/before-pack.js",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "main/",
+      "preload.js",
+      "client-analysis-cache.js",
+      "language-pack-manager.js",
+      "language-packs/*/manifest.json",
+      "language-packs/*/messages.json",
+      "index.html",
+      "rclone.js",
+      "lsp-transport.js",
+      "dap-transport.js",
+      "src/ai-settings-schema.js",
+      "renderer-dist/",
+      "styles/",
+      "ico/"
+    ],
+    "win": {
+      "icon": "ico/app-icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "rclone/rclone.exe",
+          "to": "rclone/rclone.exe"
+        }
+      ]
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "extraResources": [
+        {
+          "from": "node_modules/.cache/bobocloud-rclone/v1.64.0/darwin-${arch}/rclone",
+          "to": "rclone/rclone"
+        }
+      ]
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "Development",
+      "extraResources": [
+        {
+          "from": "node_modules/.cache/bobocloud-rclone/v1.64.0/linux-${arch}/rclone",
+          "to": "rclone/rclone"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": true,
+      "runAfterFinish": true,
+      "include": "build/installer.nsh",
+      "installerLanguages": [
+        "en_US",
+        "zh_CN",
+        "ja_JP"
+      ]
+    }
+  }
+}

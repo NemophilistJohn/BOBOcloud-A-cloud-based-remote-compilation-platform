@@ -1,0 +1,28 @@
+[Unit]
+Description=BOBOCLOUD Server (cloud compilation platform)
+Documentation=https://github.com/bobocloud
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/cloudeEditor
+ExecStart=/root/cloudeEditor/bobocloud-server
+# 优雅停止：发 SIGTERM，服务会回收所有 Docker 容器后退出
+KillSignal=SIGTERM
+TimeoutStopSec=20
+# 崩溃自动重启（3 秒后），避免裸 nohup 运行时挂了没人管
+Restart=on-failure
+RestartSec=3
+# 也可用环境变量覆盖配置（见 config.go applyEnvOverrides）
+# Environment=BOBOCLOUD_LOG_LEVEL=debug
+# Environment=BOBOCLOUD_AUTH_ENABLED=true
+
+# 日志走 journald（服务自身也写 data/logs/bobocloud.log）
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,1023 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' http://*:* ws://*:* wss://*:*; img-src 'self' file: blob: data:;">
+  <title>BOBOCLOUD Editor</title>
+  <link rel="stylesheet" href="./styles/tokens.css">
+  <link rel="stylesheet" href="./styles/main.css">
+  <link rel="stylesheet" href="./styles/modals.css">
+  <link rel="stylesheet" href="./styles/ai.css">
+  <link rel="stylesheet" href="./styles/ai-settings.css">
+  <link rel="stylesheet" href="./styles/auth.css">
+  <link rel="stylesheet" href="./styles/collaboration.css">
+  <link rel="stylesheet" href="./styles/workbench.css">
+  <link rel="stylesheet" href="./styles/environment-center.css">
+  <link rel="stylesheet" href="./styles/language-packs.css">
+  <link rel="stylesheet" href="./styles/project-tasks.css">
+  <link rel="stylesheet" href="./styles/debug.css">
+</head>
+<body>
+  <div id="layout" class="workbench-shell" data-panel-position="bottom" data-density="comfortable">
+    <header id="titlebar">
+      <div class="titlebar-brand" aria-label="BOBOCLOUD Editor">
+        <span class="titlebar-brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6.5 17.5a4.5 4.5 0 0 1-.35-8.98 6 6 0 0 1 11.43-1.5A4.75 4.75 0 0 1 17.5 16.5h-11" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.25 20h5.5M12 16.5V22" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
+        <span class="titlebar-brand-name">BOBO<span>CLOUD</span></span>
+      </div>
+      <button id="command-center" class="command-center" title="Show commands (Ctrl+Shift+P)" aria-label="Show commands">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="1.7"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        <span id="workspace-label">No folder opened</span><kbd>Ctrl+Shift+P</kbd>
+      </button>
+      <div class="titlebar-context"><button id="team-project-badge" class="team-project-badge" title="Open team workbench" style="display:none"></button></div>
+      <div class="titlebar-actions">
+        <button id="cloud-sync-btn" class="topbar-button" title="Upload local workspace to cloud" style="display:none"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 15v4a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Sync</span></button>
+        <div id="runtime-selector" class="runtime-selector">
+          <button id="runtime-btn" class="topbar-button" title="Select compile runtime"><span class="runtime-dot" aria-hidden="true"></span><span class="runtime-label">Local</span><svg class="chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <div id="runtime-menu" class="context-menu" style="display:none; position:absolute; top:100%; right:0; z-index:2000;"></div>
+        </div>
+        <div class="run-control-group">
+          <button id="run-code" title="Run (Ctrl+F5)"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2.5v11a.7.7 0 0 0 1.07.6l8.8-5.5a.7.7 0 0 0 0-1.2L5.07 1.9A.7.7 0 0 0 4 2.5z"/></svg><span>Run</span></button>
+          <button id="run-target-btn" title="Select run target" aria-label="Select run target" aria-expanded="false" aria-haspopup="menu"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button id="stop-code" title="Stop running code" disabled aria-label="Stop running code"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/></svg></button>
+          <button id="run-config-btn" title="Run configuration" aria-label="Run configuration"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+        </div>
+        <div id="run-target-menu" class="run-target-menu" role="menu" aria-label="Run targets" hidden></div>
+        <div class="debug-control-group">
+          <button id="debug-start" title="Start Debugging (F5)" aria-label="Start Debugging (F5)"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5.25 6V4.75a2.75 2.75 0 0 1 5.5 0V6M3.5 8H2m12 0h-1.5M3.75 11 2.5 12.25m9.75-1.25 1.25 1.25M5 6h6v4.25a3 3 0 0 1-6 0V6Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Debug</span></button>
+          <button id="debug-config-button" title="Select debug configuration" aria-label="Select debug configuration" aria-expanded="false" aria-haspopup="menu"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        </div>
+        <div id="debug-config-menu" class="debug-config-menu" role="menu" aria-label="Debug configurations" hidden></div>
+        <button id="history-btn" class="topbar-icon-button" title="Run history" aria-label="Run history"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.4"/><path d="M8 4.5V8l2.5 1.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+        <div class="layout-menu-wrap">
+          <button id="layout-menu-button" class="topbar-icon-button" title="Customize layout" aria-label="Customize layout" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M8 4v16M8 14h13" stroke="currentColor" stroke-width="1.6"/></svg></button>
+          <div id="layout-menu" class="workbench-menu" role="menu" aria-label="Workbench layout">
+            <div class="workbench-menu-title">Workbench layout</div>
+            <button class="workbench-menu-item" data-layout-toggle="primarySidebar" role="menuitemcheckbox" aria-checked="true"><span>Primary sidebar</span><kbd>Ctrl+B</kbd></button>
+            <button class="workbench-menu-item" data-layout-toggle="bottomPanel" role="menuitemcheckbox" aria-checked="true"><span>Panel</span><kbd>Ctrl+J</kbd></button>
+            <div class="workbench-menu-separator"></div>
+            <div class="workbench-menu-label">Panel position</div>
+            <div class="workbench-segmented" role="group" aria-label="Panel position"><button data-panel-position="bottom" aria-pressed="true">Bottom</button><button data-panel-position="right" aria-pressed="false">Right</button></div>
+            <div class="workbench-menu-label">Interface density</div>
+            <div class="workbench-segmented" role="group" aria-label="Interface density"><button data-density="comfortable" aria-pressed="true">Comfortable</button><button data-density="compact" aria-pressed="false">Compact</button></div>
+            <div class="workbench-menu-separator"></div>
+            <button class="workbench-menu-item" data-layout-action="focus" role="menuitemcheckbox" aria-checked="false"><span>Focus mode</span><kbd>Ctrl+Shift+F11</kbd></button>
+            <button class="workbench-menu-item" data-layout-action="reset" role="menuitem"><span>Reset layout</span></button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <nav id="activitybar" aria-label="Workbench views">
+      <div class="activity-primary">
+        <button class="activity-item active" data-workbench-view="explorer" title="Explorer" aria-label="Explorer" aria-pressed="true"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3.5 5.5h6l1.8 2H20.5v11H3.5v-13Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M3.5 8h17" stroke="currentColor" stroke-width="1.6"/></svg></button>
+        <button id="activity-search" class="activity-item" title="Quick file search (Ctrl+P)" aria-label="Quick file search"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="1.7"/><path d="m15.5 15.5 4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button>
+        <button class="activity-item" data-workbench-view="cloud" title="Cloud resources" aria-label="Cloud resources" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6.5 18a4.5 4.5 0 0 1-.35-8.98 6 6 0 0 1 11.43-1.5A4.75 4.75 0 0 1 17.5 17h-11" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button id="activity-environment" class="activity-item" data-workbench-view="environment" title="Project environment" aria-label="Project environment" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m4.4 7.7 7.6 4.2 7.6-4.2M12 12v8.5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m8.2 5.2 7.7 4.3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+        <button id="activity-team" class="activity-item" data-workbench-view="team" title="Team workspace" aria-label="Team workspace" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.6"/><circle cx="17" cy="9" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M3 19c.3-3.4 2.4-5.2 5.3-5.2s5 1.8 5.3 5.2M14 14.5c3-1.2 6.6.3 7 4.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      </div>
+      <div class="activity-secondary"><button id="activity-settings" class="activity-item" title="Settings (Ctrl+,)" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>
+    </nav>
+
+    <aside id="sidebar" aria-label="Primary sidebar">
+      <section class="sidebar-view active" data-sidebar-view="explorer" aria-label="Explorer">
+        <div class="sidebar-header"><span>Explorer</span><div class="sidebar-header-actions"><button id="open-folder" title="Open folder" aria-label="Open folder"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3.5 5.5h6l1.8 2H20.5v11H3.5v-13Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 11v5M9.5 13.5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><button class="sidebar-hide" title="Hide primary sidebar" aria-label="Hide primary sidebar"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m10 3-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div>
+        <div class="sidebar-section-title"><span id="sidebar-workspace-name">No folder opened</span></div>
+        <div class="sidebar-scroll"><div class="tree" id="file-tree" role="tree" aria-label="Workspace files"></div></div>
+      </section>
+      <section class="sidebar-view" data-sidebar-view="cloud" aria-label="Cloud resources">
+        <div class="sidebar-header"><span>Cloud</span><button class="sidebar-hide" title="Hide primary sidebar" aria-label="Hide primary sidebar"><svg viewBox="0 0 16 16" fill="none"><path d="m10 3-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+        <div class="sidebar-scroll sidebar-command-list"><div class="sidebar-section-title">Workspace</div><button id="cloud-view-sync" class="sidebar-command" disabled><span>Sync workspace</span><small>Upload local changes</small></button><div class="sidebar-section-title">Server</div><button id="cloud-open-storage" class="sidebar-command"><span>Storage and cache</span><small>Projects, quota and build cache</small></button><button id="cloud-open-settings" class="sidebar-command"><span>Connection settings</span><small>Server and file synchronization</small></button></div>
+      </section>
+      <section class="sidebar-view" data-sidebar-view="team" aria-label="Team workspace">
+        <div class="sidebar-header"><span>Team</span><button class="sidebar-hide" title="Hide primary sidebar" aria-label="Hide primary sidebar"><svg viewBox="0 0 16 16" fill="none"><path d="m10 3-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+        <div class="sidebar-scroll sidebar-command-list"><div id="team-sidebar-context" class="sidebar-context-block"><span class="sidebar-context-kicker">Current workspace</span><strong id="team-sidebar-project">Personal project</strong><small id="team-sidebar-branch">No team mapping</small></div><button id="team-hub-btn" class="sidebar-command"><span>Team center</span><small>Projects, members and shared cache</small></button><button id="team-sidebar-panel" class="sidebar-command" disabled><span>Project workbench</span><small>Branches, commits and conflicts</small></button></div>
+      </section>
+      <section id="environment-center" class="sidebar-view environment-center" data-sidebar-view="environment" aria-label="Environment Center" aria-busy="false">
+        <div class="sidebar-header environment-center-header">
+          <span>Environment Center</span>
+          <button class="sidebar-hide" title="Hide primary sidebar" aria-label="Hide primary sidebar"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m10 3-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        </div>
+
+        <div id="environment-center-empty" class="environment-center-state environment-center-empty">
+          <span class="environment-state-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="m4.4 7.7 7.6 4.2 7.6-4.2M12 12v8.5" stroke="currentColor" stroke-width="1.5"/></svg></span>
+          <strong>Open a workspace to inspect its environment.</strong>
+          <span>Inspect runtimes, dependencies, and analysis health in one place.</span>
+        </div>
+
+        <div id="environment-center-loading" class="environment-center-state environment-center-loading" hidden>
+          <div class="environment-loading-mark" aria-hidden="true"></div>
+          <strong>Loading project environment...</strong>
+          <div class="environment-skeleton" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+        </div>
+
+        <div id="environment-center-error" class="environment-center-state environment-center-error" role="alert" hidden>
+          <span class="environment-state-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 3.5 21 20H3L12 3.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 9v5M12 17.5v.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
+          <strong>Environment data could not be loaded.</strong>
+          <span id="environment-center-error-message" data-i18n-skip></span>
+          <button id="environment-center-error-retry" type="button">Try again</button>
+        </div>
+
+        <div id="environment-center-ready" class="environment-center-ready" hidden>
+          <div class="environment-center-scroll sidebar-scroll">
+            <section class="environment-section environment-context" aria-labelledby="environment-context-heading">
+              <div class="environment-section-heading environment-context-heading">
+                <div><span class="environment-eyebrow">Current environment</span><strong id="environment-context-heading" data-i18n-skip>--</strong></div>
+                <span id="environment-overall-status" class="environment-status" data-status="unknown">Not checked</span>
+              </div>
+              <dl class="environment-facts">
+                <div><dt>Language</dt><dd id="environment-context-language" data-i18n-skip>--</dd></div>
+                <div><dt>Runtime</dt><dd id="environment-context-runtime" data-i18n-skip>--</dd></div>
+                <div><dt>Image</dt><dd id="environment-context-image" data-i18n-skip>--</dd></div>
+                <div><dt>Project</dt><dd id="environment-context-project" data-i18n-skip>--</dd></div>
+              </dl>
+            </section>
+
+            <section class="environment-section" aria-labelledby="environment-health-heading">
+              <div class="environment-section-title-row"><h2 id="environment-health-heading">Environment health</h2></div>
+              <div class="environment-health-list">
+                <div id="environment-health-lsp" class="environment-health-row" data-health="unknown">
+                  <span class="environment-health-dot" aria-hidden="true"></span>
+                  <span class="environment-health-copy"><strong>Language service</strong><small id="environment-health-lsp-detail" data-i18n-skip>--</small></span>
+                  <span id="environment-health-lsp-state" class="environment-health-state">Not checked</span>
+                </div>
+                <div id="environment-health-runtime" class="environment-health-row" data-health="unknown">
+                  <span class="environment-health-dot" aria-hidden="true"></span>
+                  <span class="environment-health-copy"><strong>Runtime compatibility</strong><small id="environment-health-runtime-detail" data-i18n-skip>--</small></span>
+                  <span id="environment-health-runtime-state" class="environment-health-state">Not checked</span>
+                </div>
+                <div id="environment-health-dependencies" class="environment-health-row" data-health="unknown">
+                  <span class="environment-health-dot" aria-hidden="true"></span>
+                  <span class="environment-health-copy"><strong>Dependencies</strong><small id="environment-health-dependencies-detail" data-i18n-skip>--</small></span>
+                  <span id="environment-health-dependencies-state" class="environment-health-state">Not checked</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="environment-section" aria-labelledby="environment-manifest-heading">
+              <div class="environment-section-title-row"><h2 id="environment-manifest-heading">Dependency files</h2><span id="environment-manifest-count" class="environment-count" data-i18n-skip>0</span></div>
+              <div id="environment-manifest-list" class="environment-list" role="list"></div>
+              <div id="environment-manifest-empty" class="environment-list-empty">No dependency files detected</div>
+            </section>
+
+            <section class="environment-section" aria-labelledby="environment-installed-heading">
+              <div class="environment-section-title-row"><h2 id="environment-installed-heading">Installed dependencies</h2><span id="environment-installed-count" class="environment-count" data-i18n-skip>0</span></div>
+              <div id="environment-installed-list" class="environment-list environment-package-list" role="list"></div>
+              <div id="environment-installed-empty" class="environment-list-empty">No installed dependencies detected</div>
+            </section>
+
+            <section class="environment-section environment-missing-section" aria-labelledby="environment-missing-heading">
+              <div class="environment-section-title-row"><h2 id="environment-missing-heading">Missing dependencies</h2><span id="environment-missing-count" class="environment-count" data-i18n-skip>0</span></div>
+              <div id="environment-missing-list" class="environment-list environment-package-list" role="list"></div>
+              <div id="environment-missing-empty" class="environment-list-empty">No missing dependencies detected</div>
+            </section>
+
+            <section class="environment-section environment-activity" aria-labelledby="environment-activity-heading">
+              <div class="environment-section-title-row"><h2 id="environment-activity-heading">Recent activity</h2></div>
+              <div class="environment-timeline">
+                <div id="environment-activity-index" class="environment-timeline-row"><span class="environment-timeline-mark" aria-hidden="true"></span><span>Last index</span><time id="environment-activity-index-time" data-i18n-skip>No activity yet</time></div>
+                <div id="environment-activity-install" class="environment-timeline-row"><span class="environment-timeline-mark" aria-hidden="true"></span><span>Last install</span><time id="environment-activity-install-time" data-i18n-skip>No activity yet</time></div>
+                <div id="environment-activity-compile" class="environment-timeline-row"><span class="environment-timeline-mark" aria-hidden="true"></span><span>Last compile</span><time id="environment-activity-compile-time" data-i18n-skip>No activity yet</time></div>
+              </div>
+            </section>
+          </div>
+
+          <div class="environment-action-dock" aria-label="Environment actions">
+            <div id="environment-center-busy" class="environment-busy" role="status" aria-live="polite" hidden><span class="environment-busy-spinner" aria-hidden="true"></span><span id="environment-center-busy-label">Preparing environment action...</span></div>
+            <button id="environment-action-repair" class="environment-repair-button" type="button" data-environment-action="repair" title="Repair detected environment issues"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M12.2 4.1a4.3 4.3 0 0 0-5.4 5.4l-4.2 4.2a1.7 1.7 0 0 0 2.4 2.4l4.2-4.2a4.3 4.3 0 0 0 5.5-5.3l-2.5 2.5-2.1-.5-.5-2.1 2.6-2.4Z" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Repair issues</span></button>
+            <div class="environment-tool-row">
+              <button id="environment-action-rebuild" class="environment-tool-button" type="button" data-environment-action="rebuild" title="Rebuild environment" aria-label="Rebuild environment"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M15.8 7.1A6.2 6.2 0 1 0 16 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M12.7 3.5h3.6v3.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+              <button id="environment-action-refresh" class="environment-tool-button" type="button" data-environment-action="refresh" title="Refresh index" aria-label="Refresh index"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M15.5 6.5A6 6 0 1 0 16 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M12.5 3.5h3.5V7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 7v3l2.1 1.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+              <button id="environment-action-clear" class="environment-tool-button environment-tool-danger" type="button" data-environment-action="clear" title="Clear environment cache" aria-label="Clear environment cache"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4.5 6h11M8 6V4.2h4V6M6.2 6l.6 9h6.4l.6-9" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 8.7v3.8M11.5 8.7v3.8" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </aside>
+    <div id="sidebar-resizer" class="workbench-resizer" role="separator" aria-label="Resize primary sidebar" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="520" tabindex="0"></div>
+
+    <div id="tabbar" role="tablist" aria-label="Open editors"></div>
+    <div id="editor">
+      <div id="debug-toolbar" class="debug-toolbar" role="toolbar" aria-label="Debug" hidden>
+        <span id="debug-toolbar-status" class="debug-toolbar-status"></span>
+        <button type="button" data-debug-command="continue" title="Continue (F5)" aria-label="Continue (F5)"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M3.5 2.5v11l8.75-5.5L3.5 2.5Z"/></svg></button>
+        <button type="button" data-debug-command="pause" title="Pause (F6)" aria-label="Pause (F6)"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="2.5" width="3.5" height="11" rx=".8"/><rect x="9.5" y="2.5" width="3.5" height="11" rx=".8"/></svg></button>
+        <button type="button" data-debug-command="next" title="Step Over (F10)" aria-label="Step Over (F10)"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 9.5a5 5 0 0 1 8.8-3.25L13.5 8M13.5 4.5V8H10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 8v5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
+        <button type="button" data-debug-command="stepIn" title="Step Into (F11)" aria-label="Step Into (F11)"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2.5v8M4.75 7.5 8 10.75l3.25-3.25M3 13.5h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button type="button" data-debug-command="stepOut" title="Step Out (Shift+F11)" aria-label="Step Out (Shift+F11)"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 13.5v-8M4.75 8.5 8 5.25l3.25 3.25M3 2.5h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button type="button" data-debug-command="restart" title="Restart (Ctrl+Shift+F5)" aria-label="Restart (Ctrl+Shift+F5)"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13 7a5.25 5.25 0 1 0 .1 2M13 3.5V7H9.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button type="button" data-debug-command="stop" class="debug-stop" title="Stop (Shift+F5)" aria-label="Stop (Shift+F5)"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.3"/></svg></button>
+      </div>
+      <div id="container"></div>
+
+      <!-- Empty state -->
+      <div id="empty-state" class="empty-state">
+        <div class="empty-state-icon">
+          <svg viewBox="0 0 24 24" fill="none" width="48" height="48"><path d="M6.5 18a4.5 4.5 0 0 1-.42-8.98 6 6 0 0 1 11.58-1.4A4.75 4.75 0 0 1 17.5 17h-11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="empty-state-title">Open a folder to start</div>
+        <div class="empty-state-subtitle">Browse your project files and start coding</div>
+        <button id="empty-state-open" class="empty-state-btn">Open Folder</button>
+      </div>
+
+      <!-- Split view -->
+      <div id="split-container">
+        <div class="split-pane" id="split-left"></div>
+        <div class="split-pane" id="split-right"></div>
+      </div>
+
+      <!-- Diff view -->
+      <div id="diff-container">
+        <div id="diff-header">
+          <div class="diff-files">
+            <span>Comparing:</span>
+            <span class="original" id="diff-original-label"></span>
+            <span>&#8594;</span>
+            <span class="modified" id="diff-modified-label"></span>
+          </div>
+          <button id="close-diff" title="Close diff (Escape)">&times;</button>
+        </div>
+        <div id="diff-editor"></div>
+      </div>
+
+      <!-- Image preview -->
+      <div id="image-preview" class="hidden">
+        <div class="image-preview-header">
+          <span id="image-preview-title"></span>
+          <button id="close-image-preview" class="close-btn">&times;</button>
+        </div>
+        <div class="image-preview-content"><img id="preview-image" alt="Preview"></div>
+        <div class="image-preview-controls">
+          <button id="rotate-left" class="control-btn">&#8634;</button>
+          <button id="zoom-out" class="control-btn">&#8722;</button>
+          <button id="zoom-reset" class="control-btn">100%</button>
+          <button id="zoom-in" class="control-btn">+</button>
+          <button id="rotate-right" class="control-btn">&#8635;</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Resizer between editor and bottom panel -->
+    <div id="output-resizer" class="workbench-resizer" role="separator" aria-label="Resize panel" aria-orientation="horizontal" aria-valuemin="96" tabindex="0"></div>
+
+    <!-- Bottom panel with OUTPUT | TERMINAL tabs -->
+    <div id="bottom-panel">
+      <div id="panel-tabs" role="tablist" aria-label="Workbench panel">
+        <button class="panel-tab active" data-panel="output" role="tab" aria-selected="true">Output</button>
+        <button class="panel-tab" data-panel="terminal" role="tab" aria-selected="false">Terminal</button>
+        <button class="panel-tab" data-panel="debug" role="tab" aria-selected="false">Debug</button>
+        <button class="panel-tab" id="team-panel-tab" data-panel="team" role="tab" aria-selected="false" style="display:none">Team</button>
+        <div class="panel-actions">
+          <button id="panel-clear" title="Clear active panel" aria-label="Clear active panel"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 4h10M6 4V2.5h4V4M4.5 4l.5 9h6l.5-9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button id="panel-position-toggle" title="Move panel to the right" aria-label="Change panel position"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="2" width="12" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M2 10h12" stroke="currentColor" stroke-width="1.2"/></svg></button>
+          <button id="panel-maximize" title="Maximize panel" aria-label="Maximize panel"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m5 6 3-3 3 3M8 3v10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button id="panel-close" title="Hide panel" aria-label="Hide panel"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+        </div>
+      </div>
+      <div id="panel-output" class="panel-content active" role="tabpanel">
+        <div id="run-log">[Ready] Open a folder and select a file to begin.</div>
+        <div id="stdin-input-row" class="stdin-input-row" style="display:none">
+          <span class="stdin-prompt">&gt;</span>
+          <input id="stdin-input" type="text" placeholder="Type input and press Enter (for input()/scanf/etc.)">
+        </div>
+      </div>
+      <div id="panel-terminal" class="panel-content" role="tabpanel">
+        <div id="terminal-output"></div>
+        <div class="terminal-input-row">
+          <span class="term-prompt">$</span>
+          <input id="terminal-input" type="text" placeholder="e.g. pip install numpy pandas">
+        </div>
+      </div>
+      <div id="panel-debug" class="panel-content debug-panel-content" role="tabpanel">
+        <div class="debug-inspector" aria-label="Debug">
+          <section class="debug-section" data-debug-section="stack">
+            <header><span>Call Stack</span></header>
+            <div id="debug-call-stack" class="debug-tree"><div class="debug-empty">No stack frames</div></div>
+          </section>
+          <section class="debug-section" data-debug-section="variables">
+            <header><span>Variables</span></header>
+            <div id="debug-variables" class="debug-tree"><div class="debug-empty">No variables</div></div>
+          </section>
+          <section class="debug-section" data-debug-section="watch">
+            <header><span>Watch</span><button id="debug-add-watch" type="button" title="Add Watch Expression" aria-label="Add Watch Expression">+</button></header>
+            <div id="debug-watch-list" class="debug-tree"><div class="debug-empty">No watch expressions</div></div>
+          </section>
+          <section class="debug-section debug-console-section" data-debug-section="console">
+            <header><span>Debug Console</span></header>
+            <div id="debug-console-output" class="debug-console-output" aria-live="polite"></div>
+            <div class="debug-console-input-row"><span>&gt;</span><input id="debug-console-input" type="text" placeholder="Evaluate expression" aria-label="Evaluate expression"></div>
+          </section>
+        </div>
+      </div>
+      <div id="panel-team" class="panel-content team-panel-content" role="tabpanel">
+        <div id="team-workbench"></div>
+      </div>
+    </div>
+
+    <!-- AI Chat resizer -->
+    <div id="ai-chat-resizer" class="workbench-resizer" role="separator" aria-label="Resize AI assistant" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="640" tabindex="0"></div>
+
+    <!-- AI Chat Panel -->
+    <aside id="ai-chat-panel" aria-label="AI assistant">
+      <div class="ai-chat-header">
+        <div class="ai-chat-heading">
+          <span class="ai-chat-title" data-i18n="ai.chat.title">AI Chat</span>
+          <small id="ai-chat-model-label"></small>
+        </div>
+        <button id="ai-chat-new" title="New conversation"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="flex-shrink:0"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> New</button>
+        <button id="ai-chat-history" title="Conversation history"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.4"/><path d="M8 4.5V8l2.5 1.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+        <button id="ai-chat-settings" title="ai.control.open" aria-label="ai.control.open"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+        <button id="ai-chat-clear" title="Clear chat"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2.5 4h11M6 4V2.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V4M4 4l.5 9a1 1 0 0 0 1 .9h5a1 1 0 0 0 1-.9L12 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button id="ai-chat-close" title="Close panel"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+      </div>
+      <div class="ai-chat-messages" id="ai-chat-messages"></div>
+      <div class="ai-chat-context" id="ai-chat-context">No context</div>
+      <div class="ai-chat-input-row">
+        <textarea id="ai-chat-input" rows="1" placeholder="Ask AI about your code... (Enter to send, Shift+Enter for new line)"></textarea>
+        <button class="ai-chat-send-btn" id="ai-chat-send">Send</button>
+      </div>
+    </aside>
+
+    <!-- Status bar -->
+    <div id="statusbar">
+      <div class="status-left">
+        <span class="status-item" id="status-linecol" title="Go to Line/Column">Ln 1, Col 1</span>
+        <span class="status-sep"></span>
+        <span class="status-item" id="status-language">Plain Text</span>
+        <span class="status-sep"></span>
+        <span class="status-item clickable" id="status-lsp" data-state="local" title="Local completion">LSP: Local</span>
+      </div>
+      <div class="status-right">
+        <span class="status-item" id="status-encoding">UTF-8</span>
+        <span class="status-sep"></span>
+        <span class="status-item" id="status-indent">Spaces: 4</span>
+        <span class="status-sep"></span>
+        <span class="status-item clickable" id="status-errors" title="Click to see problems">&#10003; No problems</span>
+        <span class="status-sep"></span>
+        <span class="status-item clickable" id="auth-chip" title="Cloud account" style="display:none"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Unified Settings Center (Local + Server) -->
+  <div id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="ss-card settings-card">
+      <div class="ss-head">
+        <div class="ss-title" id="settings-title">Settings</div>
+        <button id="settings-close-x" class="close-btn" title="Close">&times;</button>
+      </div>
+      <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+        <button class="settings-tab active" data-stab="local" role="tab" aria-selected="true">Editor</button>
+        <button class="settings-tab" data-stab="lsp" role="tab" aria-selected="false">Code intelligence</button>
+        <button class="settings-tab" data-stab="workbench" role="tab" aria-selected="false">Workbench</button>
+        <button class="settings-tab" data-stab="language" role="tab" aria-selected="false">Language</button>
+        <button class="settings-tab" data-stab="server" role="tab" aria-selected="false">Server</button>
+      </div>
+      <div class="settings-body">
+        <div class="settings-pane active" data-spane="local" role="tabpanel">
+          <div>
+            <div class="ss-section-label">Appearance</div>
+            <div class="ss-field">
+              <label class="ss-label" for="settings-theme-select">Theme</label>
+              <select id="settings-theme-select" class="ss-input"></select>
+            </div>
+          </div>
+          <div>
+            <div class="ss-section-label">Diagnostics</div>
+            <div class="diag-row">
+              <span class="diag-label">Enable syntax checking<span class="diag-desc">Check for errors as you type</span></span>
+              <label class="diag-toggle">
+                <input type="checkbox" id="settings-diag-enabled" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="diag-row">
+              <span class="diag-label">Check mode<span class="diag-desc">When to run diagnostics</span></span>
+              <select id="settings-diag-mode" class="diag-sev-select">
+                <option value="type">On type</option>
+                <option value="save">On save</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="settings-pane" data-spane="lsp" role="tabpanel">
+          <section aria-labelledby="lsp-strategy-heading">
+            <div class="ss-section-label" id="lsp-strategy-heading">Completion strategy</div>
+            <div class="lsp-mode-selector" role="radiogroup" aria-label="Completion strategy">
+              <label class="lsp-mode-option">
+                <input type="radio" name="lsp-mode" value="local" checked>
+                <span><strong>Local</strong><small>Instant lightweight completion with no network traffic.</small></span>
+              </label>
+              <label class="lsp-mode-option">
+                <input type="radio" name="lsp-mode" value="standard">
+                <span><strong>Standard</strong><small>Remote completion, hover, definitions and open-file diagnostics.</small></span>
+              </label>
+              <label class="lsp-mode-option">
+                <input type="radio" name="lsp-mode" value="full">
+                <span><strong>Full</strong><small>Add references, rename and workspace symbol search.</small></span>
+              </label>
+            </div>
+          </section>
+          <section>
+            <div class="lsp-section-heading">
+              <div>
+                <div class="ss-section-label">Remote analysis</div>
+                <div id="lsp-settings-state" class="lsp-settings-state" data-state="local" role="status" aria-live="polite">Local completion</div>
+                <div id="lsp-settings-detail" class="lsp-settings-detail" role="status" aria-live="polite" hidden></div>
+              </div>
+              <div id="lsp-settings-actions" class="lsp-settings-actions" hidden>
+                <button id="lsp-restart" class="ss-btn ss-btn-ghost" type="button">Restart analysis</button>
+                <button id="lsp-clear-cache" class="ss-btn ss-btn-ghost" type="button">Clear analysis cache</button>
+              </div>
+            </div>
+            <div class="lsp-metrics" aria-label="Remote analysis metrics">
+              <div><span>Round-trip latency</span><strong id="lsp-metric-latency">--</strong></div>
+              <div><span>Session traffic (sent / received)</span><strong id="lsp-metric-traffic">0 B / 0 B</strong></div>
+              <div><span>Analysis cache</span><strong id="lsp-metric-cache">--</strong></div>
+              <div><span>Index status</span><strong id="lsp-metric-index">--</strong></div>
+              <div><span>Dependency status</span><strong id="lsp-metric-dependency">--</strong></div>
+              <div><span>Dependency revision</span><strong id="lsp-metric-dependency-revision">--</strong></div>
+              <div><span>Analysis language</span><strong id="lsp-metric-dependency-language">--</strong></div>
+              <div><span>Analysis runtime</span><strong id="lsp-metric-dependency-runtime">--</strong></div>
+            </div>
+            <p class="lsp-policy-note">Only open-file changes and requested semantic results are transferred. Dependencies and indexes remain on the server.</p>
+          </section>
+          <section class="lsp-client-cache-section" aria-labelledby="lsp-client-cache-heading">
+            <div class="lsp-section-heading">
+              <div>
+                <div class="ss-section-label" id="lsp-client-cache-heading">Local completion cache</div>
+                <p class="lsp-client-cache-description">Store safe completion hints on this device.</p>
+              </div>
+              <div class="lsp-client-cache-actions" aria-label="Local completion cache actions">
+                <button id="lsp-client-cache-clear-workspace" class="ss-btn ss-btn-ghost" type="button" disabled>Clear this workspace</button>
+                <button id="lsp-client-cache-clear-all" class="ss-btn ss-btn-ghost" type="button" disabled>Clear all local cache</button>
+              </div>
+            </div>
+            <div class="lsp-client-cache-mode-selector" role="radiogroup" aria-label="Local completion cache policy">
+              <label class="lsp-client-cache-mode-option">
+                <input type="radio" name="lsp-client-cache-mode" value="off">
+                <span><strong>Off</strong><small>Do not retain local completion data.</small></span>
+              </label>
+              <label class="lsp-client-cache-mode-option">
+                <input type="radio" name="lsp-client-cache-mode" value="lazy" checked>
+                <span><strong>Lazy cache</strong><small>Reuse matching local hints, then refresh them only when needed.</small></span>
+              </label>
+              <label class="lsp-client-cache-mode-option">
+                <input type="radio" name="lsp-client-cache-mode" value="active">
+                <span><strong>Active cache</strong><small>Keep a larger local hint set and refresh it in the background.</small></span>
+              </label>
+            </div>
+            <div class="lsp-client-cache-capacity" aria-labelledby="lsp-client-cache-capacity-label">
+              <div class="lsp-client-cache-capacity-heading">
+                <div>
+                  <label id="lsp-client-cache-capacity-label" for="lsp-client-cache-size-mib">Cache capacity</label>
+                  <p id="lsp-client-cache-capacity-description">Choose how much local space the cache may use.</p>
+                </div>
+                <output id="lsp-client-cache-size-output" for="lsp-client-cache-size-mib" aria-live="polite">32 MB</output>
+              </div>
+              <input id="lsp-client-cache-size-mib" class="lsp-client-cache-size-slider" type="range" min="1" max="1024" step="1" value="32" aria-describedby="lsp-client-cache-capacity-description" aria-valuetext="32 MB">
+              <div class="lsp-client-cache-size-bounds" aria-hidden="true"><span>1 MB</span><span>1024 MB</span></div>
+            </div>
+            <div id="lsp-client-cache-dependency-index" class="lsp-client-cache-dependency-index" aria-labelledby="lsp-client-cache-dependency-index-heading" hidden>
+              <div class="lsp-client-cache-dependency-index-copy">
+                <div id="lsp-client-cache-dependency-index-heading" class="lsp-client-cache-dependency-index-heading">Library API cache</div>
+                <p>Cache safe module and public API summaries for faster imports and member completion.</p>
+              </div>
+              <div class="lsp-client-cache-dependency-index-control">
+                <button id="lsp-client-cache-dependency-index-toggle" class="ss-btn ss-btn-ghost" type="button" aria-pressed="false" aria-describedby="lsp-client-cache-dependency-index-hint" disabled>Enable library API cache</button>
+                <div id="lsp-client-cache-dependency-index-state" class="lsp-client-cache-dependency-index-state" data-state="disabled" role="status" aria-live="polite">Library API cache is disabled</div>
+              </div>
+              <p id="lsp-client-cache-dependency-index-hint" class="lsp-client-cache-dependency-index-hint">Requires active cache and at least 30 MB.</p>
+            </div>
+            <div id="lsp-client-cache-state" class="lsp-client-cache-state" data-state="loading" role="status" aria-live="polite" aria-atomic="true">Loading local cache...</div>
+            <div class="lsp-client-cache-metrics" aria-label="Local acceleration cache metrics">
+              <div><span>Storage used</span><strong id="lsp-client-cache-size" data-state="loading">--</strong></div>
+              <div><span>Entries</span><strong id="lsp-client-cache-entries" data-state="loading">--</strong></div>
+              <div class="lsp-client-cache-cleanup"><span>Automatic cleanup</span><strong id="lsp-client-cache-cleanup" data-state="loading">--</strong></div>
+            </div>
+            <p id="lsp-client-cache-detail" class="lsp-client-cache-detail" role="status" aria-live="polite" hidden></p>
+          </section>
+        </div>
+        <div class="settings-pane" data-spane="workbench" role="tabpanel">
+          <div>
+            <div class="ss-section-label">Visible regions</div>
+            <div class="diag-row">
+              <span class="diag-label">Primary sidebar<span class="diag-desc">Explorer, cloud and team navigation</span></span>
+              <label class="diag-toggle"><input type="checkbox" id="settings-layout-sidebar"><span class="slider"></span></label>
+            </div>
+            <div class="diag-row">
+              <span class="diag-label">Workbench panel<span class="diag-desc">Output, terminal and team tools</span></span>
+              <label class="diag-toggle"><input type="checkbox" id="settings-layout-panel"><span class="slider"></span></label>
+            </div>
+          </div>
+          <div>
+            <div class="ss-section-label">Arrangement</div>
+            <div class="workbench-settings-grid">
+              <div class="ss-field"><label class="ss-label" for="settings-panel-position">Panel position</label><select id="settings-panel-position" class="ss-input"><option value="bottom">Bottom</option><option value="right">Right</option></select></div>
+              <div class="ss-field"><label class="ss-label" for="settings-density">Interface density</label><select id="settings-density" class="ss-input"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></div>
+            </div>
+          </div>
+          <div class="workbench-settings-reset"><div><strong>Reset workbench</strong><span>Restore the default regions, sizes and panel position.</span></div><button id="settings-layout-reset" class="ss-btn ss-btn-ghost" type="button">Reset</button></div>
+        </div>
+        <div class="settings-pane" data-spane="language" role="tabpanel">
+          <section class="language-pack-section" aria-labelledby="language-pack-heading">
+            <div class="language-pack-heading-row">
+              <div><div class="ss-section-label" id="language-pack-heading">Display language</div><div class="language-pack-active-meta" id="language-pack-active-meta"></div></div>
+              <select id="language-pack-current" class="ss-input" aria-label="Display language"></select>
+            </div>
+            <div class="language-pack-toolbar" role="toolbar" aria-label="Language pack actions">
+              <button id="language-pack-install" class="ss-btn ss-btn-primary" type="button">Install pack</button>
+              <button id="language-pack-open-folder" class="ss-btn ss-btn-ghost" type="button">Open folder</button>
+              <button id="language-pack-refresh" class="ss-btn ss-btn-ghost" type="button">Refresh</button>
+            </div>
+            <div id="language-pack-list" class="language-pack-list" aria-live="polite"></div>
+            <div id="language-pack-status" class="language-pack-status" role="status" aria-live="polite"></div>
+          </section>
+        </div>
+        <div class="settings-pane" data-spane="server" role="tabpanel">
+          <div id="server-first-run-intro" class="server-first-run-intro" hidden>
+            <div class="server-first-run-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M6.5 18a4.5 4.5 0 0 1-.42-8.98 6 6 0 0 1 11.58-1.4A4.75 4.75 0 0 1 17.5 17h-11" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M9 20.5h6M12 17v5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            </div>
+            <div>
+              <h2>Connect to your cloud compiler</h2>
+              <p>Add the server used for compilation, synchronization, teams, and remote code intelligence.</p>
+            </div>
+          </div>
+          <div>
+            <div class="ss-section-label">Connection</div>
+            <div class="form-stack">
+              <div class="ss-field">
+                <label class="ss-label" for="server-ip">Server address</label>
+                <input id="server-ip" class="ss-input" type="text" placeholder="compiler.example.com" autocomplete="off">
+              </div>
+              <div class="ss-row">
+                <div class="ss-field">
+                  <label class="ss-label" for="server-user">SSH account</label>
+                  <input id="server-user" class="ss-input" type="text" placeholder="root" autocomplete="username">
+                  <span class="server-field-help">Used for workspace synchronization.</span>
+                </div>
+                <div class="ss-field">
+                  <label class="ss-label" for="server-pass">SSH password</label>
+                  <input id="server-pass" class="ss-input" type="password" placeholder="Enter password" autocomplete="current-password">
+                  <span class="server-field-help">Stored on this device for workspace synchronization.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <details class="server-legacy-auth">
+            <summary>Legacy single-user authentication</summary>
+            <p>Only older single-user servers require an API key. Multi-user servers use account login.</p>
+            <div class="ss-field">
+              <label class="ss-label" for="server-apikey">Legacy API key</label>
+              <input id="server-apikey" class="ss-input" type="password" placeholder="bobo_...">
+            </div>
+          </details>
+          <div>
+            <div class="ss-section-label">File Sync</div>
+            <div class="form-stack">
+              <div class="ss-field">
+                <label class="ss-label" for="rclone-path">Rclone Path <span class="hint">(empty = bundled rclone)</span></label>
+                <div class="rclone-path-row">
+                  <input id="rclone-path" class="ss-input" type="text" placeholder="Leave empty to use bundled rclone">
+                  <button id="rclone-detect" class="ss-btn ss-btn-ghost" type="button">Detect</button>
+                </div>
+                <div id="rclone-status" class="rclone-status" data-state="idle" aria-live="polite">Not checked</div>
+              </div>
+              <div class="ss-field">
+                <label class="ss-label" for="sync-interval">Auto Sync Interval (seconds)</label>
+                <input id="sync-interval" class="ss-input" type="number" min="5" max="3600" value="30">
+              </div>
+            </div>
+          </div>
+          <div id="server-connect-status" class="server-connect-status" role="status" aria-live="polite"></div>
+        </div>
+      </div>
+      <div class="ss-foot settings-foot active" data-sfoot="local">
+        <button id="settings-close" class="ss-btn ss-btn-ghost">Cancel</button>
+        <button id="settings-save-local" class="ss-btn ss-btn-primary">Apply</button>
+      </div>
+      <div class="ss-foot settings-foot" data-sfoot="lsp">
+        <button id="settings-close-lsp" class="ss-btn ss-btn-primary">Done</button>
+      </div>
+      <div class="ss-foot settings-foot" data-sfoot="workbench">
+        <button id="settings-close-workbench" class="ss-btn ss-btn-primary">Done</button>
+      </div>
+      <div class="ss-foot settings-foot" data-sfoot="language">
+        <button id="settings-close-language" class="ss-btn ss-btn-primary">Done</button>
+      </div>
+      <div class="ss-foot settings-foot" data-sfoot="server">
+        <button id="server-close" class="ss-btn ss-btn-ghost">Cancel</button>
+        <button id="server-skip-first-run" class="ss-btn ss-btn-ghost" type="button" hidden>Use local editor only</button>
+        <button id="server-save" class="ss-btn ss-btn-primary">Save &amp; Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI Control Center: independent from general application settings. -->
+  <div id="ai-settings-modal" class="ai-control-overlay" role="dialog" aria-modal="true" aria-labelledby="ai-control-title" aria-hidden="true">
+    <div class="ai-control-shell">
+      <header class="ai-control-header">
+        <div class="ai-control-heading">
+          <h1 id="ai-control-title" data-i18n="ai.control.title">AI Control Center</h1>
+          <span id="ai-control-status" class="ai-control-status" data-state="unconfigured" role="status" aria-live="polite"></span>
+        </div>
+        <button id="ai-control-close" class="ai-control-icon-button" type="button" title="ai.control.close" aria-label="ai.control.close">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+      </header>
+
+      <nav class="ai-control-nav" role="tablist" aria-label="ai.control.sections">
+        <div class="ai-control-nav-label" data-i18n="ai.control.group.workspace">Workspace AI</div>
+        <button class="ai-control-tab active" type="button" role="tab" data-ai-tab="overview" aria-selected="true" aria-controls="ai-pane-overview"><span class="ai-control-tab-icon" aria-hidden="true"></span><span data-i18n="ai.control.tab.overview">Overview</span></button>
+        <button class="ai-control-tab" type="button" role="tab" data-ai-tab="connections" aria-selected="false" aria-controls="ai-pane-connections" tabindex="-1"><span class="ai-control-tab-icon" aria-hidden="true"></span><span data-i18n="ai.control.tab.connections">Connections</span></button>
+        <button class="ai-control-tab" type="button" role="tab" data-ai-tab="chat" aria-selected="false" aria-controls="ai-pane-chat" tabindex="-1"><span class="ai-control-tab-icon" aria-hidden="true"></span><span data-i18n="ai.control.tab.chat">Chat agent</span></button>
+        <button class="ai-control-tab" type="button" role="tab" data-ai-tab="inline" aria-selected="false" aria-controls="ai-pane-inline" tabindex="-1"><span class="ai-control-tab-icon" aria-hidden="true"></span><span data-i18n="ai.control.tab.inline">Inline completion</span></button>
+        <div class="ai-control-nav-label" data-i18n="ai.control.group.customization">Customization</div>
+        <button class="ai-control-tab" type="button" role="tab" data-ai-tab="instructions" aria-selected="false" aria-controls="ai-pane-instructions" tabindex="-1"><span class="ai-control-tab-icon" aria-hidden="true"></span><span data-i18n="ai.control.tab.instructions">Instructions</span></button>
+        <button class="ai-control-tab" type="button" role="tab" data-ai-tab="capabilities" aria-selected="false" aria-controls="ai-pane-capabilities" tabindex="-1"><span class="ai-control-tab-icon" aria-hidden="true"></span><span data-i18n="ai.control.tab.capabilities">Capabilities</span></button>
+      </nav>
+
+      <div id="ai-control-content" class="ai-control-content">
+        <section id="ai-pane-overview" class="ai-control-pane active" role="tabpanel" data-ai-pane="overview"></section>
+        <section id="ai-pane-connections" class="ai-control-pane" role="tabpanel" data-ai-pane="connections" hidden></section>
+        <section id="ai-pane-chat" class="ai-control-pane" role="tabpanel" data-ai-pane="chat" hidden></section>
+        <section id="ai-pane-inline" class="ai-control-pane" role="tabpanel" data-ai-pane="inline" hidden></section>
+        <section id="ai-pane-instructions" class="ai-control-pane" role="tabpanel" data-ai-pane="instructions" hidden></section>
+        <section id="ai-pane-capabilities" class="ai-control-pane" role="tabpanel" data-ai-pane="capabilities" hidden></section>
+      </div>
+
+      <footer class="ai-control-footer">
+        <span id="ai-control-save-status" class="ai-control-save-status" role="status" aria-live="polite"></span>
+        <button id="ai-control-cancel" class="ss-btn ss-btn-primary" type="button" data-i18n="ai.control.done">Done</button>
+        <button id="ai-control-save" class="ss-btn ss-btn-primary" type="button" data-i18n="ai.control.save" hidden>Save changes</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Diagnostics Settings Modal -->
+  <div id="diag-modal">
+    <div class="ss-card">
+      <div class="ss-head">
+        <div class="ss-title">Diagnostics Settings</div>
+        <button id="diag-close-x" class="close-btn" title="Close">&times;</button>
+      </div>
+      <div class="ss-body" id="diag-body"><!-- populated by diagnostics-settings.js --></div>
+      <div class="ss-foot">
+        <button id="diag-reset" class="ss-btn ss-btn-ghost">Reset to Defaults</button>
+        <button id="diag-close" class="ss-btn ss-btn-ghost">Cancel</button>
+        <button id="diag-save" class="ss-btn ss-btn-primary">Save &amp; Re-check</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Run Configuration popover (compile & program args) -->
+  <div id="run-config-pop" class="rc-pop" style="display:none">
+    <div class="rc-title">Run Configuration <span id="rc-lang" class="rc-lang"></span></div>
+    <div class="rc-field" id="rc-compile-field">
+      <label class="rc-label" for="rc-compile-args">Compile args</label>
+      <input id="rc-compile-args" class="rc-input" type="text" placeholder="-O2 -std=c++17 -lm" spellcheck="false">
+    </div>
+    <div class="rc-field">
+      <label class="rc-label" for="rc-run-args">Program args</label>
+      <input id="rc-run-args" class="rc-input" type="text" placeholder='arg1 "arg with space"' spellcheck="false">
+    </div>
+    <div class="rc-hint" id="rc-hint"></div>
+  </div>
+
+  <!-- Run History Modal -->
+  <div id="history-modal">
+    <div class="history-card">
+      <div class="history-head">
+        <strong class="history-head-title">Run History</strong>
+        <button id="history-close" class="close-btn">&times;</button>
+      </div>
+      <div id="history-list" class="history-list-container"></div>
+      <div id="history-detail" class="history-detail">
+        <pre id="history-detail-output"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ Auth: 登录 / 注册 ══════════ -->
+  <div id="auth-overlay">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <div class="auth-brand-logo">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M6.5 18a4.5 4.5 0 0 1-.42-8.98 6 6 0 0 1 11.58-1.4A4.75 4.75 0 0 1 17.5 17h-11" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 20.5h6M12 17v5" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </div>
+        <div>
+          <div class="auth-brand-name">BOBOCLOUD</div>
+          <div class="auth-brand-sub">Cloud Compilation Service</div>
+        </div>
+      </div>
+
+      <div class="auth-tabs">
+        <div class="auth-tab active" id="auth-tab-login">Login</div>
+        <div class="auth-tab" id="auth-tab-register">Register</div>
+      </div>
+
+      <div class="auth-body">
+        <div class="auth-notice" id="auth-notice">
+          <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/><path d="M8 5v3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="8" cy="11" r="0.9" fill="currentColor"/></svg>
+          <span id="auth-notice-text"></span>
+        </div>
+        <div class="auth-error" id="auth-error">
+          <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <span id="auth-error-text"></span>
+        </div>
+
+        <!-- 登录表单 -->
+        <div id="auth-form-login">
+          <div class="form-stack">
+            <div class="auth-field">
+              <input id="auth-login-identity" type="text" placeholder="Username or email" autocomplete="username">
+              <svg class="auth-field-icon" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="5.5" r="3" stroke="currentColor" stroke-width="1.4"/><path d="M2.5 13.5c0-2.5 2.5-4 5.5-4s5.5 1.5 5.5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+            </div>
+            <div class="auth-field">
+              <input id="auth-login-password" type="password" placeholder="Password" autocomplete="current-password">
+              <svg class="auth-field-icon" viewBox="0 0 16 16" fill="none"><rect x="3" y="7" width="10" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7V5.5a2.5 2.5 0 0 1 5 0V7" stroke="currentColor" stroke-width="1.4"/></svg>
+            </div>
+          </div>
+        </div>
+
+        <!-- 注册表单 -->
+        <div id="auth-form-register" style="display:none">
+          <div class="form-stack">
+            <div class="auth-field">
+              <input id="auth-reg-username" type="text" placeholder="Username (3-32 chars, a-z 0-9 _ -)" autocomplete="username">
+              <svg class="auth-field-icon" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="5.5" r="3" stroke="currentColor" stroke-width="1.4"/><path d="M2.5 13.5c0-2.5 2.5-4 5.5-4s5.5 1.5 5.5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+            </div>
+            <div class="auth-field">
+              <input id="auth-reg-email" type="email" placeholder="Email" autocomplete="email">
+              <svg class="auth-field-icon" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="3.5" width="13" height="9" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M2.5 5l5.5 4 5.5-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div class="auth-field">
+              <input id="auth-reg-password" type="password" placeholder="Password (at least 6 chars)" autocomplete="new-password">
+              <svg class="auth-field-icon" viewBox="0 0 16 16" fill="none"><rect x="3" y="7" width="10" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7V5.5a2.5 2.5 0 0 1 5 0V7" stroke="currentColor" stroke-width="1.4"/></svg>
+            </div>
+            <div class="auth-field">
+              <input id="auth-reg-password2" type="password" placeholder="Confirm password" autocomplete="new-password">
+              <svg class="auth-field-icon" viewBox="0 0 16 16" fill="none"><rect x="3" y="7" width="10" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7V5.5a2.5 2.5 0 0 1 5 0V7" stroke="currentColor" stroke-width="1.4"/><path d="M6.8 10.2l1 1 1.8-2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div class="auth-field">
+              <input id="auth-reg-invite" type="text" placeholder="Invite code (INV-XXXXXXXX)" autocapitalize="characters">
+              <svg class="auth-field-icon" viewBox="0 0 16 16" fill="none"><path d="M2 5.5A1.5 1.5 0 0 1 3.5 4h9A1.5 1.5 0 0 1 14 5.5v1a1.75 1.75 0 0 0 0 3.5v1a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-1a1.75 1.75 0 0 0 0-3.5v-1z" stroke="currentColor" stroke-width="1.4"/><path d="M9.5 4v1.5M9.5 7.25v2M9.5 11v1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-dasharray="0.1 2.2"/></svg>
+            </div>
+          </div>
+        </div>
+
+        <button class="auth-submit" id="auth-submit">Login</button>
+      </div>
+
+      <div class="auth-foot">
+        <button class="auth-skip" id="auth-skip">Skip for now, use local editor only (cloud compile unavailable)</button>
+        <div class="auth-server-hint" id="auth-server-hint"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ Auth: 用户下拉菜单 ══════════ -->
+  <div id="auth-menu" style="display:none">
+    <div class="auth-menu-head">
+      <div class="auth-menu-name" id="auth-menu-name"></div>
+      <div class="auth-menu-email" id="auth-menu-email"></div>
+    </div>
+    <div class="auth-menu-item" id="auth-menu-chpwd">
+      <svg viewBox="0 0 16 16" fill="none"><rect x="3" y="7" width="10" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7V5.5a2.5 2.5 0 0 1 5 0V7" stroke="currentColor" stroke-width="1.4"/></svg>
+      Change password
+    </div>
+    <div class="auth-menu-item" id="auth-menu-profile">
+      <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="5.2" r="2.6" stroke="currentColor" stroke-width="1.3"/><path d="M2.8 13.5c.2-2.6 2.2-4 5.2-4s5 1.4 5.2 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+      Profile
+    </div>
+    <div class="auth-menu-item" id="auth-menu-teams">
+      <svg viewBox="0 0 16 16" fill="none"><circle cx="5.2" cy="5.2" r="2.2" stroke="currentColor" stroke-width="1.3"/><circle cx="11.5" cy="6" r="1.7" stroke="currentColor" stroke-width="1.2"/><path d="M1.8 13c.2-2.4 1.8-3.7 3.8-3.7s3.6 1.3 3.8 3.7M9 10.2c2-.8 4.6.1 4.9 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      Team workspace
+    </div>
+    <div class="auth-menu-item" id="auth-menu-admin" style="display:none">
+      <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.8v1.8M8 12.4v1.8M1.8 8h1.8M12.4 8h1.8M3.6 3.6l1.3 1.3M11.1 11.1l1.3 1.3M12.4 3.6l-1.3 1.3M4.9 11.1l-1.3 1.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+      Admin panel
+    </div>
+    <div class="auth-menu-item danger" id="auth-menu-logout">
+      <svg viewBox="0 0 16 16" fill="none"><path d="M6 2.5H3.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1H6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M10.5 5l3 3-3 3M13 8H6.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Log out
+    </div>
+  </div>
+
+  <!-- Account profile: identity, avatar and compile activity -->
+  <div id="profile-modal" class="collab-overlay" role="dialog" aria-modal="true" aria-labelledby="account-profile-title" tabindex="-1">
+    <div class="profile-card account-profile-shell">
+      <header class="account-profile-head">
+        <div class="account-profile-heading">
+          <div class="account-profile-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.6"/><path d="M4.5 20c.4-4.1 3.2-6.3 7.5-6.3s7.1 2.2 7.5 6.3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </div>
+          <div><h1 id="account-profile-title">Personal profile</h1><p>Your identity and cloud compile activity</p></div>
+        </div>
+        <button id="profile-close-x" class="close-btn" type="button" title="Close" aria-label="Close">&times;</button>
+      </header>
+      <div class="account-profile-layout">
+        <aside class="account-profile-sidebar">
+          <div id="account-summary-avatar" class="account-summary-avatar"></div>
+          <strong id="account-summary-name"></strong>
+          <span id="account-summary-username"></span>
+          <code id="account-summary-uid"></code>
+          <span id="account-summary-role" class="account-role-badge"></span>
+          <nav class="account-profile-nav" aria-label="Account sections">
+            <button class="active" type="button" data-account-tab="profile">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="8" r="3.5" stroke="currentColor" stroke-width="1.6"/><path d="M5 20c.4-4 3-6 7-6s6.6 2 7 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              <span>Profile</span>
+            </button>
+            <button type="button" data-account-tab="activity">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 19V9m5 10V5m6 14v-7m5 7V3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+              <span>Activity</span>
+            </button>
+          </nav>
+        </aside>
+        <main class="account-profile-main">
+          <section class="account-profile-pane active" data-account-pane="profile">
+            <header class="account-pane-head"><h2>Profile details</h2><p>Update how teammates identify you.</p></header>
+            <div class="account-pane-scroll">
+              <div class="account-avatar-editor">
+                <div id="profile-avatar-preview" class="profile-avatar-preview"></div>
+                <div><h3>Avatar</h3><p>Choose a preset or upload an image.</p>
+                  <button id="profile-avatar-upload" class="ss-btn ss-btn-ghost" type="button">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 15v4a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <span>Upload image</span>
+                  </button>
+                  <input id="profile-avatar-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+                </div>
+              </div>
+              <div id="profile-avatar-options" class="avatar-options account-avatar-options"></div>
+              <div class="account-info-grid">
+                <label class="account-field account-field-wide"><span>Display name</span><input id="profile-name" class="ss-input" maxlength="80"></label>
+                <div class="account-readonly-field"><span>Username</span><strong id="account-info-username"></strong></div>
+                <div class="account-readonly-field"><span>Email</span><strong id="account-info-email"></strong></div>
+                <div class="account-readonly-field"><span>Member since</span><strong id="account-info-created"></strong></div>
+                <div class="account-readonly-field account-field-wide"><span>Permanent user ID</span><div class="profile-uid-row"><code id="profile-uid"></code><button id="profile-copy-uid" class="icon-command" type="button" title="Copy user ID" aria-label="Copy user ID">&#10697;</button></div></div>
+              </div>
+            </div>
+          </section>
+          <section class="account-profile-pane" data-account-pane="activity">
+            <header class="account-pane-head"><h2>Compile activity</h2><p>Accepted cloud compile requests, aggregated daily in UTC.</p></header>
+            <div class="account-pane-scroll">
+              <div class="account-activity-summary">
+                <div><strong id="account-activity-today">0</strong><span>Today</span></div>
+                <div><strong id="account-activity-month">0</strong><span>Last 30 days</span></div>
+                <div><strong id="account-activity-days">0</strong><span>Active days</span></div>
+              </div>
+              <div class="account-heatmap-region">
+                <div class="account-heatmap-toolbar"><span id="account-activity-range">UTC dates · one square per day</span><span id="account-activity-status" role="status"></span></div>
+                <div class="account-heatmap-scroll">
+                  <div id="account-heatmap-months" class="account-heatmap-months" aria-hidden="true"></div>
+                  <div class="account-heatmap-row"><div class="account-heatmap-weekdays" aria-hidden="true"><span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span></div><div id="account-heatmap" class="account-heatmap" role="grid" aria-label="Compile activity"></div></div>
+                </div>
+                <div class="account-heatmap-legend"><span>Less</span><i data-level="0"></i><i data-level="1"></i><i data-level="2"></i><i data-level="3"></i><i data-level="4"></i><span>More</span></div>
+              </div>
+            </div>
+          </section>
+        </main>
+      </div>
+      <footer class="account-profile-foot"><span id="profile-save-status" role="status"></span><div><button id="profile-cancel" class="ss-btn ss-btn-ghost" type="button">Cancel</button><button id="profile-save" class="ss-btn ss-btn-primary" type="button">Save changes</button></div></footer>
+    </div>
+  </div>
+
+  <!-- Team center -->
+  <div id="collab-modal" class="collab-overlay" role="dialog" aria-modal="true" aria-labelledby="collab-title" tabindex="-1">
+    <div class="collab-shell">
+      <header class="collab-header">
+        <div><div class="collab-title" id="collab-title">Team workspace</div><div class="collab-subtitle" id="collab-account-id"></div></div>
+        <div class="collab-header-actions"><button id="collab-join" class="ss-btn ss-btn-ghost">Join</button><button id="collab-new-team" class="ss-btn ss-btn-primary">New team</button><button id="collab-close" class="close-btn" title="Close">&times;</button></div>
+      </header>
+      <div class="collab-layout">
+        <aside class="collab-sidebar"><div class="collab-sidebar-label">YOUR TEAMS</div><div id="collab-team-list" class="collab-team-list"></div></aside>
+        <main class="collab-main">
+		  <div class="collab-team-head"><div><h2 id="collab-team-name">Select a team</h2><p id="collab-team-description"></p></div><div><span id="collab-admin-badge"></span><button id="collab-team-settings" class="icon-command" title="Team settings">&#9881;</button></div></div>
+          <nav class="collab-tabs">
+            <button class="active" data-collab-tab="projects">Projects</button><button data-collab-tab="members">Members</button><button data-collab-tab="invites">Invites</button><button data-collab-tab="cache">Build cache</button>
+          </nav>
+          <section id="collab-pane-projects" class="collab-pane active"><div class="collab-pane-toolbar"><span id="collab-project-count"></span><button id="collab-new-project" class="ss-btn ss-btn-primary">New project</button></div><div id="collab-project-list" class="collab-project-grid"></div></section>
+          <section id="collab-pane-members" class="collab-pane"><div id="collab-member-list" class="collab-list"></div></section>
+          <section id="collab-pane-invites" class="collab-pane"><div class="collab-pane-toolbar"><span>Administrator-issued invitations</span><button id="collab-new-invite" class="ss-btn ss-btn-primary">Generate invite</button></div><div id="collab-invite-list" class="collab-list"></div></section>
+          <section id="collab-pane-cache" class="collab-pane"><div id="collab-cache-view"></div></section>
+        </main>
+      </div>
+    </div>
+  </div>
+
+  <!-- Reusable form/dialog for team actions -->
+  <div id="collab-action-modal" class="collab-overlay collab-action-overlay">
+    <div class="collab-action-card">
+      <div class="ss-head"><div class="ss-title" id="collab-action-title"></div><button id="collab-action-close" class="close-btn" title="Close">&times;</button></div>
+      <div id="collab-action-body" class="collab-action-body"></div>
+      <div class="ss-foot"><button id="collab-action-cancel" class="ss-btn ss-btn-ghost">Cancel</button><button id="collab-action-confirm" class="ss-btn ss-btn-primary">Continue</button></div>
+    </div>
+  </div>
+
+  <!-- ══════════ Auth: 修改密码 ══════════ -->
+  <div id="chpwd-modal">
+    <div class="ss-card">
+      <div class="ss-head">
+        <div class="ss-title">Change password</div>
+        <button id="chpwd-close-x" class="close-btn" title="Close">&times;</button>
+      </div>
+      <div class="ss-body" style="gap:var(--space-3)">
+        <div class="auth-error" id="chpwd-error">
+          <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <span id="chpwd-error-text"></span>
+        </div>
+        <div class="ss-field">
+          <label class="ss-label" for="chpwd-old">Current password</label>
+          <input id="chpwd-old" class="ss-input" type="password" autocomplete="current-password">
+        </div>
+        <div class="ss-field">
+          <label class="ss-label" for="chpwd-new">New password (at least 6 chars)</label>
+          <input id="chpwd-new" class="ss-input" type="password" autocomplete="new-password">
+        </div>
+        <div class="ss-field">
+          <label class="ss-label" for="chpwd-new2">Confirm new password</label>
+          <input id="chpwd-new2" class="ss-input" type="password" autocomplete="new-password">
+        </div>
+      </div>
+      <div class="ss-foot">
+        <button id="chpwd-cancel" class="ss-btn ss-btn-ghost">Cancel</button>
+        <button id="chpwd-save" class="ss-btn ss-btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ Auth: 管理面板（admin+） ══════════ -->
+  <div id="admin-modal">
+    <div class="admin-card">
+      <div class="ss-head admin-head">
+        <div class="ss-title">Admin panel</div>
+        <button id="admin-close-x" class="close-btn" title="Close">&times;</button>
+      </div>
+      <div class="admin-tabs">
+        <div class="admin-tab active" data-pane="users">Users</div>
+        <div class="admin-tab" data-pane="invites">Invite codes</div>
+        <div class="admin-tab" data-pane="audit">Audit log</div>
+      </div>
+      <div class="admin-body">
+        <div class="admin-pane active" id="admin-pane-users"></div>
+        <div class="admin-pane" id="admin-pane-invites">
+          <div class="admin-invite-bar">
+            <select id="invite-role">
+              <option value="member">Member</option>
+              <option value="admin" id="invite-role-admin" style="display:none">Admin</option>
+            </select>
+            <label class="admin-label">Uses</label>
+            <input id="invite-maxuses" type="number" min="1" max="100" value="1">
+            <label class="admin-label">Valid (hours)</label>
+            <input id="invite-hours" type="number" min="1" max="720" value="168">
+            <button class="admin-mini-btn" id="invite-create">Generate</button>
+          </div>
+          <div id="invite-new-box"></div>
+          <div id="invite-list"></div>
+        </div>
+        <div class="admin-pane" id="admin-pane-audit"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ Server Projects 管理弹窗 ══════════ -->
+  <div id="projects-modal">
+    <div class="projects-card">
+      <div class="projects-head">
+        <div class="ss-title">Server Storage</div>
+        <button id="projects-close-x" class="close-btn" title="Close">&times;</button>
+      </div>
+      <!-- 顶部摘要 -->
+      <div class="projects-summary" id="projects-summary">Loading...</div>
+      <!-- 子标签 -->
+      <div class="projects-tabs">
+        <div class="projects-tab active" data-ptab="projects">Projects</div>
+        <div class="projects-tab" data-ptab="cache">Cache</div>
+      </div>
+      <!-- Projects 标签页 -->
+      <div class="projects-pane active" id="projects-pane-projects">
+        <div class="projects-pie-row">
+          <div class="quota-pie-wrap">
+            <div class="quota-pie" id="quota-pie"></div>
+            <div class="quota-pie-center" id="quota-pie-center"></div>
+          </div>
+          <div class="quota-pie-text" id="quota-pie-text"></div>
+        </div>
+        <div class="projects-list" id="projects-list"></div>
+      </div>
+      <!-- Cache 标签页 -->
+      <div class="projects-pane" id="projects-pane-cache">
+        <div class="cache-tree" id="cache-tree"></div>
+      </div>
+      <div class="ss-foot">
+        <button id="projects-refresh" class="ss-btn ss-btn-ghost">Refresh</button>
+        <button id="projects-close" class="ss-btn ss-btn-primary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Monaco keeps its AMD loader; every BOBO module is composed by one bundle. -->
+  <script src="./node_modules/monaco-editor/min/vs/loader.js"></script>
+  <script src="./renderer-dist/bobo-renderer.js"></script>
+</body>
+</html>

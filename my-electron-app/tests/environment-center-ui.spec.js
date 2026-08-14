@@ -1,0 +1,203 @@
+const { test, expect, _electron: electron } = require('playwright/test');
+const path = require('node:path');
+const os = require('node:os');
+const fs = require('node:fs');
+
+function electronPath() {
+  const dist = path.join(process.cwd(), 'node_modules', 'electron', 'dist');
+  if (process.platform === 'win32') return path.join(dist, 'electron.exe');
+  if (process.platform === 'darwin') return path.join(dist, 'Electron.app', 'Contents', 'MacOS', 'Electron');
+  return path.join(dist, 'electron');
+}
+
+test('environment view switches, persists, localizes, and fits at 180px', async () => {
+  test.setTimeout(60000);
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-environment-ui-'));
+  const appData = path.join(sandbox, 'appdata');
+  const home = path.join(sandbox, 'home');
+  const workspace = path.join(sandbox, 'compact-environment-workspace-with-a-long-name');
+  fs.mkdirSync(appData, { recursive: true });
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.writeFileSync(path.join(workspace, 'requirements-production-with-a-long-name.txt'), 'numpy==2.2.6\n', 'utf8');
+  let app;
+  try {
+    app = await electron.launch({
+      executablePath: electronPath(),
+      args: ['.', '--user-data-dir=' + path.join(sandbox, 'chromium')],
+      env: Object.assign({}, process.env, {
+        APPDATA: appData,
+        ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
+        HOME: home,
+        USERPROFILE: home,
+        XDG_CONFIG_HOME: path.join(sandbox, 'xdg-config')
+      })
+    });
+    const page = await app.firstWindow();
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(message.text());
+    });
+    await page.setViewportSize({ width: 1024, height: 720 });
+    await page.waitForFunction(() => document.documentElement.dataset.boboReady === 'true', null, { timeout: 20000 });
+
+    const activity = page.locator('#activity-environment');
+    const center = page.locator('#environment-center');
+    await expect(activity).toBeVisible();
+    await expect(activity).toHaveAttribute('data-workbench-view', 'environment');
+    await expect(center).toHaveAttribute('data-sidebar-view', 'environment');
+    await activity.click();
+    await expect(activity).toHaveAttribute('aria-pressed', 'true');
+    await expect(center).toHaveClass(/active/);
+    expect(await page.evaluate(() => window.BOBO.workbench.getState().activity)).toBe('environment');
+    await page.waitForTimeout(150);
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem('bobocloud.workbench.v1')).activity)).toBe('environment');
+
+    await page.reload();
+    await page.waitForFunction(() => document.documentElement.dataset.boboReady === 'true', null, { timeout: 20000 });
+    await expect(page.locator('#activity-environment')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('#environment-center')).toHaveClass(/active/);
+
+    await page.evaluate(async (workspacePath) => {
+      window.BOBO.sendToServer = async () => { throw new Error('offline UI fixture'); };
+      const selected = await window.api.pickWorkspace(workspacePath);
+      await window.BOBO.workspace.applyWorkspace(selected.rootPath, selected.tree);
+      await window.BOBO.environmentCenter.refresh();
+    }, workspace);
+    await expect(page.locator('#environment-center-ready')).toBeVisible();
+    await page.evaluate(() => {
+      document.getElementById('environment-context-heading').textContent = 'compact-environment-workspace-with-a-long-name';
+      document.getElementById('environment-context-image').textContent = 'ghcr.io/bobocloud/python-runtime:3.12-bookworm';
+    });
+    const manifestRow = page.locator('#environment-manifest-list button.environment-list-link');
+    await expect(manifestRow).toHaveCount(1);
+    await manifestRow.focus();
+    const manifestStyle = await manifestRow.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { width: element.getBoundingClientRect().width, parentWidth: element.parentElement.getBoundingClientRect().width, appearance: style.appearance };
+    });
+    expect(Math.abs(manifestStyle.width - manifestStyle.parentWidth)).toBeLessThanOrEqual(1);
+    expect(manifestStyle.appearance).toBe('none');
+
+    await page.evaluate(async () => {
+      window.__environmentCalls = [];
+      window.__environmentRepaired = false;
+      window.BOBO.confirm = async () => true;
+      window.BOBO.sendToServer = async (action, data) => {
+        window.__environmentCalls.push({ action, data });
+        if (action === 'planProjectEnvironmentRepair') {
+          return {
+            success: true,
+            data: {
+              schema: 'project-environment-repair-plan/v1',
+              supported: true,
+              requiresConfirmation: true,
+              steps: [{ id: 'install-python-requirements', description: 'Install requirements.txt' }]
+            }
+          };
+        }
+        if (action === 'applyProjectEnvironmentAction') {
+          window.__environmentRepaired = true;
+          return { success: true, data: { schema: 'project-environment-action/v1', action: 'repair', applied: true } };
+        }
+        if (action !== 'getProjectEnvironment') throw new Error('unexpected action: ' + action);
+        const repaired = window.__environmentRepaired;
+        return {
+          success: true,
+          data: {
+            schema: 'project-environment/v1',
+            revision: repaired ? 'verified-2' : 'missing-1',
+            checkedAt: Date.now(),
+            workspace: { kind: 'personal', id: 'fixture', name: 'compact-environment-workspace-with-a-long-name', key: data.folderKey },
+            language: { id: 'python', source: 'editor' },
+            runtime: { id: 'python:3.10', language: 'python', version: '3.10', image: 'python:3.10-slim', displayName: 'Python 3.10', status: 'ready' },
+            manifests: [{ path: 'requirements-production-with-a-long-name.txt', kind: 'requirements', manager: 'pip', language: 'python', parsed: true, status: 'parsed' }],
+            packages: {
+              declared: [{ name: 'numpy', constraint: '==2.2.6', source: 'requirements-production-with-a-long-name.txt' }],
+              installed: repaired ? [{ name: 'numpy', version: '2.2.6', source: 'runtime', trust: 'runtime-scoped' }] : [],
+              missing: repaired ? [] : [{ name: 'numpy', constraint: '==2.2.6', source: 'requirements-production-with-a-long-name.txt', reason: 'Not installed' }],
+              unknown: []
+            },
+            consistency: {
+              status: repaired ? 'aligned' : 'missing',
+              languageRuntime: { status: 'aligned', detail: 'Language and runtime agree' },
+              dependencyRuntime: { status: repaired ? 'ready' : 'missing', detail: repaired ? 'Runtime dependencies match' : 'One dependency is missing' },
+              lspDependencies: { status: 'ready', detail: 'Dependency view is current' }
+            },
+            activity: {},
+            actions: {
+              repair: { supported: !repaired, requiresConfirmation: true, reason: repaired ? 'No repairable dependency issues were found' : '' },
+              rebuild: { supported: true, requiresConfirmation: true },
+              refreshIndex: { supported: false, reason: 'Remote analysis is not ready' },
+              clearCache: { supported: true, scope: 'workspace', requiresConfirmation: true }
+            }
+          }
+        };
+      };
+      window.BOBO.state.serverSettings.ip = 'fixture.example';
+      window.BOBO.state.selectedRuntime = 'python:3.10';
+      await window.BOBO.environmentCenter.refresh({ force: true });
+    });
+    const repair = page.locator('#environment-action-repair');
+    await expect(repair).toBeEnabled();
+    await expect(page.locator('#environment-missing-count')).toHaveText('1');
+    await repair.click();
+    await expect.poll(async () => page.evaluate(() => window.__environmentCalls.map((entry) => entry.action))).toEqual(expect.arrayContaining([
+      'planProjectEnvironmentRepair',
+      'applyProjectEnvironmentAction',
+      'getProjectEnvironment'
+    ]));
+    await expect(repair).toBeDisabled();
+    await expect(page.locator('#environment-installed-count')).toHaveText('1');
+    await expect(page.locator('#environment-missing-count')).toHaveText('0');
+    await expect(page.locator('#environment-center-busy')).toBeHidden();
+
+    const resizer = page.locator('#sidebar-resizer');
+    await resizer.focus();
+    await resizer.press('Home');
+    await expect(resizer).toHaveAttribute('aria-valuenow', '180');
+    await expect.poll(async () => Math.round(await page.locator('#environment-center-ready').evaluate((element) => element.getBoundingClientRect().width))).toBe(179);
+    const fit = await page.evaluate(() => {
+      const center = document.getElementById('environment-center');
+      const ready = document.getElementById('environment-center-ready').getBoundingClientRect();
+      const scroll = document.querySelector('.environment-center-scroll').getBoundingClientRect();
+      const dock = document.querySelector('.environment-action-dock').getBoundingClientRect();
+      const controls = [...document.querySelectorAll('.environment-action-dock button')].map((item) => item.getBoundingClientRect());
+      return {
+        width: ready.width,
+        noHorizontalOverflow: center.scrollWidth <= center.clientWidth + 1,
+        noOverlap: scroll.bottom <= dock.top + 0.5,
+        dockInside: dock.left >= ready.left && dock.right <= ready.right + 0.5 && dock.bottom <= ready.bottom + 0.5,
+        controlsInside: controls.every((item) => item.left >= dock.left && item.right <= dock.right + 0.5)
+      };
+    });
+    expect(Math.round(fit.width)).toBe(179);
+    expect(fit.noHorizontalOverflow).toBe(true);
+    expect(fit.noOverlap).toBe(true);
+    expect(fit.dockInside).toBe(true);
+    expect(fit.controlsInside).toBe(true);
+
+    for (const locale of ['en', 'zh-CN', 'ja']) {
+      const copy = await page.evaluate(async (nextLocale) => {
+        await window.BOBO.i18n.setLocale(nextLocale);
+        return {
+          title: [window.BOBO.i18n.t('Environment Center'), document.querySelector('#environment-center .sidebar-header > span').textContent],
+          health: [window.BOBO.i18n.t('Environment health'), document.getElementById('environment-health-heading').textContent],
+          repair: [window.BOBO.i18n.t('Repair issues'), document.querySelector('#environment-action-repair span').textContent],
+          refresh: [window.BOBO.i18n.t('Remote analysis is not ready'), document.getElementById('environment-action-refresh').title],
+          activity: [window.BOBO.i18n.t('Project environment'), document.getElementById('activity-environment').getAttribute('aria-label')]
+        };
+      }, locale);
+      Object.values(copy).forEach(([expected, actual]) => expect(actual).toBe(expected));
+    }
+    await page.screenshot({ path: path.join(os.tmpdir(), 'bobo-environment-center-narrow-ja.png'), fullPage: false });
+    expect(errors).toEqual([]);
+  } finally {
+    if (app) {
+      try { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)); } catch {}
+    }
+    await new Promise(resolve => setTimeout(resolve, 300));
+    await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+  }
+});

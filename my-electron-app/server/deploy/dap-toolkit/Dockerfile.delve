@@ -1,0 +1,20 @@
+ARG BASE_IMAGE=golang:1.23
+# Delve 1.24.2 builds with Go 1.23. Reuse the same broadly available
+# toolchain family as the supported runtime instead of requiring a newer
+# builder tag that may be absent from regional registries.
+FROM golang:1.23 AS builder
+ARG DELVE_VERSION=v1.24.2
+ARG GOPROXY=https://proxy.golang.org,direct
+WORKDIR /src/bridge
+COPY bridge/go.mod bridge/main.go ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/dap-stdio-bridge . \
+    && CGO_ENABLED=0 GOPROXY="${GOPROXY}" GOBIN=/out go install -trimpath -ldflags="-s -w" "github.com/go-delve/delve/cmd/dlv@${DELVE_VERSION}" \
+    && ldd /out/dlv 2>&1 | grep -Eq "not a dynamic executable|statically linked"
+
+FROM ${BASE_IMAGE}
+ARG DELVE_VERSION=v1.24.2
+LABEL bobocloud.dap.adapter="delve" bobocloud.dap.version="${DELVE_VERSION}"
+COPY --from=builder /out/dap-stdio-bridge /usr/local/bin/dap-stdio-bridge
+COPY --from=builder /out/dlv /usr/local/bin/dlv
+WORKDIR /workspace
+CMD ["/usr/local/bin/dap-stdio-bridge", "--listen", "127.0.0.1:4711", "--", "/usr/local/bin/dlv", "dap", "--listen=127.0.0.1:4711"]

@@ -1,0 +1,112 @@
+package handler
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"time"
+
+	"bobocloud-server/internal/files"
+	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/runner"
+	"bobocloud-server/internal/session"
+)
+
+func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *model.RunSession, channel *session.RunChannel, stdinReader io.Reader) (runResult *model.RunResult) {
+	output := session.NewWebSocketWriter(channel, h.Config.ChunkSize)
+	started := time.Now()
+	output.WriteStatus("setup", "Task accepted; resolving cloud workspace")
+	defer func() {
+		channel.Close()
+		h.Channels.CleanupRun(runID, h.Sessions)
+	}()
+	defer func() {
+		if runResult != nil && ctx.Err() == context.Canceled {
+			runResult.Cancelled = true
+		}
+	}()
+
+	fail := func(message string) {
+		output.WriteError(message)
+		output.WriteArtifactEnd()
+		output.WriteResult(false, 1)
+		runResult = &model.RunResult{Success: false, ReturnCode: 1, Stderr: message}
+	}
+
+	if sess.Task == nil {
+		fail("Task execution data is missing")
+		return
+	}
+	if h.Lifecycle != nil && sess.UserID != "" {
+		workspaceKey := ""
+		if sess.TeamID == "" {
+			workspaceKey = sess.FolderKey
+			if workspaceKey == "" {
+				workspaceKey = sess.FolderName
+			}
+		}
+		activity, err := h.Lifecycle.AcquireActivity(sess.UserID, workspaceKey)
+		if err != nil {
+			fail(err.Error())
+			return
+		}
+		defer activity.Release()
+	}
+	if sess.TeamID != "" && sess.ProjectID != "" && h.Collaboration != nil {
+		activity, err := h.Collaboration.AcquireProjectActivity(sess.UserID, sess.TeamID, sess.ProjectID)
+		if err != nil {
+			fail(err.Error())
+			return
+		}
+		defer activity.Release()
+	}
+
+	projectPath, err := h.resolveWorkspace(ctx, sess)
+	if err != nil {
+		fail("Invalid workspace path: " + err.Error())
+		return
+	}
+	runtimeDef := model.GetRuntimeDef(sess.Runtime)
+	if runtimeDef == nil || sess.Runtime == "" {
+		fail("Project tasks require a known Docker runtime")
+		return
+	}
+	output.WriteStatus("setup", fmt.Sprintf("Using Docker runtime: %s (%s)", runtimeDef.DisplayName, runtimeDef.DockerImage))
+
+	tempDir, err := os.MkdirTemp("", fmt.Sprintf("task-%s-", runID[:min(8, len(runID))]))
+	if err != nil {
+		fail(fmt.Sprintf("Failed to create isolated task workspace: %v", err))
+		return
+	}
+	defer os.RemoveAll(tempDir)
+	copyStarted := time.Now()
+	if err := files.CopyProjectToTemp(projectPath, tempDir); err != nil {
+		fail(fmt.Sprintf("Failed to copy project for task: %v", err))
+		return
+	}
+	output.WriteStatus("setup", fmt.Sprintf("Isolated task workspace ready in %d ms", time.Since(copyStarted).Milliseconds()))
+	beforeSnapshot := files.SnapshotFiles(tempDir)
+
+	dockerRunner := runner.NewDockerRunner(*runtimeDef, h.DockerPool, h.Security)
+	dockerRunner.SetUserID(sess.UserID)
+	dockerRunner.SetSetupCommands(sess.SetupCommands)
+	result := dockerRunner.RunTaskExecution(ctx, sess.Task, tempDir, output, stdinReader)
+	if result == nil {
+		fail("Task execution returned no result")
+		return
+	}
+	if shouldPublishRunArtifacts(ctx, result) {
+		changedFiles := files.SyncGeneratedArtifacts(tempDir, projectPath, beforeSnapshot, "")
+		if shouldPublishRunArtifacts(ctx, result) {
+			files.SendArtifacts(channel, tempDir, changedFiles, h.Config.ChunkSize)
+		}
+	}
+	output.WriteArtifactEnd()
+	output.WriteResult(result.Success, result.ReturnCode)
+	slog.Info("Project task completed", "run_id", runID, "task", sess.Task.Label,
+		"duration_ms", time.Since(started).Milliseconds(), "success", result.Success)
+	runResult = result
+	return
+}

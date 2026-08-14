@@ -1,0 +1,198 @@
+/* ═══════════════════════════════════════════════════════════
+   tokens.css — BOBOCLOUD Editor Design Token System
+
+   Design concept: "Cloud Forge"
+   A cloud compilation service with the atmosphere of a data center
+   at night. Deep blue-black backgrounds, amber as the signature
+   accent (the color of compilation output / molten metal), and
+   a cool blue for interactive elements. Every value here is a
+   deliberate choice, not a default.
+
+   All other CSS files MUST reference these tokens. Do not
+   hardcode colors, radii, or shadows in component CSS.
+   ═══════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Background Layers ──
+     Each step lifts the element visually.
+     Deep = editor canvas; Surface = chrome; Elevated = overlays;
+     Hover/Active = interactive states. */
+  --bg-deep:      #101311;
+  --bg-surface:   #171b18;
+  --bg-elevated:  #202521;
+  --bg-hover:     #29302b;
+  --bg-active:    #343c36;
+
+  /* ── Text ──
+     Contrast ratios on --bg-deep:
+     primary 15:1 (AAA), secondary 5.8:1 (AA), tertiary 3.2:1 */
+  --text-primary:   #edf0ed;
+  --text-secondary: #9aa39c;
+  --text-tertiary:  #6f7972;
+
+  /* ── Brand Accent — Amber ──
+     The "compilation artifact" color. Used for primary CTAs,
+     active indicators, and brand moments. Rare in code editors,
+     which makes it distinctive. */
+  --brand:          #d8a63f;
+  --brand-hover:    #e8b955;
+  --brand-pressed:  #bd8623;
+  --brand-muted:    rgba(216, 166, 63, 0.12);
+  --brand-border:   rgba(216, 166, 63, 0.30);
+
+  /* ── Semantic Colors ── */
+  --blue:           #6aa9d6;
+  --blue-hover:     #84b9dd;
+  --blue-muted:     rgba(106, 169, 214, 0.12);
+
+  --green:          #56b87a;
+  --green-muted:    rgba(86, 184, 122, 0.12);
+
+  --red:            #e45d5d;
+  --red-hover:      #ee7676;
+  --red-muted:      rgba(228, 93, 93, 0.12);
+
+  --yellow:         #d8a63f;
+  --yellow-muted:   rgba(216, 166, 63, 0.12);
+
+  --orange:         #d98245;
+  --purple:         #aa8ed6;
+
+  /* ── Borders ──
+     Blue-tinted to differentiate from flat gray One Dark. */
+  --border-subtle:  rgba(168, 181, 170, 0.06);
+  --border-default: rgba(168, 181, 170, 0.10);
+  --border-strong:  rgba(168, 181, 170, 0.18);
+
+  /* ── Shadows ── */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 24px 64px rgba(0, 0, 0, 0.6);
+
+  /* ── Radius ──
+     Five steps. Don't invent intermediate values. */
+  --radius-xs:   3px;    /* badges, tags */
+  --radius-sm:   4px;    /* inputs, small buttons */
+  --radius-md:   6px;    /* standard buttons, cards */
+  --radius-lg:   10px;   /* modals, large cards */
+  --radius-full: 999px;  /* pills, toggles */
+
+  /* ── Spacing ──
+     4px base scale. Use these, not arbitrary pixels. */
+  --space-0:  0;
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+
+  /* ── Typography ──
+     Inter first (if installed), Segoe UI Variable on Win11,
+     system fallback otherwise. */
+  --font-ui:      'Inter', 'Segoe UI Variable', 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-display: 'Inter', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'Cascadia Code', 'Consolas', 'Monaco', monospace;
+
+  --text-xs:   11px;
+  --text-sm:   12px;
+  --text-base: 13px;
+  --text-md:   14px;
+  --text-lg:   15px;
+  --text-xl:   18px;
+  --text-2xl:  22px;
+
+  --leading-tight:   1.3;
+  --leading-normal:  1.5;
+  --leading-relaxed: 1.65;
+
+  --weight-normal:   400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
+
+  /* ── Motion ──
+     Three durations, three easings. That's the vocabulary. */
+  --ease-out:      cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring:   cubic-bezier(0.34, 1.3, 0.5, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+
+  --dur-fast:  0.12s;
+  --dur-base:  0.2s;
+  --dur-slow:  0.35s;
+
+  /* ── Status Bar ──
+     Dark to break from VS Code's blue bar. Amber accent items. */
+  --statusbar-bg:     var(--bg-deep);
+  --statusbar-text:   var(--text-secondary);
+  --statusbar-accent: var(--brand);
+  --statusbar-border: var(--border-default);
+
+  /* ── Panel Tabs ── */
+  --panel-tab-active-bg:     var(--bg-deep);
+  --panel-tab-active-border: var(--brand);
+
+  /* ── Layout Dimensions ── */
+  --sidebar-width:     260px;
+  --chat-width:        350px;
+  --titlebar-height:   38px;
+  --tabbar-height:     34px;
+  --statusbar-height:  24px;
+  --bottom-panel-height: 180px;
+  --resizer-thickness: 3px;
+
+  /* ──────────────────────────────────────────────
+     Legacy Aliases
+     Old variable names mapped to new tokens.
+     New code should use the semantic tokens above.
+     ────────────────────────────────────────────── */
+  --bg:            var(--bg-deep);
+  --panel:         var(--bg-surface);
+  --text:          var(--text-primary);
+  --text-dim:      var(--text-secondary);
+  --accent:        var(--bg-hover);
+  --accent-hover:  var(--bg-active);
+  --border:        var(--border-default);
+  --shadow:        var(--shadow-md);
+  --radius:        var(--radius-md);
+  --transition:    var(--dur-base) var(--ease-standard);
+}
+
+/* ── Reduced Motion ──
+   Respects user's OS preference. Animations become near-instant. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0.01ms;
+    --dur-base: 0.01ms;
+    --dur-slow: 0.01ms;
+  }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Focus Ring ──
+   Visible keyboard focus for all interactive elements. */
+:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+  border-radius: var(--radius-xs);
+}
+
+/* ── Text Selection ──
+   Soft, theme-aware selection for non-Monaco areas (inputs, terminal, output).
+   Monaco uses its own selection colors defined in theme-manager.js. */
+::selection {
+  background: var(--blue-muted);
+  color: var(--text-primary);
+}
+::-moz-selection {
+  background: var(--blue-muted);
+  color: var(--text-primary);
+}

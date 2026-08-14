@@ -1,0 +1,26 @@
+# Experimental groundwork only. This image is not built, verified, tagged, or
+# advertised until BOBOCloud implements js-debug child-session routing.
+ARG BASE_IMAGE=node:20-slim
+FROM golang:1.23 AS bridge-builder
+WORKDIR /src/bridge
+COPY bridge/go.mod bridge/main.go ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/dap-stdio-bridge .
+
+FROM ${BASE_IMAGE}
+ARG JS_DEBUG_VERSION=v1.102.0
+ARG JS_DEBUG_SHA256=6eb0f9c9d5acc124a0cb4ee4e778adf57fb71f113d60aa6c303fc0c1501acc78
+LABEL bobocloud.dap.adapter="vscode-js-debug" bobocloud.dap.version="${JS_DEBUG_VERSION}"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && curl -fL --retry 5 --retry-all-errors \
+      "https://github.com/microsoft/vscode-js-debug/releases/download/${JS_DEBUG_VERSION}/js-debug-dap-${JS_DEBUG_VERSION}.tar.gz" \
+      -o /tmp/js-debug.tar.gz \
+    && echo "${JS_DEBUG_SHA256}  /tmp/js-debug.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/js-debug.tar.gz -C /opt \
+    && test -f /opt/js-debug/src/dapDebugServer.js \
+    && rm -f /tmp/js-debug.tar.gz \
+    && apt-get purge -y --auto-remove curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=bridge-builder /out/dap-stdio-bridge /usr/local/bin/dap-stdio-bridge
+WORKDIR /workspace
+CMD ["/usr/local/bin/dap-stdio-bridge", "--listen", "127.0.0.1:4711", "--", "node", "/opt/js-debug/src/dapDebugServer.js", "4711", "127.0.0.1"]

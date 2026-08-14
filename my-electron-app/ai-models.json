@@ -1,0 +1,73 @@
+{
+  "presets": [
+    {
+      "id": "preset-claude-sonnet",
+      "name": "Claude Sonnet 4.6",
+      "provider": "anthropic",
+      "endpoint": "https://api.anthropic.com/v1/messages",
+      "modelId": "claude-sonnet-4-6",
+      "description": "Anthropic Claude Sonnet - balanced speed and capability"
+    },
+    {
+      "id": "preset-claude-opus",
+      "name": "Claude Opus 4.8",
+      "provider": "anthropic",
+      "endpoint": "https://api.anthropic.com/v1/messages",
+      "modelId": "claude-opus-4-8",
+      "description": "Anthropic Claude Opus - most capable model"
+    },
+    {
+      "id": "preset-claude-haiku",
+      "name": "Claude Haiku 4.5",
+      "provider": "anthropic",
+      "endpoint": "https://api.anthropic.com/v1/messages",
+      "modelId": "claude-haiku-4-5-20251001",
+      "description": "Anthropic Claude Haiku - fastest model"
+    },
+    {
+      "id": "preset-gpt4o",
+      "name": "GPT-4o (OpenAI)",
+      "provider": "openai",
+      "endpoint": "https://api.openai.com/v1/chat/completions",
+      "modelId": "gpt-4o",
+      "description": "OpenAI GPT-4o - multimodal flagship"
+    },
+    {
+      "id": "preset-gpt4o-mini",
+      "name": "GPT-4o Mini (OpenAI)",
+      "provider": "openai",
+      "endpoint": "https://api.openai.com/v1/chat/completions",
+      "modelId": "gpt-4o-mini",
+      "description": "OpenAI GPT-4o Mini - affordable and fast"
+    },
+    {
+      "id": "preset-deepseek-v4-flash",
+      "name": "DeepSeek V4 Flash",
+      "provider": "openai-compatible",
+      "endpoint": "https://api.deepseek.com/chat/completions",
+      "modelId": "deepseek-v4-flash",
+      "inlineEndpoint": "https://api.deepseek.com/beta/completions",
+      "inlineModelId": "deepseek-v4-pro",
+      "inlineMode": "fim",
+      "description": "DeepSeek V4 Flash for chat with V4 Pro FIM completion",
+      "options": {
+        "thinking": {"type": "disabled"}
+      }
+    },
+    {
+      "id": "preset-deepseek-v4-pro",
+      "name": "DeepSeek V4 Pro",
+      "provider": "openai-compatible",
+      "endpoint": "https://api.deepseek.com/chat/completions",
+      "modelId": "deepseek-v4-pro",
+      "inlineEndpoint": "https://api.deepseek.com/beta/completions",
+      "inlineModelId": "deepseek-v4-pro",
+      "inlineMode": "fim",
+      "description": "DeepSeek V4 Pro with FIM completion",
+      "options": {
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "high"
+      }
+    }
+  ]
+}

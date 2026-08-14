@@ -1,0 +1,18 @@
+{
+  "name": "bobocloud-lsp-toolkit-runtime",
+  "version": "2026.8.11.2",
+  "private": true,
+  "description": "Pinned Node-based language servers for BOBOCloud",
+  "license": "UNLICENSED",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "bash-language-server": "5.6.0",
+    "pyright": "1.1.411",
+    "typescript": "6.0.3",
+    "typescript-language-server": "5.3.0",
+    "vscode-langservers-extracted": "4.10.0",
+    "yaml-language-server": "1.24.0"
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "servers": [
+    {
+      "languageId": "rust",
+      "command": ["rust-analyzer"],
+      "docker": {
+        "image": "bobocloud/lsp-toolkit:2026.08.11.2",
+        "command": ["rust-analyzer"]
+      },
+      "fingerprint": "rust-analyzer-2026-08-10.1-rust-1.97.1"
+    },
+    {
+      "languageId": "go",
+      "command": ["gopls"],
+      "docker": {
+        "image": "bobocloud/lsp-toolkit:2026.08.11.2",
+        "command": ["gopls"]
+      },
+      "environment": {
+        "GOMEMLIMIT": "400MiB"
+      },
+      "fingerprint": "gopls-v0.23.0-go-1.26.5"
+    },
+    {
+      "languageId": "c",
+      "aliases": ["cpp"],
+      "command": ["clangd", "--background-index", "--clang-tidy=false"],
+      "docker": {
+        "image": "bobocloud/lsp-toolkit:2026.08.11.2",
+        "command": ["bobocloud-clangd"]
+      },
+      "fingerprint": "clangd-19.1.7-bookworm-sysroot-bobocloud-cdb-v2-flags-json"
+    },
+    {
+      "languageId": "java",
+      "command": ["jdtls"],
+      "docker": {
+        "image": "bobocloud/lsp-toolkit:2026.08.11.2",
+        "command": ["jdtls"]
+      },
+      "environment": {
+        "BOBO_LSP_JAVA_XMX": "384m"
+      },
+      "fingerprint": "eclipse-jdtls-1.60.0-jre-21.0.12-dependency-repo-v3"
+    },
+    {
+      "languageId": "python",
+      "command": ["pyright-langserver", "--stdio"],
+      "docker": {
+        "image": "bobocloud/lsp-toolkit:2026.08.11.2",
+        "command": ["pyright-langserver", "--stdio"]
+      },
+      "environment": {
+        "NODE_OPTIONS": "--max-old-space-size=384"
+      },
+      "fingerprint": "pyright-1.1.411-python-3.11"
+    },
+    {
+      "languageId": "node",
+      "aliases": ["javascript", "typescript"],
+      "command": ["typescript-language-server", "--stdio"],
+      "docker": {
+        "image": "bobocloud/lsp-toolkit:2026.08.11.2",
+        "command": ["typescript-language-server", "--stdio"]
+      },
+      "environment": {
+        "NODE_OPTIONS": "--max-old-space-size=384"
+      },
+      "fingerprint": "typescript-language-server-5.3.0-typescript-6.0.3-node-20.20.2"
+    },
+    {
+      "languageId": "html",
+      "command": ["vscode-html-language-server", "--stdio"],
+      "docker": { "image": "bobocloud/lsp-toolkit:2026.08.11.2", "command": ["vscode-html-language-server", "--stdio"] },
+      "environment": { "NODE_OPTIONS": "--max-old-space-size=256" },
+      "fingerprint": "vscode-html-language-server-4.10.0"
+    },
+    {
+      "languageId": "css",
+      "aliases": ["scss", "less"],
+      "command": ["vscode-css-language-server", "--stdio"],
+      "docker": { "image": "bobocloud/lsp-toolkit:2026.08.11.2", "command": ["vscode-css-language-server", "--stdio"] },
+      "environment": { "NODE_OPTIONS": "--max-old-space-size=256" },
+      "fingerprint": "vscode-css-language-server-4.10.0"
+    },
+    {
+      "languageId": "json",
+      "aliases": ["jsonc"],
+      "command": ["vscode-json-language-server", "--stdio"],
+      "docker": { "image": "bobocloud/lsp-toolkit:2026.08.11.2", "command": ["vscode-json-language-server", "--stdio"] },
+      "environment": { "NODE_OPTIONS": "--max-old-space-size=256" },
+      "fingerprint": "vscode-json-language-server-4.10.0"
+    },
+    {
+      "languageId": "yaml",
+      "command": ["yaml-language-server", "--stdio"],
+      "docker": { "image": "bobocloud/lsp-toolkit:2026.08.11.2", "command": ["yaml-language-server", "--stdio"] },
+      "environment": { "NODE_OPTIONS": "--max-old-space-size=256" },
+      "fingerprint": "yaml-language-server-1.24.0"
+    },
+    {
+      "languageId": "shell",
+      "aliases": ["shellscript", "bash", "sh"],
+      "command": ["bash-language-server", "start"],
+      "docker": { "image": "bobocloud/lsp-toolkit:2026.08.11.2", "command": ["bash-language-server", "start"] },
+      "environment": { "NODE_OPTIONS": "--max-old-space-size=256" },
+      "fingerprint": "bash-language-server-5.6.0"
+    }
+  ]
+}

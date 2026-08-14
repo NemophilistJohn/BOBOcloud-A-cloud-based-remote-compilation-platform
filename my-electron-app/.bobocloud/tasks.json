@@ -1,0 +1,39 @@
+{
+  // BOBOCloud extends the VS Code 2.0.0 task shape only with bobocloud.kind.
+  // command, args, options, dependsOn and dependsOrder retain VS Code semantics.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build Renderer",
+      "type": "process",
+      "command": "npm",
+      "args": ["run", "build:renderer"],
+      "group": { "kind": "build", "isDefault": true },
+      "bobocloud": { "kind": "build" }
+    },
+    {
+      "label": "Test Client",
+      "type": "process",
+      "command": "npm",
+      "args": ["test"],
+      "group": "test",
+      "bobocloud": { "kind": "test" }
+    },
+    {
+      "label": "Verify Client",
+      "dependsOn": ["Build Renderer", "Test Client"],
+      "dependsOrder": "sequence",
+      "bobocloud": { "kind": "run" }
+    },
+    {
+      "label": "Print Cloud Workspace",
+      "type": "shell",
+      "command": "printf 'workspace=%s\\n' \"$BOBO_WORKSPACE\"",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "BOBO_WORKSPACE": "${workspaceFolderBasename}" }
+      },
+      "bobocloud": { "kind": "custom" }
+    }
+  ]
+}

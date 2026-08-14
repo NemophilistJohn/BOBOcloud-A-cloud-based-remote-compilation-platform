@@ -1,0 +1,29 @@
+ARG NODE_BASE_IMAGE=node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
+ARG TOOLKIT_BASE_IMAGE=bobocloud/lsp-toolkit:2026.08.11.1
+
+FROM ${NODE_BASE_IMAGE} AS node-tools
+WORKDIR /opt/node-lsp
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean --force
+
+FROM ${TOOLKIT_BASE_IMAGE}
+ARG TOOLKIT_VERSION=2026.08.11.2
+LABEL org.opencontainers.image.title="BOBOCloud LSP Toolkit" \
+      org.opencontainers.image.version="${TOOLKIT_VERSION}" \
+      org.opencontainers.image.description="Pinned language servers for application, web, configuration and shell languages"
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends python3; \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=node-tools /opt/node-lsp /opt/node-lsp
+COPY --chmod=0755 jdtls.sh /usr/local/bin/jdtls
+COPY --chmod=0755 clangd.sh /usr/local/bin/bobocloud-clangd
+COPY --chmod=0755 pyright-python.sh /usr/local/bin/bobocloud-python
+COPY prepare-clangd-cdb.js /opt/bobocloud/prepare-clangd-cdb.js
+COPY clangd-flags.js /opt/bobocloud/clangd-flags.js
+COPY --chmod=0755 verify.sh /usr/local/bin/bobocloud-lsp-verify
+COPY --chmod=0755 lsp-smoke.js /usr/local/bin/bobocloud-lsp-smoke
+
+CMD ["bobocloud-lsp-verify"]
