@@ -1394,5 +1394,21 @@
   "Server is in single-user mode — no login required.": "サーバーはシングルユーザーモードです。ログインは不要です。",
   "The server requires HTTPS, but secure transport is disabled in Server Settings.": "サーバーは HTTPS を要求していますが、サーバー設定でセキュア転送が有効になっていません。",
   "The server returned an invalid response. Check the server address and transport setting.": "サーバーから無効な応答が返されました。サーバーアドレスと転送設定を確認してください。",
-  "Unable to reach the configured server. Check Server Settings and try again.": "設定済みのサーバーに接続できません。サーバー設定を確認してから再試行してください。"
+  "Unable to reach the configured server. Check Server Settings and try again.": "設定済みのサーバーに接続できません。サーバー設定を確認してから再試行してください。",
+  "Build target": "ビルドターゲット",
+  "Target system": "対象システム",
+  "Architecture": "アーキテクチャ",
+  "Generated toolchain": "生成ツールチェーン",
+  "Output artifact": "出力成果物",
+  "Linux x86_64": "Linux x86_64",
+  "Linux ARM64": "Linux ARM64",
+  "Windows x86_64": "Windows x86_64",
+  "Cortex-M4": "Cortex-M4",
+  "Linux": "Linux",
+  "Windows": "Windows",
+  "Bare metal / RTOS": "ベアメタル / RTOS",
+  "Runs in cloud": "クラウドで実行",
+  "Build only - returned as an artifact": "ビルドのみ。成果物として返却されます",
+  "Saved per workspace and language. Changes apply to the next run.": "ワークスペースと言語ごとに保存され、次回の実行から適用されます。",
+  "Build target: {target}": "ビルドターゲット: {target}"
 }

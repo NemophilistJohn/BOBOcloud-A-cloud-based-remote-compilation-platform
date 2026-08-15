@@ -565,7 +565,7 @@ html, body {
 .rc-pop {
   position: fixed;
   z-index: 2500;
-  width: 320px;
+  width: min(390px, calc(100vw - 16px));
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
@@ -580,6 +580,71 @@ html, body {
 }
 .rc-lang { color: var(--text-secondary); font-weight: var(--weight-normal); font-size: var(--text-sm); }
 .rc-field { margin-bottom: var(--space-2); }
+.rc-target {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--blue) 32%, var(--border-default));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--blue) 7%, var(--bg-deep));
+}
+.rc-target[hidden] { display: none; }
+.rc-target-heading {
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  margin-bottom: var(--space-2);
+}
+.rc-target-selects {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 4px var(--space-2);
+  align-items: end;
+}
+.rc-target-selects .rc-label { margin: 0; }
+.rc-select {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+  outline: none;
+}
+.rc-select:focus { border-color: var(--blue); }
+.rc-target-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+}
+.rc-target-summary div { min-width: 0; }
+.rc-target-summary dt {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  letter-spacing: .35px;
+  text-transform: uppercase;
+}
+.rc-target-summary dd {
+  overflow: hidden;
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rc-target-mode {
+  display: inline-flex;
+  margin-top: var(--space-2);
+  border-radius: 2px;
+  padding: 2px 6px;
+  font-size: var(--text-xs);
+}
+.rc-target-mode.is-runnable { color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
+.rc-target-mode.is-artifact { color: var(--orange); background: color-mix(in srgb, var(--orange) 14%, transparent); }
+#run-config-btn[hidden] { display: none !important; }
 .rc-label {
   display: block;
   font-size: var(--text-xs);

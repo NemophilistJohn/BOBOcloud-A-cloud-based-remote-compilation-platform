@@ -582,7 +582,7 @@
         : 'run-' + Date.now();
 
       // 读取当前语言的运行配置（编译参数 / 程序参数，按 工作区×语言 记忆）
-      var rc = (BOBO.runConfig && rcLang) ? BOBO.runConfig.getArgs(rcLang) : { compileArgs: [], runArgs: [] };
+      var rc = (BOBO.runConfig && rcLang) ? BOBO.runConfig.getArgs(rcLang) : { compileArgs: [], runArgs: [], buildTarget: '' };
 
       await cancelActiveRun();
       if (!isRunPreparationCurrent(runContext)) return;
@@ -614,6 +614,10 @@
         : 'Running code: ' + relativeFilePath);
       if (!taskExecution && rc.compileArgs.length > 0) BOBO.updateRunOutput('Compile args: ' + rc.compileArgs.join(' '));
       if (!taskExecution && rc.runArgs.length > 0) BOBO.updateRunOutput('Program args: ' + rc.runArgs.join(' '));
+      if (!taskExecution && rc.buildTarget) {
+        var targetLabel = BOBO.runConfig && BOBO.runConfig.describeTarget ? BOBO.runConfig.describeTarget(rc.buildTarget) : rc.buildTarget;
+        BOBO.updateRunOutput(tr('Build target: {target}', { target: targetLabel }));
+      }
 
       var requestPayload = {
         folderName: projectName,
@@ -633,6 +637,7 @@
         requestPayload.filePath = relativeFilePath;
         requestPayload.compileArgs = rc.compileArgs.length > 0 ? rc.compileArgs : undefined;
         requestPayload.runArgs = rc.runArgs.length > 0 ? rc.runArgs : undefined;
+        requestPayload.buildTarget = rc.buildTarget || undefined;
       }
       var runResult = await BOBO.sendToServer(taskExecution ? 'runTask' : 'runCode', requestPayload);
       if (!isRunContextCurrent(runContext)) return;

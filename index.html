@@ -699,9 +699,23 @@
     </div>
   </div>
 
-  <!-- Run Configuration popover (compile & program args) -->
+  <!-- Run Configuration popover: per-language arguments and build target preset. -->
   <div id="run-config-pop" class="rc-pop" style="display:none">
     <div class="rc-title">Run Configuration <span id="rc-lang" class="rc-lang"></span></div>
+    <section class="rc-target" id="rc-target-field" hidden aria-label="Build target">
+      <div class="rc-target-heading" data-i18n="Build target">Build target</div>
+      <div class="rc-target-selects">
+        <label class="rc-label" for="rc-target-system" data-i18n="Target system">Target system</label>
+        <label class="rc-label" for="rc-target-arch" data-i18n="Architecture">Architecture</label>
+        <select id="rc-target-system" class="rc-select"></select>
+        <select id="rc-target-arch" class="rc-select"></select>
+      </div>
+      <dl class="rc-target-summary">
+        <div><dt data-i18n="Generated toolchain">Generated toolchain</dt><dd id="rc-target-toolchain" data-i18n-skip></dd></div>
+        <div><dt data-i18n="Output artifact">Output artifact</dt><dd id="rc-target-output" data-i18n-skip></dd></div>
+      </dl>
+      <div id="rc-target-mode" class="rc-target-mode" aria-live="polite"></div>
+    </section>
     <div class="rc-field" id="rc-compile-field">
       <label class="rc-label" for="rc-compile-args">Compile args</label>
       <input id="rc-compile-args" class="rc-input" type="text" placeholder="-O2 -std=c++17 -lm" spellcheck="false">

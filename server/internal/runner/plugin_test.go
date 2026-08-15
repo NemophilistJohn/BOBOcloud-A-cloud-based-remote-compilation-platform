@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"bobocloud-server/internal/model"
 )
 
 // ============================================================
@@ -107,6 +109,25 @@ func TestCPlugin_EntryInSubdir(t *testing.T) {
 	}
 	if strings.Contains(compile, "week2/main.c") {
 		t.Errorf("should NOT include other program's main: %s", compile)
+	}
+}
+
+func TestCPlugin_CrossTargetBuildsArtifactWithoutRunning(t *testing.T) {
+	hostDir, files := writeTempProject(t, map[string]string{"main.c": "int main(void){return 0;}"})
+	target, ok := model.ResolveBuildTarget("c", "linux-arm64")
+	if !ok {
+		t.Fatal("missing arm64 target")
+	}
+	plan, err := CPlugin{}.Plan(&PlanRequest{EntryRelPath: "main.c", ProjectFiles: files, HostWorkDir: hostDir, BuildTarget: target, Timeouts: testTimeouts()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmds := strings.Join(stepCmds(plan), "\n")
+	if !strings.Contains(cmds, "aarch64-linux-gnu-gcc") || !strings.Contains(cmds, "artifacts/app_linux_arm64") {
+		t.Fatalf("cross C plan = %s", cmds)
+	}
+	if strings.Contains(cmds, "run:c") || len(plan.Steps) != 2 {
+		t.Fatalf("cross target must not create a run step: %#v", plan.Steps)
 	}
 }
 
@@ -239,6 +260,33 @@ func TestGoPlugin_NoModule_MultiFile(t *testing.T) {
 	}
 }
 
+func TestGoPlugin_CrossTargetBuildsArtifactWithoutRunning(t *testing.T) {
+	hostDir, files := writeTempProject(t, map[string]string{
+		"go.mod":  "module demo\n\ngo 1.23\n",
+		"main.go": "package main\nfunc main(){}",
+	})
+	target, ok := model.ResolveBuildTarget("go", "windows-x86_64")
+	if !ok {
+		t.Fatal("missing Windows Go target")
+	}
+	plan, err := GoPlugin{}.Plan(&PlanRequest{
+		EntryRelPath: "main.go", ProjectFiles: files, HostWorkDir: hostDir, ProjectRoot: "/workspace", BuildTarget: target, Timeouts: testTimeouts(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Steps) != 2 || plan.Steps[1].Stage != "compile:go" {
+		t.Fatalf("cross Go plan = %#v", plan.Steps)
+	}
+	step := plan.Steps[1]
+	if step.Env["GOOS"] != "windows" || step.Env["GOARCH"] != "amd64" || step.Env["CGO_ENABLED"] != "0" {
+		t.Fatalf("cross Go environment = %#v", step.Env)
+	}
+	if got := strings.Join(step.Cmd, " "); !strings.Contains(got, "go build") || !strings.Contains(got, "/workspace/artifacts/app_windows_x86_64.exe") {
+		t.Fatalf("cross Go command = %s", got)
+	}
+}
+
 // ---------- Rust 插件 ----------
 
 func TestRustPlugin_CargoMode(t *testing.T) {
@@ -306,6 +354,25 @@ func TestRustPlugin_SingleFile(t *testing.T) {
 	compile := strings.Join(plan.Steps[1].Cmd, " ")
 	if !strings.HasPrefix(compile, "rustc main.rs") {
 		t.Errorf("single-file mode should rustc the entry: %s", compile)
+	}
+}
+
+func TestRustPlugin_CrossTargetBuildsArtifactWithoutRunning(t *testing.T) {
+	hostDir, files := writeTempProject(t, map[string]string{"main.rs": "fn main(){}"})
+	target, ok := model.ResolveBuildTarget("rust", "windows-x86_64")
+	if !ok {
+		t.Fatal("missing Windows target")
+	}
+	plan, err := RustPlugin{}.Plan(&PlanRequest{EntryRelPath: "main.rs", ProjectFiles: files, HostWorkDir: hostDir, BuildTarget: target, Timeouts: testTimeouts()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmds := strings.Join(stepCmds(plan), "\n")
+	if !strings.Contains(cmds, "--target x86_64-pc-windows-gnu") || !strings.Contains(cmds, "artifacts/app_windows_x86_64.exe") {
+		t.Fatalf("cross Rust plan = %s", cmds)
+	}
+	if len(plan.Steps) != 2 || plan.Steps[len(plan.Steps)-1].Stage == "run:rust" {
+		t.Fatalf("cross target must not run: %#v", plan.Steps)
 	}
 }
 

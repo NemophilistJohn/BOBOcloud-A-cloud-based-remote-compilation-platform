@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
 
 const ROOT = path.resolve(__dirname, '..');
 const README = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+const README_ZH = fs.readFileSync(path.join(ROOT, 'README.zh-CN.md'), 'utf8');
 const PACKAGE = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const CAPTURE_SCRIPT = fs.readFileSync(path.join(ROOT, 'scripts', 'capture-readme-screenshots.js'), 'utf8');
 const DAP_MANIFEST = JSON.parse(fs.readFileSync(path.join(ROOT, 'server', 'dap_adapters.json'), 'utf8'));
@@ -24,8 +25,12 @@ function pngMetadata(filePath) {
   return { bytes: buffer.length, width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
 }
 
-test('README documents current client/server contracts and single-binary deployment', () => {
-  assert.match(README, /客户端 \*\*2\.6\.0\*\*，服务端 \*\*2\.4\.0\*\*/);
+test('README documents current client/server contracts, language navigation, and deployment assets', () => {
+  assert.match(README, /Client \*\*2\.6\.0\*\* and server \*\*2\.4\.0\*\*/);
+  assert.match(README, /README\.zh-CN\.md/);
+  assert.match(README, /For desktop users/);
+  assert.match(README, /For server operators/);
+  assert.match(README, /For contributors/);
   assert.match(README, /WebSocket `:3101\/ws`/);
   assert.match(README, /WebSocket `:3101\/term`/);
   assert.match(README, /HTTP `:3100`/);
@@ -33,14 +38,25 @@ test('README documents current client/server contracts and single-binary deploym
   assert.match(README, /debugpy 1\.8\.16/);
   assert.match(README, /Delve 1\.24\.2/);
   assert.match(README, /Node\.js[\s\S]*child-session routing/);
-  assert.match(README, /\| Node\.js 20、22 \|/);
-  assert.match(README, /\[DAP 服务端文档\]\(docs\/dap-server\.md\)/);
+  assert.match(README, /\| Node\.js \| `node:20`, `node:22` \|/);
+  assert.match(README, /\[DAP server guide\]\(docs\/dap-server\.md\)/);
+  assert.match(README, /\[Plugin API\]\(docs\/plugin-api\.md\)/);
   assert.match(README, /Python[\s\S]*`python:3\.13`/);
   assert.match(README, /Go[\s\S]*`go:1\.23`/);
-  assert.match(README, /只保留当前 `bobocloud-server`/);
-  assert.match(README, /不创建或保留 `\.bak`\/版本号快照/);
+  assert.match(README, /retain only the current `bobocloud-server`/);
+  assert.match(README, /do not create `\.bak` or version-number binary snapshots/);
+  assert.match(README, /cross-toolkit/);
+  assert.match(README, /Cortex-M4/);
   assert.doesNotMatch(README, /renderer\.js/);
   assert.doesNotMatch(README, /Expect: \{"success":true,"authMode":"multi","version":"2\.1\.0"\}/);
+});
+
+test('Chinese README mirrors the three audience paths and links back to English', () => {
+  assert.match(README_ZH, /README\.md/);
+  assert.match(README_ZH, /用户端使用者/);
+  assert.match(README_ZH, /服务器运维者/);
+  assert.match(README_ZH, /贡献者/);
+  assert.match(README_ZH, /cross-toolkit/);
 });
 
 test('DAP release artifacts advertise only smoke-verified Python, Go, and Node adapters', () => {

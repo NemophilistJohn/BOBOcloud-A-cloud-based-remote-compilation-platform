@@ -219,6 +219,7 @@ func (h *WSHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			TaskLabel:     taskLabel,
 			TaskKind:      taskKind,
 			Runtime:       sess.Runtime,
+			BuildTarget:   sess.BuildTarget,
 			Status:        status,
 			ExitCode:      runResult.ReturnCode,
 			DurationMs:    time.Since(sess.CreatedAt).Milliseconds(),
@@ -375,6 +376,36 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		output.WriteStatus("setup", fmt.Sprintf("Using local executor for %s (runs on server host, no sandbox)", plugin.Language()))
 	}
 
+	// A client selects a catalog ID, never an arbitrary compiler or image.
+	// Resolve it only after the language/runtime checks above.
+	var buildTarget model.BuildTarget
+	if plugin.Language() == "c" || plugin.Language() == "cpp" || plugin.Language() == "rust" || plugin.Language() == "go" {
+		var targetOK bool
+		buildTarget, targetOK = model.ResolveBuildTarget(plugin.Language(), sess.BuildTarget)
+		if !targetOK {
+			fail(fmt.Sprintf("Unsupported build target %q for %s", sess.BuildTarget, plugin.Language()))
+			return
+		}
+		if model.IsCrossBuildTarget(buildTarget) {
+			if !useDocker || rt == nil {
+				fail("Cross-compilation requires a Docker runtime")
+				return
+			}
+			image := model.CrossBuildImage(*rt, buildTarget)
+			if image == "" {
+				fail(fmt.Sprintf("No cross toolchain is available for %s", plugin.Language()))
+				return
+			}
+			runtimeCopy := *rt
+			runtimeCopy.DockerImage = image
+			rt = &runtimeCopy
+			output.WriteStatus("target", fmt.Sprintf("Cross-compiling for %s/%s; artifact: %s", buildTarget.OS, buildTarget.Architecture, buildTarget.OutputPath))
+		}
+	} else if sess.BuildTarget != "" {
+		fail(fmt.Sprintf("Build targets are not supported for %s files", plugin.Language()))
+		return
+	}
+
 	// Team builds use an exclusive branch/runtime cache namespace. This allows
 	// every member to reuse previous dependency and incremental compiler output
 	// without concurrent writers corrupting a Cargo/Go target directory.
@@ -388,6 +419,9 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		runtimeKey := "local"
 		if useDocker {
 			runtimeKey = "docker-" + sess.Runtime
+			if buildTarget.ID != "" {
+				runtimeKey += "-" + buildTarget.ID
+			}
 		}
 		cacheStarted := time.Now()
 		output.WriteStatus("cache", "Waiting for exclusive team cache lease")
@@ -464,6 +498,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		ProjectRoot:  projectRoot,
 		CompileArgs:  sess.CompileArgs,
 		RunArgs:      sess.RunArgs,
+		BuildTarget:  buildTarget,
 		Timeouts: runner.TimeoutConfig{
 			CompileSec:     h.Config.DefaultCompileTimeout,
 			RustCompileSec: h.Config.RustCompileTimeout,

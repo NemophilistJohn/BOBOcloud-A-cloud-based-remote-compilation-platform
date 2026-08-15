@@ -277,6 +277,8 @@ func (h *HTTPHandler) routeRequest(w http.ResponseWriter, r *http.Request, req *
 		h.handleDeleteFile(w, r, req)
 	case "listRuntimes":
 		h.handleListRuntimes(w, req)
+	case "listBuildTargets":
+		h.handleListBuildTargets(w, req)
 	case "checkDocker":
 		h.handleCheckDocker(w)
 	case "terminal":
@@ -511,6 +513,17 @@ func (h *HTTPHandler) handleRun(w http.ResponseWriter, r *http.Request, req *mod
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid runArgs: " + err.Error()})
 		return
 	}
+	if !taskMode && req.BuildTarget != "" {
+		language := model.LanguageFromExtension(filepath.Ext(req.FilePath))
+		if req.Runtime == "" {
+			writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Cross-compilation requires a Docker runtime"})
+			return
+		}
+		if target, ok := model.ResolveBuildTarget(language, req.BuildTarget); !ok || !model.IsCrossBuildTarget(target) && req.BuildTarget != "linux-x86_64" {
+			writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Unsupported build target for " + language})
+			return
+		}
+	}
 
 	userID := auth.UserIDFromContext(r.Context())
 	rawRunID := req.RunID
@@ -587,6 +600,7 @@ func (h *HTTPHandler) handleRun(w http.ResponseWriter, r *http.Request, req *mod
 		SetupCommands: req.SetupCommands,
 		CompileArgs:   req.CompileArgs,
 		RunArgs:       req.RunArgs,
+		BuildTarget:   req.BuildTarget,
 		Task:          req.Task,
 		UserID:        userID,
 		TeamID:        req.TeamID,
@@ -614,6 +628,7 @@ func (h *HTTPHandler) handleRun(w http.ResponseWriter, r *http.Request, req *mod
 		"runtime", req.Runtime,
 		"compile_args", req.CompileArgs,
 		"run_args", req.RunArgs,
+		"build_target", req.BuildTarget,
 	)
 
 	writeJSON(w, http.StatusOK, model.Response{
@@ -812,6 +827,46 @@ func (h *HTTPHandler) handleListRuntimes(w http.ResponseWriter, req *model.Reque
 	writeJSON(w, http.StatusOK, model.Response{
 		Success:  true,
 		Runtimes: model.SupportedRuntimes,
+	})
+}
+
+// handleListBuildTargets exposes only predeclared targets for C, C++, Rust,
+// and Go. The client receives no compiler command or Docker image details.
+func (h *HTTPHandler) handleListBuildTargets(w http.ResponseWriter, req *model.Request) {
+	targets := model.BuildTargetsForLanguage(req.Language)
+	if len(targets) == 0 {
+		writeJSON(w, http.StatusOK, model.Response{Success: true})
+		return
+	}
+	// Native remains available without Docker. Cross entries are offered only
+	// when the precise versioned image exists locally; this prevents a preset
+	// from looking usable on a server whose operator has not deployed it.
+	available := make([]model.BuildTarget, 0, len(targets))
+	imageAvailability := make(map[string]bool)
+	for _, target := range targets {
+		if !model.IsCrossBuildTarget(target) {
+			available = append(available, target)
+			continue
+		}
+		runtime := model.GetRuntimeDef(req.Runtime)
+		if runtime == nil || runtime.Language != req.Language {
+			continue
+		}
+		image := model.CrossBuildImage(*runtime, target)
+		ready, checked := imageAvailability[image]
+		if !checked {
+			ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+			ready = exec.CommandContext(ctx, "docker", "image", "inspect", image).Run() == nil
+			cancel()
+			imageAvailability[image] = ready
+		}
+		if ready {
+			available = append(available, target)
+		}
+	}
+	writeJSON(w, http.StatusOK, model.Response{
+		Success:      true,
+		BuildTargets: available,
 	})
 }
 

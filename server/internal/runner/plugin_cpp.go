@@ -26,23 +26,36 @@ func (CppPlugin) Plan(req *PlanRequest) (*Plan, error) {
 		return nil, ErrNoSources("cpp")
 	}
 
-	const output = ".bobocloud/output"
+	target := req.BuildTarget
+	if target.ID == "" {
+		target = nativeBuildTarget()
+	}
+	output := target.OutputPath
+	compilerName := target.CppCompiler
+	if compilerName == "" {
+		compilerName = "g++"
+	}
 
-	compileCmd := []string{"g++", "-std=gnu++11"}
+	compileCmd := []string{compilerName, "-std=gnu++11"}
 	compileCmd = append(compileCmd, sources...)
 	compileCmd = append(compileCmd, "-o", output, "-Wall")
-	compileCmd = append(compileCmd, compiler.CollectCompileFlags(req.HostWorkDir, "g++")...)
+	compileCmd = append(compileCmd, compiler.CollectCompileFlags(req.HostWorkDir, compilerName)...)
+	compileCmd = append(compileCmd, target.DefaultCompileArgs...)
 	compileCmd = append(compileCmd, req.CompileArgs...)
 
-	runCmd := append([]string{output}, req.RunArgs...)
-
 	note := fmt.Sprintf("C++: compiling %d source file(s) under %s", len(sources), displayDir(entryDir))
+	if !target.Runnable {
+		note += fmt.Sprintf(" for %s/%s (artifact: %s)", target.OS, target.Architecture, output)
+	}
+	steps := []Step{
+		{Stage: "setup", Cmd: []string{"mkdir", "-p", ".bobocloud", "artifacts"}, TimeoutSec: 10},
+		{Stage: "compile:cpp", Cmd: compileCmd, TimeoutSec: req.Timeouts.CompileSec},
+	}
+	if target.Runnable {
+		steps = append(steps, Step{Stage: "run:cpp", Cmd: append([]string{output}, req.RunArgs...), TimeoutSec: req.Timeouts.RunSec})
+	}
 	return &Plan{
-		Steps: []Step{
-			{Stage: "setup", Cmd: []string{"mkdir", "-p", ".bobocloud"}, TimeoutSec: 10},
-			{Stage: "compile:cpp", Cmd: compileCmd, TimeoutSec: req.Timeouts.CompileSec},
-			{Stage: "run:cpp", Cmd: runCmd, TimeoutSec: req.Timeouts.RunSec},
-		},
-		Note: note,
+		Steps: steps,
+		Note:  note,
 	}, nil
 }

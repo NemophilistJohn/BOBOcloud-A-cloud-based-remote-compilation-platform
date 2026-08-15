@@ -397,6 +397,7 @@
     if (options.approved && BOBO.dap && BOBO.dap.beforeWorkspaceLeave) await BOBO.dap.beforeWorkspaceLeave();
     closeContextMenu({ restoreFocus: false });
     cancelInlineEditor();
+    if (BOBO.runConfig && BOBO.runConfig.close) BOBO.runConfig.close();
     // Dispose all Monaco models (skip image tabs which have no model)
     for (var i = 0; i < S.tabs.length; i++) {
       var t = S.tabs[i];
@@ -1247,6 +1248,7 @@
     var tab = S.tabs.find(function(t) { return t.path === filePath; });
     if (!tab) return;
     S.activeTabPath = filePath;
+    if (BOBO.runConfig && BOBO.runConfig.refreshForActiveFile) BOBO.runConfig.refreshForActiveFile();
 
     if (tab.language === 'image') {
       if (BOBO.views && BOBO.views.showImagePreview) {

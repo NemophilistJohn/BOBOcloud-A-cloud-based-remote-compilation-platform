@@ -35,12 +35,13 @@ type TimeoutConfig struct {
 
 // PlanRequest 一次运行请求的完整上下文（规划期）
 type PlanRequest struct {
-	EntryRelPath string   // 入口文件相对项目根的路径（slash 分隔），如 "src/main.c"
-	ProjectFiles []string // 项目内全部文件的相对路径（slash 分隔）
-	HostWorkDir  string   // 宿主机上的项目临时目录（仅规划期读文件用：解析 go.mod / package 等）
-	ProjectRoot  string   // 执行侧项目根：Docker 为 "/workspace"，本地等于 HostWorkDir
-	CompileArgs  []string // 用户编译参数（argv 元素，不经 shell 解析）
-	RunArgs      []string // 用户程序参数（传给被运行程序）
+	EntryRelPath string            // 入口文件相对项目根的路径（slash 分隔），如 "src/main.c"
+	ProjectFiles []string          // 项目内全部文件的相对路径（slash 分隔）
+	HostWorkDir  string            // 宿主机上的项目临时目录（仅规划期读文件用：解析 go.mod / package 等）
+	ProjectRoot  string            // 执行侧项目根：Docker 为 "/workspace"，本地等于 HostWorkDir
+	CompileArgs  []string          // 用户编译参数（argv 元素，不经 shell 解析）
+	RunArgs      []string          // 用户程序参数（传给被运行程序）
+	BuildTarget  model.BuildTarget // 服务端已验证的目标预设
 	Timeouts     TimeoutConfig
 }
 
@@ -58,6 +59,11 @@ type Step struct {
 type Plan struct {
 	Steps []Step
 	Note  string // 计划说明（非空则以 status 消息展示给用户，如 "检测到 Cargo 项目"）
+}
+
+func nativeBuildTarget() model.BuildTarget {
+	target, _ := model.ResolveBuildTarget("c", "linux-x86_64")
+	return target
 }
 
 // LanguagePlugin 语言插件接口

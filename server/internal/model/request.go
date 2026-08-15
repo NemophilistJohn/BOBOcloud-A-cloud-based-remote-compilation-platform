@@ -17,6 +17,7 @@ type Request struct {
 	SetupCommands     []string       `json:"setupCommands,omitempty"` // 前置命令列表
 	CompileArgs       []string       `json:"compileArgs,omitempty"`   // 用户编译参数（如 ["-O2","-std=c++17"]）
 	RunArgs           []string       `json:"runArgs,omitempty"`       // 用户程序参数（传给被运行程序）
+	BuildTarget       string         `json:"buildTarget,omitempty"`   // 受服务端白名单约束的交叉编译目标
 	Command           string         `json:"command,omitempty"`       // terminal 命令
 	Language          string         `json:"language,omitempty"`      // project environment language
 	Task              *TaskExecution `json:"task,omitempty"`
@@ -66,20 +67,21 @@ type Request struct {
 
 // Response 是服务端返回的 HTTP JSON 响应体
 type Response struct {
-	Success    bool         `json:"success"`
-	Error      string       `json:"error,omitempty"`
-	ErrorCode  string       `json:"errorCode,omitempty"`
-	Details    any          `json:"details,omitempty"`
-	Message    string       `json:"message,omitempty"`
-	FolderPath string       `json:"folderPath,omitempty"`
-	RunID      string       `json:"runId,omitempty"`
-	Token      string       `json:"token,omitempty"` // runCode: 运行令牌；login/register: 会话 token
-	WSPath     string       `json:"wsPath,omitempty"`
-	Stdout     string       `json:"stdout,omitempty"`
-	Stderr     string       `json:"stderr,omitempty"`
-	ExitCode   int          `json:"exitCode,omitempty"`
-	Runtimes   []RuntimeDef `json:"runtimes,omitempty"`
-	History    []*RunRecord `json:"history,omitempty"`
+	Success      bool          `json:"success"`
+	Error        string        `json:"error,omitempty"`
+	ErrorCode    string        `json:"errorCode,omitempty"`
+	Details      any           `json:"details,omitempty"`
+	Message      string        `json:"message,omitempty"`
+	FolderPath   string        `json:"folderPath,omitempty"`
+	RunID        string        `json:"runId,omitempty"`
+	Token        string        `json:"token,omitempty"` // runCode: 运行令牌；login/register: 会话 token
+	WSPath       string        `json:"wsPath,omitempty"`
+	Stdout       string        `json:"stdout,omitempty"`
+	Stderr       string        `json:"stderr,omitempty"`
+	ExitCode     int           `json:"exitCode,omitempty"`
+	Runtimes     []RuntimeDef  `json:"runtimes,omitempty"`
+	BuildTargets []BuildTarget `json:"buildTargets,omitempty"`
+	History      []*RunRecord  `json:"history,omitempty"`
 
 	// ── 账户系统字段 ──
 	AuthMode    string        `json:"authMode,omitempty"`    // serverInfo：single / multi
@@ -207,6 +209,7 @@ type RunSession struct {
 	SetupCommands []string       `json:"setup_commands,omitempty"`
 	CompileArgs   []string       `json:"compile_args,omitempty"`
 	RunArgs       []string       `json:"run_args,omitempty"`
+	BuildTarget   string         `json:"build_target,omitempty"`
 	CreatedAt     time.Time      `json:"created_at"`
 	Started       bool           `json:"started"`
 	UserID        string         `json:"user_id"`
@@ -247,6 +250,7 @@ type RunRecord struct {
 	TaskLabel     string    `json:"task_label,omitempty"`
 	TaskKind      string    `json:"task_kind,omitempty"`
 	Runtime       string    `json:"runtime"`
+	BuildTarget   string    `json:"build_target,omitempty"`
 	Status        string    `json:"status"` // "completed", "failed", "timed_out", "cancelled"
 	ExitCode      int       `json:"exit_code"`
 	DurationMs    int64     `json:"duration_ms"`

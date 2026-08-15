@@ -1,0 +1,20 @@
+ARG GCC_VERSION=13
+ARG GCC_IMAGE=docker.m.daocloud.io/library/gcc:${GCC_VERSION}
+FROM ${GCC_IMAGE}
+
+# Fixed, distribution-independent cross toolchain image used only by the
+# server-controlled buildTarget catalog. It intentionally contains no shell
+# supplied by the client beyond the existing argv-based language plans.
+# Tencent's Debian mirror avoids the very slow default route on mainland hosts.
+RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i 's|http://deb.debian.org/debian|https://mirrors.cloud.tencent.com/debian|g' /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+    gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+    gcc-arm-none-eabi libnewlib-arm-none-eabi binutils-arm-none-eabi \
+    ca-certificates file \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace

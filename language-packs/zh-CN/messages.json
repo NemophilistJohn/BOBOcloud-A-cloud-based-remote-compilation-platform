@@ -1394,5 +1394,21 @@
   "Server is in single-user mode — no login required.": "服务器处于单用户模式，无需登录。",
   "The server requires HTTPS, but secure transport is disabled in Server Settings.": "服务器要求使用 HTTPS，但服务器设置中未启用安全传输。",
   "The server returned an invalid response. Check the server address and transport setting.": "服务器返回了无效响应。请检查服务器地址和传输设置。",
-  "Unable to reach the configured server. Check Server Settings and try again.": "无法连接到已配置的服务器。请检查服务器设置后重试。"
+  "Unable to reach the configured server. Check Server Settings and try again.": "无法连接到已配置的服务器。请检查服务器设置后重试。",
+  "Build target": "构建目标",
+  "Target system": "目标系统",
+  "Architecture": "指令集架构",
+  "Generated toolchain": "生成工具链",
+  "Output artifact": "输出产物",
+  "Linux x86_64": "Linux x86_64",
+  "Linux ARM64": "Linux ARM64",
+  "Windows x86_64": "Windows x86_64",
+  "Cortex-M4": "Cortex-M4",
+  "Linux": "Linux",
+  "Windows": "Windows",
+  "Bare metal / RTOS": "裸机 / RTOS",
+  "Runs in cloud": "在云端运行",
+  "Build only - returned as an artifact": "仅构建，作为产物返回",
+  "Saved per workspace and language. Changes apply to the next run.": "按工作区和语言保存，更改将在下一次运行生效。",
+  "Build target: {target}": "构建目标：{target}"
 }

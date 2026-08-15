@@ -29,26 +29,39 @@ func (CPlugin) Plan(req *PlanRequest) (*Plan, error) {
 		return nil, ErrNoSources("c")
 	}
 
-	const output = ".bobocloud/output"
+	target := req.BuildTarget
+	if target.ID == "" {
+		target = nativeBuildTarget()
+	}
+	output := target.OutputPath
+	compilerName := target.CCompiler
+	if compilerName == "" {
+		compilerName = "gcc"
+	}
 
-	compileCmd := []string{"gcc", "-std=gnu11"}
+	compileCmd := []string{compilerName, "-std=gnu11"}
 	compileCmd = append(compileCmd, sources...)
 	compileCmd = append(compileCmd, "-o", output, "-Wall")
 	// 自动检测规则（#include <pthread.h> → -pthread 等），全项目扫描
-	compileCmd = append(compileCmd, compiler.CollectCompileFlags(req.HostWorkDir, "gcc")...)
+	compileCmd = append(compileCmd, compiler.CollectCompileFlags(req.HostWorkDir, compilerName)...)
+	compileCmd = append(compileCmd, target.DefaultCompileArgs...)
 	// 用户编译参数（如 -O2 -std=c17 -lm）
 	compileCmd = append(compileCmd, req.CompileArgs...)
 
-	runCmd := append([]string{output}, req.RunArgs...)
-
 	note := fmt.Sprintf("C: compiling %d source file(s) under %s", len(sources), displayDir(entryDir))
+	if !target.Runnable {
+		note += fmt.Sprintf(" for %s/%s (artifact: %s)", target.OS, target.Architecture, output)
+	}
+	steps := []Step{
+		{Stage: "setup", Cmd: []string{"mkdir", "-p", ".bobocloud", "artifacts"}, TimeoutSec: 10},
+		{Stage: "compile:c", Cmd: compileCmd, TimeoutSec: req.Timeouts.CompileSec},
+	}
+	if target.Runnable {
+		steps = append(steps, Step{Stage: "run:c", Cmd: append([]string{output}, req.RunArgs...), TimeoutSec: req.Timeouts.RunSec})
+	}
 	return &Plan{
-		Steps: []Step{
-			{Stage: "setup", Cmd: []string{"mkdir", "-p", ".bobocloud"}, TimeoutSec: 10},
-			{Stage: "compile:c", Cmd: compileCmd, TimeoutSec: req.Timeouts.CompileSec},
-			{Stage: "run:c", Cmd: runCmd, TimeoutSec: req.Timeouts.RunSec},
-		},
-		Note: note,
+		Steps: steps,
+		Note:  note,
 	}, nil
 }
 

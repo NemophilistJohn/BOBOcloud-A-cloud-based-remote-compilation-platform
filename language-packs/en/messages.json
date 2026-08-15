@@ -1394,5 +1394,21 @@
   "Server is in single-user mode — no login required.": "Server is in single-user mode — no login required.",
   "The server requires HTTPS, but secure transport is disabled in Server Settings.": "The server requires HTTPS, but secure transport is disabled in Server Settings.",
   "The server returned an invalid response. Check the server address and transport setting.": "The server returned an invalid response. Check the server address and transport setting.",
-  "Unable to reach the configured server. Check Server Settings and try again.": "Unable to reach the configured server. Check Server Settings and try again."
+  "Unable to reach the configured server. Check Server Settings and try again.": "Unable to reach the configured server. Check Server Settings and try again.",
+  "Build target": "Build target",
+  "Target system": "Target system",
+  "Architecture": "Architecture",
+  "Generated toolchain": "Generated toolchain",
+  "Output artifact": "Output artifact",
+  "Linux x86_64": "Linux x86_64",
+  "Linux ARM64": "Linux ARM64",
+  "Windows x86_64": "Windows x86_64",
+  "Cortex-M4": "Cortex-M4",
+  "Linux": "Linux",
+  "Windows": "Windows",
+  "Bare metal / RTOS": "Bare metal / RTOS",
+  "Runs in cloud": "Runs in cloud",
+  "Build only - returned as an artifact": "Build only - returned as an artifact",
+  "Saved per workspace and language. Changes apply to the next run.": "Saved per workspace and language. Changes apply to the next run.",
+  "Build target: {target}": "Build target: {target}"
 }
