@@ -9,10 +9,13 @@ ENV RUSTUP_DIST_SERVER=https://rsproxy.cn \
 
 RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
       sed -i 's|http://deb.debian.org/debian|https://mirrors.cloud.tencent.com/debian|g' /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    if [ -f /etc/apt/sources.list ]; then \
+      sed -i 's|http://deb.debian.org/debian|https://mirrors.cloud.tencent.com/debian|g' /etc/apt/sources.list; \
     fi \
     && apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    gcc-aarch64-linux-gnu gcc-mingw-w64-x86-64 \
+    gcc-aarch64-linux-gnu libc6-dev-arm64-cross gcc-mingw-w64-x86-64 \
     gcc-arm-none-eabi binutils-arm-none-eabi lld \
     ca-certificates file \
     && rm -rf /var/lib/apt/lists/* \

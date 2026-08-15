@@ -8,6 +8,9 @@ FROM ${GCC_IMAGE}
 # Tencent's Debian mirror avoids the very slow default route on mainland hosts.
 RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
       sed -i 's|http://deb.debian.org/debian|https://mirrors.cloud.tencent.com/debian|g' /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    if [ -f /etc/apt/sources.list ]; then \
+      sed -i 's|http://deb.debian.org/debian|https://mirrors.cloud.tencent.com/debian|g' /etc/apt/sources.list; \
     fi \
     && apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
