@@ -177,6 +177,17 @@ func (g *Gateway) HandleServer(payload []byte) ([]byte, error) {
 	return g.mapper.RewriteOutbound(payload)
 }
 
+// IsChildStartRequest reports the adapter reverse request that creates a
+// child debug session. It intentionally does not consume the request: the
+// parent Gateway still validates the response sent back by the browser.
+func IsChildStartRequest(payload []byte) (Envelope, bool) {
+	envelope, err := parseEnvelope(payload)
+	if err != nil || envelope.Type != "request" || envelope.Command != "startDebugging" || envelope.Seq <= 0 {
+		return Envelope{}, false
+	}
+	return envelope, true
+}
+
 func (g *Gateway) SessionEnded() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()

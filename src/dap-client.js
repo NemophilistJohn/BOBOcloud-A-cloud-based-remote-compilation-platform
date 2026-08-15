@@ -1239,6 +1239,10 @@
         await global.api.dapRequest('configurationDone', {}, 15000);
       }
       if (!contextIsCurrent(initialContext) || !isActive()) throw new Error(tr('The debug session ended while it was starting.'));
+      // js-debug uses the root session as a breakpoint/configuration staging
+      // area. configurationDone triggers its reverse startDebugging request;
+      // only after that handoff does launch resolve and later requests route
+      // to the actual child session.
       var launch = await launchOutcome;
       if (!launch.ok) throw launch.error;
       if (!contextIsCurrent(initialContext) || !isActive()) throw new Error(tr('The debug session ended while it was starting.'));

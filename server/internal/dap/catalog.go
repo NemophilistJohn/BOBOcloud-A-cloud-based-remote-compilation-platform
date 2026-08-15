@@ -24,19 +24,25 @@ const (
 )
 
 type AdapterSpec struct {
-	ID             string         `json:"id"`
-	Label          string         `json:"label"`
-	LanguageID     string         `json:"languageId"`
-	RuntimeID      string         `json:"runtimeId"`
-	Image          string         `json:"image"`
-	Command        []string       `json:"command"`
-	AdapterVersion string         `json:"adapterVersion"`
-	SupportsLaunch bool           `json:"supportsLaunch"`
-	SupportsAttach bool           `json:"supportsAttach"`
-	RequiresPtrace bool           `json:"requiresPtrace,omitempty"`
-	LaunchDefaults map[string]any `json:"launchDefaults,omitempty"`
-	DependencyMode string         `json:"dependencyMode,omitempty"`
-	Constraints    []string       `json:"constraints,omitempty"`
+	ID             string   `json:"id"`
+	Label          string   `json:"label"`
+	LanguageID     string   `json:"languageId"`
+	RuntimeID      string   `json:"runtimeId"`
+	Image          string   `json:"image"`
+	Command        []string `json:"command"`
+	AdapterVersion string   `json:"adapterVersion"`
+	SupportsLaunch bool     `json:"supportsLaunch"`
+	SupportsAttach bool     `json:"supportsAttach"`
+	RequiresPtrace bool     `json:"requiresPtrace,omitempty"`
+	// Transport is "stdio" (the default), "tcp", or "unix". The Unix
+	// variant is reserved for adapters such as js-debug which create child DAP
+	// sessions without publishing an adapter TCP port on the host.
+	Transport             string         `json:"transport,omitempty"`
+	ContainerPort         int            `json:"containerPort,omitempty"`
+	SupportsChildSessions bool           `json:"supportsChildSessions,omitempty"`
+	LaunchDefaults        map[string]any `json:"launchDefaults,omitempty"`
+	DependencyMode        string         `json:"dependencyMode,omitempty"`
+	Constraints           []string       `json:"constraints,omitempty"`
 }
 
 type Manifest struct {
@@ -45,20 +51,22 @@ type Manifest struct {
 }
 
 type Capability struct {
-	ID             string         `json:"id"`
-	Label          string         `json:"label"`
-	LanguageID     string         `json:"languageId"`
-	RuntimeID      string         `json:"runtimeId"`
-	AdapterVersion string         `json:"adapterVersion"`
-	Image          string         `json:"image"`
-	Available      bool           `json:"available"`
-	Unavailable    string         `json:"unavailableReason,omitempty"`
-	SupportsLaunch bool           `json:"supportsLaunch"`
-	SupportsAttach bool           `json:"supportsAttach"`
-	RequiresPtrace bool           `json:"requiresPtrace,omitempty"`
-	LaunchDefaults map[string]any `json:"launchDefaults,omitempty"`
-	DependencyMode string         `json:"dependencyMode,omitempty"`
-	Constraints    []string       `json:"constraints,omitempty"`
+	ID                    string         `json:"id"`
+	Label                 string         `json:"label"`
+	LanguageID            string         `json:"languageId"`
+	RuntimeID             string         `json:"runtimeId"`
+	AdapterVersion        string         `json:"adapterVersion"`
+	Image                 string         `json:"image"`
+	Available             bool           `json:"available"`
+	Unavailable           string         `json:"unavailableReason,omitempty"`
+	SupportsLaunch        bool           `json:"supportsLaunch"`
+	SupportsAttach        bool           `json:"supportsAttach"`
+	RequiresPtrace        bool           `json:"requiresPtrace,omitempty"`
+	Transport             string         `json:"transport,omitempty"`
+	SupportsChildSessions bool           `json:"supportsChildSessions,omitempty"`
+	LaunchDefaults        map[string]any `json:"launchDefaults,omitempty"`
+	DependencyMode        string         `json:"dependencyMode,omitempty"`
+	Constraints           []string       `json:"constraints,omitempty"`
 }
 
 type Catalog struct {
@@ -102,8 +110,21 @@ func LoadCatalog(path string) (*Catalog, error) {
 		spec.LanguageID = normalizeLanguage(spec.LanguageID)
 		spec.RuntimeID = strings.TrimSpace(spec.RuntimeID)
 		spec.Image = strings.TrimSpace(spec.Image)
+		spec.Transport = strings.ToLower(strings.TrimSpace(spec.Transport))
+		if spec.Transport == "" {
+			spec.Transport = "stdio"
+		}
 		if spec.ID == "" || spec.LanguageID == "" || spec.RuntimeID == "" || spec.Image == "" || len(spec.Command) == 0 {
 			return nil, fmt.Errorf("DAP adapter %d is missing id, languageId, runtimeId, image, or command", index)
+		}
+		if spec.Transport != "stdio" && spec.Transport != "tcp" && spec.Transport != "unix" {
+			return nil, fmt.Errorf("DAP adapter %q has unsupported transport %q", spec.ID, spec.Transport)
+		}
+		if (spec.Transport == "tcp" || spec.Transport == "unix") && (spec.ContainerPort < 1 || spec.ContainerPort > 65535) {
+			return nil, fmt.Errorf("DAP adapter %q requires a valid containerPort for connection transport", spec.ID)
+		}
+		if spec.SupportsChildSessions && spec.Transport != "tcp" && spec.Transport != "unix" {
+			return nil, fmt.Errorf("DAP adapter %q supports child sessions but does not use a connection transport", spec.ID)
 		}
 		for _, arg := range spec.Command {
 			if strings.TrimSpace(arg) == "" {
@@ -221,6 +242,7 @@ func (c *Catalog) Capabilities(ctx context.Context, inspector ImageInspector) []
 			AdapterVersion: spec.AdapterVersion, Image: spec.Image, Available: available, Unavailable: reason,
 			SupportsLaunch: spec.SupportsLaunch, SupportsAttach: spec.SupportsAttach,
 			RequiresPtrace: spec.RequiresPtrace, LaunchDefaults: cloneMap(spec.LaunchDefaults),
+			Transport: spec.Transport, SupportsChildSessions: spec.SupportsChildSessions,
 			DependencyMode: spec.DependencyMode, Constraints: append([]string(nil), spec.Constraints...),
 		})
 	}

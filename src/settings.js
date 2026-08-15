@@ -296,6 +296,11 @@
       el = document.getElementById('server-user'); if (el) el.value = ss.user || '';
       el = document.getElementById('server-pass'); if (el) el.value = ss.pass || '';
       el = document.getElementById('server-apikey'); if (el) el.value = ss.apiKey || '';
+	  el = document.getElementById('server-secure-transport'); if (el) el.checked = ss.secureTransport === true;
+	  el = document.getElementById('server-http-port'); if (el) el.value = ss.httpPort || 3100;
+	  el = document.getElementById('server-ws-port'); if (el) el.value = ss.wsPort || 3101;
+	  el = document.getElementById('server-dap-child-port'); if (el) el.value = ss.dapChildWsPort || 3102;
+	  el = document.getElementById('server-cert-fingerprint'); if (el) el.value = ss.certificateFingerprint || '';
       el = document.getElementById('rclone-path'); if (el) el.value = ss.rclonePath || '';
       var rcloneStatus = document.getElementById('rclone-status');
       if (rcloneStatus) {

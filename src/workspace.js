@@ -1235,6 +1235,7 @@
     }
 
     var tab = { path: filePath, name: name, model: model, language: language, dirty: false };
+    if (BOBO.taskProblemMatcher && BOBO.taskProblemMatcher.applyModel) BOBO.taskProblemMatcher.applyModel(model);
     S.tabs.push(tab);
     activateTab(filePath);
     addTabToBar(tab, S.tabs.length - 1);

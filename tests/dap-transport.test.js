@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { DapTransport, normalizeDapUrl } = require('../dap-transport');
+const { DapTransport, normalizeDapUrl, normalizeDapChildUrl } = require('../dap-transport');
 const {
   BUILTIN_CONFIGURATION_ID,
   readLaunchConfigurations,
@@ -45,6 +45,59 @@ function ready(socket, extra = {}) {
 test('normalizes DAP endpoint without replacing an explicit reverse-proxy port', () => {
   assert.equal(normalizeDapUrl('example.test'), 'ws://example.test:3100/dap');
   assert.equal(normalizeDapUrl('https://example.test:8443/base?q=1'), 'wss://example.test:8443/dap');
+  assert.equal(normalizeDapChildUrl('https://example.test:8443/base?q=1', 3102), 'wss://example.test:3102/dap-child');
+});
+
+test('routes js-debug target requests through a ticket-bound child WebSocket', async () => {
+  const sockets = [];
+  const transport = new DapTransport({
+    webSocketFactory: () => {
+      const socket = new MockSocket();
+      sockets.push(socket);
+      return socket;
+    },
+    getCredential: () => 'token'
+  });
+  const starting = transport.start({
+    serverHost: 'https://cloud.test:3100', childPort: 3102, languageId: 'node', runtimeId: 'node:22',
+    workspace: { kind: 'personal', folderKey: 'demo' }
+  });
+  sockets[0].open();
+  await new Promise((resolve) => setImmediate(resolve));
+  ready(sockets[0], { adapter: { id: 'node-js-debug', languageId: 'node', runtimeId: 'node:22', supportsChildSessions: true } });
+  await starting;
+  const initialized = transport.request('initialize', { clientID: 'test', supportsVariablePaging: true });
+  sockets[0].fire('message', { seq: 1, type: 'response', request_seq: 1, command: 'initialize', success: true, body: {} });
+  await initialized;
+  const launch = transport.request('launch', { type: 'pwa-node', request: 'launch', program: '/workspace/app.js' });
+  sockets[0].fire('message', {
+    type: 'dap.child', ticket: 'one-use-ticket', request: {
+      seq: 90, type: 'request', command: 'startDebugging',
+      arguments: { configuration: { type: 'pwa-node', request: 'launch', program: '/workspace/app.js', __pendingTargetId: 'target-1' } }
+    }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sockets.length, 2);
+  sockets[1].open();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(sockets[1].sent[0], { type: 'dap.child.attach', token: 'token', ticket: 'one-use-ticket' });
+  sockets[1].fire('message', { type: 'dap.child.ready', parentSessionId: 'session-1' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sockets[1].sent[1].command, 'initialize');
+  sockets[1].fire('message', { seq: 2, type: 'response', request_seq: 1, command: 'initialize', success: true, body: {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sockets[1].sent[2].command, 'launch');
+  assert.equal(sockets[1].sent[3].command, 'configurationDone');
+  sockets[1].fire('message', { seq: 3, type: 'response', request_seq: 3, command: 'configurationDone', success: true, body: {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(sockets[0].sent.at(-1), { seq: 3, type: 'response', request_seq: 90, command: 'startDebugging', success: true, body: {} });
+  sockets[0].fire('message', { seq: 4, type: 'response', request_seq: 2, command: 'launch', success: true, body: {} });
+  await launch;
+  const breakpoints = transport.request('setBreakpoints', { source: { path: '/workspace/app.js' }, breakpoints: [] });
+  assert.equal(sockets[1].sent.at(-1).command, 'setBreakpoints');
+  sockets[1].fire('message', { seq: 4, type: 'response', request_seq: 4, command: 'setBreakpoints', success: true, body: {} });
+  await breakpoints;
+  await transport.stop('test');
 });
 
 test('uses one gateway handshake then exchanges raw DAP messages', async () => {

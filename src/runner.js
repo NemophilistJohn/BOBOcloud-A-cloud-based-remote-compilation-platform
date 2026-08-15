@@ -485,6 +485,7 @@
     var filePath = options.filePath;
     var taskExecution = options.taskExecution;
     var taskRequest = options.taskRequest;
+    var taskProblemSession = null;
     var isProjectTask = Boolean(taskExecution || taskRequest);
     if (S.workspaceTransitionLocked) return;
     if (BOBO.dap && BOBO.dap.isActive && BOBO.dap.isActive()) {
@@ -563,6 +564,10 @@
       }
     }
 
+    if (taskExecution && BOBO.taskProblemMatcher && BOBO.taskProblemMatcher.begin) {
+      taskProblemSession = BOBO.taskProblemMatcher.begin(taskExecution);
+    }
+
     try {
       var syncSuccess = await ensureWorkspaceSyncedForRun();
       if (!isRunPreparationCurrent(runContext)) return;
@@ -621,7 +626,9 @@
 		branch: S.collaboration && S.collaboration.current ? S.collaboration.current.branch : undefined
       };
       if (taskExecution) {
-        requestPayload.task = taskExecution;
+        // Matchers are renderer-only UI rules. The cloud runner receives only the execution DAG.
+        requestPayload.task = Object.assign({}, taskExecution);
+        delete requestPayload.task.problemMatcher;
       } else {
         requestPayload.filePath = relativeFilePath;
         requestPayload.compileArgs = rc.compileArgs.length > 0 ? rc.compileArgs : undefined;
@@ -646,8 +653,9 @@
       // WebSocket streaming
       var token = runResult.token;
       var wsPath = runResult.wsPath || '/ws';
-      var wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
-      var wsUrl = wsProtocol + '://' + S.serverSettings.ip + ':3101' + wsPath;
+      var wsUrl = BOBO.serverTransport && BOBO.serverTransport.websocket
+        ? BOBO.serverTransport.websocket(S.serverSettings, wsPath, 'ws')
+        : 'ws://' + S.serverSettings.ip + ':3101' + wsPath;
 
       var streamReady = await new Promise(function(resolve) {
         var settled = false;
@@ -703,10 +711,14 @@
             }
             if (payload.type === 'stdout' && payload.line !== undefined && !S.activeRunCancelled) {
               BOBO.updateRunOutput(payload.line);
+              if (taskProblemSession) taskProblemSession.consume(payload.line, payload.stage);
               // 程序有输出（如 input() 的提示文字）：立即显示输入框
               if (!taskExecution || payload.stage === interactiveTaskStage) showStdinOnce();
             }
-            if (payload.type === 'stderr' && payload.line !== undefined && !S.activeRunCancelled) BOBO.updateRunOutput('[stderr] ' + payload.line);
+            if (payload.type === 'stderr' && payload.line !== undefined && !S.activeRunCancelled) {
+              BOBO.updateRunOutput('[stderr] ' + payload.line);
+              if (taskProblemSession) taskProblemSession.consume(payload.line, payload.stage);
+            }
             if (payload.type === 'artifact') {
               var write = handleArtifactChunk(payload, runContext);
               if (write) {
@@ -738,8 +750,12 @@
               }
               if (stdinFallbackTimer) { clearTimeout(stdinFallbackTimer); stdinFallbackTimer = null; }
               hideStdinInput();
+              if (taskProblemSession) taskProblemSession.finish();
             }
-            if (payload.type === 'error' && payload.message) BOBO.updateRunOutput('Error: ' + payload.message);
+            if (payload.type === 'error' && payload.message) {
+              BOBO.updateRunOutput('Error: ' + payload.message);
+              if (taskProblemSession) taskProblemSession.finish();
+            }
           } catch (error) {
             BOBO.updateRunOutput('Stream parse error: ' + error.message);
           }
@@ -757,6 +773,7 @@
           if (stdinFallbackTimer) { clearTimeout(stdinFallbackTimer); stdinFallbackTimer = null; }
           if (isRunContextCurrent(runContext)) {
             BOBO.updateRunOutput('WebSocket stream closed');
+            if (taskProblemSession) taskProblemSession.finish();
             clearRunContext(runContext, runId);
           }
         };
@@ -767,6 +784,7 @@
           BOBO.updateRunOutput('Error: Failed to establish output stream (check server port 3101 and WS endpoint)');
           await cancelActiveRun();
         }
+        if (taskProblemSession) taskProblemSession.finish();
       }
     } catch (error) {
       if (isRunPreparationCurrent(runContext) || isRunContextCurrent(runContext)) {
@@ -774,6 +792,7 @@
       }
       finishRunPreparation(runContext);
       if (isRunContextCurrent(runContext)) await cancelActiveRun();
+      if (taskProblemSession) taskProblemSession.finish();
     }
   }
 

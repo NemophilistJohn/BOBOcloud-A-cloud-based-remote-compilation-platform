@@ -216,3 +216,14 @@ test('every structured task configuration warning has a renderer localization ma
     assert.match(rendererSource, new RegExp('\\b' + code + '\\s*:'), `missing renderer warning mapping for ${code}`);
   }
 });
+
+test('problemMatcher is carried to the renderer execution plan but is not sent as a server warning', (t) => {
+  const root = workspace(t);
+  write(root, '.bobocloud/tasks.json', JSON.stringify({
+    version: '2.0.0',
+    tasks: [{ label: 'Build', type: 'process', command: 'cc', args: ['main.c'], problemMatcher: '$gcc' }]
+  }));
+  const configuration = loadTaskConfiguration(root);
+  assert.equal(configuration.tasks[0].warnings.some((item) => item.field === 'problemMatcher'), false);
+  assert.equal(resolveTaskExecution(configuration, 'Build').problemMatcher, '$gcc');
+});

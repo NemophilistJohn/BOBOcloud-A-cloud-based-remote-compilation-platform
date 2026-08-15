@@ -2,6 +2,7 @@ function createAuthController(options) {
   const ipcMain = options.ipcMain;
   const settings = options.settings;
   const onStateChanged = options.onStateChanged || (() => {});
+  const onServerSettingsWritten = options.onServerSettingsWritten || (() => {});
   const disposeLsp = options.disposeLsp || (() => {});
   let currentState = { loggedIn: false, role: '' };
 
@@ -9,7 +10,9 @@ function createAuthController(options) {
     ipcMain.handle('read-server-settings', async () => settings.readServerSettings());
     ipcMain.handle('write-server-settings', async (_event, nextSettings) => {
       disposeLsp();
-      return settings.writeServerSettings(nextSettings);
+      const wrote = await settings.writeServerSettings(nextSettings);
+      if (wrote) onServerSettingsWritten(nextSettings);
+      return wrote;
     });
     ipcMain.handle('auth-get', async (_event, serverIp) => {
       if (!serverIp) return null;

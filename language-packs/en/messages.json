@@ -16,6 +16,8 @@
   "Workbench layout": "Workbench layout",
   "Primary sidebar": "Primary sidebar",
   "Panel": "Panel",
+  "Problems": "Problems",
+  "No task problems": "No task problems",
   "AI assistant": "AI assistant",
   "Panel position": "Panel position",
   "Bottom": "Bottom",
@@ -1380,5 +1382,13 @@
   "Data breakpoint": "Data breakpoint",
   "Instruction breakpoint": "Instruction breakpoint",
   "Thread": "Thread",
-  "Debug event": "Debug event"
+  "Debug event": "Debug event",
+  "Secure transport": "Secure transport",
+  "Encrypt API and WebSocket traffic with TLS 1.3.": "Encrypt API and WebSocket traffic with TLS 1.3.",
+  "Use TLS-secured transport": "Use TLS-secured transport",
+  "HTTPS port": "HTTPS port",
+  "WebSocket port": "WebSocket port",
+  "Node debug child port": "Node debug child port",
+  "Certificate SHA-256 fingerprint": "Certificate SHA-256 fingerprint",
+  "Required for a self-signed certificate. Leave blank for a publicly trusted certificate.": "Required for a self-signed certificate. Leave blank for a publicly trusted certificate."
 }

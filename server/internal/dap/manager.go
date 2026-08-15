@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -75,6 +76,87 @@ type Session struct {
 	errMu         sync.RWMutex
 	terminalErr   error
 	onClose       func(*Session)
+}
+
+// ChildSession owns one additional DAP connection for an adapter-managed
+// debuggee. js-debug uses this shape when the root process creates a Node
+// target. It is deliberately separate from LSP session handling.
+type ChildSession struct {
+	messages chan []byte
+	done     chan struct{}
+	conn     io.ReadWriteCloser
+	writer   *LockedFrameWriter
+	maxBytes int
+	errMu    sync.RWMutex
+	err      error
+	stopOnce sync.Once
+}
+
+func newChildSession(conn io.ReadWriteCloser, maxBytes int) *ChildSession {
+	child := &ChildSession{messages: make(chan []byte, 32), done: make(chan struct{}), conn: conn, writer: NewLockedFrameWriter(conn), maxBytes: maxBytes}
+	go child.readLoop()
+	return child
+}
+
+func (s *Session) OpenChild(ctx context.Context) (*ChildSession, error) {
+	provider, ok := s.process.(ChildConnectionProvider)
+	if !ok || !s.Adapter.SupportsChildSessions {
+		return nil, fmt.Errorf("this debug adapter does not support child DAP sessions")
+	}
+	select {
+	case <-s.stopping:
+		return nil, fmt.Errorf("DAP session is stopping")
+	default:
+	}
+	connection, err := provider.OpenChild(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("open DAP child session: %w", err)
+	}
+	return newChildSession(connection, s.maxBytes), nil
+}
+
+func (s *ChildSession) Messages() <-chan []byte { return s.messages }
+func (s *ChildSession) Done() <-chan struct{}   { return s.done }
+func (s *ChildSession) Err() error {
+	s.errMu.RLock()
+	defer s.errMu.RUnlock()
+	return s.err
+}
+func (s *ChildSession) Send(payload []byte) error {
+	if s.maxBytes > 0 && len(payload) > s.maxBytes {
+		return fmt.Errorf("DAP message exceeds %d bytes", s.maxBytes)
+	}
+	select {
+	case <-s.done:
+		return fmt.Errorf("DAP child session is closed")
+	default:
+	}
+	return s.writer.Write(payload)
+}
+func (s *ChildSession) Stop() {
+	s.stopOnce.Do(func() { _ = s.conn.Close() })
+}
+func (s *ChildSession) readLoop() {
+	defer func() {
+		s.Stop()
+		close(s.messages)
+		close(s.done)
+	}()
+	reader := bufio.NewReader(s.conn)
+	for {
+		payload, err := ReadFrame(reader, s.maxBytes)
+		if err != nil {
+			s.errMu.Lock()
+			s.err = err
+			s.errMu.Unlock()
+			return
+		}
+		select {
+		case s.messages <- payload:
+		case <-s.done:
+			return
+		}
+	}
 }
 
 func (s *Session) Messages() <-chan []byte        { return s.messages }

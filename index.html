@@ -264,6 +264,7 @@
       <div id="panel-tabs" role="tablist" aria-label="Workbench panel">
         <button class="panel-tab active" data-panel="output" role="tab" aria-selected="true">Output</button>
         <button class="panel-tab" data-panel="terminal" role="tab" aria-selected="false">Terminal</button>
+        <button class="panel-tab" data-panel="problems" role="tab" aria-selected="false" data-i18n="Problems">Problems</button>
         <button class="panel-tab" data-panel="debug" role="tab" aria-selected="false">Debug</button>
         <button class="panel-tab" id="team-panel-tab" data-panel="team" role="tab" aria-selected="false" style="display:none">Team</button>
         <div class="panel-actions">
@@ -287,6 +288,7 @@
           <input id="terminal-input" type="text" placeholder="e.g. pip install numpy pandas">
         </div>
       </div>
+      <div id="panel-problems" class="panel-content problems-panel-content" role="tabpanel"></div>
       <div id="panel-debug" class="panel-content debug-panel-content" role="tabpanel">
         <div class="debug-inspector" aria-label="Debug">
           <section class="debug-section" data-debug-section="stack">
@@ -570,6 +572,33 @@
             <div class="ss-field">
               <label class="ss-label" for="server-apikey">Legacy API key</label>
               <input id="server-apikey" class="ss-input" type="password" placeholder="bobo_...">
+            </div>
+          </details>
+          <details class="server-legacy-auth server-secure-transport">
+            <summary>Secure transport</summary>
+            <p>Encrypt API and WebSocket traffic with TLS 1.3.</p>
+            <label class="ss-check-row" for="server-secure-transport">
+              <input id="server-secure-transport" type="checkbox">
+              <span>Use TLS-secured transport</span>
+            </label>
+            <div class="ss-row server-port-row">
+              <div class="ss-field">
+                <label class="ss-label" for="server-http-port">HTTPS port</label>
+                <input id="server-http-port" class="ss-input" type="number" min="1" max="65535" value="3100">
+              </div>
+              <div class="ss-field">
+                <label class="ss-label" for="server-ws-port">WebSocket port</label>
+                <input id="server-ws-port" class="ss-input" type="number" min="1" max="65535" value="3101">
+              </div>
+              <div class="ss-field">
+                <label class="ss-label" for="server-dap-child-port">Node debug child port</label>
+                <input id="server-dap-child-port" class="ss-input" type="number" min="1" max="65535" value="3102">
+              </div>
+            </div>
+            <div class="ss-field">
+              <label class="ss-label" for="server-cert-fingerprint">Certificate SHA-256 fingerprint</label>
+              <input id="server-cert-fingerprint" class="ss-input" type="text" placeholder="AA:BB:CC:..." autocomplete="off" spellcheck="false">
+              <span class="server-field-help">Required for a self-signed certificate. Leave blank for a publicly trusted certificate.</span>
             </div>
           </details>
           <div>

@@ -251,6 +251,17 @@ html, body {
 }
 #run-log { white-space: pre-wrap; word-wrap: break-word; }
 
+/* Task output diagnostics stay separate from compiler/LSP markers by owner,
+   but share the normal bottom-panel affordance for scan-and-jump workflows. */
+#panel-problems { background: var(--bg-deep); overflow: auto; padding: var(--space-1); }
+.problems-empty { color: var(--text-secondary); padding: var(--space-3); font-size: var(--text-sm); }
+.problem-row { width: 100%; display: grid; grid-template-columns: minmax(150px, 34%) 1fr; gap: var(--space-2); align-items: baseline; text-align: left; border: 0; border-left: 3px solid var(--red); background: transparent; color: var(--text-primary); padding: 5px var(--space-2); cursor: pointer; font-family: var(--font-mono); font-size: var(--text-sm); }
+.problem-row:hover { background: var(--bg-hover); }
+.problem-row.problem-warning { border-left-color: var(--yellow); }
+.problem-row.problem-info, .problem-row.problem-hint { border-left-color: var(--blue); }
+.problem-location { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.problem-message { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* Terminal panel */
 #panel-terminal {
   background: var(--bg-deep);

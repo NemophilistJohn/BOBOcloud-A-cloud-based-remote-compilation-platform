@@ -387,6 +387,11 @@
         user: document.getElementById('server-user').value.trim(),
         pass: document.getElementById('server-pass').value,
         apiKey: document.getElementById('server-apikey').value || '',
+		secureTransport: document.getElementById('server-secure-transport').checked,
+		httpPort: Number(document.getElementById('server-http-port').value) || 3100,
+		wsPort: Number(document.getElementById('server-ws-port').value) || 3101,
+		dapChildWsPort: Number(document.getElementById('server-dap-child-port').value) || 3102,
+		certificateFingerprint: document.getElementById('server-cert-fingerprint').value.trim(),
         rclonePath: document.getElementById('rclone-path').value || '',
         syncInterval: (parseInt(document.getElementById('sync-interval').value) || 30) * 1000,
         setupCompleted: !firstRunConnection
@@ -399,7 +404,10 @@
       if (connectStatus) { connectStatus.dataset.state = 'checking'; connectStatus.textContent = BOBO.i18n.t('Connecting...'); }
       var previousConfig = S.serverSettings || {};
       var serverIdentityChanged = previousConfig.ip !== config.ip || previousConfig.user !== config.user ||
-        previousConfig.pass !== config.pass || previousConfig.apiKey !== config.apiKey;
+        previousConfig.pass !== config.pass || previousConfig.apiKey !== config.apiKey ||
+		previousConfig.secureTransport !== config.secureTransport || previousConfig.httpPort !== config.httpPort ||
+		previousConfig.wsPort !== config.wsPort || previousConfig.dapChildWsPort !== config.dapChildWsPort ||
+		previousConfig.certificateFingerprint !== config.certificateFingerprint;
       if (serverIdentityChanged && BOBO.dap && typeof BOBO.dap.abort === 'function') {
         await BOBO.dap.abort('server-change');
       }

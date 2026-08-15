@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +25,16 @@ import (
 
 var dapUpgrader = websocket.Upgrader{
 	ReadBufferSize: 4096, WriteBufferSize: 4096,
-	CheckOrigin: func(_ *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		// Electron has no Origin header. Browser clients must be same-origin;
+		// authentication and TLS still protect both cases.
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin == "" {
+			return true
+		}
+		parsed, err := url.Parse(origin)
+		return err == nil && strings.EqualFold(parsed.Host, r.Host)
+	},
 }
 
 type DAPHandler struct {
@@ -36,6 +46,7 @@ type DAPHandler struct {
 	AuthSessions  auth.AuthSessionStore
 	Collaboration *collab.Manager
 	Lifecycle     *lifecycle.Manager
+	ChildTickets  *dap.ChildTicketBroker
 }
 
 type dapWorkspaceStart struct {
@@ -53,6 +64,12 @@ type dapStartMessage struct {
 	RuntimeID  string            `json:"runtimeId"`
 	LanguageID string            `json:"languageId"`
 	Workspace  dapWorkspaceStart `json:"workspace"`
+}
+
+type dapChildAttachMessage struct {
+	Type   string `json:"type"`
+	Token  string `json:"token"`
+	Ticket string `json:"ticket"`
 }
 
 type dapByteWindow struct {
@@ -345,6 +362,7 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		"id": session.Adapter.ID, "label": session.Adapter.Label, "languageId": session.Adapter.LanguageID,
 		"runtimeId": session.Adapter.RuntimeID, "adapterVersion": session.Adapter.AdapterVersion,
 		"supportsLaunch": session.Adapter.SupportsLaunch, "supportsAttach": session.Adapter.SupportsAttach,
+		"transport": session.Adapter.Transport, "supportsChildSessions": session.Adapter.SupportsChildSessions,
 		"requiresPtrace": session.Adapter.RequiresPtrace, "launchDefaults": session.Adapter.LaunchDefaults,
 		"dependencyMode": session.Adapter.DependencyMode, "constraints": session.Adapter.Constraints,
 	}
@@ -369,6 +387,21 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				slog.Warn("Managed debug adapter emitted invalid DAP", "session_id", session.ID, "error", gatewayErr)
 				_ = writeJSON(map[string]any{"type": "dap.error", "code": "adapter_protocol_error", "message": gatewayErr.Error()})
 				return
+			}
+			if _, isChildStart := dap.IsChildStartRequest(payload); isChildStart {
+				if h.ChildTickets == nil {
+					_ = writeJSON(map[string]any{"type": "dap.error", "code": "child_session_unavailable", "message": "The debug adapter requires a child session, but this server has not enabled it."})
+					return
+				}
+				ticket, ticketErr := h.ChildTickets.Offer(user.ID, session, rewritten)
+				if ticketErr != nil {
+					_ = writeJSON(map[string]any{"type": "dap.error", "code": "child_session_failed", "message": ticketErr.Error()})
+					return
+				}
+				if writeJSON(map[string]any{"type": "dap.child", "ticket": ticket, "request": json.RawMessage(rewritten)}) != nil {
+					return
+				}
+				continue
 			}
 			if writeRaw(rewritten) != nil {
 				return
@@ -437,6 +470,134 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		if result.Disconnect {
 			time.AfterFunc(3*time.Second, session.Stop)
+		}
+		select {
+		case <-closing:
+			return
+		default:
+		}
+	}
+}
+
+// HandleChildWebSocket brokers one js-debug child session. It is intentionally
+// a separate listener from the root DAP endpoint: the child ticket is bound to
+// an authenticated parent user and expires after a few seconds.
+func (h *DAPHandler) HandleChildWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := dapUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	if h.Manager == nil || h.Config == nil || !h.Config.DAPEnabled || h.ChildTickets == nil {
+		writeDAPControlError(conn, "child_session_unavailable", "debug child sessions are unavailable")
+		return
+	}
+	maxMessage := h.Config.DAPMaxMessageBytes
+	if maxMessage <= 0 {
+		maxMessage = 1 << 20
+	}
+	conn.SetReadLimit(int64(maxMessage))
+	deadline := time.Duration(h.Config.DAPHandshakeTimeoutSeconds) * time.Second
+	if deadline <= 0 {
+		deadline = 10 * time.Second
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(deadline))
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		return
+	}
+	var attach dapChildAttachMessage
+	if err := json.Unmarshal(raw, &attach); err != nil || attach.Type != "dap.child.attach" {
+		writeDAPControlError(conn, "invalid_child_start", "the first message must be dap.child.attach")
+		return
+	}
+	user, err := h.authenticate(attach.Token)
+	if err != nil {
+		writeDAPControlError(conn, "unauthorized", err.Error())
+		return
+	}
+	claimed, err := h.ChildTickets.Claim(user.ID, attach.Ticket)
+	if err != nil {
+		writeDAPControlError(conn, "child_ticket_invalid", err.Error())
+		return
+	}
+	connectCtx, cancel := context.WithTimeout(r.Context(), deadline)
+	child, err := claimed.Parent.OpenChild(connectCtx)
+	cancel()
+	if err != nil {
+		writeDAPControlError(conn, "child_connect_failed", err.Error())
+		return
+	}
+	defer child.Stop()
+	_ = conn.SetReadDeadline(time.Time{})
+	writeWait := h.Config.WSWriteWaitDuration()
+	if writeWait <= 0 {
+		writeWait = 10 * time.Second
+	}
+	var writeMu sync.Mutex
+	writeJSON := func(value any) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
+		return conn.WriteJSON(value)
+	}
+	writeRaw := func(payload []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
+		return conn.WriteMessage(websocket.TextMessage, payload)
+	}
+	if err := writeJSON(map[string]any{"type": "dap.child.ready", "parentSessionId": claimed.Parent.ID, "request": claimed.Request}); err != nil {
+		return
+	}
+	gateway := dap.NewGateway(claimed.Parent.Adapter)
+	closing := make(chan struct{})
+	var closeOnce sync.Once
+	closeBridge := func() {
+		closeOnce.Do(func() {
+			close(closing)
+			child.Stop()
+			_ = conn.Close()
+		})
+	}
+	defer closeBridge()
+	go func() {
+		defer closeBridge()
+		for payload := range child.Messages() {
+			rewritten, gatewayErr := gateway.HandleServer(payload)
+			if gatewayErr != nil {
+				_ = writeJSON(map[string]any{"type": "dap.error", "code": "adapter_protocol_error", "message": gatewayErr.Error()})
+				return
+			}
+			if writeRaw(rewritten) != nil {
+				return
+			}
+		}
+		if child.Err() != nil && !gateway.SessionEnded() {
+			_ = writeJSON(map[string]any{"type": "dap.error", "code": "adapter_exited", "message": "The debug adapter stopped unexpectedly."})
+		}
+	}()
+	for {
+		_, payload, readErr := conn.ReadMessage()
+		if readErr != nil {
+			return
+		}
+		result, gatewayErr := gateway.HandleClient(payload)
+		if gatewayErr != nil {
+			_ = writeJSON(map[string]any{"type": "dap.error", "code": "protocol_error", "message": gatewayErr.Error()})
+			return
+		}
+		if len(result.LocalResponse) > 0 {
+			if writeRaw(result.LocalResponse) != nil {
+				return
+			}
+			continue
+		}
+		if err := child.Send(result.Payload); err != nil {
+			return
+		}
+		if result.Disconnect {
+			return
 		}
 		select {
 		case <-closing:

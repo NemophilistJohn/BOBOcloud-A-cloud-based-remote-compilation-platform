@@ -64,6 +64,8 @@
           if (termOut) termOut.textContent = '';
         } else if (S.activePanel === 'debug') {
           if (BOBO.dap && BOBO.dap.clearConsole) BOBO.dap.clearConsole();
+        } else if (S.activePanel === 'problems') {
+          if (BOBO.taskProblemMatcher && BOBO.taskProblemMatcher.clear) BOBO.taskProblemMatcher.clear();
         }
       });
     }

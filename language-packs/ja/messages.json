@@ -16,6 +16,8 @@
   "Workbench layout": "ワークベンチレイアウト",
   "Primary sidebar": "プライマリサイドバー",
   "Panel": "パネル",
+  "Problems": "問題",
+  "No task problems": "タスクの問題はありません",
   "AI assistant": "AI アシスタント",
   "Panel position": "パネルの位置",
   "Bottom": "下",
@@ -1380,5 +1382,13 @@
   "Data breakpoint": "データブレークポイント",
   "Instruction breakpoint": "命令ブレークポイント",
   "Thread": "スレッド",
-  "Debug event": "デバッグイベント"
+  "Debug event": "デバッグイベント",
+  "Secure transport": "セキュア転送",
+  "Encrypt API and WebSocket traffic with TLS 1.3.": "TLS 1.3 で API と WebSocket 通信を暗号化します。",
+  "Use TLS-secured transport": "TLS 保護された転送を使用する",
+  "HTTPS port": "HTTPS ポート",
+  "WebSocket port": "WebSocket ポート",
+  "Node debug child port": "Node デバッグ子セッションポート",
+  "Certificate SHA-256 fingerprint": "証明書 SHA-256 フィンガープリント",
+  "Required for a self-signed certificate. Leave blank for a publicly trusted certificate.": "自己署名証明書では必須です。公開信頼済み証明書では空欄にできます。"
 }

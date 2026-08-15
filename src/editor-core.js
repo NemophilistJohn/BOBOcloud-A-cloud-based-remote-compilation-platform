@@ -335,6 +335,10 @@
 
     var errorsEl = document.getElementById('status-errors');
     errorsEl.addEventListener('click', function() {
+      if (BOBO.taskProblemMatcher && BOBO.taskProblemMatcher.getProblems && BOBO.taskProblemMatcher.getProblems().length) {
+        if (BOBO.switchToPanel) BOBO.switchToPanel('problems');
+        return;
+      }
       showFindWidget();
       S.editor.trigger('keyboard', 'editor.action.marker.next');
     });

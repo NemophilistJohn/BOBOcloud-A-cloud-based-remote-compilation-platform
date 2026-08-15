@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { DapTransport } = require('../dap-transport');
+const { endpoint: serverEndpoint } = require('./server-transport');
 const {
   readLaunchConfigurations,
   resolveLaunchConfiguration
@@ -135,7 +136,8 @@ function createDapController(options) {
       sessionContext = localContext;
       try {
         const status = await ensureTransport().start({
-          serverHost: serverSettings.ip,
+          serverHost: serverEndpoint(serverSettings, 'http'),
+          childPort: serverSettings.dapChildWsPort || 3102,
           languageId: value.languageId,
           runtimeId: value.runtimeId,
           workspace: value.workspace,

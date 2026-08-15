@@ -16,6 +16,8 @@
   "Workbench layout": "工作台布局",
   "Primary sidebar": "主侧边栏",
   "Panel": "面板",
+  "Problems": "问题",
+  "No task problems": "没有任务问题",
   "AI assistant": "AI 助手",
   "Panel position": "面板位置",
   "Bottom": "底部",
@@ -1380,5 +1382,13 @@
   "Data breakpoint": "数据断点",
   "Instruction breakpoint": "指令断点",
   "Thread": "线程",
-  "Debug event": "调试事件"
+  "Debug event": "调试事件",
+  "Secure transport": "安全传输",
+  "Encrypt API and WebSocket traffic with TLS 1.3.": "使用 TLS 1.3 加密 API 和 WebSocket 流量。",
+  "Use TLS-secured transport": "使用 TLS 加密传输",
+  "HTTPS port": "HTTPS 端口",
+  "WebSocket port": "WebSocket 端口",
+  "Node debug child port": "Node 调试子会话端口",
+  "Certificate SHA-256 fingerprint": "证书 SHA-256 指纹",
+  "Required for a self-signed certificate. Leave blank for a publicly trusted certificate.": "自签名证书必须填写；使用受公开信任的证书时可留空。"
 }

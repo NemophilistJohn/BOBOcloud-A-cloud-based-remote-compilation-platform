@@ -11,6 +11,11 @@ const DEFAULT_SERVER_SETTINGS = Object.freeze({
   user: '',
   pass: '',
   apiKey: '',
+	secureTransport: false,
+	httpPort: 3100,
+	wsPort: 3101,
+	dapChildWsPort: 3102,
+	certificateFingerprint: '',
   rclonePath: '',
   syncInterval: 30000,
   setupCompleted: false
@@ -61,6 +66,12 @@ function createSettingsStore(options) {
   function normalizeServerSettings(value) {
     const source = value && typeof value === 'object' ? value : {};
     const normalized = Object.assign({}, DEFAULT_SERVER_SETTINGS, source);
+		for (const [field, fallback] of [['httpPort', 3100], ['wsPort', 3101], ['dapChildWsPort', 3102]]) {
+			const port = Number(normalized[field]);
+			normalized[field] = Number.isInteger(port) && port > 0 && port <= 65535 ? port : fallback;
+		}
+		normalized.secureTransport = normalized.secureTransport === true;
+		normalized.certificateFingerprint = String(normalized.certificateFingerprint || '').trim();
     normalized.setupCompleted = source.setupCompleted === true ||
       (source.setupCompleted === undefined && Boolean(source.ip));
     normalized.firstRunRequired = !normalized.setupCompleted &&
@@ -89,7 +100,7 @@ function createSettingsStore(options) {
 
   async function writeServerSettings(settings) {
     try {
-      const persisted = Object.assign({}, DEFAULT_SERVER_SETTINGS, settings || {});
+      const persisted = normalizeServerSettings(settings);
       delete persisted.firstRunRequired;
       persisted.setupCompleted = persisted.setupCompleted === true;
       fs.writeFileSync(paths.server, JSON.stringify(persisted, null, 2), 'utf-8');

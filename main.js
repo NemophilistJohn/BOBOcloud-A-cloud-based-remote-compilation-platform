@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu, screen, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, screen, shell, session: electronSession } = require('electron');
 const path = require('path');
 const rclone = require('./rclone');
 const { createSettingsStore } = require('./main/settings-store');
@@ -13,11 +13,13 @@ const { createLanguagePackController } = require('./main/language-packs');
 const { createMenuController } = require('./main/menu');
 const { createTasksController } = require('./main/tasks');
 const { createDapController } = require('./main/dap');
+const { createSecureTransportGuard } = require('./main/secure-transport');
 
 let window = null;
 let menu = null;
 const getWindow = () => window;
 const settings = createSettingsStore({ app, rclone });
+const secureTransport = createSecureTransportGuard();
 const lsp = createLspController({ ipcMain, getWindow, settings });
 let dap = null;
 const disposeRemoteEditorServices = () => {
@@ -49,7 +51,8 @@ const auth = createAuthController({
   disposeLsp: disposeRemoteEditorServices,
   onStateChanged: () => {
     if (menu) menu.rebuild();
-  }
+  },
+  onServerSettingsWritten: secureTransport.update
 });
 menu = createMenuController({
   Menu,
@@ -137,6 +140,8 @@ function createWindow() {
 
 app.whenReady().then(() => {
   languagePacks.initialize();
+  electronSession.defaultSession.setCertificateVerifyProc((request, callback) => callback(secureTransport.verify(request)));
+  settings.readServerSettings().then(secureTransport.update).catch(() => {});
   lsp.initializeRetentionPolicy();
   createWindow();
 });

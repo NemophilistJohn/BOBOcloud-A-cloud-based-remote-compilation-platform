@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -71,6 +72,18 @@ func main() {
 			cfg.ServerRoot = abs
 		}
 	}
+	if cfg.TLSEnabled {
+		if !filepath.IsAbs(cfg.TLSCertFile) {
+			cfg.TLSCertFile = filepath.Join(execDir, cfg.TLSCertFile)
+		}
+		if !filepath.IsAbs(cfg.TLSKeyFile) {
+			cfg.TLSKeyFile = filepath.Join(execDir, cfg.TLSKeyFile)
+		}
+		if _, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to load TLS certificate: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	// ──── 2. 初始化日志 ────
 	logger := customlog.NewLogger(cfg.LogLevel, cfg.LogFormat)
@@ -79,6 +92,8 @@ func main() {
 	slog.Info("BOBOCLOUD Server v2 starting",
 		"http_port", cfg.HTTPPort,
 		"ws_port", cfg.WSPort,
+		"dap_child_ws_port", cfg.DAPChildWSPort,
+		"tls_enabled", cfg.TLSEnabled,
 		"data_dir", cfg.DataDir,
 		"auth_enabled", cfg.AuthEnabled,
 	)
@@ -463,7 +478,7 @@ func main() {
 	dapHandler := &handler.DAPHandler{
 		Config: cfg, Manager: dapManager, AuthEnabled: multiUser,
 		Authenticator: authenticator, UserStore: userStore, AuthSessions: authSessions,
-		Collaboration: collaborationManager, Lifecycle: resourceLifecycle,
+		Collaboration: collaborationManager, Lifecycle: resourceLifecycle, ChildTickets: dap.NewChildTicketBroker(),
 	}
 
 	// ──── 12. 后台任务 ────
@@ -528,6 +543,23 @@ func main() {
 	}
 
 	// ──── 13. 启动服务 ────
+	// DAP child sessions (currently js-debug) have their own broker port. The
+	// port exposes only TLS WebSocket controls; Docker adapter ports remain on
+	// host loopback and are ticket-bound in the handler.
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/dap-child", dapHandler.HandleChildWebSocket)
+		addr := fmt.Sprintf(":%d", cfg.DAPChildWSPort)
+		slog.Info("DAP child WebSocket server starting", "addr", addr, "tls", cfg.TLSEnabled)
+		if err := serveBOBOHTTP(&http.Server{Addr: addr, Handler: mux}, cfg); err != nil {
+			slog.Error("DAP child WebSocket server failed", "error", err)
+			if db != nil {
+				db.Close()
+			}
+			os.Exit(1)
+		}
+	}()
+
 	// WebSocket 服务（端口 3101）
 	go func() {
 		mux := http.NewServeMux()
@@ -537,7 +569,7 @@ func main() {
 		mux.HandleFunc("/dap", dapHandler.HandleWebSocket)
 		addr := fmt.Sprintf(":%d", cfg.WSPort)
 		slog.Info("WebSocket server starting", "addr", addr)
-		if err := http.ListenAndServe(addr, mux); err != nil {
+		if err := serveBOBOHTTP(&http.Server{Addr: addr, Handler: mux}, cfg); err != nil {
 			slog.Error("WebSocket server failed", "error", err)
 			if db != nil {
 				db.Close()
@@ -554,13 +586,24 @@ func main() {
 	httpMux.HandleFunc("/lsp", wsHandler.HandleLSPWebSocket)
 	httpMux.HandleFunc("/dap", dapHandler.HandleWebSocket)
 	httpMux.Handle("/", httpHandler)
-	if err := http.ListenAndServe(addr, httpMux); err != nil {
+	if err := serveBOBOHTTP(&http.Server{Addr: addr, Handler: httpMux}, cfg); err != nil {
 		slog.Error("HTTP server failed", "error", err)
 		if db != nil {
 			db.Close()
 		}
 		os.Exit(1)
 	}
+}
+
+// serveBOBOHTTP is shared only by the server listeners. TLS is transport
+// security, not an application-level encryption scheme: HTTP and all WebSocket
+// upgrades on a configured listener are protected by the same TLS 1.3 policy.
+func serveBOBOHTTP(server *http.Server, cfg *config.Config) error {
+	if cfg != nil && cfg.TLSEnabled {
+		server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS13}
+		return server.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+	}
+	return server.ListenAndServe()
 }
 
 // ──── 后台协程 ────

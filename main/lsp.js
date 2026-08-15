@@ -4,6 +4,7 @@ const {
   ClientAnalysisCache,
   normalizeScope: normalizeClientAnalysisScope
 } = require('../client-analysis-cache');
+const { endpoint: serverEndpoint } = require('./server-transport');
 
 function createLspController(options) {
   const ipcMain = options.ipcMain;
@@ -156,7 +157,7 @@ function createLspController(options) {
     });
     ipcMain.handle('lsp:configure', async (_event, config) => {
       const serverSettings = await settings.readServerSettings();
-      return ensureTransport().configure(Object.assign({}, config, { serverHost: serverSettings.ip || '' }));
+      return ensureTransport().configure(Object.assign({}, config, { serverHost: serverEndpoint(serverSettings, 'http') }));
     });
     ipcMain.handle('lsp:request', async (_event, payload) => {
       if (!payload || typeof payload.method !== 'string') throw new Error('Invalid LSP request');

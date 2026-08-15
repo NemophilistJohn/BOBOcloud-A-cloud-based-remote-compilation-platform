@@ -100,6 +100,40 @@
       "launchDefaults": {"type": "go", "mode": "debug", "stopOnEntry": false, "outputMode": "remote"},
       "dependencyMode": "go-modules-persist-cache",
       "constraints": ["modules-must-exist-in-persist-cache-network-disabled", "debuggee-stdin-unavailable"]
+    },
+    {
+      "id": "node-js-debug",
+      "label": "Node.js js-debug",
+      "languageId": "node",
+      "runtimeId": "node:20",
+      "image": "bobocloud/dap-node:20-1.0.0",
+      "command": ["/usr/local/bin/bobocloud-js-debug-bridge"],
+      "adapterVersion": "js-debug 1.102.0",
+      "supportsLaunch": true,
+      "supportsAttach": false,
+      "transport": "unix",
+      "containerPort": 4711,
+      "supportsChildSessions": true,
+      "launchDefaults": {"type": "pwa-node", "console": "internalConsole", "stopOnEntry": true},
+      "dependencyMode": "dependency-free-or-persist-global-packages",
+      "constraints": ["child-session-broker-required", "initial-entry-stop-protects-breakpoint-binding", "workspace-node-modules-excluded", "debuggee-stdin-unavailable"]
+    },
+    {
+      "id": "node-js-debug",
+      "label": "Node.js js-debug",
+      "languageId": "node",
+      "runtimeId": "node:22",
+      "image": "bobocloud/dap-node:22-1.0.0",
+      "command": ["/usr/local/bin/bobocloud-js-debug-bridge"],
+      "adapterVersion": "js-debug 1.102.0",
+      "supportsLaunch": true,
+      "supportsAttach": false,
+      "transport": "unix",
+      "containerPort": 4711,
+      "supportsChildSessions": true,
+      "launchDefaults": {"type": "pwa-node", "console": "internalConsole", "stopOnEntry": true},
+      "dependencyMode": "dependency-free-or-persist-global-packages",
+      "constraints": ["child-session-broker-required", "initial-entry-stop-protects-breakpoint-binding", "workspace-node-modules-excluded", "debuggee-stdin-unavailable"]
     }
   ]
 }

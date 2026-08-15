@@ -64,3 +64,22 @@ func TestCatalogRejectsDuplicateRuntimeAdapter(t *testing.T) {
 		t.Fatal("duplicate language/runtime adapter was accepted")
 	}
 }
+
+func TestCatalogAcceptsPrivateUnixChildTransport(t *testing.T) {
+	path := writeCatalogTestManifest(t, `{
+		"version":"1.0",
+		"adapters":[{
+			"id":"node-js-debug","languageId":"node","runtimeId":"node:20",
+			"image":"node","command":["adapter"],"transport":"unix",
+			"containerPort":4711,"supportsChildSessions":true
+		}]
+	}`)
+	catalog, err := LoadCatalog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, ok := catalog.Lookup("javascript", "node:20")
+	if !ok || spec.Transport != "unix" || !spec.SupportsChildSessions {
+		t.Fatalf("private child transport was not retained: %#v", spec)
+	}
+}

@@ -140,6 +140,12 @@
   "lsp_cpu_limit": "0.75",
 
   "dap_enabled": true,
+	"dap_child_ws_port": 3102,
+	"_dap_child_ws_port": "Node.js js-debug target sessions use this separate WSS listener. It brokers authenticated one-use child tickets; no Docker adapter port is exposed publicly.",
+	"tls_enabled": false,
+	"tls_cert_file": "",
+	"tls_key_file": "",
+	"_tls": "Set tls_enabled=true with an X.509 certificate and key. All HTTP/WebSocket listeners, including the DAP child listener, then require TLS 1.3 or later.",
   "dap_manifest_path": "dap_adapters.json",
   "dap_max_sessions": 1,
   "dap_max_sessions_per_user": 1,

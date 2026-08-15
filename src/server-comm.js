@@ -231,7 +231,9 @@
       BOBO.updateRunOutput('Error: Server IP not configured');
       return null;
     }
-    var url = 'http://' + S.serverSettings.ip + ':3100';
+    var url = BOBO.serverTransport && BOBO.serverTransport.endpoint
+      ? BOBO.serverTransport.endpoint(S.serverSettings, 'http')
+      : 'http://' + S.serverSettings.ip + ':3100';
     var payload = { action: action };
     // merge data into payload
     for (var k in data) {

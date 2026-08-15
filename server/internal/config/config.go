@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -33,6 +34,13 @@ type Config struct {
 	ServerRoot string `json:"server_root"`
 	HTTPPort   int    `json:"http_port"`
 	WSPort     int    `json:"ws_port"`
+	// DAPChildWSPort carries js-debug child sessions on a separate WebSocket
+	// listener. It is never a Docker adapter port and must use the same TLS
+	// policy as the primary API/WebSocket listeners.
+	DAPChildWSPort int    `json:"dap_child_ws_port"`
+	TLSEnabled     bool   `json:"tls_enabled"`
+	TLSCertFile    string `json:"tls_cert_file"`
+	TLSKeyFile     string `json:"tls_key_file"`
 
 	// 数据目录
 	DataDir string `json:"data_dir"`
@@ -129,6 +137,8 @@ func Default() *Config {
 		ServerRoot:                  "/shareOnling",
 		HTTPPort:                    3100,
 		WSPort:                      3101,
+		DAPChildWSPort:              3102,
+		TLSEnabled:                  false,
 		DataDir:                     "./data",
 		DockerHotPoolSize:           2,
 		DockerMaxContainers:         20,
@@ -321,6 +331,12 @@ func Load(path string) (*Config, error) {
 	if cfg.DAPWorkspaceCopyMaxBytes <= 0 {
 		cfg.DAPWorkspaceCopyMaxBytes = 512 << 20
 	}
+	if cfg.DAPChildWSPort <= 0 {
+		cfg.DAPChildWSPort = 3102
+	}
+	if cfg.TLSEnabled && (strings.TrimSpace(cfg.TLSCertFile) == "" || strings.TrimSpace(cfg.TLSKeyFile) == "") {
+		return nil, fmt.Errorf("tls_enabled requires tls_cert_file and tls_key_file")
+	}
 
 	return cfg, nil
 }
@@ -339,6 +355,20 @@ func applyEnvOverrides(cfg *Config) {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.WSPort = n
 		}
+	}
+	if v := os.Getenv("BOBOCLOUD_DAP_CHILD_WS_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.DAPChildWSPort = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_TLS_ENABLED"); v != "" {
+		cfg.TLSEnabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("BOBOCLOUD_TLS_CERT_FILE"); v != "" {
+		cfg.TLSCertFile = v
+	}
+	if v := os.Getenv("BOBOCLOUD_TLS_KEY_FILE"); v != "" {
+		cfg.TLSKeyFile = v
 	}
 	if v := os.Getenv("BOBOCLOUD_LOG_LEVEL"); v != "" {
 		cfg.LogLevel = v

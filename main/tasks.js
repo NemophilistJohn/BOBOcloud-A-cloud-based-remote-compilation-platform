@@ -161,7 +161,10 @@ function normalizeTask(rawTask, index, globalBase, source, filePath, version, pa
       source: source.id, path: filePath, task: label, field: 'command'
     }));
   }
-  for (const field of ['problemMatcher', 'presentation', 'runOptions']) {
+  // problemMatcher is evaluated in the renderer against the task output. It
+  // never crosses the execution boundary, while presentation/runOptions are
+  // still retained only for round-trip compatibility.
+  for (const field of ['presentation', 'runOptions']) {
     if (merged[field] !== undefined) {
       taskWarnings.push(warning('TASK_FIELD_PRESERVED', `${label}: ${field} is preserved but is not applied by the cloud output runner`, {
         source: source.id, path: filePath, task: label, field
@@ -189,6 +192,7 @@ function normalizeTask(rawTask, index, globalBase, source, filePath, version, pa
     executable,
     source: source.id,
     sourcePath: filePath,
+    problemMatcher: merged.problemMatcher === undefined ? undefined : JSON.parse(JSON.stringify(merged.problemMatcher)),
     raw: sourceTask,
     warnings: taskWarnings
   };
@@ -429,7 +433,10 @@ function resolveTaskExecution(configuration, label, context = {}) {
     label,
     kind: selected.kind,
     steps: nodes,
-    source: selected.source
+    source: selected.source,
+    // This is declarative client-side display metadata. The server receives
+    // only the resolved command DAG and therefore cannot execute matcher code.
+    problemMatcher: selected.problemMatcher
   };
 }
 
