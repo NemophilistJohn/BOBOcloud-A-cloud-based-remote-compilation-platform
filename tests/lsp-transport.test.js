@@ -9,6 +9,7 @@ const {
   normalizeConfig,
   resolveConfigurationSection
 } = require('../lsp-transport');
+const { nonFatalLspRequestResult } = require('../main/lsp');
 const uriHelpers = require('../src/lsp-client');
 
 class MockSocket {
@@ -59,6 +60,16 @@ function deferred() {
 function nextTurn() {
   return new Promise((resolve) => setImmediate(resolve));
 }
+
+test('classifies superseded and timed-out LSP calls as normal IPC outcomes', () => {
+  assert.deepEqual(nonFatalLspRequestResult(new Error('LSP request cancelled')), {
+    __bobocloudLspRequestState: 'cancelled'
+  });
+  assert.deepEqual(nonFatalLspRequestResult(new Error('LSP request timed out')), {
+    __bobocloudLspRequestState: 'timedOut'
+  });
+  assert.equal(nonFatalLspRequestResult(new Error('gateway rejected request')), null);
+});
 
 test('normalizes the dedicated LSP WebSocket endpoint', () => {
   assert.equal(normalizeLspUrl('compiler.example.com:3100'), 'ws://compiler.example.com:3100/lsp');

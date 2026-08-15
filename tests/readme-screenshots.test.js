@@ -13,6 +13,7 @@ const DAP_MANIFEST = JSON.parse(fs.readFileSync(path.join(ROOT, 'server', 'dap_a
 const DAP_BUILD = fs.readFileSync(path.join(ROOT, 'server', 'deploy', 'dap-toolkit', 'build.sh'), 'utf8');
 const DAP_VERIFY = fs.readFileSync(path.join(ROOT, 'server', 'deploy', 'dap-toolkit', 'verify.sh'), 'utf8');
 const DAP_SMOKE = fs.readFileSync(path.join(ROOT, 'server', 'deploy', 'dap-toolkit', 'dap-smoke.py'), 'utf8');
+const DAP_NODE_SMOKE = fs.readFileSync(path.join(ROOT, 'server', 'deploy', 'dap-toolkit', 'node-dap-smoke.py'), 'utf8');
 const DAP_NODE_DOCKERFILE = fs.readFileSync(path.join(ROOT, 'server', 'deploy', 'dap-toolkit', 'Dockerfile.node'), 'utf8');
 const DAP_DOCS = fs.readFileSync(path.join(ROOT, 'docs', 'dap-server.md'), 'utf8');
 const IMAGE_NAMES = ['workbench.png', 'environment-center.png', 'ai-control-center.png'];
@@ -32,7 +33,7 @@ test('README documents current client/server contracts and single-binary deploym
   assert.match(README, /debugpy 1\.8\.16/);
   assert.match(README, /Delve 1\.24\.2/);
   assert.match(README, /Node\.js[\s\S]*child-session routing/);
-  assert.doesNotMatch(README, /\| Node\.js 20、22 \|/);
+  assert.match(README, /\| Node\.js 20、22 \|/);
   assert.match(README, /\[DAP 服务端文档\]\(docs\/dap-server\.md\)/);
   assert.match(README, /Python[\s\S]*`python:3\.13`/);
   assert.match(README, /Go[\s\S]*`go:1\.23`/);
@@ -42,19 +43,19 @@ test('README documents current client/server contracts and single-binary deploym
   assert.doesNotMatch(README, /Expect: \{"success":true,"authMode":"multi","version":"2\.1\.0"\}/);
 });
 
-test('DAP release artifacts advertise only verified Python and Go adapters', () => {
+test('DAP release artifacts advertise only smoke-verified Python, Go, and Node adapters', () => {
   assert.deepEqual(
     DAP_MANIFEST.adapters.map((adapter) => adapter.runtimeId),
-    ['python:3.9', 'python:3.10', 'python:3.11', 'python:3.12', 'python:3.13', 'go:1.21', 'go:1.23']
+    ['python:3.9', 'python:3.10', 'python:3.11', 'python:3.12', 'python:3.13', 'go:1.21', 'go:1.23', 'node:20', 'node:22']
   );
-  assert.ok(DAP_MANIFEST.adapters.every((adapter) => adapter.languageId === 'python' || adapter.languageId === 'go'));
+  assert.ok(DAP_MANIFEST.adapters.every((adapter) => ['python', 'go', 'node'].includes(adapter.languageId)));
   for (const [name, source] of [['build.sh', DAP_BUILD], ['verify.sh', DAP_VERIFY]]) {
-    assert.doesNotMatch(source, /dap-node|Dockerfile\.node|verify_candidate\s+node/, `${name} must not publish Node DAP`);
+    assert.match(source, /dap-node/, `${name} must publish Node DAP`);
   }
-  assert.doesNotMatch(DAP_SMOKE, /^\s*"node"\s*:/m);
-  assert.match(DAP_NODE_DOCKERFILE, /Experimental groundwork only/);
-  assert.match(DAP_DOCS, /Node\.js 调试延后[\s\S]*child-session routing/);
-  assert.doesNotMatch(DAP_DOCS, /\| Node\.js 20、22 \|/);
+  assert.match(DAP_NODE_SMOKE, /startDebugging/);
+  assert.match(DAP_NODE_DOCKERFILE, /bobocloud-js-debug-bridge/);
+  assert.match(DAP_DOCS, /Node\.js 使用 DAP child-session routing/);
+  assert.match(DAP_DOCS, /\| Node\.js 20、22 \|/);
 });
 
 test('README screenshot references exist and are presentation-sized PNG files', () => {

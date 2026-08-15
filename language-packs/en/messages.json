@@ -1390,5 +1390,9 @@
   "WebSocket port": "WebSocket port",
   "Node debug child port": "Node debug child port",
   "Certificate SHA-256 fingerprint": "Certificate SHA-256 fingerprint",
-  "Required for a self-signed certificate. Leave blank for a publicly trusted certificate.": "Required for a self-signed certificate. Leave blank for a publicly trusted certificate."
+  "Required for a self-signed certificate. Leave blank for a publicly trusted certificate.": "Required for a self-signed certificate. Leave blank for a publicly trusted certificate.",
+  "Server is in single-user mode — no login required.": "Server is in single-user mode — no login required.",
+  "The server requires HTTPS, but secure transport is disabled in Server Settings.": "The server requires HTTPS, but secure transport is disabled in Server Settings.",
+  "The server returned an invalid response. Check the server address and transport setting.": "The server returned an invalid response. Check the server address and transport setting.",
+  "Unable to reach the configured server. Check Server Settings and try again.": "Unable to reach the configured server. Check Server Settings and try again."
 }

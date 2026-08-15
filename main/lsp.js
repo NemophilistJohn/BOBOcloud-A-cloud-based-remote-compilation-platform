@@ -6,6 +6,17 @@ const {
 } = require('../client-analysis-cache');
 const { endpoint: serverEndpoint } = require('./server-transport');
 
+function nonFatalLspRequestResult(error) {
+  const message = String(error && error.message || '');
+  if (message === 'LSP request cancelled') {
+    return { __bobocloudLspRequestState: 'cancelled' };
+  }
+  if (message === 'LSP request timed out') {
+    return { __bobocloudLspRequestState: 'timedOut' };
+  }
+  return null;
+}
+
 function createLspController(options) {
   const ipcMain = options.ipcMain;
   const getWindow = options.getWindow;
@@ -161,7 +172,15 @@ function createLspController(options) {
     });
     ipcMain.handle('lsp:request', async (_event, payload) => {
       if (!payload || typeof payload.method !== 'string') throw new Error('Invalid LSP request');
-      return ensureTransport().request(payload.method, payload.params, payload.requestKey, payload.timeoutMs);
+      try {
+        return await ensureTransport().request(payload.method, payload.params, payload.requestKey, payload.timeoutMs);
+      } catch (error) {
+        // Monaco frequently supersedes completion/hover requests while typing.
+        // These outcomes are normal control flow, not Electron IPC failures.
+        const nonFatal = nonFatalLspRequestResult(error);
+        if (nonFatal) return nonFatal;
+        throw error;
+      }
     });
     ipcMain.handle('lsp:notify', async (_event, payload) => {
       if (!payload || typeof payload.method !== 'string') throw new Error('Invalid LSP notification');
@@ -190,4 +209,4 @@ function createLspController(options) {
   return { registerIpc, initializeRetentionPolicy, dispose };
 }
 
-module.exports = { createLspController };
+module.exports = { createLspController, nonFatalLspRequestResult };

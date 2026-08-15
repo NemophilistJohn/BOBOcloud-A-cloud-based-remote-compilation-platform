@@ -112,10 +112,11 @@ flowchart LR
 | --- | --- | --- | --- |
 | Python 3.9-3.13 | debugpy 1.8.16 | `bobocloud/dap-python:<version>-1.0.0` | final 镜像经 smoke 后可用 |
 | Go 1.21、1.23 | Delve 1.24.2 | `bobocloud/dap-go:<version>-1.0.0` | 需要 `SYS_PTRACE` 和 `seccomp=unconfined` |
+| Node.js 20、22 | vscode-js-debug 1.102.0 | `bobocloud/dap-node:<version>-1.0.0` | root/child 会话；适配器端口仅在内部网络 |
 
 所有首发适配器只声明 launch，不声明 attach。首版不提供 debuggee stdin。
 
-Node.js 调试延后到服务端和客户端具备 DAP child-session routing 之后。vscode-js-debug 的根会话会通过反向 `startDebugging` 请求为真实 Node target 建立第二条 DAP 连接；当前 BOBOCloud 的单 WebSocket、单 adapter session 桥无法承载这条子会话。因此 Node 不出现在 release catalog、构建脚本或验收脚本中，`Dockerfile.node` 只保留为未来实验资产，不得构建或标记为可用。
+Node.js 使用 DAP child-session routing。vscode-js-debug 根会话会通过反向 `startDebugging` 请求为真实 target 建立第二条 DAP 连接；客户端以一次性、用户和父会话绑定的 ticket 连接 `/dap-child`，服务端仅将该会话桥接到 Docker 内部网络中的适配器 Unix socket。Node 20/22 已进入 release catalog、构建脚本和真实 smoke；为避免启动期断点竞态，默认 `stopOnEntry: true`。
 
 依赖边界必须如实显示：
 
@@ -137,7 +138,7 @@ chmod +x build.sh verify.sh dap-smoke.py
 
 `build.sh` 先删除同名旧 candidate，再构建固定适配器版本的 candidate 镜像。Go 的 TCP adapter 通过独立的静态 `dap-stdio-bridge` 转为 Content-Length stdio framing；adapter 日志只写 stderr，不污染 DAP stdout。Delve 与 bridge 都以 `CGO_ENABLED=0` 构建。
 
-`verify.sh` 对每个 candidate 执行真实 Docker 调试：initialize、launch、initialized、已验证断点、stopped、threads、stack、scopes、variables 初值、next 单步、continue、程序 output 和 terminated。Go smoke 会验证 `fmt.Println` 通过 DAP output event 返回。只有全部 Python/Go candidate 都成功，脚本才批量更新 final 标签；任一失败都不会覆盖任何 final 标签。
+`verify.sh` 对每个 candidate 执行真实 Docker 调试：initialize、launch、initialized、已验证断点、stopped、threads、stack、scopes、variables 初值、next 单步、continue、程序 output 和 terminated。Go smoke 会验证 `fmt.Println` 通过 DAP output event 返回；Node smoke 会验证根/child 会话、断点绑定和 target 停止。只有全部 Python/Go/Node candidate 都成功，脚本才批量更新 final 标签；任一失败都不会覆盖任何 final 标签。
 
 基础 runtime tag 可能随上游更新。发布构建应在日志中记录实际 image ID/RepoDigest；升级基础镜像或适配器版本后必须重新跑全部 smoke，不得直接创建 final 标签。
 

@@ -6,16 +6,18 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-function loadMatcher() {
+function loadMatcher(options = {}) {
   const setCalls = [];
   const model = { uri: { fsPath: 'E:\\workspace\\src\\main.c' } };
+  const externalMarkers = options.externalMarkers || [];
   const window = {
     BOBO: { state: { workspaceRoot: 'E:\\workspace' } },
     monaco: {
       MarkerSeverity: { Error: 8, Warning: 4, Info: 2, Hint: 1 },
       editor: {
         getModels: () => [model],
-        setModelMarkers: (_model, owner, markers) => setCalls.push({ owner, markers })
+        setModelMarkers: (_model, owner, markers) => setCalls.push({ owner, markers }),
+        getModelMarkers: () => externalMarkers
       }
     },
     document: { getElementById: () => null },
@@ -39,6 +41,36 @@ test('GCC task output becomes a workspace-scoped error marker', () => {
   assert.equal(problems[0].message, 'expected semicolon');
   assert.equal(setCalls.at(-1).owner, 'task-problem-matcher');
   assert.equal(setCalls.at(-1).markers[0].startLineNumber, 12);
+});
+
+test('Problems combines task output with Monaco syntax and LSP markers', () => {
+  const { matcher } = loadMatcher({ externalMarkers: [
+    {
+      owner: 'syntax', source: 'syntax', severity: 8,
+      startLineNumber: 3, startColumn: 1, endLineNumber: 3, endColumn: 7,
+      message: 'Unexpected token'
+    },
+    {
+      owner: 'remote-lsp', source: 'Pyright', severity: 4,
+      startLineNumber: 8, startColumn: 4, endLineNumber: 8, endColumn: 9,
+      message: 'Possibly unbound variable', code: 'reportPossiblyUnboundVariable'
+    },
+    {
+      owner: 'task-problem-matcher', source: 'gcc', severity: 8,
+      startLineNumber: 12, startColumn: 5, endLineNumber: 12, endColumn: 6,
+      message: 'duplicate task marker'
+    }
+  ] });
+  const session = matcher.begin({ problemMatcher: '$gcc' });
+  session.consume('src/main.c:12:5: error: expected semicolon', 'task:build:task-step-1');
+
+  const problems = matcher.getAllProblems();
+  assert.equal(problems.length, 3);
+  assert.deepEqual(problems.map(problem => [problem.owner, problem.severity, problem.line]), [
+    ['syntax', 'error', 3],
+    ['Pyright', 'warning', 8],
+    ['gcc', 'error', 12]
+  ]);
 });
 
 test('matcher ignores setup output and rejects paths outside the workspace', () => {

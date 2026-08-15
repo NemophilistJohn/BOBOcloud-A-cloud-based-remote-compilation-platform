@@ -1390,5 +1390,9 @@
   "WebSocket port": "WebSocket ポート",
   "Node debug child port": "Node デバッグ子セッションポート",
   "Certificate SHA-256 fingerprint": "証明書 SHA-256 フィンガープリント",
-  "Required for a self-signed certificate. Leave blank for a publicly trusted certificate.": "自己署名証明書では必須です。公開信頼済み証明書では空欄にできます。"
+  "Required for a self-signed certificate. Leave blank for a publicly trusted certificate.": "自己署名証明書では必須です。公開信頼済み証明書では空欄にできます。",
+  "Server is in single-user mode — no login required.": "サーバーはシングルユーザーモードです。ログインは不要です。",
+  "The server requires HTTPS, but secure transport is disabled in Server Settings.": "サーバーは HTTPS を要求していますが、サーバー設定でセキュア転送が有効になっていません。",
+  "The server returned an invalid response. Check the server address and transport setting.": "サーバーから無効な応答が返されました。サーバーアドレスと転送設定を確認してください。",
+  "Unable to reach the configured server. Check Server Settings and try again.": "設定済みのサーバーに接続できません。サーバー設定を確認してから再試行してください。"
 }

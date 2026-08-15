@@ -179,6 +179,19 @@
     }
   }
 
+  function ensureBottomPanelSize(minimumSize) {
+    if (state.panelPosition !== 'bottom') {
+      revealPanel();
+      return;
+    }
+    var requested = Number(minimumSize);
+    if (!Number.isFinite(requested)) requested = DEFAULTS.panelSize;
+    state.panelSize = Math.max(state.panelSize, requested);
+    state.panelVisible = true;
+    state.focusMode = false;
+    apply();
+  }
+
   function setPanelPosition(position) {
     state.panelPosition = position === 'right' ? 'right' : 'bottom';
     state.panelMaximized = false;
@@ -545,6 +558,7 @@
     setPanelVisible: setPanelVisible,
     togglePanel: togglePanel,
     revealPanel: revealPanel,
+    ensureBottomPanelSize: ensureBottomPanelSize,
     setPanelPosition: setPanelPosition,
     togglePanelPosition: togglePanelPosition,
     togglePanelMaximized: togglePanelMaximized,

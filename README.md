@@ -15,7 +15,7 @@ BOBOCLOUD 是一个 Electron 桌面开发环境：本地用 Monaco 编辑项目�
 - 将工作区同步到云编译服务，并在 Python、Java、C、C++、Go、Rust、Node.js Docker 运行时中执行。
 - 通过 HTTP 建立 run 会话，再由 WebSocket 接收结构化 stdout、stderr、阶段状态和构建产物。
 - 在同一项目环境中使用交互终端、远程 LSP、依赖索引、缓存状态和环境修复工作流。
-- 在 Python 和 Go 云运行时中使用独立的远程 DAP，会话支持断点、调用栈、变量、Watch、单步和 Debug Console。
+- 在 Python、Go 和 Node.js 20/22 云运行时中使用独立的远程 DAP，会话支持断点、调用栈、变量、Watch、单步和 Debug Console。
 - 创建团队、项目和分支，共享项目文件、成员状态、聊天与文件锁。
 - 配置兼容 Chat Completions/FIM 的 AI 连接，分别控制聊天、行内补全、上下文与指令。
 - 在中文、英文、日文之间切换；Monaco 与应用语言包分别加载。
@@ -118,13 +118,11 @@ Explorer 在文件名右侧使用固定宽度的云同步轨道显示 `仅本地
 
 ### 云端断点调试
 
-顶部 Debug 按钮读取 `.vscode/launch.json` 和 `.bobocloud/launch.json`（JSONC、`version: "0.2.0"`）；后者按配置名覆盖 VS Code 配置。没有配置时可直接调试当前 Python 或 Go 文件。编辑器 gutter 用于增删断点，F5 启动或继续，F6 暂停，F10/F11/Shift+F11 单步，Shift+F5 停止。暂停后底部 Debug 面板按 DAP 标准链路加载线程、调用栈、作用域、分页变量和 Watch；Debug Console 展示程序输出并可求值。
+顶部 Debug 按钮读取 `.vscode/launch.json` 和 `.bobocloud/launch.json`（JSONC、`version: "0.2.0"`）；后者按配置名覆盖 VS Code 配置。没有配置时可直接调试当前 Python、Go 或 Node.js 文件。编辑器 gutter 用于增删断点，F5 启动或继续，F6 暂停，F10/F11/Shift+F11 单步，Shift+F5 停止。暂停后底部 Debug 面板按 DAP 标准链路加载线程、调用栈、作用域、分页变量和 Watch；Debug Console 展示程序输出并可求值。
 
 DAP 不是 LSP 的调试模式。客户端使用独立的 `dap-transport.js` 和调试状态机，服务端使用独立的 `/dap` handler、session manager、DAP framing、路径映射和适配器进程；两者只在应用组合根并列依赖通用认证、工作区和 Docker 基础设施。连接首帧是 BOBOCLOUD `dap.start`，收到 `dap.ready` 后 WebSocket 每一帧都是原生 DAP JSON，不套业务 envelope。
 
-首发只声明经真实断点 smoke 的适配器：Python 3.9-3.13 / debugpy 1.8.16、Go 1.21/1.23 / Delve 1.24.2。C/C++、Rust、Java、attach、compound、inputs、pre/post task、debuggee stdin 和 background debug 暂不伪装成已支持。服务端把过滤后的项目复制到临时目录并挂载到独立调试容器，调试写入不会回传真实工作区；断连、超时、账号删除或团队权限撤销都会回收容器和副本。
-
-Node.js 调试延后到 DAP child-session routing 完成之后：vscode-js-debug 会用反向 `startDebugging` 请求为真实 Node target 建立第二条 DAP 连接，当前单 WebSocket、单 adapter session 架构无法正确承载，所以 Node 不进入 catalog、构建或发布验收。依赖边界也保持明确：Python 使用用户 persist 中对应版本的包，Go 在断网容器中使用 persist module/build cache。跨发行版兼容指 Docker host 上的 Linux 容器部署，不是把适配器原生安装到各发行版；本次生产构建与 smoke 针对 Linux amd64，arm64 必须在目标架构重新完成全矩阵 smoke 后才能声明。完整协议、镜像、资源限制和运维说明见 [DAP 服务端文档](docs/dap-server.md)。
+首发只声明经真实断点 smoke 的适配器：Python 3.9-3.13 / debugpy 1.8.16、Go 1.21/1.23 / Delve 1.24.2、Node.js 20/22 / vscode-js-debug 1.102.0。Node 的根会话通过反向 `startDebugging` 请求建立受 ticket 约束的第二条 DAP WebSocket，用于真实 target；适配器端口仅位于 Docker 内部网络。C/C++、Rust、Java、attach、compound、inputs、pre/post task、debuggee stdin 和 background debug 暂不伪装成已支持。服务端把过滤后的项目复制到临时目录并挂载到独立调试容器，调试写入不会回传真实工作区；断连、超时、账号删除或团队权限撤销都会回收容器和副本。依赖边界也保持明确：Python 使用用户 persist 中对应版本的包，Go 在断网容器中使用 persist module/build cache，Node 不复制工作区 `node_modules`。跨发行版兼容指 Docker host 上的 Linux 容器部署，不是把适配器原生安装到各发行版；本次生产构建与 smoke 针对 Linux amd64，arm64 必须在目标架构重新完成全矩阵 smoke 后才能声明。完整协议、镜像、资源限制和运维说明见 [DAP 服务端文档](docs/dap-server.md)。
 
 ## 客户端结构
 
@@ -213,10 +211,11 @@ HTTP action 的实际集合以 `server/internal/handler/http.go` 为准，覆盖
 | --- | --- | --- |
 | Python 3.9-3.13 | debugpy 1.8.16 | persist 包；不复制 `.venv` |
 | Go 1.21、1.23 | Delve 1.24.2 | 独立 ptrace 容器；module 需在 persist cache |
+| Node.js 20、22 | vscode-js-debug 1.102.0 | root/child DAP 会话；不复制工作区 `node_modules` |
 
 可用性来自服务端 `getDAPInfo` catalog 检查；客户端不会因为某个语言有编辑器语法或 LSP 就推断它可以调试。每个 final adapter image 必须先通过 initialize、launch、断点、stopped、stack/scopes/variables、单步、输出和 terminated 的完整 smoke。
 
-Node.js 当前明确延后，直到客户端、WebSocket gateway 与 adapter bridge 都实现 js-debug 所需的 child-session routing；保留的 Node Dockerfile 仅供后续研发，不属于当前发布矩阵。
+Node.js 调试使用独立 child-session routing：根 DAP 会话收到 js-debug 的 `startDebugging` 反向请求后，客户端以一次性 ticket 建立第二条 DAP WebSocket，并只在 Docker 内部网络连接适配器。Node 20/22 已纳入构建和真实 smoke；工作区 `node_modules` 不会复制进调试副本。
 
 ## 本地开发
 
@@ -356,7 +355,7 @@ chmod 0755 /root/cloudeEditor/bobocloud-server
 /root/cloudeEditor/dap-toolkit/
 ```
 
-DAP 发布还必须在目标 Linux 主机执行 `server/deploy/dap-toolkit/build.sh` 和 `verify.sh`。脚本会顺序构建 candidate、对 Python/Go 做真实断点 smoke，只有全部通过才更新 final 标签。部署完成后重新启动实际使用的服务管理单元，并检查日志中的版本、HTTP/WS 监听端口、Docker pool、LSP catalog 和 DAP catalog；仓库不假设固定的 systemd unit 名称。
+DAP 发布还必须在目标 Linux 主机执行 `server/deploy/dap-toolkit/build.sh` 和 `verify.sh`。脚本会顺序构建 candidate、对 Python/Go/Node 做真实断点 smoke，只有全部通过才更新 final 标签。部署完成后重新启动实际使用的服务管理单元，并检查日志中的版本、HTTP/WS 监听端口、Docker pool、LSP catalog 和 DAP catalog；仓库不假设固定的 systemd unit 名称。
 
 ## 数据目录
 
@@ -420,7 +419,7 @@ go test -race ./internal/handler/... ./internal/session/... ./internal/collab/..
 
 ### Debug 按钮不可用或断点未验证
 
-先检查已选择受支持的云 runtime，再查看服务端 `getDAPInfo` 是否将对应 adapter 报告为 available。镜像只有在 `dap-toolkit/verify.sh` 完成真实断点 smoke 后才可用。调试使用启动时的隔离项目副本；会话中修改源码后需重启调试，才能让新代码与断点行保持一致。Node.js 当前不在远程 DAP 发布矩阵中。
+先检查已选择受支持的云 runtime，再查看服务端 `getDAPInfo` 是否将对应 adapter 报告为 available。镜像只有在 `dap-toolkit/verify.sh` 完成真实断点 smoke 后才可用。调试使用启动时的隔离项目副本；会话中修改源码后需重启调试，才能让新代码与断点行保持一致。Node.js 使用 root/child DAP 会话，首次会在入口暂停以确保断点已绑定。
 
 ### 截图流水线失败
 

@@ -182,6 +182,8 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
 
     await page.locator('#debug-config-button').click();
     await expect(page.locator('#debug-config-menu')).toBeVisible();
+    const configBackground = await page.locator('#debug-config-menu').evaluate((element) => getComputedStyle(element).backgroundColor);
+    expect(configBackground).not.toBe('rgba(0, 0, 0, 0)');
     await expect(page.locator('.debug-config-name')).toHaveText(['Current File', 'Debug project']);
     await expect(page.locator('.debug-config-item').first()).toBeEnabled();
     await page.locator('.debug-config-item', { hasText: 'Debug project' }).click();
@@ -197,6 +199,14 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
     await expect(page.locator('#debug-toolbar')).toBeVisible();
     await expect(page.locator('#debug-toolbar-status')).toContainText('Paused');
     await expect(page.locator('#panel-debug')).toHaveClass(/active/);
+    const debugPanelHeight = await page.locator('#bottom-panel').evaluate((element) => element.getBoundingClientRect().height);
+    const debugConsoleHeight = await page.locator('#debug-console-output').evaluate((element) => element.getBoundingClientRect().height);
+    expect(debugPanelHeight).toBeGreaterThanOrEqual(280);
+    expect(debugConsoleHeight).toBeGreaterThanOrEqual(120);
+    await page.setViewportSize({ width: 720, height: 480 });
+    const compactConsoleHeight = await page.locator('#debug-console-output').evaluate((element) => element.getBoundingClientRect().height);
+    expect(compactConsoleHeight).toBeGreaterThanOrEqual(90);
+    await page.setViewportSize({ width: 1180, height: 760 });
     await expect(page.locator('#debug-call-stack')).toContainText('main');
     await expect(page.locator('#debug-variables')).toContainText('value');
     await expect(page.locator('#debug-variables')).toContainText('7');

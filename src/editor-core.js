@@ -68,16 +68,19 @@
   }
 
   function refreshDiagnosticsForModel(model) {
-    if (!monacoRef || !model || !S.editor || S.editor.getModel() !== model) return;
-    var markers = monacoRef.editor.getModelMarkers({ resource: model.uri });
-    var errCount = 0, warnCount = 0, infoCount = 0;
-    for (var i = 0; i < markers.length; i++) {
-      if (markers[i].severity === monacoRef.MarkerSeverity.Error) errCount++;
-      else if (markers[i].severity === monacoRef.MarkerSeverity.Warning) warnCount++;
-      else infoCount++;
+    if (!monacoRef || !model) return;
+    if (S.editor && S.editor.getModel() === model) {
+      var markers = monacoRef.editor.getModelMarkers({ resource: model.uri });
+      var errCount = 0, warnCount = 0, infoCount = 0;
+      for (var i = 0; i < markers.length; i++) {
+        if (markers[i].severity === monacoRef.MarkerSeverity.Error) errCount++;
+        else if (markers[i].severity === monacoRef.MarkerSeverity.Warning) warnCount++;
+        else infoCount++;
+      }
+      S.currentDiagnostics = { errors: errCount, warnings: warnCount, infos: infoCount };
+      updateDiagnosticsStatus();
     }
-    S.currentDiagnostics = { errors: errCount, warnings: warnCount, infos: infoCount };
-    updateDiagnosticsStatus();
+    if (BOBO.taskProblemMatcher && BOBO.taskProblemMatcher.refreshMonacoProblems) BOBO.taskProblemMatcher.refreshMonacoProblems();
   }
 
   // ──── Find / Replace ────
@@ -335,7 +338,7 @@
 
     var errorsEl = document.getElementById('status-errors');
     errorsEl.addEventListener('click', function() {
-      if (BOBO.taskProblemMatcher && BOBO.taskProblemMatcher.getProblems && BOBO.taskProblemMatcher.getProblems().length) {
+      if (BOBO.taskProblemMatcher && BOBO.taskProblemMatcher.getAllProblems && BOBO.taskProblemMatcher.getAllProblems().length) {
         if (BOBO.switchToPanel) BOBO.switchToPanel('problems');
         return;
       }

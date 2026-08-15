@@ -1390,5 +1390,9 @@
   "WebSocket port": "WebSocket 端口",
   "Node debug child port": "Node 调试子会话端口",
   "Certificate SHA-256 fingerprint": "证书 SHA-256 指纹",
-  "Required for a self-signed certificate. Leave blank for a publicly trusted certificate.": "自签名证书必须填写；使用受公开信任的证书时可留空。"
+  "Required for a self-signed certificate. Leave blank for a publicly trusted certificate.": "自签名证书必须填写；使用受公开信任的证书时可留空。",
+  "Server is in single-user mode — no login required.": "服务器处于单用户模式，无需登录。",
+  "The server requires HTTPS, but secure transport is disabled in Server Settings.": "服务器要求使用 HTTPS，但服务器设置中未启用安全传输。",
+  "The server returned an invalid response. Check the server address and transport setting.": "服务器返回了无效响应。请检查服务器地址和传输设置。",
+  "Unable to reach the configured server. Check Server Settings and try again.": "无法连接到已配置的服务器。请检查服务器设置后重试。"
 }

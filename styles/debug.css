@@ -2,7 +2,7 @@
   display: inline-flex;
   align-items: stretch;
   height: 30px;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
   overflow: hidden;
   flex: 0 0 auto;
@@ -12,7 +12,7 @@
   height: 100%;
   border: 0;
   border-radius: 0;
-  background: var(--bg-secondary);
+  background: var(--bg-surface);
   color: var(--text-primary);
   display: inline-flex;
   align-items: center;
@@ -22,7 +22,7 @@
   cursor: pointer;
 }
 
-.debug-control-group button + button { border-left: 1px solid var(--border-color); }
+.debug-control-group button + button { border-left: 1px solid var(--border-default); }
 .debug-control-group button:hover:not(:disabled) { background: var(--bg-hover); }
 .debug-control-group button:disabled { opacity: .48; cursor: default; }
 #run-code:disabled, #run-target-btn:disabled { opacity: .45; cursor: default; filter: saturate(.35); }
@@ -36,17 +36,17 @@
   max-height: min(420px, calc(100vh - 16px));
   overflow: auto;
   padding: 5px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  background: var(--bg-secondary);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, .34);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
 }
 
 .debug-config-menu[hidden] { display: none; }
 
 .debug-config-heading {
   padding: 6px 8px 5px;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -72,15 +72,15 @@
 .debug-config-item:focus-visible,
 .debug-config-edit:hover,
 .debug-config-edit:focus-visible { background: var(--bg-hover); outline: none; }
-.debug-config-item[aria-checked="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.debug-config-item[aria-checked="true"] { background: var(--brand-muted); }
 .debug-config-item:disabled { opacity: .52; cursor: default; }
-.debug-config-indicator { width: 12px; color: var(--accent); flex: 0 0 auto; }
+.debug-config-indicator { width: 12px; color: var(--brand); flex: 0 0 auto; }
 .debug-config-copy { min-width: 0; flex: 1; }
 .debug-config-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.debug-config-source { display: block; color: var(--text-muted); font-size: 10px; margin-top: 1px; }
-.debug-config-warning { color: var(--warning, #cca700); flex: 0 0 auto; }
-.debug-config-separator { height: 1px; margin: 4px 5px; background: var(--border-color); }
-.debug-config-empty { padding: 10px; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.debug-config-source { display: block; color: var(--text-tertiary); font-size: 10px; margin-top: 1px; }
+.debug-config-warning { color: var(--yellow); flex: 0 0 auto; }
+.debug-config-separator { height: 1px; margin: 4px 5px; background: var(--border-default); }
+.debug-config-empty { padding: 10px; color: var(--text-tertiary); font-size: 12px; line-height: 1.45; }
 
 .debug-toolbar {
   position: absolute;
@@ -93,25 +93,25 @@
   align-items: center;
   gap: 2px;
   padding: 3px 5px;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border-strong);
   border-radius: 5px;
-  background: var(--bg-secondary);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, .3);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-md);
 }
 
 .debug-toolbar[hidden] { display: none; }
 #editor.debug-session #container { top: 42px; }
-.debug-toolbar-status { max-width: 180px; padding: 0 7px; color: var(--text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.debug-toolbar-status { max-width: 180px; padding: 0 7px; color: var(--text-tertiary); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .debug-toolbar button { width: 27px; height: 27px; border: 0; border-radius: 3px; padding: 5px; background: transparent; color: var(--text-primary); cursor: pointer; }
 .debug-toolbar button:hover:not(:disabled) { background: var(--bg-hover); }
 .debug-toolbar button:disabled { opacity: .35; cursor: default; }
 .debug-toolbar button svg { width: 100%; height: 100%; }
-.debug-toolbar .debug-stop { color: var(--error, #f14c4c); }
+.debug-toolbar .debug-stop { color: var(--red); }
 
 .debug-panel-content { overflow: hidden !important; }
-.debug-inspector { height: 100%; min-height: 0; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.2fr) minmax(180px, 1fr); grid-template-rows: minmax(72px, 1fr) minmax(82px, .9fr); }
-.debug-section { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border-color); overflow: hidden; }
-.debug-section > header { height: 28px; flex: 0 0 28px; display: flex; align-items: center; justify-content: space-between; padding: 0 9px; border-bottom: 1px solid var(--border-color); color: var(--text-muted); font-size: 11px; font-weight: 600; text-transform: uppercase; }
+.debug-inspector { height: 100%; min-height: 0; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.2fr) minmax(180px, 1fr); grid-template-rows: minmax(54px, .55fr) minmax(138px, 1.85fr); }
+.debug-section { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border-default); overflow: hidden; }
+.debug-section > header { height: 28px; flex: 0 0 28px; display: flex; align-items: center; justify-content: space-between; padding: 0 9px; border-bottom: 1px solid var(--border-default); color: var(--text-tertiary); font-size: 11px; font-weight: 600; text-transform: uppercase; }
 .debug-section > header button { width: 22px; height: 22px; border: 0; border-radius: 3px; background: transparent; color: var(--text-primary); font-size: 18px; line-height: 18px; cursor: pointer; }
 .debug-section > header button:hover { background: var(--bg-hover); }
 .debug-tree { min-height: 0; overflow: auto; padding: 3px 0; font-family: var(--font-mono, Consolas, monospace); font-size: 11px; }
@@ -120,16 +120,16 @@ button.debug-tree-row { width: 100%; border: 0; background: transparent; color: 
 button.debug-tree-row:hover, button.debug-tree-row.active { background: var(--bg-hover); }
 .debug-tree-name { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .debug-tree-value { color: var(--debug-token-string, #ce9178); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.debug-tree-type, .debug-tree-meta { color: var(--text-muted); margin-left: auto; white-space: nowrap; }
-.debug-variable-truncated { color: var(--text-muted); font-family: var(--font-ui, sans-serif); font-style: italic; }
-.debug-empty { padding: 9px; color: var(--text-muted); font-family: var(--font-ui, sans-serif); font-size: 11px; }
-.debug-watch-remove { margin-left: auto; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; opacity: 0; }
+.debug-tree-type, .debug-tree-meta { color: var(--text-tertiary); margin-left: auto; white-space: nowrap; }
+.debug-variable-truncated { color: var(--text-tertiary); font-family: var(--font-ui, sans-serif); font-style: italic; }
+.debug-empty { padding: 9px; color: var(--text-tertiary); font-family: var(--font-ui, sans-serif); font-size: 11px; }
+.debug-watch-remove { margin-left: auto; border: 0; background: transparent; color: var(--text-tertiary); cursor: pointer; opacity: 0; }
 .debug-tree-row:hover .debug-watch-remove, .debug-watch-remove:focus-visible { opacity: 1; }
-.debug-console-section { grid-column: 1 / -1; border-top: 1px solid var(--border-color); border-right: 0; }
+.debug-console-section { grid-column: 1 / -1; border-top: 1px solid var(--border-default); border-right: 0; }
 .debug-console-output { min-height: 0; flex: 1; overflow: auto; padding: 6px 9px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono, Consolas, monospace); font-size: 11px; line-height: 1.5; }
-.debug-console-line[data-category="stderr"], .debug-console-line[data-category="important"] { color: var(--error, #f14c4c); }
-.debug-console-line[data-category="console"] { color: var(--text-muted); }
-.debug-console-input-row { height: 27px; flex: 0 0 27px; display: flex; align-items: center; gap: 6px; padding: 0 8px; border-top: 1px solid var(--border-color); color: var(--accent); }
+.debug-console-line[data-category="stderr"], .debug-console-line[data-category="important"] { color: var(--red); }
+.debug-console-line[data-category="console"] { color: var(--text-tertiary); }
+.debug-console-input-row { height: 27px; flex: 0 0 27px; display: flex; align-items: center; gap: 6px; padding: 0 8px; border-top: 1px solid var(--border-default); color: var(--brand); }
 .debug-console-input-row input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text-primary); font-family: var(--font-mono, Consolas, monospace); font-size: 11px; }
 
 .monaco-editor .dap-breakpoint,
@@ -147,11 +147,11 @@ button.debug-tree-row:hover, button.debug-tree-row.active { background: var(--bg
   .debug-control-group #debug-start span { display: none; }
   .debug-control-group #debug-start { width: 30px; padding: 0; }
   .debug-toolbar-status { display: none; }
-  .debug-inspector { grid-template-columns: 1fr 1fr; grid-template-rows: minmax(70px, 1fr) minmax(70px, 1fr) minmax(82px, 1fr); }
+  .debug-inspector { grid-template-columns: 1fr 1fr; grid-template-rows: minmax(44px, .45fr) minmax(44px, .45fr) minmax(138px, 2fr); }
   .debug-section[data-debug-section="watch"] { grid-column: 1 / -1; }
   .debug-console-section { grid-row: 3; }
 }
 
 #layout[data-panel-position="right"] .debug-inspector { display: flex; flex-direction: column; }
-#layout[data-panel-position="right"] .debug-section { flex: 1 1 25%; border-right: 0; border-bottom: 1px solid var(--border-color); }
-#layout[data-panel-position="right"] .debug-console-section { flex: 1.25 1 30%; border-top: 0; }
+#layout[data-panel-position="right"] .debug-section { flex: 1 1 18%; border-right: 0; border-bottom: 1px solid var(--border-default); }
+#layout[data-panel-position="right"] .debug-console-section { flex: 1.8 1 46%; border-top: 0; }

@@ -238,6 +238,61 @@
     });
   }
 
+  function severityFromMarker(marker) {
+    if (!global.monaco || !global.monaco.MarkerSeverity) return 'error';
+    if (marker.severity === global.monaco.MarkerSeverity.Warning) return 'warning';
+    if (marker.severity === global.monaco.MarkerSeverity.Info) return 'info';
+    if (marker.severity === global.monaco.MarkerSeverity.Hint) return 'hint';
+    return 'error';
+  }
+
+  function markerCode(marker) {
+    if (!marker || marker.code === undefined || marker.code === null) return '';
+    if (typeof marker.code === 'object') return String(marker.code.value || '');
+    return String(marker.code);
+  }
+
+  function isWorkspaceFile(filePath) {
+    var root = String(S.workspaceRoot || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    var value = String(filePath || '').replace(/\\/g, '/').toLowerCase();
+    return Boolean(root && value && (value === root || value.indexOf(root + '/') === 0));
+  }
+
+  // Monaco markers are the shared diagnostics truth for syntax rules and LSP.
+  // Task output remains separately owned so Clear only clears the active task.
+  function getMonacoProblems() {
+    if (!global.monaco || !global.monaco.editor || !global.monaco.editor.getModels || !global.monaco.editor.getModelMarkers) return [];
+    var result = [];
+    global.monaco.editor.getModels().some(function(model) {
+      var filePath = model && model.uri && model.uri.fsPath ? model.uri.fsPath : '';
+      if (!isWorkspaceFile(filePath)) return false;
+      var markers = global.monaco.editor.getModelMarkers({ resource: model.uri }) || [];
+      markers.forEach(function(marker) {
+        if (!marker || marker.owner === OWNER || result.length >= MAX_PROBLEMS) return;
+        result.push({
+          path: String(filePath).replace(/\\/g, '/'),
+          relativePath: relativePath(filePath),
+          line: Math.max(1, Number(marker.startLineNumber) || 1),
+          column: Math.max(1, Number(marker.startColumn) || 1),
+          endLine: Math.max(1, Number(marker.endLineNumber) || Number(marker.startLineNumber) || 1),
+          endColumn: Math.max(1, Number(marker.endColumn) || (Number(marker.startColumn) || 1) + 1),
+          severity: severityFromMarker(marker),
+          code: markerCode(marker),
+          message: String(marker.message || '').slice(0, 2000),
+          owner: String(marker.source || marker.owner || 'editor')
+        });
+      });
+      return result.length >= MAX_PROBLEMS;
+    });
+    return result;
+  }
+
+  function getAllProblems() {
+    return getProblems().concat(getMonacoProblems()).slice(0, MAX_PROBLEMS).sort(function(a, b) {
+      return a.relativePath.localeCompare(b.relativePath) || a.line - b.line || a.column - b.column || a.message.localeCompare(b.message);
+    });
+  }
+
   function clear() {
     problemsByPath.clear();
     applyOpenModels();
@@ -280,11 +335,11 @@
     var panel = global.document && global.document.getElementById('panel-problems');
     if (!panel) return;
     panel.replaceChildren();
-    var problems = getProblems();
+    var problems = getAllProblems();
     if (!problems.length) {
       var empty = document.createElement('div');
       empty.className = 'problems-empty';
-      empty.textContent = tr('No task problems');
+      empty.textContent = tr('No problems');
       panel.appendChild(empty);
       return;
     }
@@ -314,6 +369,8 @@
     begin: begin,
     clear: clear,
     getProblems: getProblems,
+    getAllProblems: getAllProblems,
+    refreshMonacoProblems: renderPanel,
     onDidChange: function(listener) { listeners.add(listener); return function() { listeners.delete(listener); }; },
     applyModel: applyModel,
     activeSession: function() { return activeSession; },

@@ -12,6 +12,12 @@
 
   // ──── 工具 ────
   function $(id) { return document.getElementById(id); }
+  function t(key, params) {
+    if (BOBO.i18n && BOBO.i18n.t) return BOBO.i18n.t(key, params);
+    return String(key).replace(/\{([a-zA-Z0-9_]+)\}/g, function(match, name) {
+      return params && Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match;
+    });
+  }
   function esc(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -718,8 +724,10 @@
           } else {
             openAuthModal();
           }
+        } else if (S.auth.mode === 'single') {
+          BOBO.updateRunOutput(t('Server is in single-user mode — no login required.'));
         } else {
-          BOBO.updateRunOutput('Server is in single-user mode — no login required.');
+          BOBO.updateRunOutput(t('Unable to reach the configured server. Check Server Settings and try again.'));
         }
       });
     }

@@ -57,6 +57,24 @@ test('project task matcher creates clickable Problems entries and Monaco markers
     expect(markerCount).toBe(1);
     await panel.locator('.problem-row').click();
     await expect(page.locator('#tabbar .tab.active .tab-title')).toHaveText('main.c');
+    await page.evaluate(() => {
+      window.BOBO.taskProblemMatcher.clear();
+      const model = window.BOBO.state.editor.getModel();
+      window.monaco.editor.setModelMarkers(model, 'remote-lsp', [{
+        startLineNumber: 2,
+        startColumn: 10,
+        endLineNumber: 2,
+        endColumn: 24,
+        severity: window.monaco.MarkerSeverity.Error,
+        message: 'Cannot find name missing_symbol',
+        source: 'LSP'
+      }]);
+      window.BOBO.editorCore.refreshDiagnosticsForModel(model);
+      document.getElementById('status-errors').click();
+    });
+    await expect(panel.locator('.problem-row')).toHaveCount(1);
+    await expect(panel.locator('.problem-row')).toContainText('Cannot find name missing_symbol');
+    await expect(page.locator('#panel-problems')).toHaveClass(/active/);
     expect(issues).toEqual([]);
   } finally {
     if (app) await closeFixture(app, sandbox);

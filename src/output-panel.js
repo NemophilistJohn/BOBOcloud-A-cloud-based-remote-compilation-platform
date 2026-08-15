@@ -14,7 +14,10 @@
       tab.addEventListener('click', function() {
         var panelName = tab.getAttribute('data-panel');
 
-        if (BOBO.workbench) BOBO.workbench.revealPanel();
+        if (BOBO.workbench) {
+          if (panelName === 'debug' && BOBO.workbench.ensureBottomPanelSize) BOBO.workbench.ensureBottomPanelSize(300);
+          else BOBO.workbench.revealPanel();
+        }
 
         // Update active tab
         tabs.forEach(function(t) { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });

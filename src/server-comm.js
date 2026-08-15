@@ -16,6 +16,13 @@
     return BOBO.i18n && BOBO.i18n.t ? BOBO.i18n.t(String(message)) : String(message);
   }
 
+  function invalidResponseMessage(response, body) {
+    if (/Client sent an HTTP request to an HTTPS server/i.test(String(body || ''))) {
+      return localizeServerError('The server requires HTTPS, but secure transport is disabled in Server Settings.');
+    }
+    return localizeServerError('The server returned an invalid response. Check the server address and transport setting.');
+  }
+
   function escHtml(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -252,7 +259,24 @@
         headers: headers,
         body: JSON.stringify(payload)
       });
-      var result = await response.json();
+      // Reverse proxies and TLS listeners can return plain text or HTML. Never
+      // leak a JSON parser exception into the workspace/sync workflow.
+      var result;
+      if (typeof response.text === 'function') {
+        var body = await response.text();
+        try {
+          result = JSON.parse(body);
+        } catch (parseError) {
+          var responseError = invalidResponseMessage(response, body);
+          if (opts.quiet) {
+            return { success: false, error: responseError, status: response.status, errorCode: 'invalid_server_response' };
+          }
+          throw new Error(responseError);
+        }
+      } else {
+        // Compatibility with lightweight test doubles and older fetch shims.
+        result = await response.json();
+      }
       if (!response.ok) {
         if (response.status === 429 && !opts.quiet) {
           BOBO.updateRunOutput('Rate limit exceeded - please slow down');

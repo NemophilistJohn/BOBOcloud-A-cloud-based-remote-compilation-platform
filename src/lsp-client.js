@@ -917,6 +917,7 @@
       return sendNotification('textDocument/didClose', { textDocument: { uri: uri } });
     });
     if (monacoRef) monacoRef.editor.setModelMarkers(model, 'remote-lsp', []);
+    if (BOBO.editorCore && BOBO.editorCore.refreshDiagnosticsForModel) BOBO.editorCore.refreshDiagnosticsForModel(model);
   }
 
   function queueChanges(model, event) {
@@ -994,6 +995,12 @@
       unsubscribe = token.onCancellationRequested(function() { cancelRequestKey(key); });
     }
     return global.api.lspRequest({ method: method, params: params, requestKey: key, timeoutMs: timeoutMs })
+      .then(function(result) {
+        if (result && (result.__bobocloudLspRequestState === 'cancelled' || result.__bobocloudLspRequestState === 'timedOut')) {
+          return undefinedOnFailure ? undefined : null;
+        }
+        return result;
+      })
       .catch(function() { return undefinedOnFailure ? undefined : null; })
       .finally(function() { if (unsubscribe && unsubscribe.dispose) unsubscribe.dispose(); });
   }
