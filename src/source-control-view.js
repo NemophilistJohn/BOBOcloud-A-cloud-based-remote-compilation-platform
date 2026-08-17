@@ -61,9 +61,9 @@
     var svg = svgElement();
     svg.classList.add('source-control-tool-icon');
     if (kind === 'refresh') svgPath(svg, 'M19 7V3m0 4h-4M19 7a8 8 0 1 0 2 5');
-    else if (kind === 'commit') svgPath(svg, 'M5 12h14M12 5v14M4 5h16v14H4z');
+    else if (kind === 'commit') svgPath(svg, 'M5 12.5 9.5 17 19 7.5');
     else if (kind === 'pull') svgPath(svg, 'M12 4v12m0 0-4-4m4 4 4-4M5 20h14');
-    else if (kind === 'push') svgPath(svg, 'M12 20V8m0 0-4 4m4-4 4 4M5 4h14');
+    else if (kind === 'push') svgPath(svg, 'M12 15V4m0 0-4 4m4-4 4 4M5 16v4h14v-4');
     else if (kind === 'branch') svgPath(svg, 'M7 4v16M7 7h4a4 4 0 0 0 4-4M7 16h4a4 4 0 0 1 4 4M7 4a2 2 0 1 0 0 .01M7 20a2 2 0 1 0 0 .01M15 3a2 2 0 1 0 0 .01M15 21a2 2 0 1 0 0 .01');
     else if (kind === 'publish') svgPath(svg, 'M12 20V7m0 0-5 5m5-5 5 5M5 4h14M5 20h14');
     else if (kind === 'remote') svgPath(svg, 'M7 17 4 14a3 3 0 0 1 0-4l3-3m10 10 3-3a3 3 0 0 0 0-4l-3-3M9 15l6-6');
@@ -167,11 +167,11 @@
   function useAction(panel, record, action) {
     if (action.form) {
       panel.activeForm = panel.activeForm === action.id ? '' : action.id;
-      panel.overflowOpen = false;
+      closeOverflow(panel);
       renderPanel(panel, sourceControl().get(record.id) || record);
       return;
     }
-    panel.overflowOpen = false;
+    closeOverflow(panel);
     invoke(panel, record, action.command, action.id, {}, { kind: 'action' });
   }
 
@@ -181,6 +181,10 @@
       panel.overflowCleanup();
       panel.overflowCleanup = null;
     }
+    if (panel.overflowMenu) {
+      panel.overflowMenu.remove();
+      panel.overflowMenu = null;
+    }
   }
 
   function appendHeaderActions(panel, record, state) {
@@ -189,6 +193,10 @@
     if (panel.overflowCleanup) {
       panel.overflowCleanup();
       panel.overflowCleanup = null;
+    }
+    if (panel.overflowMenu) {
+      panel.overflowMenu.remove();
+      panel.overflowMenu = null;
     }
     panel.tools.replaceChildren();
     var toolbar = state.actions.filter(function(action) { return action.placement === 'toolbar'; });
@@ -211,25 +219,41 @@
     if (panel.overflowOpen) {
       var menu = element('div', 'source-control-overflow-menu');
       menu.setAttribute('role', 'menu');
+      menu.setAttribute('aria-label', t('More source-control actions'));
       overflow.forEach(function(action) {
-        var item = button(action.title, 'source-control-overflow-item', action.description || action.title);
+        var item = button('', 'source-control-overflow-item', action.description || action.title);
         item.setAttribute('role', 'menuitem');
         item.disabled = panel.busy || action.disabled === true;
+        item.appendChild(toolIcon(action.icon));
+        item.appendChild(element('span', 'source-control-overflow-label', action.title));
         item.addEventListener('click', function() { useAction(panel, record, action); });
         menu.appendChild(item);
       });
-      panel.tools.appendChild(menu);
+      document.body.appendChild(menu);
+      panel.overflowMenu = menu;
+      var placeMenu = function() {
+        var trigger = menuButton.getBoundingClientRect();
+        var bounds = menu.getBoundingClientRect();
+        var margin = 8;
+        var left = Math.max(margin, Math.min(trigger.right - bounds.width, global.innerWidth - bounds.width - margin));
+        var top = Math.max(margin, Math.min(trigger.bottom + 4, global.innerHeight - bounds.height - margin));
+        menu.style.left = Math.round(left) + 'px';
+        menu.style.top = Math.round(top) + 'px';
+      };
+      placeMenu();
       var dismiss = function(event) {
         if (event.type === 'keydown' && event.key !== 'Escape') return;
-        if (event.type === 'pointerdown' && panel.tools.contains(event.target)) return;
+        if (event.type === 'pointerdown' && (panel.tools.contains(event.target) || menu.contains(event.target))) return;
         closeOverflow(panel);
         renderPanel(panel, sourceControl().get(record.id) || record);
       };
       document.addEventListener('pointerdown', dismiss, true);
       document.addEventListener('keydown', dismiss, true);
+      global.addEventListener('resize', placeMenu);
       panel.overflowCleanup = function() {
         document.removeEventListener('pointerdown', dismiss, true);
         document.removeEventListener('keydown', dismiss, true);
+        global.removeEventListener('resize', placeMenu);
       };
     }
     menuButton.addEventListener('click', function() {
@@ -308,7 +332,17 @@
         if (item.badge || item.meta) {
           var metadata = element('span', 'source-control-list-meta');
           if (item.badge) metadata.appendChild(element('em', 'source-control-badge', item.badge));
-          if (item.meta) metadata.appendChild(element('small', '', item.meta));
+          if (item.meta) {
+            var stats = /^\+(\d+)\s+-(\d+)$/.exec(item.meta);
+            if (stats) {
+              var lineStats = element('span', 'source-control-line-stats');
+              lineStats.appendChild(element('span', 'source-control-line-stat source-control-line-stat-added', '+' + stats[1]));
+              lineStats.appendChild(element('span', 'source-control-line-stat source-control-line-stat-removed', '-' + stats[2]));
+              metadata.appendChild(lineStats);
+            } else {
+              metadata.appendChild(element('small', '', item.meta));
+            }
+          }
           itemNode.appendChild(metadata);
         }
         list.appendChild(itemNode);
@@ -500,6 +534,7 @@
       activeForm: '',
       overflowOpen: false,
       overflowCleanup: null,
+      overflowMenu: null,
       busy: false,
       error: '',
       collapsed: Object.create(null),

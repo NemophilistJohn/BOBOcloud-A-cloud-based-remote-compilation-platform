@@ -10,7 +10,7 @@ const ARTIFACT = path.join(
   process.cwd(),
   'official-local-scm-plugin',
   'artifacts',
-    'bobocloud.local-scm-1.2.0.boboplugin'
+  'bobocloud.local-scm-1.2.1.boboplugin'
 );
 
 function electronPath() {
@@ -111,7 +111,7 @@ test('official local SCM plugin accepts cross-realm broker data and controls fil
       await window.api.plugins.enable(id);
       return record;
     }, PLUGIN_ID);
-    expect(installed.version).toBe('1.2.0');
+    expect(installed.version).toBe('1.2.1');
     expect([...installed.grantedPermissions].sort()).toEqual([...installed.requestedPermissions].sort());
 
     await page.waitForFunction(() => window.BOBO.commands.has('bobocloud.local-scm.refresh'), null, { timeout: 20000 });
@@ -129,6 +129,7 @@ test('official local SCM plugin accepts cross-realm broker data and controls fil
     await expect(panel).toContainText('main.py');
     await expect(panel).toContainText('notes.txt');
     await expect(panel).not.toContainText('Extension payload must contain plain objects only.');
+    await expect(panel.locator('.source-control-tool-button[aria-label="Push"]')).toBeVisible();
 
     const modified = page.locator('.tree-row[data-name="main.py"]');
     const untracked = page.locator('.tree-row[data-name="notes.txt"]');
@@ -142,19 +143,34 @@ test('official local SCM plugin accepts cross-realm broker data and controls fil
     await stagedSection.locator('.source-control-list-item-action', { hasText: 'notes.txt' }).click();
     await expect.poll(() => git(workspace, ['diff', '--cached', '--name-only'])).not.toContain('notes.txt');
 
+    const changedStats = panel.locator('.source-control-line-stats').first();
+    await expect(changedStats.locator('.source-control-line-stat-added')).toHaveCSS('color', 'rgb(86, 184, 122)');
+    await expect(changedStats.locator('.source-control-line-stat-removed')).toHaveCSS('color', 'rgb(228, 93, 93)');
+
     await panel.locator('.source-control-more-button').click();
-    await panel.locator('.source-control-overflow-item', { hasText: 'Hide file tree status' }).click();
+    const overflow = page.locator('.source-control-overflow-menu');
+    await expect(overflow).toBeVisible();
+    await expect(overflow).toContainText('Pull');
+    await expect.poll(() => overflow.locator('.source-control-overflow-item').first().evaluate((node) => node.getBoundingClientRect().height)).toBeGreaterThanOrEqual(33);
+    await expect.poll(() => overflow.evaluate((menu) => menu.getBoundingClientRect().left)).toBeGreaterThanOrEqual(7);
+    await expect.poll(() => overflow.evaluate((menu) => {
+      const label = menu.querySelector('.source-control-overflow-label');
+      return Boolean(label && label.getBoundingClientRect().left >= menu.getBoundingClientRect().left + 24);
+    })).toBe(true);
+    await page.screenshot({
+      path: path.join(evidenceDirectory, 'official-local-scm-plugin-menu.png'),
+      fullPage: true
+    });
+    await page.locator('.source-control-overflow-item', { hasText: 'Hide file tree status' }).click();
     await expect(modified.locator('.tree-scm-rail')).toHaveCount(0);
-    await expect(panel).toContainText('Off');
     await panel.locator('.source-control-more-button').click();
-    await panel.locator('.source-control-overflow-item', { hasText: 'Show file tree status' }).click();
+    await page.locator('.source-control-overflow-item', { hasText: 'Show file tree status' }).click();
     await expect(modified.locator('.tree-scm-rail[data-decoration-status="modified"]')).toHaveCount(1);
 
     // A real Git failure must cross the Worker boundary through the protocol's
     // serialized error channel. The old plugin returned an Error as a fulfilled
     // command value, which the host correctly rejected as a non-plain payload.
-    await panel.locator('.source-control-more-button').click();
-    await panel.locator('.source-control-overflow-item', { hasText: 'Push' }).click();
+    await panel.locator('.source-control-tool-button[aria-label="Push"]').click();
     await panel.locator('.source-control-form button[type="submit"]').click();
     await expect(panel).toContainText('The operation could not be completed in the local workspace.');
     await expect(panel.locator('.source-control-host-error')).toHaveCount(0);
