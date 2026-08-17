@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "example.hello-plugin",
+  "displayName": "Hello Plugin",
+  "description": "Minimal isolated BOBOCloud plugin example.",
+  "version": "1.0.0",
+  "engines": {
+    "bobocloud": ">=2.6.0",
+    "pluginApi": "^1.2.0"
+  },
+  "main": "dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "permissions": [
+    "commands.register"
+  ],
+  "contributes": {},
+  "integrity": {
+    "algorithm": "sha256",
+    "files": {
+      "dist/extension.js": "f21ef68ead8e684932025b83a40db19364c98e22308b4661cb93f67240a157d2"
+    }
+  }
+}

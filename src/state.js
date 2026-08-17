@@ -10,7 +10,7 @@
     editor: null,
     splitEditor: null,
     diffEditor: null,
-    currentViewMode: 'single', // 'single' | 'split' | 'diff'
+    currentViewMode: 'single', // 'single' | 'split' | 'diff' | 'plugin-details'
 
     // Workspace
     workspaceRoot: null,

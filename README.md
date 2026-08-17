@@ -8,6 +8,7 @@ BOBOCLOUD is an Electron workbench for local projects that uses a self-hosted Li
 | --- | --- |
 | A desktop user | [Use BOBOCLOUD](#for-desktop-users) |
 | Operating a server | [Run a service](#for-server-operators) |
+| Building a desktop plugin | [Build and publish a plugin](#for-plugin-developers) |
 | Contributing code | [Contribute](#for-contributors) |
 
 ![Workbench](docs/screenshots/workbench.png)
@@ -154,9 +155,106 @@ The normal run path is: save dirty buffers -> rclone workspace sync -> `runCode`
 | LSP | Dedicated catalog, transport, cache and session lifecycle. |
 | DAP | A `dap.start` frame followed by raw DAP JSON; it shares only common auth/workspace/Docker foundations with LSP. |
 | Decorations | Fixed `sync`, `scm`, and `diagnostic` lanes. |
-| Plugins | Lifecycle registries and a capability boundary exist; third-party package discovery/loading is not enabled yet. |
+| Plugins | Extensions browse the official verified marketplace or import a local `.boboplugin` archive. Metadata and package bytes are verified before installation. Declared permissions are enabled by default and remain individually revocable. The online catalog exposes only each package's latest release; older releases require a manual archive import. |
 
 Further design references: [Plugin API](docs/plugin-api.md), [DAP server guide](docs/dap-server.md), [`server/internal/model`](server/internal/model), [`server/internal/handler`](server/internal/handler), and [`server/internal/runner`](server/internal/runner).
+
+## For plugin developers
+
+BOBOCloud Plugin API `1.2.0` runs one bundled ESM entry in an isolated Worker. A plugin receives only the APIs declared in its manifest; declared permissions are enabled automatically on install and can be revoked later from the extension detail tab. Plugin code has no DOM, Node.js, Electron, arbitrary filesystem, shell, environment, credential, or network access. Use the host-rendered contributions and mediated APIs instead.
+
+The official local source-control plugin is the complete reference project: [BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-](https://github.com/NemophilistJohn/BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-). Third-party plugins should use their own repository; do not add unrelated plugin code to the official source-control repository.
+
+### Repository and package layout
+
+Keep source, tests, private localization, packaging scripts, and versioned artifacts together:
+
+```text
+my-plugin/
+  package.json
+  manifest.template.json
+  README.md
+  LICENSE
+  src/extension.js
+  locales/en.json
+  locales/zh-CN.json
+  locales/ja.json
+  scripts/build.mjs
+  scripts/generate-integrity.mjs
+  scripts/package.mjs
+  test/extension.test.mjs
+  artifacts/publisher.name-1.2.3.boboplugin
+```
+
+The `.boboplugin` file is a ZIP archive whose root contains `manifest.json`, not an enclosing directory. API `1.2.0` accepts one bundled JavaScript entry plus declared data resources:
+
+```text
+manifest.json
+dist/extension.js
+locales/en.json
+locales/zh-CN.json
+locales/ja.json
+```
+
+Every non-manifest file must appear exactly once in `integrity.files` with the SHA-256 of its exact bytes. Do not package `node_modules`, source maps, development secrets, another JavaScript module, or undeclared files.
+
+### Minimal manifest and entry
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "acme.example",
+  "displayName": "Example Plugin",
+  "description": "A bounded BOBOCloud desktop extension.",
+  "version": "1.2.3",
+  "engines": {
+    "bobocloud": ">=2.6.0 <3.0.0",
+    "pluginApi": "^1.2.0"
+  },
+  "main": "dist/extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "permissions": ["commands.register"],
+  "contributes": {},
+  "localization": {
+    "default": "locales/en.json",
+    "zh-CN": "locales/zh-CN.json",
+    "ja": "locales/ja.json"
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "files": {
+      "dist/extension.js": "<64 lowercase hexadecimal characters>"
+    }
+  }
+}
+```
+
+```js
+export async function activate(context) {
+  const disposable = await context.commands.register(
+    'acme.example.hello',
+    () => ({ ok: true }),
+    { title: context.i18n.t('command.hello'), category: 'Extensions' }
+  );
+  context.subscriptions.add(disposable);
+}
+
+export async function deactivate() {}
+```
+
+Build a single ESM file, copy only declared locale/data files, regenerate the integrity map, create the archive, then install the `.boboplugin` from the Extensions activity view. Test activation, disable/enable, permission revocation, cleanup, English, Simplified Chinese, and Japanese before publishing.
+
+### Publish to the official marketplace
+
+The client reads [BOBOCloud-Marketplace-Registry](https://github.com/NemophilistJohn/BOBOCloud-Marketplace-Registry). Executable code remains in the plugin's own repository; the registry contains only a hash-linked catalog.
+
+1. Commit the exact `.boboplugin` under `artifacts/`, tag the same semantic version such as `v1.2.3`, and ensure the Raw GitHub URL uses that immutable tag or a commit.
+2. Add `packages/<publisher>/<name>/versions/<version>.json` with the package id/version, engine ranges, artifact URL/SHA-256/size, source repository/ref, permissions, locales, and publication time.
+3. Update `packages/<publisher>/<name>/index.json`: add the immutable version descriptor and set `latest` to the new version.
+4. Update the package entry and SHA-256 in `indexes/<shard>.json`, then update the shard SHA-256/count/date in `registry.json`.
+5. Run `node scripts/validate-registry.mjs` in the registry repository before pushing the change.
+
+The marketplace renders and installs only `latest`. Historical descriptors remain immutable for auditability, but users who deliberately need an older release must download its `.boboplugin` and install it locally. Exact APIs, schemas, lifecycle rules, security limits, packaging commands, and troubleshooting are in [Plugin development](docs/plugin-development.md), [Plugin API](docs/plugin-api.md), and [plugin-sdk/bobocloud-plugin.d.ts](plugin-sdk/bobocloud-plugin.d.ts).
 
 ## For contributors
 

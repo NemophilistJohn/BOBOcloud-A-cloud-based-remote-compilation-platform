@@ -25,6 +25,32 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+function nextTurn() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function createExtensionSandboxHarness(options) {
+  const sent = [];
+  let disposed = false;
+  const emit = (message) => options.onMessage({ protocolVersion: 1, ...message });
+  return {
+    ready: Promise.resolve(),
+    sent,
+    get disposed() { return disposed; },
+    postMessage(message) {
+      sent.push(message);
+      if (message.type === 'initialize') {
+        queueMicrotask(() => emit({ type: 'activated' }));
+      } else if (message.type === 'request' &&
+          (message.method === 'extension.deactivate' || message.method === 'i18n.changed')) {
+        queueMicrotask(() => emit({ type: 'response', id: message.id, ok: true, value: null }));
+      }
+    },
+    emit,
+    dispose() { disposed = true; }
+  };
+}
+
 async function bundleModule(entry, outputName) {
   const output = path.join(temporaryDirectory, outputName + '.cjs');
   await esbuild.build({
@@ -63,6 +89,20 @@ test.before(async () => {
 
 test.after(() => {
   fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+});
+
+test('extension protocol accepts cross-realm data records but rejects class instances', () => {
+  const foreignRecord = vm.runInNewContext('({ operation: "detect", args: { includeNested: true } })');
+  assert.deepEqual(JSON.parse(JSON.stringify(core.cloneExtensionData(foreignRecord))), {
+    operation: 'detect',
+    args: { includeNested: true }
+  });
+
+  const foreignClass = vm.runInNewContext('new (class Payload { constructor() { this.value = 1; } })()');
+  assert.throws(
+    () => core.cloneExtensionData(foreignClass),
+    /plain objects only/
+  );
 });
 
 test('disposable store tears down in reverse order and isolates cleanup errors', () => {
@@ -199,6 +239,7 @@ test('file decoration contract keeps sync and SCM lanes separate', () => {
   }), {
     status: 'synced',
     badge: 'cloud-check',
+    color: '',
     tooltip: 'Synchronized',
     ariaLabel: '',
     transient: false
@@ -300,6 +341,639 @@ test('plugin API ranges are parsed strictly and evaluated against the host versi
     () => core.validatePluginManifest({ ...base, version: '01.0.0', engines: { pluginApi: '^1.0.0' } }),
     /valid semver/
   );
+});
+
+test('installed extension host proxies commands through a sandbox and removes palette entries on disable', async () => {
+  const errors = [];
+  const platform = core.createRendererPlatform({ onError: (event) => errors.push(event) });
+  platform.services.register('workbench.projectTasks', {
+    list: () => [{ label: 'Build', executable: true }],
+    getSelected: () => ({ type: 'task', label: 'Build' })
+  }, {
+    owner: 'core.tasks',
+    exposeToPlugins: true,
+    pluginView: {
+      list: () => [{ label: 'Build', executable: true }],
+      getSelected: () => ({ type: 'task', label: 'Build' })
+    }
+  });
+  const paletteItems = new Map();
+  const palette = {
+    supportsDisposables: true,
+    register(id, title, hint, category, handler) {
+      const item = { id, title, hint, category, handler };
+      paletteItems.set(id, item);
+      return { dispose() { if (paletteItems.get(id) === item) paletteItems.delete(id); } };
+    }
+  };
+  let sandbox;
+  const host = new core.PluginExtensionHost({
+    services: platform.services,
+    commands: platform.commands,
+    contributions: platform.contributions,
+    loadEntry: async (id) => ({ id, source: 'export function activate() {}' }),
+    broker: async (_id, method) => {
+      if (method === 'host.getInfo') return { apiVersion: '1.0.0' };
+      return { authorized: true, method };
+    },
+    getCommandPalette: () => palette,
+    sandboxFactory: (options) => (sandbox = createExtensionSandboxHarness(options)),
+    onError: (event) => errors.push(event)
+  });
+  const descriptor = {
+    id: 'acme.runner',
+    revision: 'first',
+    manifest: {
+      id: 'acme.runner',
+      version: '1.0.0',
+      engines: { pluginApi: '^1.0.0' },
+      permissions: [
+        core.PluginPermission.COMMANDS_REGISTER,
+        core.PluginPermission.COMMANDS_EXECUTE,
+        core.PluginPermission.CONTRIBUTIONS_REGISTER,
+        core.PluginPermission.SERVICES_READ
+      ]
+    },
+    grantedPermissions: [
+      core.PluginPermission.COMMANDS_REGISTER,
+      core.PluginPermission.COMMANDS_EXECUTE,
+      core.PluginPermission.CONTRIBUTIONS_REGISTER,
+      core.PluginPermission.SERVICES_READ
+    ]
+  };
+  assert.equal((await host.activate(descriptor)).ok, true);
+
+  sandbox.emit({
+    type: 'request',
+    id: 1,
+    method: 'commands.register',
+    args: {
+      id: 'acme.runner.build',
+      handlerId: 'handler-1',
+      metadata: { title: 'Build with Acme', category: 'Build' }
+    }
+  });
+  await nextTurn();
+  const commandRegistration = sandbox.sent.find((message) => message.type === 'response' && message.id === 1);
+  assert.equal(commandRegistration.ok, true);
+  assert.equal(platform.commands.has('acme.runner.build'), true);
+  assert.equal(paletteItems.has('acme.runner.build'), true);
+
+  const commandExecution = platform.commands.execute('acme.runner.build', { target: 'debug' });
+  await nextTurn();
+  const invocation = sandbox.sent.find((message) => message.type === 'request' && message.method === 'command.invoke');
+  assert.ok(invocation);
+  assert.deepEqual(JSON.parse(JSON.stringify(invocation.args.args)), [{ target: 'debug' }]);
+  sandbox.emit({ type: 'response', id: invocation.id, ok: true, value: { completed: true } });
+  assert.deepEqual(JSON.parse(JSON.stringify(await commandExecution)), { completed: true });
+
+  sandbox.emit({
+    type: 'request',
+    id: 2,
+    method: 'contributions.register',
+    args: {
+      point: core.DeclarativeContributionPoint.MENUS,
+      contribution: { id: 'acme.runner.menu', command: 'acme.runner.build', location: 'commandPalette' },
+      options: { id: 'acme.runner.menu' }
+    }
+  });
+  await nextTurn();
+  assert.equal(sandbox.sent.find((message) => message.type === 'response' && message.id === 2).ok, true);
+  assert.equal(platform.contributions.list(core.DeclarativeContributionPoint.MENUS).length, 1);
+
+  sandbox.emit({
+    type: 'request',
+    id: 3,
+    method: 'services.get',
+    args: { id: 'workbench.projectTasks' }
+  });
+  await nextTurn();
+  const serviceResponse = sandbox.sent.find((message) => message.type === 'response' && message.id === 3);
+  assert.deepEqual(JSON.parse(JSON.stringify(serviceResponse.value)), {
+    tasks: [{ label: 'Build', executable: true }],
+    selected: { type: 'task', label: 'Build' }
+  });
+  assert.equal(typeof serviceResponse.value.tasks[0].list, 'undefined');
+
+  assert.equal((await host.deactivate('acme.runner')).ok, true);
+  assert.equal(platform.commands.has('acme.runner.build'), false);
+  assert.equal(platform.contributions.list(core.DeclarativeContributionPoint.MENUS).length, 0);
+  assert.equal(paletteItems.has('acme.runner.build'), false);
+  assert.equal(sandbox.disposed, true);
+  assert.equal(errors.length, 0);
+  await platform.dispose();
+});
+
+test('installed extension host rejects malformed or ungranted requests and cancels an in-flight activation', async () => {
+  const reports = [];
+  const platform = core.createRendererPlatform({ onError: (event) => reports.push(event) });
+  let sandbox;
+  const host = new core.PluginExtensionHost({
+    services: platform.services,
+    commands: platform.commands,
+    contributions: platform.contributions,
+    loadEntry: async (id) => ({ id, source: 'export function activate() {}' }),
+    broker: async () => ({ authorized: true }),
+    sandboxFactory: (options) => (sandbox = createExtensionSandboxHarness(options)),
+    onError: (event) => reports.push(event)
+  });
+  const descriptor = {
+    id: 'acme.restricted',
+    manifest: {
+      id: 'acme.restricted',
+      version: '1.0.0',
+      engines: { pluginApi: '^1.0.0' },
+      permissions: [core.PluginPermission.COMMANDS_REGISTER]
+    },
+    grantedPermissions: [core.PluginPermission.COMMANDS_REGISTER]
+  };
+  assert.equal((await host.activate(descriptor)).ok, true);
+  sandbox.emit({ type: 'request', id: 1, method: 'services.get', args: { id: 'workbench.projectTasks' } });
+  sandbox.emit({ type: 'request', method: 'commands.register', args: {} });
+  await nextTurn();
+  const denied = sandbox.sent.find((message) => message.type === 'response' && message.id === 1);
+  assert.equal(denied.ok, false);
+  assert.equal(denied.error.code, core.ExtensionErrorCode.DENIED);
+  assert.ok(reports.some((event) => event.source === 'extension-protocol'));
+  await host.deactivate('acme.restricted');
+
+  const source = deferred();
+  let raceSandboxCreated = false;
+  const raceHost = new core.PluginExtensionHost({
+    services: platform.services,
+    commands: platform.commands,
+    contributions: platform.contributions,
+    loadEntry: () => source.promise,
+    broker: async () => ({ authorized: true }),
+    sandboxFactory: () => { raceSandboxCreated = true; return createExtensionSandboxHarness({ onMessage() {} }); }
+  });
+  const pendingActivation = raceHost.activate({
+    id: 'acme.race',
+    manifest: {
+      id: 'acme.race',
+      version: '1.0.0',
+      engines: { pluginApi: '^1.0.0' },
+      permissions: []
+    },
+    grantedPermissions: []
+  });
+  const deactivation = raceHost.deactivate('acme.race');
+  source.resolve({ id: 'acme.race', source: 'export function activate() {}' });
+  assert.equal((await pendingActivation).ok, false);
+  assert.equal((await deactivation).ok, true);
+  assert.equal(raceSandboxCreated, false);
+  assert.deepEqual(raceHost.list(), []);
+  await raceHost.dispose();
+  await platform.dispose();
+});
+
+test('extension sandbox keeps downloaded source out of the renderer document and blocks direct network', () => {
+  const documentSource = core.buildExtensionSandboxDocument();
+  assert.match(core.EXTENSION_SANDBOX_CSP, /connect-src 'none'/);
+  assert.match(core.EXTENSION_SANDBOX_CSP, /worker-src blob:/);
+  assert.match(documentSource, /new Worker\(/);
+  assert.match(documentSource, /Object\.defineProperty\(self, name/);
+  assert.doesNotMatch(documentSource, /window\.api/);
+  assert.doesNotMatch(documentSource, /window\.BOBO/);
+  assert.match(documentSource, /registerScm/);
+  assert.match(documentSource, /scm\.git\.request/);
+  assert.match(documentSource, /function scmRequest\(operation, args\)/);
+  assert.match(documentSource, /clone: \(args\) => scmRequest\('clone', args\)/);
+  assert.match(documentSource, /deleteBranch: \(args\) => scmRequest\('deleteBranch', args\)/);
+  assert.doesNotMatch(documentSource, /operation: 'detect', args: args \|\| \{\}/);
+});
+
+test('SCM data contracts reject path escape and keep presentation host-controlled', () => {
+  const provider = core.createScmFileDecorationProvider({
+    id: 'acme.scm.decorations',
+    namespace: 'acme.scm',
+    priority: 20,
+    localize: (key) => key === 'Source control: Modified' ? 'Changed by source control' : key
+  });
+  const events = [];
+  provider.onDidChange((paths) => events.push(Array.from(paths)));
+
+  const result = provider.set([
+    { path: 'src\\app.js', status: 'modified' },
+    { path: 'README.md', status: 'untracked' }
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), {
+    changedPaths: ['src/app.js', 'README.md'],
+    entryCount: 2
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(provider.getDecoration('src/app.js'))), {
+    status: 'modified',
+    badge: 'M',
+    color: 'warning',
+    tooltip: 'Changed by source control',
+    ariaLabel: 'Changed by source control'
+  });
+  assert.deepEqual(events, [['src/app.js', 'README.md']]);
+  assert.throws(() => provider.set([{ path: '../outside.js', status: 'modified' }]), /workspace-relative|traverse/);
+  assert.throws(() => provider.set([{ path: 'src/app.js', status: 'arbitrary-badge' }]), /status/);
+  assert.throws(() => provider.set([{ path: 'src/app.js', status: 'added', badge: '<svg>' }]), /unsupported field/);
+  assert.equal(provider.clear(['src/app.js']).entryCount, 1);
+  assert.equal(provider.getDecoration('src/app.js'), null);
+  provider.dispose();
+  assert.throws(() => provider.set([]), /disposed/);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(core.normalizeScmGitRequest({
+    operation: 'stage',
+    args: { repositoryId: 'scm-1234567890abcdef', paths: ['src/app.js'] }
+  }))), {
+    operation: 'stage',
+    permission: 'scm.git.write',
+    args: { repositoryId: 'scm-1234567890abcdef', paths: ['src/app.js'] }
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(core.normalizeScmGitRequest({
+    operation: 'stageAll',
+    args: { repositoryId: 'scm-1234567890abcdef' }
+  }))), {
+    operation: 'stageAll',
+    permission: 'scm.git.write',
+    args: { repositoryId: 'scm-1234567890abcdef' }
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(core.normalizeScmGitRequest({
+    operation: 'detect',
+    args: { includeNested: false }
+  }))), {
+    operation: 'detect',
+    permission: 'scm.git.read',
+    args: { includeNested: false }
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(core.normalizeScmGitRequest({
+    operation: 'history',
+    args: { repositoryId: 'scm-1234567890abcdef', offset: 25, limit: 500, ref: 'main' }
+  }))), {
+    operation: 'history',
+    permission: 'scm.git.read',
+    args: { repositoryId: 'scm-1234567890abcdef', offset: 25, limit: 500, ref: 'main' }
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(core.normalizeScmGitRequest({
+    operation: 'status',
+    args: { repositoryId: 'scm-1234567890abcdef', offset: 50, limit: 200 }
+  }))), {
+    operation: 'status',
+    permission: 'scm.git.read',
+    args: { repositoryId: 'scm-1234567890abcdef', offset: 50, limit: 200 }
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(core.normalizeScmGitRequest({
+    operation: 'diff',
+    args: { repositoryId: 'scm-1234567890abcdef', path: 'src/app.js', ref: 'main', staged: true }
+  }))), {
+    operation: 'diff',
+    permission: 'scm.git.read',
+    args: { repositoryId: 'scm-1234567890abcdef', path: 'src/app.js', ref: 'main', staged: true }
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(core.normalizeScmGitRequest({
+    operation: 'checkout',
+    args: { repositoryId: 'scm-1234567890abcdef', branch: 'feature/local', force: true }
+  }))), {
+    operation: 'checkout',
+    permission: 'scm.git.write',
+    args: { repositoryId: 'scm-1234567890abcdef', branch: 'feature/local', force: true }
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(core.normalizeScmGitRequest({
+    operation: 'createBranch',
+    args: { repositoryId: 'scm-1234567890abcdef', name: 'feature/local', checkout: true }
+  }))), {
+    operation: 'createBranch',
+    permission: 'scm.git.write',
+    args: { repositoryId: 'scm-1234567890abcdef', name: 'feature/local', checkout: true }
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(core.normalizeScmGitRequest({
+    operation: 'clone',
+    args: { url: 'https://github.com/example/repository.git', branch: 'main' }
+  }))), {
+    operation: 'clone',
+    permission: 'scm.git.write',
+    args: { url: 'https://github.com/example/repository.git', branch: 'main' }
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(core.normalizeScmGitRequest({
+    operation: 'clone',
+    args: { url: 'git@github.com:example/repository.git' }
+  }))), {
+    operation: 'clone',
+    permission: 'scm.git.write',
+    args: { url: 'git@github.com:example/repository.git' }
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(core.normalizeScmGitRequest({
+    operation: 'deleteBranch',
+    args: { repositoryId: 'scm-1234567890abcdef', name: 'feature/local', force: true }
+  }))), {
+    operation: 'deleteBranch',
+    permission: 'scm.git.write',
+    args: { repositoryId: 'scm-1234567890abcdef', name: 'feature/local', force: true }
+  });
+  assert.throws(() => core.normalizeScmGitRequest({
+    operation: 'history',
+    args: { repositoryId: 'scm-1234567890abcdef', limit: 501 }
+  }), /1 to 500/);
+  assert.throws(() => core.normalizeScmGitRequest({
+    operation: 'status',
+    args: { repositoryId: 'scm-1234567890abcdef', limit: 201 }
+  }), /1 to 200/);
+  assert.throws(() => core.normalizeScmGitRequest({
+    operation: 'clone',
+    args: { url: 'file:///tmp/not-allowed.git' }
+  }), /HTTPS or SSH/);
+  assert.throws(() => core.normalizeScmGitRequest({
+    operation: 'clone',
+    args: { url: 'file:relative-repository.git' }
+  }), /HTTPS or SSH/);
+  assert.throws(() => core.normalizeScmGitRequest({
+    operation: 'clone',
+    args: { url: 'C:/local-repository.git' }
+  }), /HTTPS or SSH/);
+  assert.throws(() => core.normalizeScmGitRequest({
+    operation: 'clone',
+    args: { url: 'https://github.com/example/repository.git', target: '../outside' }
+  }), /does not accept/);
+  assert.throws(() => core.normalizeScmGitRequest({
+    operation: 'status',
+    args: { repositoryId: 'scm-1234567890abcdef', cwd: 'C:/outside' }
+  }), /does not accept/);
+  assert.throws(() => core.normalizeScmGitRequest({ operation: 'detect', args: null }), /plain object/);
+  assert.throws(() => core.normalizeScmGitRequest({ operation: 'detect', args: false }), /plain object/);
+});
+
+test('static SCM decoration provider reaches the generic SCM tree lane without touching sync or diagnostics', () => {
+  const context = { console, window: {}, document: {} };
+  vm.runInNewContext(compatibilityBundle, context);
+  const BOBO = context.window.BOBO;
+  const provider = core.createScmFileDecorationProvider({
+    id: 'acme.tree.decorations',
+    namespace: 'acme.tree',
+    priority: 40
+  });
+  const changes = [];
+  BOBO.platform.fileDecorations.onDidChange((event) => changes.push(event));
+  const registration = BOBO.platform.contributions.register('fileDecorations.scm', provider, {
+    id: provider.id,
+    owner: 'acme.tree'
+  });
+  provider.set([{ path: 'src/main.go', status: 'added' }]);
+  const decoration = BOBO.platform.fileDecorations.get('scm', 'src/main.go', { type: 'file' });
+  assert.equal(decoration.status, 'added');
+  assert.equal(decoration.badge, 'A');
+  assert.equal(BOBO.platform.fileDecorations.get('sync', 'src/main.go', { type: 'file' }), null);
+  assert.equal(BOBO.platform.fileDecorations.get('diagnostic', 'src/main.go', { type: 'file' }), null);
+  assert.equal(changes.some((event) => event.lane === 'scm' && event.reason === 'provider'), true);
+  registration.dispose();
+  assert.equal(BOBO.platform.fileDecorations.get('scm', 'src/main.go', { type: 'file' }), null);
+});
+
+test('source-control state providers are bounded, localized, and removed with their extension', async () => {
+  const platform = core.createRendererPlatform();
+  let sandbox;
+  let activeLocale = 'en';
+  let localeListener;
+  const localizationLoads = [];
+  const host = new core.PluginExtensionHost({
+    services: platform.services,
+    commands: platform.commands,
+    contributions: platform.contributions,
+    sourceControls: platform.sourceControls,
+    loadEntry: async (id) => ({ id, source: 'export function activate() {}' }),
+    loadLocalization: async (id, locale) => {
+      localizationLoads.push({ id, locale });
+      return {
+        locale,
+        messages: locale === 'ja'
+          ? { 'Workspace records': 'Workspace records ja' }
+          : { 'Workspace records': 'Workspace records' }
+      };
+    },
+    getLocale: () => activeLocale,
+    onLocaleChange: (listener) => {
+      localeListener = listener;
+      return () => { localeListener = null; };
+    },
+    broker: async () => ({ authorized: true }),
+    sandboxFactory: (options) => (sandbox = createExtensionSandboxHarness(options))
+  });
+  const descriptor = {
+    id: 'acme.source-panel',
+    revision: 'first',
+    manifest: {
+      id: 'acme.source-panel',
+      version: '1.0.0',
+      engines: { pluginApi: '^1.2.0' },
+      permissions: [core.PluginPermission.SOURCE_CONTROL_REGISTER]
+    },
+    grantedPermissions: [core.PluginPermission.SOURCE_CONTROL_REGISTER]
+  };
+  assert.equal((await host.activate(descriptor)).ok, true);
+  assert.deepEqual(localizationLoads, [{ id: 'acme.source-panel', locale: 'en' }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(sandbox.sent.find((message) => message.type === 'initialize').localization)), {
+    locale: 'en', messages: { 'Workspace records': 'Workspace records' }
+  });
+
+  sandbox.emit({
+    type: 'request', id: 1, method: 'sourceControl.register', args: {
+      id: 'acme.source-panel.view', title: 'Workspace records', icon: 'git-branch', order: 3,
+      openCommand: 'acme.source-panel.open'
+    }
+  });
+  await nextTurn();
+  const registration = sandbox.sent.find((message) => message.id === 1);
+  assert.equal(registration.ok, true);
+  const handle = registration.value.handle;
+
+  sandbox.emit({
+    type: 'request', id: 2, method: 'sourceControl.setState', args: {
+      handle,
+      state: {
+        phase: 'ready',
+        title: 'Workspace records',
+        summary: { items: [{ label: 'Selected', value: '1' }] },
+        sections: [{
+          id: 'records', title: 'Records', items: [{
+            id: 'first', title: 'First record', command: 'acme.source-panel.select'
+          }],
+          loadMore: { command: 'acme.source-panel.loadMore' }
+        }],
+        actions: [{
+          id: 'refresh', title: 'Refresh', command: 'acme.source-panel.refresh', placement: 'toolbar', icon: 'refresh',
+          form: { fields: [{ id: 'note', label: 'Note', type: 'textarea', maxLength: 128 }] }
+        }]
+      }
+    }
+  });
+  await nextTurn();
+  assert.equal(sandbox.sent.find((message) => message.id === 2).ok, true);
+  const state = platform.sourceControls.get('acme.source-panel.view');
+  assert.equal(state.state.phase, 'ready');
+  assert.equal(state.state.sections[0].loadMore.command, 'acme.source-panel.loadMore');
+  assert.equal(state.state.actions[0].form.fields[0].maxLength, 128);
+  assert.equal(state.state.actions[0].placement, 'toolbar');
+  assert.equal(state.state.actions[0].icon, 'refresh');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(core.normalizeSourceControlFormValues(state.state.actions[0].form, { note: 'hello', extra: 'ignored' }))),
+    { note: 'hello' }
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(core.createSourceControlCommandPayload(state.id, 'refresh', { note: 'hello' }, { kind: 'action' }))),
+    { sourceControlId: 'acme.source-panel.view', actionId: 'refresh', values: { note: 'hello' }, kind: 'action' }
+  );
+
+  sandbox.emit({
+    type: 'request', id: 3, method: 'sourceControl.setState', args: {
+      handle,
+      state: { actions: [{ id: 'unsafe', title: 'Unsafe', command: 'outside.command' }] }
+    }
+  });
+  await nextTurn();
+  assert.equal(sandbox.sent.find((message) => message.id === 3).ok, false);
+  assert.equal(sandbox.sent.find((message) => message.id === 3).error.code, core.ExtensionErrorCode.INVALID_REQUEST);
+
+  activeLocale = 'ja';
+  localeListener();
+  await nextTurn();
+  await nextTurn();
+  const localeUpdate = sandbox.sent.find((message) => message.type === 'request' && message.method === 'i18n.changed');
+  assert.deepEqual(JSON.parse(JSON.stringify(localeUpdate.args)), {
+    locale: 'ja', messages: { 'Workspace records': 'Workspace records ja' }
+  });
+
+  sandbox.emit({ type: 'request', id: 4, method: 'sourceControl.clearState', args: { handle } });
+  await nextTurn();
+  assert.equal(sandbox.sent.find((message) => message.id === 4).ok, true);
+  assert.equal(platform.sourceControls.get('acme.source-panel.view').state, null);
+
+  assert.equal((await host.deactivate(descriptor.id)).ok, true);
+  assert.equal(platform.sourceControls.get('acme.source-panel.view'), null);
+  await platform.dispose();
+});
+
+test('installed extensions receive only data-only source control, SCM, and local Git contracts', async () => {
+  const platform = core.createRendererPlatform();
+  let sandbox;
+  const brokerCalls = [];
+  const host = new core.PluginExtensionHost({
+    services: platform.services,
+    commands: platform.commands,
+    contributions: platform.contributions,
+    loadEntry: async (id) => ({ id, source: 'export function activate() {}' }),
+    broker: async (id, method, args) => {
+      brokerCalls.push({ id, method, args: JSON.parse(JSON.stringify(args)) });
+      if (method === 'scm.git.status') return { repositoryId: args.repositoryId, changes: [] };
+      return { authorized: true, method };
+    },
+    sandboxFactory: (options) => (sandbox = createExtensionSandboxHarness(options))
+  });
+  const descriptor = {
+    id: 'acme.local-scm',
+    revision: 'first',
+    manifest: {
+      id: 'acme.local-scm',
+      version: '1.0.0',
+      engines: { pluginApi: '^1.0.0' },
+      permissions: [
+        core.PluginPermission.SOURCE_CONTROL_REGISTER,
+        core.PluginPermission.FILE_DECORATIONS_SCM,
+        core.PluginPermission.SCM_GIT_READ,
+        core.PluginPermission.SCM_GIT_WRITE
+      ]
+    },
+    grantedPermissions: [
+      core.PluginPermission.SOURCE_CONTROL_REGISTER,
+      core.PluginPermission.FILE_DECORATIONS_SCM,
+      core.PluginPermission.SCM_GIT_READ,
+      core.PluginPermission.SCM_GIT_WRITE
+    ]
+  };
+  assert.equal((await host.activate(descriptor)).ok, true);
+
+  sandbox.emit({
+    type: 'request', id: 1, method: 'sourceControl.register', args: {
+      id: 'acme.local-scm.provider', title: 'Local source control', icon: 'git-branch', order: 15
+    }
+  });
+  await nextTurn();
+  assert.equal(sandbox.sent.find((message) => message.id === 1).ok, true);
+  assert.equal(platform.contributions.list(core.ContributionPoint.SOURCE_CONTROL).length, 1);
+
+  sandbox.emit({
+    type: 'request', id: 2, method: 'fileDecorations.scm.register', args: {
+      id: 'acme.local-scm.decorations', priority: 75
+    }
+  });
+  await nextTurn();
+  const registration = sandbox.sent.find((message) => message.id === 2);
+  assert.equal(registration.ok, true);
+  const handle = registration.value.handle;
+  sandbox.emit({
+    type: 'request', id: 3, method: 'fileDecorations.scm.set', args: {
+      handle,
+      entries: [{ path: 'src/app.js', status: 'conflicted' }]
+    }
+  });
+  await nextTurn();
+  assert.equal(sandbox.sent.find((message) => message.id === 3).ok, true);
+  const scmProvider = platform.contributions.list(core.ContributionPoint.FILE_DECORATIONS_SCM)[0];
+  assert.deepEqual(JSON.parse(JSON.stringify(scmProvider.getDecoration('src/app.js'))), {
+    status: 'conflicted', badge: '!', color: 'danger', tooltip: 'Source control: Conflicted', ariaLabel: 'Source control: Conflicted'
+  });
+
+  sandbox.emit({
+    type: 'request', id: 4, method: 'scm.git.request', args: {
+      operation: 'status', args: { repositoryId: 'scm-1234567890abcdef' }
+    }
+  });
+  await nextTurn();
+  const statusResult = sandbox.sent.find((message) => message.id === 4);
+  assert.equal(statusResult.ok, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(statusResult.value)), { repositoryId: 'scm-1234567890abcdef', changes: [] });
+  assert.equal(brokerCalls.some((call) => call.method === 'scm.git.status' && call.args.repositoryId === 'scm-1234567890abcdef'), true);
+
+  sandbox.emit({
+    type: 'request', id: 41, method: 'scm.git.request', args: {
+      operation: 'clone', args: { url: 'https://github.com/example/repository.git', branch: 'main' }
+    }
+  });
+  await nextTurn();
+  const cloneResult = sandbox.sent.find((message) => message.id === 41);
+  assert.equal(cloneResult.ok, true);
+  assert.equal(
+    brokerCalls.some((call) => call.method === 'scm.git.clone' && call.args.url === 'https://github.com/example/repository.git' && call.args.branch === 'main'),
+    true
+  );
+
+  const brokerCallsBeforeInvalid = brokerCalls.length;
+  sandbox.emit({
+    type: 'request', id: 5, method: 'fileDecorations.scm.set', args: {
+      handle, entries: [{ path: '../outside.js', status: 'modified' }]
+    }
+  });
+  sandbox.emit({
+    type: 'request', id: 6, method: 'scm.git.request', args: {
+      operation: 'stage', args: { repositoryId: 'scm-1234567890abcdef', paths: ['../outside.js'] }
+    }
+  });
+  await nextTurn();
+  assert.equal(sandbox.sent.find((message) => message.id === 5).error.code, core.ExtensionErrorCode.INVALID_REQUEST);
+  assert.equal(sandbox.sent.find((message) => message.id === 6).error.code, core.ExtensionErrorCode.INVALID_REQUEST);
+  assert.equal(brokerCalls.length, brokerCallsBeforeInvalid);
+
+  assert.equal((await host.deactivate(descriptor.id)).ok, true);
+  assert.equal(platform.contributions.list(core.ContributionPoint.SOURCE_CONTROL).length, 0);
+  assert.equal(platform.contributions.list(core.ContributionPoint.FILE_DECORATIONS_SCM).length, 0);
+  await platform.dispose();
+});
+
+test('command palette registrations are disposable and do not leave disabled extension commands behind', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'command-palette.js'), 'utf8');
+  const context = { window: {}, document: {} };
+  vm.runInNewContext(source, context);
+  const palette = context.window.BOBO.commands;
+  const first = palette.register('acme.palette.command', 'One', '', 'Extensions', () => {});
+  assert.equal(palette.has('acme.palette.command'), true);
+  const replacement = palette.register('acme.palette.command', 'Two', '', 'Extensions', () => {});
+  first.dispose();
+  assert.equal(palette.has('acme.palette.command'), true);
+  replacement.dispose();
+  assert.equal(palette.has('acme.palette.command'), false);
 });
 
 test('deactivation waits for in-flight activation and leaves no late registrations', async () => {
@@ -414,7 +1088,7 @@ test('thin BOBO adapter projects the same registered file icon service', () => {
   vm.runInNewContext(compatibilityBundle, context);
 
   const BOBO = context.window.BOBO;
-  assert.equal(BOBO.platform.apiVersion, '1.0.0');
+  assert.equal(BOBO.platform.apiVersion, '1.2.0');
   assert.equal(BOBO.platform.services.has('workbench.fileIcons'), true);
   assert.equal(BOBO.platform.services.get('workbench.fileIcons'), BOBO.fileIcons);
   assert.equal(BOBO.fileIcons.getFileIcon('main.go'), 'ico/file_type_go.svg');

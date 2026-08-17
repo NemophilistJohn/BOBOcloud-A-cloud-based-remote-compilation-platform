@@ -388,6 +388,11 @@ html, body {
   display: inline-flex; width: 16px; height: 16px;
   align-items: center; justify-content: center;
 }
+.tree-scm-rail[data-decoration-color="success"] { color: var(--green); }
+.tree-scm-rail[data-decoration-color="warning"] { color: var(--yellow); }
+.tree-scm-rail[data-decoration-color="danger"] { color: var(--red); }
+.tree-scm-rail[data-decoration-color="info"] { color: var(--blue); }
+.tree-scm-rail[data-decoration-color="muted"] { color: var(--text-secondary); opacity: 0.62; }
 #file-tree.tree .tree-row:hover .tree-sync-rail,
 #file-tree.tree .tree-row:focus-visible .tree-sync-rail { opacity: 1; }
 .tree-sync-cloud { display: inline-flex; width: 14px; height: 14px; align-items: center; justify-content: center; }

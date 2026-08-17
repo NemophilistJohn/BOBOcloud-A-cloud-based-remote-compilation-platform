@@ -1,6 +1,6 @@
 // src/command-palette.js - Quick command launcher (Ctrl+Shift+P)
 (function(global) {
-  var BOBO = global.BOBO || {};
+  var BOBO = global.BOBO = global.BOBO || {};
 
   var overlay = null;
   var input = null;
@@ -47,7 +47,37 @@
   }
 
   function register(id, label, hint, category, handler) {
-    commands.push({ id: id, label: label, hint: hint || '', category: category || 'General', handler: handler });
+    if (typeof id !== 'string' || !id) throw new TypeError('Command id is required');
+    var command = {
+      id: id,
+      label: typeof label === 'string' && label ? label : id,
+      hint: hint || '',
+      category: category || 'General',
+      handler: handler
+    };
+    var existingIndex = commands.findIndex(function(item) { return item.id === id; });
+    if (existingIndex >= 0) commands[existingIndex] = command;
+    else commands.push(command);
+    var active = true;
+    return {
+      dispose: function() {
+        if (!active) return;
+        active = false;
+        var index = commands.indexOf(command);
+        if (index >= 0) commands.splice(index, 1);
+      }
+    };
+  }
+
+  function unregister(id) {
+    var index = commands.findIndex(function(item) { return item.id === id; });
+    if (index < 0) return false;
+    commands.splice(index, 1);
+    return true;
+  }
+
+  function has(id) {
+    return commands.some(function(item) { return item.id === id; });
   }
 
   function filter() {
@@ -72,10 +102,20 @@
       (function(item, idx) {
         var el = document.createElement('div');
         el.className = 'cmd-item' + (idx === selectedIndex ? ' selected' : '');
-        el.innerHTML =
-          '<span class="cmd-category">' + item.category + '</span>' +
-          '<span class="cmd-label">' + item.label + '</span>' +
-          (item.hint ? '<span class="cmd-hint">' + item.hint + '</span>' : '');
+        var category = document.createElement('span');
+        category.className = 'cmd-category';
+        category.textContent = item.category;
+        var label = document.createElement('span');
+        label.className = 'cmd-label';
+        label.textContent = item.label;
+        el.appendChild(category);
+        el.appendChild(label);
+        if (item.hint) {
+          var hint = document.createElement('span');
+          hint.className = 'cmd-hint';
+          hint.textContent = item.hint;
+          el.appendChild(hint);
+        }
         el.addEventListener('click', function() { selectedIndex = idx; executeSelected(); });
         list.appendChild(el);
       })(filtered[i], i);
@@ -111,6 +151,9 @@
 
   BOBO.commands = {
     register: register,
+    unregister: unregister,
+    has: has,
+    supportsDisposables: true,
     show: show,
     hide: hide
   };

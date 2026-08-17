@@ -32,9 +32,12 @@ const EXPECTED_MODULES = [
   '../src/confirm-dialog.js',
   '../src/toast.js',
   '../src/command-palette.js',
+  './core/plugin-extension-bootstrap.js',
   '../src/workbench-layout.js',
+  '../src/source-control-view.js',
   '../src/file-search.js',
   '../src/settings.js',
+  '../src/plugin-manager-ui.js',
   '../src/language-packs-panel.js',
   '../src/utils.js',
   '../src/server-transport.js',
@@ -47,6 +50,7 @@ const EXPECTED_MODULES = [
   '../src/workspace-sync-status.js',
   '../src/editor-core.js',
   '../src/workspace.js',
+  '../src/plugin-details.js',
   '../src/rclone-client.js',
   '../src/run-config.js',
   '../src/task-problem-matcher.js',
@@ -120,6 +124,8 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.ok(bundle.length < sourceBytes * 0.75);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/app.js')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-runtime.js')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-host.js')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-sandbox.js')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.js')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/file-icons.js')));
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/src/ai-chat-panel.js')));
@@ -130,6 +136,8 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.deepEqual(manifest.entries.core.orderedModules, EXPECTED_MODULES);
   assert.deepEqual(manifest.entries.aiUi.orderedModules, EXPECTED_AI_UI_MODULES);
   assert.equal(manifest.entries.aiUi.load, 'first-visible-ai-ui');
+  assert.equal(manifest.entries.extensionHost.implementation, 'opaque-sandboxed-iframe-worker');
+  assert.equal(manifest.entries.extensionHost.directNetwork, 'blocked-by-sandbox-csp');
 });
 
 test('package and release audit use bundle artifacts instead of raw renderer scripts', () => {

@@ -80,6 +80,14 @@ async function buildRenderer(options = {}) {
         load: 'first-visible-ai-ui',
         orderedModules: orderedAiUiModules,
         outputs: ['bobo-ai-ui.js', 'bobo-ai-ui.js.map']
+      },
+      extensionHost: {
+        entry: 'renderer/core/plugin-extension-bootstrap.js',
+        implementation: 'opaque-sandboxed-iframe-worker',
+        load: 'after-bobo-ready',
+        protocolVersion: 1,
+        directNetwork: 'blocked-by-sandbox-csp',
+        outputs: ['bobo-renderer.js', 'bobo-renderer.js.map']
       }
     }
   }, null, 2) + '\n', 'utf8');

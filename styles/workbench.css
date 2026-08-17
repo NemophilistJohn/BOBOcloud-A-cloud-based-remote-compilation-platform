@@ -547,4 +547,19 @@
   #statusbar .status-item { padding-inline: var(--space-1); }
 }
 
+/* A titlebar must never stack hit targets on top of one another. At this
+   width retain the command entry point and the run/debug controls; the
+   omitted controls remain available from the command palette. */
+@media (max-width: 500px) {
+  .titlebar-brand,
+  #cloud-sync-btn,
+  #runtime-selector { display: none; }
+  #titlebar .command-center {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
+  }
+  .titlebar-actions { margin-left: 0; }
+}
+
 * { letter-spacing: 0; }

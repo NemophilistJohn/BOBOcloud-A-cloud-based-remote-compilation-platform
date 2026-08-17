@@ -53,6 +53,11 @@ export function normalizeFileDecoration(value) {
   return Object.freeze({
     status: value.status,
     badge: value.badge,
+    // Presentation tokens are host-controlled. Consumers map these fixed
+    // tokens to theme variables instead of accepting arbitrary CSS values.
+    color: typeof value.color === 'string' && /^(?:success|warning|danger|info|muted)$/.test(value.color)
+      ? value.color
+      : '',
     tooltip: typeof value.tooltip === 'string' ? value.tooltip : '',
     ariaLabel: typeof value.ariaLabel === 'string' ? value.ariaLabel : '',
     transient: value.transient === true

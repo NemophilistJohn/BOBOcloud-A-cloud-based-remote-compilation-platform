@@ -4,6 +4,8 @@
   global.BOBO = BOBO;
   var S = BOBO.state;
   var STORAGE_KEY = 'bobocloud.workbench.v1';
+  var STATIC_PRIMARY_VIEWS = ['explorer', 'cloud', 'environment', 'team', 'extensions'];
+  var dynamicPrimaryViews = new Set();
 
   var DEFAULTS = {
     activity: 'explorer',
@@ -40,7 +42,7 @@
   function sanitize(raw) {
     var value = copyDefaults();
     raw = raw && typeof raw === 'object' ? raw : {};
-    value.activity = ['explorer', 'cloud', 'environment', 'team'].indexOf(raw.activity) >= 0 ? raw.activity : value.activity;
+    value.activity = STATIC_PRIMARY_VIEWS.indexOf(raw.activity) >= 0 ? raw.activity : value.activity;
     value.primaryVisible = raw.primaryVisible !== false;
     value.sidebarWidth = numberInRange(raw.sidebarWidth, value.sidebarWidth, 180, 520);
     value.panelVisible = raw.panelVisible !== false;
@@ -153,8 +155,34 @@
     });
   }
 
+  function isPrimaryView(view) {
+    return STATIC_PRIMARY_VIEWS.indexOf(view) >= 0 || dynamicPrimaryViews.has(view);
+  }
+
+  function registerPrimaryView(view) {
+    if (typeof view !== 'string' || !/^[A-Za-z][A-Za-z0-9:._-]{0,239}$/.test(view)) {
+      throw new TypeError('Primary workbench view id is invalid.');
+    }
+    dynamicPrimaryViews.add(view);
+    refreshControls();
+    return {
+      dispose: function() { unregisterPrimaryView(view); }
+    };
+  }
+
+  function unregisterPrimaryView(view) {
+    if (!dynamicPrimaryViews.delete(view)) return;
+    if (state.activity === view) {
+      state.activity = 'explorer';
+      renderPrimaryView(state.activity);
+      apply();
+      return;
+    }
+    refreshControls();
+  }
+
   function setPrimaryView(view) {
-    if (['explorer', 'cloud', 'environment', 'team'].indexOf(view) < 0) return;
+    if (!isPrimaryView(view)) return;
     state.activity = view;
     state.primaryVisible = true;
     state.focusMode = false;
@@ -552,6 +580,8 @@
     apply: apply,
     refreshControls: refreshControls,
     refreshContext: refreshContext,
+    registerPrimaryView: registerPrimaryView,
+    unregisterPrimaryView: unregisterPrimaryView,
     setPrimaryView: setPrimaryView,
     setPrimaryVisible: setPrimaryVisible,
     togglePrimary: togglePrimary,

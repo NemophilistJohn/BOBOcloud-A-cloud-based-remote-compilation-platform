@@ -7,6 +7,10 @@ import {
 } from '../core/file-decoration.js';
 import { PluginPermission } from '../core/plugin-runtime.js';
 import { toDisposable } from '../core/disposable.js';
+import {
+  createSourceControlCommandPayload,
+  normalizeSourceControlFormValues
+} from '../core/source-control.js';
 
 const BOBO = window.BOBO = window.BOBO || {};
 
@@ -93,6 +97,17 @@ function createFileDecorationBridge() {
   }
 
   const registrySubscription = rendererPlatform.contributions.onDidChange(onRegistryChange);
+  const languageChangeListener = () => {
+    // Decoration providers return localized tooltip text lazily. Request a
+    // lane redraw when the workbench language changes without exposing any
+    // locale or DOM capability to installed package code.
+    for (const lane of FILE_DECORATION_LANES) {
+      emit(Object.freeze({ lane, reason: 'language' }));
+    }
+  };
+  if (window && typeof window.addEventListener === 'function') {
+    window.addEventListener('bobo:language-changed', languageChangeListener);
+  }
   for (const lane of FILE_DECORATION_LANES) {
     const point = contributionPointForDecorationLane(lane);
     for (const entry of rendererPlatform.contributions.listEntries(point)) subscribeProvider(entry);
@@ -131,6 +146,9 @@ function createFileDecorationBridge() {
     onDidChange,
     dispose() {
       registrySubscription.dispose();
+      if (window && typeof window.removeEventListener === 'function') {
+        window.removeEventListener('bobo:language-changed', languageChangeListener);
+      }
       for (const disposable of Array.from(providerSubscriptions.values()).reverse()) {
         try { disposable.dispose(); } catch (error) { reportDecorationError('unsubscribe', null, error); }
       }
@@ -153,6 +171,17 @@ BOBO.platform = Object.freeze({
   fileDecorations: Object.freeze({
     get: (lane, resourcePath, node) => fileDecorationBridge.get(lane, resourcePath, node),
     onDidChange: (listener) => fileDecorationBridge.onDidChange(listener)
+  }),
+  // This is a trusted compatibility projection for the host-rendered sidebar.
+  // Installed extension Workers never receive BOBO.platform or this store.
+  sourceControl: Object.freeze({
+    list: () => rendererPlatform.sourceControls.list(),
+    get: (id) => rendererPlatform.sourceControls.get(id),
+    onDidChange: (listener) => rendererPlatform.sourceControls.onDidChange(listener),
+    normalizeFormValues: (form, values) => normalizeSourceControlFormValues(form, values),
+    createCommandPayload: (descriptorId, actionId, values, details) => (
+      createSourceControlCommandPayload(descriptorId, actionId, values, details)
+    )
   }),
   services: Object.freeze({
     has: (id) => rendererPlatform.services.has(id),

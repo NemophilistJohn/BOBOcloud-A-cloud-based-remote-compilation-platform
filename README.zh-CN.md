@@ -8,6 +8,7 @@ BOBOCLOUD 是一个 Electron 云编译工作台：代码保留在本地工作区
 | --- | --- |
 | 用户端使用者 | [开始使用](#用户端使用者) |
 | 自建服务器的运维者 | [部署服务器](#服务器运维者) |
+| 用户端插件开发者 | [开发并发布插件](#插件开发者) |
 | 项目贡献者 | [参与开发](#贡献者) |
 
 ![工作台](docs/screenshots/workbench.png)
@@ -154,9 +155,106 @@ flowchart LR
 | LSP | 独立 catalog、transport、cache 与 session 生命周期。 |
 | DAP | `dap.start` 首帧后直接传原生 DAP JSON；只在组合边界共享认证、工作区和 Docker 基础设施。 |
 | 文件装饰 | 固定 `sync`、`scm`、`diagnostic` 三条轨道。 |
-| 插件 | 已有生命周期注册表与能力边界；第三方插件发现/加载尚未开放。 |
+| 插件 | 可浏览官方校验后的插件市场，或导入本地 `.boboplugin` 安装包。元数据与包字节均会校验；清单声明的权限安装后默认启用，用户仍可逐项撤销。在线市场只展示每个插件的最新版本，旧版本必须手动导入安装包。 |
 
 延伸文档：[插件 API](docs/plugin-api.md)、[DAP 服务端文档](docs/dap-server.md)、[`server/internal/model`](server/internal/model)、[`server/internal/handler`](server/internal/handler)、[`server/internal/runner`](server/internal/runner)。
+
+## 插件开发者
+
+BOBOCloud Plugin API `1.2.0` 会在隔离 Worker 中运行一个打包后的 ESM 入口。插件只能调用清单声明的 API；声明权限在安装时自动启用，之后可以在插件详情页逐项撤销。插件代码没有 DOM、Node.js、Electron、任意文件系统、shell、环境变量、凭据或通用网络访问能力，必须使用宿主提供的受控 API 和宿主渲染界面。
+
+官方本地源代码管理插件是完整参考项目：[BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-](https://github.com/NemophilistJohn/BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-)。第三方插件应建立自己的源码仓库，不要把无关插件提交进这个官方源代码管理仓库。
+
+### 仓库与安装包组成
+
+建议把源码、测试、插件私有语言包、打包脚本和版本化安装包放在同一仓库：
+
+```text
+my-plugin/
+  package.json
+  manifest.template.json
+  README.md
+  LICENSE
+  src/extension.js
+  locales/en.json
+  locales/zh-CN.json
+  locales/ja.json
+  scripts/build.mjs
+  scripts/generate-integrity.mjs
+  scripts/package.mjs
+  test/extension.test.mjs
+  artifacts/publisher.name-1.2.3.boboplugin
+```
+
+`.boboplugin` 是 ZIP 文件，压缩包根目录必须直接放 `manifest.json`，不能再包一层文件夹。API `1.2.0` 接受一个已打包的 JavaScript 入口和声明过的数据资源：
+
+```text
+manifest.json
+dist/extension.js
+locales/en.json
+locales/zh-CN.json
+locales/ja.json
+```
+
+除 `manifest.json` 外，每个文件必须在 `integrity.files` 中恰好出现一次，并填写其精确字节的 SHA-256。不要打包 `node_modules`、source map、开发密钥、第二个 JavaScript 模块或未声明文件。
+
+### 最小清单与入口示例
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "acme.example",
+  "displayName": "Example Plugin",
+  "description": "A bounded BOBOCloud desktop extension.",
+  "version": "1.2.3",
+  "engines": {
+    "bobocloud": ">=2.6.0 <3.0.0",
+    "pluginApi": "^1.2.0"
+  },
+  "main": "dist/extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "permissions": ["commands.register"],
+  "contributes": {},
+  "localization": {
+    "default": "locales/en.json",
+    "zh-CN": "locales/zh-CN.json",
+    "ja": "locales/ja.json"
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "files": {
+      "dist/extension.js": "<64 位小写十六进制 SHA-256>"
+    }
+  }
+}
+```
+
+```js
+export async function activate(context) {
+  const disposable = await context.commands.register(
+    'acme.example.hello',
+    () => ({ ok: true }),
+    { title: context.i18n.t('command.hello'), category: 'Extensions' }
+  );
+  context.subscriptions.add(disposable);
+}
+
+export async function deactivate() {}
+```
+
+构建时只生成一个 ESM 文件，只复制清单声明的语言/数据文件，重新计算完整性映射并创建安装包，然后在扩展侧边栏选择 `.boboplugin` 进行安装。发布前应测试激活、停用/启用、权限撤销、资源清理以及中日英切换。
+
+### 发布到官方插件市场
+
+客户端固定读取 [BOBOCloud-Marketplace-Registry](https://github.com/NemophilistJohn/BOBOCloud-Marketplace-Registry)。插件可执行代码仍放在插件自己的仓库；市场仓库只保存哈希串联的索引。
+
+1. 把精确的 `.boboplugin` 提交到 `artifacts/`，创建相同语义版本的 tag（例如 `v1.2.3`），Raw GitHub URL 必须引用该不可变 tag 或 commit。
+2. 新建 `packages/<publisher>/<name>/versions/<version>.json`，填写插件 id/version、引擎范围、工件 URL/SHA-256/大小、源码仓库/ref、权限、语言和发布时间。
+3. 更新 `packages/<publisher>/<name>/index.json`：添加不可变版本描述，并把 `latest` 指向新版本。
+4. 更新 `indexes/<shard>.json` 中该插件的版本和 SHA-256，再更新 `registry.json` 中分片的 SHA-256、数量和时间。
+5. 在市场仓库执行 `node scripts/validate-registry.mjs`，通过后再推送。
+
+在线市场只渲染并安装 `latest`。历史版本描述会保留用于审计，但需要旧版的用户只能下载相应 `.boboplugin` 后手动安装。完整 API、schema、生命周期、安全限制、打包命令和排错说明见 [插件开发文档](docs/plugin-development.md)、[插件 API](docs/plugin-api.md) 和 [plugin-sdk/bobocloud-plugin.d.ts](plugin-sdk/bobocloud-plugin.d.ts)。
 
 ## 贡献者
 

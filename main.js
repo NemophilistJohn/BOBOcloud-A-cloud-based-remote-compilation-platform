@@ -14,6 +14,8 @@ const { createMenuController } = require('./main/menu');
 const { createTasksController } = require('./main/tasks');
 const { createDapController } = require('./main/dap');
 const { createSecureTransportGuard } = require('./main/secure-transport');
+const { createPluginController } = require('./main/plugins');
+const { createMarketplaceController } = require('./main/marketplace');
 
 let window = null;
 let menu = null;
@@ -45,6 +47,10 @@ const workspace = createWorkspaceController({
   t: languagePacks.t,
   disposeLsp: disposeRemoteEditorServices
 });
+const plugins = createPluginController({ app, ipcMain, dialog, shell, getWindow, t: languagePacks.t,
+  getWorkspaceIdentity: workspace.getIdentity, onDidChange: () => { if (menu) menu.rebuild(); }
+});
+const marketplace = createMarketplaceController({ app, ipcMain, getWindow, pluginManager: plugins, hostVersion: app.getVersion() });
 const auth = createAuthController({
   ipcMain,
   settings,
@@ -74,6 +80,8 @@ ai.registerIpc();
 tasks.registerIpc();
 dap.registerIpc();
 languagePacks.registerIpc();
+plugins.registerIpc();
+marketplace.registerIpc();
 registerDiagnosticsIpc({ ipcMain, settings });
 registerRcloneIpc({ ipcMain, BrowserWindow, dialog, getWindow, rclone });
 
@@ -138,8 +146,14 @@ function createWindow() {
   menu.rebuild();
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   languagePacks.initialize();
+  try {
+    await plugins.initialize();
+  } catch (error) {
+    // A damaged user plugin must not prevent the core workbench from opening.
+    console.error('[plugins] startup scan failed:', error && error.message ? error.message : error);
+  }
   electronSession.defaultSession.setCertificateVerifyProc((request, callback) => callback(secureTransport.verify(request)));
   settings.readServerSettings().then(secureTransport.update).catch(() => {});
   lsp.initializeRetentionPolicy();

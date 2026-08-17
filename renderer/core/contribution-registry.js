@@ -1,5 +1,6 @@
 import { toDisposable } from './disposable.js';
 import { validateFileDecorationProvider } from './file-decoration.js';
+import { validateSourceControlDescriptor } from './source-control.js';
 
 export const ContributionPoint = Object.freeze({
   MENUS: 'menus',
@@ -12,7 +13,11 @@ export const ContributionPoint = Object.freeze({
   LANGUAGES: 'languages',
   AI_TOOLS: 'ai.tools',
   MCP_PROVIDERS: 'mcp.providers',
-  SKILL_PROVIDERS: 'skills.providers'
+  SKILL_PROVIDERS: 'skills.providers',
+  // This is a data-only descriptor for a future trusted SCM sidebar. It is
+  // intentionally distinct from file-decoration SCM state and from generic
+  // webview-style contributions.
+  SOURCE_CONTROL: 'sourceControl'
 });
 
 function requireId(id, label) {
@@ -37,16 +42,22 @@ export class ContributionRegistry {
     if (!contribution || typeof contribution !== 'object') {
       throw new TypeError('Contribution at "' + contributionPoint + '" must be an object.');
     }
-    const id = requireId(options.id || contribution.id, 'Contribution id');
+    let normalizedContribution = contribution;
     if (contributionPoint.startsWith('fileDecorations.')) {
-      validateFileDecorationProvider(contribution, contributionPoint);
+      validateFileDecorationProvider(normalizedContribution, contributionPoint);
+    } else if (contributionPoint === ContributionPoint.SOURCE_CONTROL) {
+      normalizedContribution = validateSourceControlDescriptor(normalizedContribution);
+    }
+    const id = requireId(options.id || normalizedContribution.id, 'Contribution id');
+    if (contributionPoint === ContributionPoint.SOURCE_CONTROL && normalizedContribution.id !== id) {
+      throw new TypeError('Source-control descriptor id must match the contribution id.');
     }
     const key = contributionPoint + '\u0000' + id;
     if (this._records.has(key)) {
       throw new Error('Contribution already registered: ' + contributionPoint + '/' + id);
     }
 
-    const record = { key, point: contributionPoint, id, owner, contribution };
+    const record = { key, point: contributionPoint, id, owner, contribution: normalizedContribution };
     this._records.set(key, record);
     this._emitChange('added', record);
     return toDisposable(() => this._removeRecord(record));

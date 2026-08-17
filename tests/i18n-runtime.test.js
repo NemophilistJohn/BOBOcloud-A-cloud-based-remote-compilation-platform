@@ -257,6 +257,18 @@ test('language packs have identical keys and placeholder contracts', () => {
   assert.equal(packs['zh-CN']['Load {count} more items'], '再加载 {count} 项');
   assert.ok(keys.includes('No matching files'));
   assert.ok(keys.includes('Search files by name...'));
+  for (const key of [
+    'Source control: Added',
+    'Source control: Modified',
+    'Source control: Deleted',
+    'Source control: Renamed',
+    'Source control: Untracked',
+    'Source control: Conflicted',
+    'Source control: Ignored'
+  ]) {
+    assert.ok(keys.includes(key), `missing localized SCM decoration key: ${key}`);
+    for (const locale of locales) assert.notEqual(packs[locale][key], '', `${locale}: ${key} must be translated`);
+  }
 });
 
 test('dynamic UI translation entry points reference defined English keys', () => {
@@ -264,7 +276,8 @@ test('dynamic UI translation entry points reference defined English keys', () =>
   const sourceFiles = [
     'ai-agent-button.js', 'ai-chat-panel.js', 'ai-markdown.js', 'ai-settings-center.js',
     'ai-capabilities.js', 'ai-prompts.js', 'collaboration.js', 'account-profile.js',
-    'project-tasks.js', 'workspace-sync-status.js', 'task-problem-matcher.js', 'runner.js', 'run-config.js', 'dap-client.js', 'auth.js'
+    'project-tasks.js', 'workspace-sync-status.js', 'task-problem-matcher.js', 'runner.js', 'run-config.js', 'dap-client.js', 'auth.js', 'plugin-manager-ui.js', 'plugin-details.js',
+    'source-control-view.js'
   ];
 
   function assertLiteralCalls(source, fileName, pattern, keyGroup) {

@@ -39,6 +39,7 @@ function createMenuController(options) {
           { label: t('Diagnostics Settings'), click: () => send('open-diagnostics-settings') },
           { type: 'separator' },
           { label: t('AI Settings'), click: () => send('open-ai-settings') },
+          { label: t('Extensions'), click: () => send('open-plugin-manager') },
           { type: 'separator' },
           {
             label: t('Display Language'),

@@ -2,6 +2,7 @@ import { DisposableStore } from './disposable.js';
 import { ServiceRegistry } from './service-registry.js';
 import { CommandRegistry } from './command-registry.js';
 import { ContributionRegistry } from './contribution-registry.js';
+import { SourceControlStateStore } from './source-control.js';
 import { PLUGIN_API_VERSION, PluginRuntime } from './plugin-runtime.js';
 
 export function createRendererPlatform(options = {}) {
@@ -20,7 +21,8 @@ export function createRendererPlatform(options = {}) {
   const services = new ServiceRegistry({ onError });
   const commands = new CommandRegistry({ onError });
   const contributions = new ContributionRegistry({ onError });
-  const plugins = new PluginRuntime({ services, commands, contributions, onError });
+  const sourceControls = new SourceControlStateStore({ onError });
+  const plugins = new PluginRuntime({ services, commands, contributions, sourceControls, onError });
   let disposed = false;
 
   return Object.freeze({
@@ -29,6 +31,7 @@ export function createRendererPlatform(options = {}) {
     services,
     commands,
     contributions,
+    sourceControls,
     plugins,
     get disposed() {
       return disposed;
@@ -38,6 +41,7 @@ export function createRendererPlatform(options = {}) {
       disposed = true;
       await plugins.dispose();
       lifecycle.dispose();
+      sourceControls.dispose();
       contributions.dispose();
       commands.dispose();
       services.dispose();

@@ -34,3 +34,6 @@ dist‑rclone‑test/
 *.rpm
 *.msi
 *.pkg
+
+# Separately published official plugin repository
+official-local-scm-plugin/

@@ -27,6 +27,103 @@
   var syncDirtyPaths = new Set();
   var fileDecorationSubscription = null;
   var FILE_DECORATION_LANES = ['sync', 'scm', 'diagnostic'];
+  // Workbench pages such as extension details are deliberately kept outside
+  // the file-tab model. Providers get the tab chrome lifecycle without ever
+  // receiving a Monaco model or a workspace path.
+  var workbenchTabProviders = new Map();
+
+  function normalizeWorkbenchTab(tab, providerId) {
+    if (!tab || typeof tab !== 'object') return null;
+    var key = typeof tab.key === 'string' ? tab.key : '';
+    if (!key || key.length > 240) return null;
+    if (S.tabs.some(function(fileTab) { return fileTab.path === key; })) return null;
+    return {
+      key: key,
+      name: String(tab.name || key).slice(0, 160),
+      title: String(tab.title || tab.name || key).slice(0, 320),
+      providerId: providerId,
+      closeable: tab.closeable !== false,
+      draggable: tab.draggable === true
+    };
+  }
+
+  function workbenchTabsFromProviders() {
+    var seen = new Set();
+    var result = [];
+    workbenchTabProviders.forEach(function(provider, providerId) {
+      if (!provider || typeof provider.getTabs !== 'function') return;
+      var supplied = [];
+      try { supplied = provider.getTabs(); } catch (error) { return; }
+      if (!Array.isArray(supplied)) return;
+      supplied.forEach(function(rawTab) {
+        var tab = normalizeWorkbenchTab(rawTab, providerId);
+        if (!tab || seen.has(tab.key)) return;
+        seen.add(tab.key);
+        result.push(tab);
+      });
+    });
+    return result;
+  }
+
+  function findWorkbenchTab(key) {
+    if (typeof key !== 'string') return null;
+    var tabs = workbenchTabsFromProviders();
+    for (var i = 0; i < tabs.length; i++) {
+      if (tabs[i].key !== key) continue;
+      return {
+        tab: tabs[i],
+        provider: workbenchTabProviders.get(tabs[i].providerId)
+      };
+    }
+    return null;
+  }
+
+  function activateWorkbenchTab(key) {
+    var match = findWorkbenchTab(key);
+    if (!match || !match.provider || typeof match.provider.activate !== 'function') return false;
+    try {
+      match.provider.activate(key);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function closeWorkbenchTab(key) {
+    var match = findWorkbenchTab(key);
+    if (!match || !match.provider || typeof match.provider.close !== 'function') return null;
+    try { return Promise.resolve(match.provider.close(key)); } catch (error) { return Promise.reject(error); }
+  }
+
+  function deactivateWorkbenchTabs() {
+    workbenchTabProviders.forEach(function(provider) {
+      if (!provider || typeof provider.deactivate !== 'function') return;
+      try { provider.deactivate(); } catch (error) {}
+    });
+  }
+
+  function notifyWorkbenchFileActivated(tab) {
+    workbenchTabProviders.forEach(function(provider) {
+      if (!provider || typeof provider.afterFileActivation !== 'function') return;
+      try { provider.afterFileActivation(tab); } catch (error) {}
+    });
+  }
+
+  function registerWorkbenchTabProvider(providerId, provider) {
+    if (typeof providerId !== 'string' || !providerId || !provider || typeof provider.getTabs !== 'function') {
+      throw new TypeError('A workbench tab provider needs an id and getTabs().');
+    }
+    workbenchTabProviders.set(providerId, provider);
+    updateTabbar();
+    return {
+      dispose: function() {
+        if (workbenchTabProviders.get(providerId) !== provider) return;
+        workbenchTabProviders.delete(providerId);
+        updateTabbar();
+        updateEmptyState();
+      }
+    };
+  }
 
   function trackTabSyncState(tab) {
     if (!tab || !tab.path) return;
@@ -87,6 +184,7 @@
       row.appendChild(rail);
     }
     rail.setAttribute('data-decoration-status', detail.status);
+    rail.setAttribute('data-decoration-color', detail.color || '');
     rail.title = detail.tooltip || '';
     rail.setAttribute('aria-label', detail.ariaLabel || detail.tooltip || detail.status);
     if (lane === 'sync') {
@@ -339,11 +437,13 @@
         try { t.model.dispose(); } catch (e) { /* ignore */ }
       }
     }
+    // A workbench page is not tied to the workspace and can stay open while
+    // files are replaced. File tabs are still disposed below as before.
+    var retainedWorkbenchTab = findWorkbenchTab(S.activeTabPath);
     S.tabs = [];
-    S.activeTabPath = null;
+    S.activeTabPath = retainedWorkbenchTab ? retainedWorkbenchTab.tab.key : null;
     if (S.editor) S.editor.setModel(null);
-    var bar = document.getElementById('tabbar');
-    if (bar) bar.innerHTML = '';
+    updateTabbar();
     var syncButton = document.getElementById('cloud-sync-btn');
     if (syncButton) syncButton.style.display = 'none';
     var workspaceLabel = document.getElementById('workspace-label');
@@ -405,8 +505,9 @@
         try { t.model.dispose(); } catch (e) { /* ignore */ }
       }
     }
+    var retainedWorkbenchTab = findWorkbenchTab(S.activeTabPath);
     S.tabs = [];
-    S.activeTabPath = null;
+    S.activeTabPath = retainedWorkbenchTab ? retainedWorkbenchTab.tab.key : null;
     S.workspaceRoot = null;
     S.workspaceTree = null;
     S.workspaceIdentity = null;
@@ -421,8 +522,7 @@
     // Clear tree + tabbar DOM
     var tree = document.getElementById('file-tree');
     if (tree) tree.innerHTML = '';
-    var bar = document.getElementById('tabbar');
-    if (bar) bar.innerHTML = '';
+    updateTabbar();
 
     // Clear editors
     if (S.editor) S.editor.setModel(null);
@@ -1245,8 +1345,10 @@
   }
 
   function activateTab(filePath) {
+    if (activateWorkbenchTab(filePath)) return;
     var tab = S.tabs.find(function(t) { return t.path === filePath; });
     if (!tab) return;
+    deactivateWorkbenchTabs();
     S.activeTabPath = filePath;
     if (BOBO.runConfig && BOBO.runConfig.refreshForActiveFile) BOBO.runConfig.refreshForActiveFile();
 
@@ -1270,6 +1372,7 @@
       }
     }
 
+    notifyWorkbenchFileActivated(tab);
     refreshTabBarActive();
     updateTitlebar();
     updateEmptyState();
@@ -1279,6 +1382,8 @@
   }
 
   async function closeTab(filePath, options) {
+    var workbenchClose = closeWorkbenchTab(filePath);
+    if (workbenchClose) return workbenchClose;
     if (S.workspaceTransitionLocked) return false;
     options = options || {};
     var idx = -1;
@@ -1378,8 +1483,8 @@
 
   // ──── Tab Bar Incremental Operations ────
   // ──── Tab Drag-and-Drop ────
-  function setupTabDrag(el) {
-    el.setAttribute('draggable', 'true');
+  function setupTabDrag(el, draggable) {
+    el.setAttribute('draggable', draggable ? 'true' : 'false');
 
     el.addEventListener('keydown', function(e) {
       if (e.key === 'Enter' || e.key === ' ') {
@@ -1396,6 +1501,10 @@
       next.focus();
       activateTab(next.getAttribute('data-tab-path'));
     });
+
+    // Workbench-owned pages participate in keyboard tab navigation but do
+    // not alter the file-tab order. They have no Monaco model to reorder.
+    if (!draggable) return;
 
     el.addEventListener('dragstart', function(e) {
       var idx = el.getAttribute('data-tab-index');
@@ -1431,7 +1540,8 @@
 
       var fromIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
       var toIdx = parseInt(el.getAttribute('data-tab-index'), 10);
-      if (isNaN(fromIdx) || isNaN(toIdx) || fromIdx === toIdx) return;
+      if (isNaN(fromIdx) || isNaN(toIdx) || fromIdx === toIdx ||
+          fromIdx < 0 || toIdx < 0 || fromIdx >= S.tabs.length || toIdx >= S.tabs.length) return;
 
       // Reorder tabs array
       var moved = S.tabs.splice(fromIdx, 1)[0];
@@ -1443,57 +1553,60 @@
     });
   }
 
-  function addTabToBar(tab, index) {
-    var bar = document.getElementById('tabbar');
-    var el = document.createElement('div');
-    el.className = 'tab';
-    el.setAttribute('data-tab-index', index);
-    el.setAttribute('data-tab-path', tab.path);
-    el.setAttribute('role', 'tab');
-    el.setAttribute('aria-selected', 'false');
-    el.tabIndex = -1;
+  function createTabElement(tab, index, providerId) {
+    var barTab = document.createElement('div');
+    var key = providerId ? tab.key : tab.path;
+    var active = key === S.activeTabPath;
+    barTab.className = 'tab' + (active ? ' active' : '') + (providerId ? ' workbench-tab' : '');
+    barTab.setAttribute('data-tab-path', key);
+    if (providerId) barTab.setAttribute('data-tab-provider', providerId);
+    else barTab.setAttribute('data-tab-index', index);
+    barTab.setAttribute('role', 'tab');
+    barTab.setAttribute('aria-selected', active ? 'true' : 'false');
+    barTab.tabIndex = active ? 0 : -1;
 
     var title = document.createElement('span');
     title.className = 'tab-title';
-    title.textContent = tab.name;
-    el.appendChild(title);
+    title.textContent = providerId ? tab.name : (tab.dirty ? tab.name + ' *' : tab.name);
+    title.title = providerId ? tab.title : tab.name;
+    barTab.appendChild(title);
 
-    var close = document.createElement('button');
-    close.className = 'close';
-    close.type = 'button';
-    close.title = 'Close ' + tab.name;
-    close.setAttribute('aria-label', 'Close ' + tab.name);
-    close.innerHTML = BOBO.icons.close;
-    close.onclick = function(e) {
-      e.stopPropagation();
-      closeTab(tab.path);
-    };
-    el.appendChild(close);
+    if (!providerId || tab.closeable !== false) {
+      var close = document.createElement('button');
+      close.className = 'close';
+      close.type = 'button';
+      close.title = 'Close ' + tab.name;
+      close.setAttribute('aria-label', 'Close ' + tab.name);
+      // The workbench tab provider can refresh tabs during early startup,
+      // before the optional icon registry is available.
+      close.innerHTML = BOBO.icons && BOBO.icons.close ? BOBO.icons.close : '';
+      close.onclick = (function(tabKey) {
+        return function(e) {
+          e.stopPropagation();
+          closeTab(tabKey);
+        };
+      })(key);
+      barTab.appendChild(close);
+    }
 
-    el.onclick = function() { activateTab(tab.path); };
+    barTab.onclick = (function(tabKey) { return function() { activateTab(tabKey); }; })(key);
+    setupTabDrag(barTab, providerId ? tab.draggable === true : true);
+    return barTab;
+  }
 
-    setupTabDrag(el);
-    bar.appendChild(el);
-    refreshTabBarActive();
+  function addTabToBar(tab, index) {
+    updateTabbar();
   }
 
   function removeTabFromBar(index) {
-    var bar = document.getElementById('tabbar');
-    var el = bar.querySelector('[data-tab-index="' + index + '"]');
-    if (el && el.parentNode) el.parentNode.removeChild(el);
-    reindexTabBar();
+    updateTabbar();
   }
 
   function updateTabDirtyFlag(index, dirty) {
-    var bar = document.getElementById('tabbar');
-    var el = bar.querySelector('[data-tab-index="' + index + '"]');
-    if (!el) return;
-    var titleEl = el.querySelector('.tab-title');
-    if (!titleEl) return;
     var tab = S.tabs[index];
     if (tab) {
       trackTabSyncState(tab);
-      titleEl.textContent = dirty ? tab.name + ' *' : tab.name;
+      updateTabbar();
     }
   }
 
@@ -1516,7 +1629,7 @@
 
   function reindexTabBar() {
     var bar = document.getElementById('tabbar');
-    var tabs = bar.querySelectorAll('.tab');
+    var tabs = bar.querySelectorAll('.tab:not([data-tab-provider])');
     for (var i = 0; i < tabs.length; i++) {
       tabs[i].setAttribute('data-tab-index', i);
     }
@@ -1524,42 +1637,29 @@
   }
 
   function updateTabbar() {
-    // Full rebuild — only called on initialization or after major state changes
+    // Full rebuild keeps file tabs and isolated workbench pages in one
+    // keyboard-accessible tab strip. Only file tabs are draggable.
     var bar = document.getElementById('tabbar');
+    if (!bar) return;
     bar.innerHTML = '';
     for (var i = 0; i < S.tabs.length; i++) {
       var t = S.tabs[i];
       trackTabSyncState(t);
-      var el = document.createElement('div');
-      el.className = 'tab' + (t.path === S.activeTabPath ? ' active' : '');
-      el.setAttribute('data-tab-index', i);
-      el.setAttribute('data-tab-path', t.path);
-      el.setAttribute('role', 'tab');
-      el.setAttribute('aria-selected', t.path === S.activeTabPath ? 'true' : 'false');
-      el.tabIndex = t.path === S.activeTabPath ? 0 : -1;
-
-      var title = document.createElement('span');
-      title.className = 'tab-title';
-      title.textContent = t.dirty ? t.name + ' *' : t.name;
-
-      var close = document.createElement('button');
-      close.className = 'close';
-      close.type = 'button';
-      close.title = 'Close ' + t.name;
-      close.setAttribute('aria-label', 'Close ' + t.name);
-      close.innerHTML = BOBO.icons.close;
-      close.onclick = (function(p) { return function(e) { e.stopPropagation(); closeTab(p); }; })(t.path);
-
-      el.appendChild(title);
-      el.appendChild(close);
-      el.onclick = (function(p) { return function() { activateTab(p); }; })(t.path);
-      setupTabDrag(el);
-      bar.appendChild(el);
+      bar.appendChild(createTabElement(t, i, null));
     }
+    workbenchTabsFromProviders().forEach(function(tab) {
+      bar.appendChild(createTabElement(tab, -1, tab.providerId));
+    });
   }
 
   function updateTitlebar() {
     var label = document.getElementById('workspace-label');
+    var workbenchTab = findWorkbenchTab(S.activeTabPath);
+    if (workbenchTab) {
+      label.textContent = t('Extensions') + ' / ' + workbenchTab.tab.name;
+      label.title = workbenchTab.tab.title;
+      return;
+    }
     var root = S.workspaceRoot || '';
     var rootParts = root.split(/[/\\]/).filter(Boolean);
     var base = root ? (rootParts[rootParts.length - 1] || root) : 'No folder opened';
@@ -1575,7 +1675,7 @@
     var editor = document.getElementById('editor');
     var el = document.getElementById('empty-state');
     if (!el || !editor) return;
-    if (S.tabs.length === 0) {
+    if (S.tabs.length === 0 && !findWorkbenchTab(S.activeTabPath)) {
       el.classList.remove('hidden');
       editor.classList.add('empty');
       var title = el.querySelector('.empty-state-title');
@@ -1701,6 +1801,15 @@
     addTabToBar: addTabToBar,
     removeTabFromBar: removeTabFromBar,
     updateTabDirtyFlag: updateTabDirtyFlag,
-    updateEmptyState: updateEmptyState
+    updateEmptyState: updateEmptyState,
+
+    // Internal workbench pages are registered by trusted renderer modules.
+    // Downloaded extensions never receive this bridge; their public API is
+    // constrained by renderer/core/plugin-extension-host.js.
+    registerWorkbenchTabProvider: registerWorkbenchTabProvider,
+    getWorkbenchTab: function(key) {
+      var match = findWorkbenchTab(key);
+      return match ? Object.assign({}, match.tab) : null;
+    }
   };
 })(window);

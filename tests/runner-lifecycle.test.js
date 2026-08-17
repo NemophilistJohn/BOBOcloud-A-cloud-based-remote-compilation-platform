@@ -30,6 +30,9 @@ function loadRunner(overrides) {
   overrides = overrides || {};
   const workspaceRoot = 'C:\\workspace';
   const elements = {
+    'run-code': { disabled: false, style: {} },
+    'run-target-btn': { disabled: false, style: {} },
+    'run-config-btn': { disabled: false, style: {} },
     'stop-code': { disabled: false, style: {} },
     'stdin-input-row': { style: {} }
   };
@@ -113,6 +116,7 @@ function loadRunner(overrides) {
   return {
     BOBO: windowObject.BOBO,
     state,
+    elements,
     outputs,
     apiCalls,
     webSocketConstructions: () => webSocketConstructions
@@ -250,6 +254,52 @@ test('workspace leave cancels a registered run before runCode responds and block
   assert.equal(fixture.webSocketConstructions(), 0);
   assert.equal(fixture.state.activeRunContext, null);
   assert.equal(fixture.state.activeRunId, null);
+});
+
+test('a second Run click cannot replace an in-flight preparation and Stop locks immediately', async () => {
+  const runCodeResult = deferred();
+  const cancelResult = deferred();
+  const serverCalls = [];
+  const fixture = loadRunner({
+    state: {
+      tabs: [{ path: 'C:\\workspace\\main.js', dirty: false }],
+      activeTabPath: 'C:\\workspace\\main.js'
+    },
+    BOBO: {
+      sendToServer(action, payload) {
+        serverCalls.push({ action, payload });
+        if (action === 'runCode') return runCodeResult.promise;
+        if (action === 'cancelRun') return cancelResult.promise;
+        throw new Error('Unexpected server action: ' + action);
+      }
+    }
+  });
+
+  const first = fixture.BOBO.runner.runActive();
+  await waitFor(() => serverCalls.some((call) => call.action === 'runCode'));
+  const second = await fixture.BOBO.runner.runActive();
+
+  assert.equal(second, false);
+  assert.equal(serverCalls.filter((call) => call.action === 'runCode').length, 1);
+  assert.equal(fixture.BOBO.state.activeRunId, 'run-id-1');
+  assert.match(fixture.outputs.at(-1), /already in progress/i);
+
+  const stop = fixture.BOBO.runner.stopActiveRun();
+  assert.equal(fixture.BOBO.state.activeRunId, null);
+  assert.equal(fixture.BOBO.state.activeRunSocket, null);
+  assert.equal(fixture.BOBO.state.activeRunCancelled, true);
+  assert.equal(fixture.BOBO.state.activeRunId, null);
+  assert.equal(fixture.BOBO.state.activeRunContext, null);
+  assert.equal(fixture.elements['run-code'].disabled, true);
+  assert.equal(fixture.elements['run-target-btn'].disabled, true);
+  assert.equal(fixture.elements['run-config-btn'].disabled, true);
+  cancelResult.resolve({ success: true });
+  runCodeResult.resolve({ success: true, token: 'late-token', wsPath: '/ws' });
+  await Promise.all([first, stop]);
+  assert.equal(fixture.webSocketConstructions(), 0);
+  assert.equal(fixture.elements['run-code'].disabled, false);
+  assert.equal(fixture.elements['run-target-btn'].disabled, false);
+  assert.equal(fixture.elements['run-config-btn'].disabled, false);
 });
 
 test('Stop invalidates a run waiting for pre-sync before it can send runCode', async () => {

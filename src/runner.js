@@ -11,6 +11,7 @@
   var runNonceSequence = 0;
   var runPreparationSequence = 0;
   var activeRunPreparation = null;
+  var cancellingRun = false;
   var syncedIdentityEpoch = S.runIdentityEpoch || 0;
 
   function tr(source, replacements) {
@@ -72,14 +73,28 @@
   }
 
   function setRunControlsIdle() {
+    var unavailable = Boolean(S.workspaceTransitionLocked || cancellingRun);
     var stopButton = document.getElementById('stop-code');
     if (stopButton) { stopButton.disabled = true; stopButton.style.opacity = '0.5'; }
+    var runButton = document.getElementById('run-code');
+    if (runButton) runButton.disabled = unavailable;
+    ['run-target-btn', 'run-config-btn'].forEach(function(id) {
+      var control = document.getElementById(id);
+      if (control) control.disabled = unavailable;
+    });
     hideStdinInput();
   }
 
   function setRunControlsActive() {
+    cancellingRun = false;
     var stopButton = document.getElementById('stop-code');
     if (stopButton) { stopButton.disabled = false; stopButton.style.opacity = '1'; }
+    var runButton = document.getElementById('run-code');
+    if (runButton) runButton.disabled = true;
+    ['run-target-btn', 'run-config-btn'].forEach(function(id) {
+      var control = document.getElementById(id);
+      if (control) control.disabled = true;
+    });
   }
 
   function requestRunCancellation(runId) {
@@ -112,6 +127,10 @@
     S.artifactInflight = new Map();
     S.activeRunSocket = null;
     S.activeRunId = null;
+    cancellingRun = true;
+    // The cancellation request may take up to the HTTP fallback timeout.
+    // Disable controls before awaiting it so Stop is visibly single-flight.
+    setRunControlsIdle();
     if (socket && socket.readyState === WebSocket.OPEN && runId) {
       try { socket.send(JSON.stringify({ type: 'cancel', runId: runId })); } catch (e) {}
     }
@@ -124,6 +143,7 @@
     if (global.api && global.api.setArtifactRunContext && runContext) {
       try { await global.api.setArtifactRunContext({ clear: true, runNonce: runContext.nonce }); } catch (e) {}
     }
+    cancellingRun = false;
     setRunControlsIdle();
     return true;
   }
@@ -434,13 +454,13 @@
 
   // ──── Run Code ────
   function runActive() {
-    if (S.workspaceTransitionLocked) return;
+    if (S.workspaceTransitionLocked) return false;
     var active = S.tabs.find(function(t) { return t.path === S.activeTabPath; });
     if (!active) {
       BOBO.updateRunOutput('Open a runnable source file before starting a run.');
-      return;
+      return false;
     }
-    runCodeOnServer(active.path);
+    return runCodeOnServer(active.path);
   }
 
   // 中止当前运行：通过 WebSocket 发送 cancel 消息，服务端取消运行上下文
@@ -487,7 +507,7 @@
     var taskRequest = options.taskRequest;
     var taskProblemSession = null;
     var isProjectTask = Boolean(taskExecution || taskRequest);
-    if (S.workspaceTransitionLocked) return;
+    if (S.workspaceTransitionLocked) return false;
     if (BOBO.dap && BOBO.dap.isActive && BOBO.dap.isActive()) {
       BOBO.updateRunOutput(tr('Cannot run code while a debug session is active.'));
       return false;
@@ -513,6 +533,10 @@
     if (!isProjectTask && BOBO.runConfig && !rcLang) {
       BOBO.updateRunOutput('Error: This file type is not runnable. Open a C, C++, Java, Go, Rust, Python, or JavaScript file.');
       return;
+    }
+    if (activeRunPreparation || S.activeRunSocket || S.activeRunId || S.activeRunContext) {
+      BOBO.updateRunOutput(tr('A run is already in progress. Stop it before starting another one.'));
+      return false;
     }
     beginRunPreparation(runContext);
 

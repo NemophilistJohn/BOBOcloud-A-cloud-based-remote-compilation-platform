@@ -154,6 +154,33 @@ contextBridge.exposeInMainWorld('api', {
     return subscribe('language-packs:changed', listener);
   },
 
+  // User plugin packages stay outside the generic file APIs. The renderer can
+  // manage metadata and request only a verified enabled entry bundle for its
+  // isolated extension host; it never receives a package path.
+  plugins: Object.freeze({
+    list: () => ipcRenderer.invoke('plugins:list'),
+    get: (id) => ipcRenderer.invoke('plugins:get', id),
+    install: () => ipcRenderer.invoke('plugins:install'),
+    enable: (id) => ipcRenderer.invoke('plugins:enable', id),
+    disable: (id) => ipcRenderer.invoke('plugins:disable', id),
+    uninstall: (id) => ipcRenderer.invoke('plugins:uninstall', id),
+    grant: (id, permission) => ipcRenderer.invoke('plugins:grant', { id, permission }),
+    revoke: (id, permission) => ipcRenderer.invoke('plugins:revoke', { id, permission }),
+    refresh: () => ipcRenderer.invoke('plugins:refresh'),
+    openFolder: () => ipcRenderer.invoke('plugins:open-folder'),
+    runtimeDescriptors: () => ipcRenderer.invoke('plugins:runtime-descriptors'),
+    loadEntry: (id) => ipcRenderer.invoke('plugins:load-entry', id),
+    loadLocalization: (id, locale) => ipcRenderer.invoke('plugins:load-localization', { id, locale }),
+    marketplace: Object.freeze({
+      list: () => ipcRenderer.invoke('plugins:marketplace-list'),
+      refresh: () => ipcRenderer.invoke('plugins:marketplace-refresh'),
+      install: (id) => ipcRenderer.invoke('plugins:marketplace-install', { id })
+    }),
+    rpc: (pluginId, method, args) => ipcRenderer.invoke('plugins:rpc', { pluginId, method, args }),
+    onChanged: (cb) => subscribePayload('plugins:changed', cb)
+  }),
+  onOpenPluginManager: (cb) => subscribe('open-plugin-manager', cb),
+
   // ──── AI Agent ────
   aiChatRequest: (payload) => ipcRenderer.invoke('ai-chat-request', payload),
   aiCancelStream: () => ipcRenderer.invoke('ai-cancel-stream'),

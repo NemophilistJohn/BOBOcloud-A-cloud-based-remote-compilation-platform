@@ -16,6 +16,9 @@
   <link rel="stylesheet" href="./styles/language-packs.css">
   <link rel="stylesheet" href="./styles/project-tasks.css">
   <link rel="stylesheet" href="./styles/debug.css">
+  <link rel="stylesheet" href="./styles/plugin-manager.css">
+  <link rel="stylesheet" href="./styles/plugin-details.css">
+  <link rel="stylesheet" href="./styles/source-control-view.css">
 </head>
 <body>
   <div id="layout" class="workbench-shell" data-panel-position="bottom" data-density="comfortable">
@@ -74,6 +77,7 @@
         <button class="activity-item" data-workbench-view="cloud" title="Cloud resources" aria-label="Cloud resources" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6.5 18a4.5 4.5 0 0 1-.35-8.98 6 6 0 0 1 11.43-1.5A4.75 4.75 0 0 1 17.5 17h-11" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button id="activity-environment" class="activity-item" data-workbench-view="environment" title="Project environment" aria-label="Project environment" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m4.4 7.7 7.6 4.2 7.6-4.2M12 12v8.5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m8.2 5.2 7.7 4.3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
         <button id="activity-team" class="activity-item" data-workbench-view="team" title="Team workspace" aria-label="Team workspace" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.6"/><circle cx="17" cy="9" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M3 19c.3-3.4 2.4-5.2 5.3-5.2s5 1.8 5.3 5.2M14 14.5c3-1.2 6.6.3 7 4.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+        <button id="activity-extensions" class="activity-item" data-workbench-view="extensions" title="Extensions" aria-label="Extensions" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx=".8" fill="currentColor"/><rect x="13.5" y="3.5" width="7" height="7" rx=".8" fill="currentColor"/><rect x="3.5" y="13.5" width="7" height="7" rx=".8" fill="currentColor"/><rect x="13.5" y="13.5" width="7" height="7" rx=".8" fill="currentColor"/></svg></button>
       </div>
       <div class="activity-secondary"><button id="activity-settings" class="activity-item" title="Settings (Ctrl+,)" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>
     </nav>
@@ -192,6 +196,36 @@
           </div>
         </div>
       </section>
+      <section id="extensions-sidebar" class="sidebar-view extensions-sidebar" data-sidebar-view="extensions" aria-label="Extensions">
+        <div class="sidebar-header extensions-sidebar-header">
+          <span data-i18n="Extensions">Extensions</span>
+          <div class="sidebar-header-actions">
+            <button id="extensions-install" type="button" title="Select .boboplugin package" aria-label="Select .boboplugin package"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 3.25v13.5M3.25 10h13.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+            <button id="extensions-refresh" type="button" title="Refresh" aria-label="Refresh"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M15.6 6.7A6.1 6.1 0 1 0 16 10.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M12.55 3.75h3.7v3.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button class="sidebar-hide" type="button" title="Hide primary sidebar" aria-label="Hide primary sidebar"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m10 3-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          </div>
+        </div>
+        <div class="extensions-sidebar-content">
+          <label class="extensions-search" for="extensions-search-input">
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="8.55" cy="8.55" r="4.65" stroke="currentColor" stroke-width="1.45"/><path d="m12.1 12.1 4 4" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"/></svg>
+            <input id="extensions-search-input" type="search" autocomplete="off" spellcheck="false" placeholder="Search extensions in Marketplace" aria-label="Search extensions in Marketplace">
+          </label>
+          <div class="extensions-view-tabs" role="tablist" aria-label="Extensions views">
+            <button id="extensions-marketplace-tab" type="button" role="tab" aria-selected="true" aria-controls="extensions-marketplace-view" data-extension-view="marketplace" data-i18n="Marketplace">Marketplace</button>
+            <button id="extensions-installed-tab" type="button" role="tab" aria-selected="false" aria-controls="extensions-installed-view" data-extension-view="installed" data-i18n="Installed">Installed</button>
+          </div>
+          <div class="extensions-sidebar-scroll sidebar-scroll">
+            <section id="extensions-marketplace-view" class="extensions-view active" role="tabpanel" aria-labelledby="extensions-marketplace-tab">
+              <div id="extensions-marketplace-list" class="extensions-marketplace-list" role="list" aria-live="polite" aria-busy="true"></div>
+            </section>
+            <section id="extensions-installed-view" class="extensions-view" role="tabpanel" aria-labelledby="extensions-installed-tab" hidden>
+              <div class="extensions-installed-heading"><span data-i18n="Installed extensions">Installed extensions</span><button id="extensions-open-folder" type="button" class="extensions-inline-action" title="Open extensions folder" aria-label="Open extensions folder"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.75 5.25h5.1l1.5 1.75h8.9v8.5a1.75 1.75 0 0 1-1.75 1.75H3.5a1.75 1.75 0 0 1-1.75-1.75v-8.5a1.75 1.75 0 0 1 1-1.75Z" stroke="currentColor" stroke-width="1.45" stroke-linejoin="round"/></svg></button></div>
+              <div id="extensions-installed-list" class="extensions-installed-list" role="list" aria-live="polite" aria-busy="false"></div>
+            </section>
+          </div>
+          <div id="extensions-status" class="extensions-status" role="status" aria-live="polite" aria-atomic="true"></div>
+        </div>
+      </section>
     </aside>
     <div id="sidebar-resizer" class="workbench-resizer" role="separator" aria-label="Resize primary sidebar" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="520" tabindex="0"></div>
 
@@ -291,23 +325,31 @@
       <div id="panel-problems" class="panel-content problems-panel-content" role="tabpanel"></div>
       <div id="panel-debug" class="panel-content debug-panel-content" role="tabpanel">
         <div class="debug-inspector" aria-label="Debug">
-          <section class="debug-section" data-debug-section="stack">
+          <div class="debug-inspector-tabs" role="tablist" aria-label="Debug">
+            <button id="debug-inspector-tab-stack" class="debug-inspector-tab active" type="button" role="tab" aria-selected="true" aria-controls="debug-section-stack" data-debug-inspector-tab="stack">Call Stack</button>
+            <button id="debug-inspector-tab-variables" class="debug-inspector-tab" type="button" role="tab" aria-selected="false" aria-controls="debug-section-variables" data-debug-inspector-tab="variables" tabindex="-1">Variables</button>
+            <button id="debug-inspector-tab-watch" class="debug-inspector-tab" type="button" role="tab" aria-selected="false" aria-controls="debug-section-watch" data-debug-inspector-tab="watch" tabindex="-1">Watch</button>
+            <button id="debug-inspector-tab-console" class="debug-inspector-tab" type="button" role="tab" aria-selected="false" aria-controls="debug-section-console" data-debug-inspector-tab="console" tabindex="-1">Debug Console</button>
+          </div>
+          <div class="debug-inspector-panels">
+          <section id="debug-section-stack" class="debug-section debug-section-active" data-debug-section="stack" role="tabpanel" aria-labelledby="debug-inspector-tab-stack">
             <header><span>Call Stack</span></header>
             <div id="debug-call-stack" class="debug-tree"><div class="debug-empty">No stack frames</div></div>
           </section>
-          <section class="debug-section" data-debug-section="variables">
+          <section id="debug-section-variables" class="debug-section" data-debug-section="variables" role="tabpanel" aria-labelledby="debug-inspector-tab-variables">
             <header><span>Variables</span></header>
             <div id="debug-variables" class="debug-tree"><div class="debug-empty">No variables</div></div>
           </section>
-          <section class="debug-section" data-debug-section="watch">
+          <section id="debug-section-watch" class="debug-section" data-debug-section="watch" role="tabpanel" aria-labelledby="debug-inspector-tab-watch">
             <header><span>Watch</span><button id="debug-add-watch" type="button" title="Add Watch Expression" aria-label="Add Watch Expression">+</button></header>
             <div id="debug-watch-list" class="debug-tree"><div class="debug-empty">No watch expressions</div></div>
           </section>
-          <section class="debug-section debug-console-section" data-debug-section="console">
+          <section id="debug-section-console" class="debug-section debug-console-section" data-debug-section="console" role="tabpanel" aria-labelledby="debug-inspector-tab-console">
             <header><span>Debug Console</span></header>
             <div id="debug-console-output" class="debug-console-output" aria-live="polite"></div>
             <div class="debug-console-input-row"><span>&gt;</span><input id="debug-console-input" type="text" placeholder="Evaluate expression" aria-label="Evaluate expression"></div>
           </section>
+          </div>
         </div>
       </div>
       <div id="panel-team" class="panel-content team-panel-content" role="tabpanel">

@@ -108,19 +108,30 @@
 .debug-toolbar button svg { width: 100%; height: 100%; }
 .debug-toolbar .debug-stop { color: var(--red); }
 
-.debug-panel-content { overflow: hidden !important; }
-.debug-inspector { height: 100%; min-height: 0; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.2fr) minmax(180px, 1fr); grid-template-rows: minmax(54px, .55fr) minmax(138px, 1.85fr); }
+.debug-panel-content { overflow: hidden !important; container: debug-panel / size; }
+.debug-inspector { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.debug-inspector-tabs { display: none; min-width: 0; flex: 0 0 31px; align-items: stretch; overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid var(--border-default); background: var(--bg-surface); scrollbar-width: thin; }
+.debug-inspector-tab { flex: 0 0 auto; min-width: max-content; border: 0; border-bottom: 2px solid transparent; padding: 0 10px; background: transparent; color: var(--text-tertiary); font-size: 11px; font-weight: 600; line-height: 29px; text-transform: uppercase; cursor: pointer; }
+.debug-inspector-tab:hover { color: var(--text-primary); background: var(--bg-hover); }
+.debug-inspector-tab:focus-visible { outline: 1px solid var(--brand); outline-offset: -2px; }
+.debug-inspector-tab.active { color: var(--text-primary); border-bottom-color: var(--brand); }
+.debug-inspector-panels { min-height: 0; flex: 1 1 auto; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.2fr) minmax(180px, 1fr); grid-template-rows: minmax(54px, .55fr) minmax(138px, 1.85fr); }
 .debug-section { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border-default); overflow: hidden; }
 .debug-section > header { height: 28px; flex: 0 0 28px; display: flex; align-items: center; justify-content: space-between; padding: 0 9px; border-bottom: 1px solid var(--border-default); color: var(--text-tertiary); font-size: 11px; font-weight: 600; text-transform: uppercase; }
 .debug-section > header button { width: 22px; height: 22px; border: 0; border-radius: 3px; background: transparent; color: var(--text-primary); font-size: 18px; line-height: 18px; cursor: pointer; }
 .debug-section > header button:hover { background: var(--bg-hover); }
 .debug-tree { min-height: 0; overflow: auto; padding: 3px 0; font-family: var(--font-mono, Consolas, monospace); font-size: 11px; }
-.debug-tree-row { min-height: 23px; padding: 3px 8px; display: flex; align-items: baseline; gap: 6px; cursor: default; }
+.debug-tree-row { min-height: 23px; padding: 3px 8px; display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.2fr) minmax(0, .55fr); align-items: start; column-gap: 7px; row-gap: 1px; cursor: default; }
 button.debug-tree-row { width: 100%; border: 0; background: transparent; color: inherit; text-align: left; }
 button.debug-tree-row:hover, button.debug-tree-row.active { background: var(--bg-hover); }
-.debug-tree-name { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.debug-tree-value { color: var(--debug-token-string, #ce9178); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.debug-tree-type, .debug-tree-meta { color: var(--text-tertiary); margin-left: auto; white-space: nowrap; }
+.debug-tree-name, .debug-tree-value, .debug-tree-type, .debug-tree-meta { min-width: 0; overflow-wrap: anywhere; }
+.debug-tree-name { color: var(--text-primary); }
+.debug-tree-value { color: var(--debug-token-string, #ce9178); white-space: pre-wrap; }
+.debug-tree-type, .debug-tree-meta { color: var(--text-tertiary); text-align: right; }
+#debug-call-stack .debug-tree-row { grid-template-columns: minmax(0, 1fr) minmax(0, auto); }
+#debug-call-stack .debug-tree-meta { max-width: 16em; }
+#debug-watch-list .debug-tree-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto; }
+.debug-scope-label { grid-template-columns: minmax(0, 1fr); color: var(--text-secondary); font-family: var(--font-ui, sans-serif); font-weight: 600; }
 .debug-variable-truncated { color: var(--text-tertiary); font-family: var(--font-ui, sans-serif); font-style: italic; }
 .debug-empty { padding: 9px; color: var(--text-tertiary); font-family: var(--font-ui, sans-serif); font-size: 11px; }
 .debug-watch-remove { margin-left: auto; border: 0; background: transparent; color: var(--text-tertiary); cursor: pointer; opacity: 0; }
@@ -147,11 +158,35 @@ button.debug-tree-row:hover, button.debug-tree-row.active { background: var(--bg
   .debug-control-group #debug-start span { display: none; }
   .debug-control-group #debug-start { width: 30px; padding: 0; }
   .debug-toolbar-status { display: none; }
-  .debug-inspector { grid-template-columns: 1fr 1fr; grid-template-rows: minmax(44px, .45fr) minmax(44px, .45fr) minmax(138px, 2fr); }
+  .debug-inspector-panels { grid-template-columns: 1fr 1fr; grid-template-rows: minmax(44px, .45fr) minmax(44px, .45fr) minmax(138px, 2fr); }
   .debug-section[data-debug-section="watch"] { grid-column: 1 / -1; }
   .debug-console-section { grid-row: 3; }
 }
 
-#layout[data-panel-position="right"] .debug-inspector { display: flex; flex-direction: column; }
+#layout[data-panel-position="right"] .debug-inspector-panels { display: flex; flex-direction: column; }
 #layout[data-panel-position="right"] .debug-section { flex: 1 1 18%; border-right: 0; border-bottom: 1px solid var(--border-default); }
 #layout[data-panel-position="right"] .debug-console-section { flex: 1.8 1 46%; border-top: 0; }
+
+/* A short or narrow dock cannot meaningfully show four independent trees at
+   once. Keep the same data mounted, but give the selected inspector its full
+   scrollable surface instead of squeezing every section into unreadable rows. */
+@container debug-panel (max-width: 820px) or (max-height: 220px) {
+  .debug-inspector-tabs { display: flex; }
+  .debug-inspector-panels { display: block; min-height: 0; overflow: hidden; }
+  .debug-section { display: none; height: 100%; border: 0; }
+  .debug-section.debug-section-active { display: flex; }
+  .debug-section > header { padding-inline: 10px; }
+  .debug-tree, .debug-console-output { font-size: 12px; }
+  .debug-tree-row { min-height: 28px; padding: 4px 10px; }
+  #debug-call-stack .debug-tree-row { grid-template-columns: minmax(0, 1fr) auto; }
+  #debug-call-stack .debug-tree-meta { max-width: 42%; }
+  #debug-variables .debug-tree-row { grid-template-columns: minmax(0, 1fr) auto; }
+  #debug-variables .debug-tree-name { grid-column: 1; grid-row: 1; }
+  #debug-variables .debug-tree-type { grid-column: 2; grid-row: 1; }
+  #debug-variables .debug-tree-value { grid-column: 1 / -1; grid-row: 2; color: var(--debug-token-string, #ce9178); }
+  #debug-watch-list .debug-tree-row { grid-template-columns: minmax(0, 1fr) auto; }
+  #debug-watch-list .debug-tree-name { grid-column: 1; grid-row: 1; }
+  #debug-watch-list .debug-watch-remove { grid-column: 2; grid-row: 1; }
+  #debug-watch-list .debug-tree-value { grid-column: 1 / -1; grid-row: 2; }
+  .debug-console-input-row { height: 32px; flex-basis: 32px; }
+}

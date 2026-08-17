@@ -417,17 +417,30 @@
       var wrote = await window.api.writeServerSettings(config);
       if (!wrote) throw new Error('Failed to save server settings');
       S.serverSettings = config;
-      if (BOBO.lsp && BOBO.lsp.workspaceChanged) BOBO.lsp.workspaceChanged();
       refreshRcloneStatus(config.rclonePath);
-      // 服务器地址变更 → 重新探测认证模式（多人模式会要求重新登录）
+      // Only a transport or credential change invalidates cloud sessions.
+      // Sync cadence and the local rclone path are client preferences and
+      // must not tear down an otherwise healthy debug/LSP/auth session.
       var connectionResult = { success: true };
-      if (BOBO.auth && BOBO.auth.onServerChanged) {
+      if (serverIdentityChanged && BOBO.auth && BOBO.auth.onServerChanged) {
         try { connectionResult = await BOBO.auth.onServerChanged({ runInvalidated: true }); } catch (e) { connectionResult = { success: false, error: e.message }; }
       }
       if (!connectionResult || !connectionResult.success) {
+        // A failed validation must not leave the application pointed at a
+        // server that it could not authenticate with. Restore the last
+        // known-good persisted settings before keeping the dialog open.
+        if (serverIdentityChanged) {
+          try { await window.api.writeServerSettings(previousConfig); } catch (_) {}
+          S.serverSettings = previousConfig;
+          try {
+            if (BOBO.auth && BOBO.auth.onServerChanged) await BOBO.auth.onServerChanged({ runInvalidated: true });
+          } catch (_) {}
+          if (BOBO.lsp && BOBO.lsp.workspaceChanged) BOBO.lsp.workspaceChanged();
+        }
         if (connectStatus) { connectStatus.dataset.state = 'error'; connectStatus.textContent = BOBO.i18n.t('Could not connect to the server. Check the address and try again.'); }
         return;
       }
+      if (serverIdentityChanged && BOBO.lsp && BOBO.lsp.workspaceChanged) BOBO.lsp.workspaceChanged();
       config.setupCompleted = true;
       config.firstRunRequired = false;
       await window.api.writeServerSettings(config);

@@ -23,6 +23,7 @@
   var breakpointSyncStates = new Map();
   var VARIABLE_PAGE_SIZE = 200;
   var startPromise = null;
+  var activeInspectorSection = 'stack';
   var consoleQueue = [];
   var consoleFlushTimer = 0;
   var consoleRenderPasses = 0;
@@ -813,6 +814,40 @@
     });
   }
 
+  function selectInspectorSection(section, focus) {
+    var allowed = ['stack', 'variables', 'watch', 'console'];
+    if (allowed.indexOf(section) < 0) return;
+    activeInspectorSection = section;
+    document.querySelectorAll('[data-debug-inspector-tab]').forEach(function(tab) {
+      var selected = tab.getAttribute('data-debug-inspector-tab') === section;
+      tab.classList.toggle('active', selected);
+      tab.setAttribute('aria-selected', selected ? 'true' : 'false');
+      tab.tabIndex = selected ? 0 : -1;
+      if (selected && focus) tab.focus();
+    });
+    document.querySelectorAll('.debug-section[data-debug-section]').forEach(function(panel) {
+      panel.classList.toggle('debug-section-active', panel.getAttribute('data-debug-section') === section);
+    });
+  }
+
+  function bindInspectorTabs() {
+    var tabs = Array.from(document.querySelectorAll('[data-debug-inspector-tab]'));
+    tabs.forEach(function(tab, index) {
+      tab.addEventListener('click', function() { selectInspectorSection(tab.getAttribute('data-debug-inspector-tab')); });
+      tab.addEventListener('keydown', function(event) {
+        var nextIndex = -1;
+        if (event.key === 'Home') nextIndex = 0;
+        else if (event.key === 'End') nextIndex = tabs.length - 1;
+        else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (index + 1) % tabs.length;
+        else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (index - 1 + tabs.length) % tabs.length;
+        if (nextIndex < 0) return;
+        event.preventDefault();
+        selectInspectorSection(tabs[nextIndex].getAttribute('data-debug-inspector-tab'), true);
+      });
+    });
+    selectInspectorSection(activeInspectorSection);
+  }
+
   function variableRow(variable, depth, epoch) {
     var wrapper = document.createElement('div');
     var row = document.createElement('button');
@@ -988,6 +1023,7 @@
   }
 
   function beginAddWatch() {
+    selectInspectorSection('watch');
     var container = document.getElementById('debug-watch-list');
     if (!container || container.querySelector('.debug-watch-input')) return;
     var row = document.createElement('div');
@@ -1040,6 +1076,7 @@
     var epoch = ++pauseEpoch;
     selectedFrameToken += 1;
     setPhase('stopped', tr('Paused on {reason}', { reason: stopReasonText(reason) }));
+    selectInspectorSection('stack');
     if (BOBO.switchToPanel) BOBO.switchToPanel('debug');
     try {
       var threads = await global.api.dapRequest('threads', {});
@@ -1419,6 +1456,7 @@
     document.querySelectorAll('#debug-toolbar [data-debug-command]').forEach(function(button) {
       button.addEventListener('click', function() { execute(button.getAttribute('data-debug-command')); });
     });
+    bindInspectorTabs();
     var addWatch = document.getElementById('debug-add-watch');
     if (addWatch) addWatch.addEventListener('click', beginAddWatch);
     var consoleInput = document.getElementById('debug-console-input');

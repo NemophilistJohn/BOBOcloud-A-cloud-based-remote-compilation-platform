@@ -84,6 +84,23 @@ const EXPECTED_IPC = new Map([
   ['language-packs:remove', 'handle'],
   ['language-packs:open-folder', 'handle'],
   ['language-packs:refresh', 'handle'],
+  ['plugins:list', 'handle'],
+  ['plugins:get', 'handle'],
+  ['plugins:install', 'handle'],
+  ['plugins:enable', 'handle'],
+  ['plugins:disable', 'handle'],
+  ['plugins:uninstall', 'handle'],
+  ['plugins:grant', 'handle'],
+  ['plugins:revoke', 'handle'],
+  ['plugins:runtime-descriptors', 'handle'],
+  ['plugins:load-entry', 'handle'],
+  ['plugins:load-localization', 'handle'],
+  ['plugins:marketplace-list', 'handle'],
+  ['plugins:marketplace-refresh', 'handle'],
+  ['plugins:marketplace-install', 'handle'],
+  ['plugins:rpc', 'handle'],
+  ['plugins:open-folder', 'handle'],
+  ['plugins:refresh', 'handle'],
   ['tasks:list', 'handle'],
   ['tasks:resolve', 'handle'],
   ['dap:configurations', 'handle'],
@@ -127,6 +144,7 @@ const LEGACY_RENDERER_MODULES = [
   'src/file-icons.js',
   'src/editor-core.js',
   'src/workspace.js',
+  'src/plugin-details.js',
   'src/rclone-client.js',
   'src/run-config.js',
   'src/runner.js',
@@ -176,7 +194,7 @@ test('main.js is a composition root and IPC ownership is complete and unique', (
 
   for (const moduleName of [
     'settings-store', 'window-state', 'workspace', 'ai', 'lsp', 'dap', 'auth',
-    'diagnostics', 'rclone-ipc', 'language-packs', 'menu'
+    'diagnostics', 'rclone-ipc', 'language-packs', 'plugins', 'marketplace', 'menu'
   ]) {
     assert.match(composition, new RegExp("require\\('./main/" + moduleName.replace('-', '\\-') + "'\\)"), moduleName + ' is composed');
   }
@@ -244,4 +262,21 @@ test('release packaging always rebuilds a production renderer and packages only 
   assert.ok(packageJson.build.files.includes('main/'));
   assert.equal(packageJson.build.files.includes('src/'), false);
   assert.equal(packageJson.scripts['pretest:ui'], 'npm run build:renderer:dev');
+});
+
+test('extensions remain a primary workbench surface while detail pages use the tab-provider boundary', () => {
+  const html = read('index.html');
+  const layout = read('src/workbench-layout.js');
+  const sidebar = read('src/plugin-manager-ui.js');
+  const details = read('src/plugin-details.js');
+
+  assert.match(html, /id="activity-extensions"[^>]*data-workbench-view="extensions"/);
+  assert.match(html, /id="extensions-sidebar"[^>]*data-sidebar-view="extensions"/);
+  assert.match(html, /id="extensions-marketplace-view"/);
+  assert.match(html, /id="extensions-installed-view"/);
+  assert.doesNotMatch(html, /settings-plugins-tab|data-spane="plugins"|data-sfoot="plugins"/);
+  assert.match(layout, /'extensions'/);
+  assert.match(sidebar, /BOBO\.pluginDetails\.open\(pluginId\)/);
+  assert.match(sidebar, /bobo:open-plugin-details/);
+  assert.match(details, /registerWorkbenchTabProvider\('plugin-details'/);
 });

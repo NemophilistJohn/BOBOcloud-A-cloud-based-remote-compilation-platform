@@ -1,17 +1,28 @@
 import { DisposableStore } from './disposable.js';
 import { ContributionPoint } from './contribution-registry.js';
+import { SourceControlStateStore, validateSourceControlDescriptor } from './source-control.js';
 
-export const PLUGIN_API_VERSION = '1.0.0';
+export const PLUGIN_API_VERSION = '1.2.0';
 
 export const PluginPermission = Object.freeze({
   COMMANDS_REGISTER: 'commands.register',
   COMMANDS_EXECUTE: 'commands.execute',
   CONTRIBUTIONS_REGISTER: 'contributions.register',
-  SERVICES_READ: 'services.read'
+  SERVICES_READ: 'services.read',
+  SOURCE_CONTROL_REGISTER: 'sourceControl.register',
+  SCM_GIT_READ: 'scm.git.read',
+  SCM_GIT_WRITE: 'scm.git.write',
+  FILE_DECORATIONS_SCM: 'fileDecorations.scm'
 });
 
 const KNOWN_PERMISSIONS = new Set(Object.values(PluginPermission));
-const KNOWN_CONTRIBUTION_POINTS = new Set(Object.values(ContributionPoint));
+// `sourceControl` is intentionally not available through the generic
+// contributions API: it has its own user-visible permission and structural
+// validation. Installed packages use the isolated extension host; this legacy
+// runtime mirrors the same contribution ownership boundary for core callers.
+const KNOWN_CONTRIBUTION_POINTS = new Set(
+  Object.values(ContributionPoint).filter((point) => point !== ContributionPoint.SOURCE_CONTROL)
+);
 
 function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
@@ -161,6 +172,11 @@ export class PluginRuntime {
     this._services = options.services;
     this._commands = options.commands;
     this._contributions = options.contributions;
+    this._sourceControls = options.sourceControls || new SourceControlStateStore({ onError: options.onError });
+    this._ownsSourceControls = !options.sourceControls;
+    this._getPluginI18n = typeof options.getPluginI18n === 'function'
+      ? options.getPluginI18n
+      : () => ({ locale: 'en', messages: Object.create(null) });
     this._onError = typeof options.onError === 'function' ? options.onError : () => {};
     this._plugins = new Map();
     this._disposed = false;
@@ -257,6 +273,7 @@ export class PluginRuntime {
     this._disposePromise = (async () => {
       const records = Array.from(this._plugins.values()).reverse();
       for (const record of records) await this._beginDeactivation(record);
+      if (this._ownsSourceControls) this._sourceControls.dispose();
     })();
     return this._disposePromise;
   }
@@ -305,7 +322,80 @@ export class PluginRuntime {
           subscriptions.add(disposable);
           return disposable;
         }
-      })
+      }),
+      sourceControl: Object.freeze({
+        async register(descriptor) {
+          requirePermission(PluginPermission.SOURCE_CONTROL_REGISTER);
+          const normalizedDescriptor = validateSourceControlDescriptor(descriptor);
+          this._requireOwnedId(manifest.id, normalizedDescriptor.id, 'Source-control descriptor');
+          if (normalizedDescriptor.openCommand) {
+            this._requireOwnedId(manifest.id, normalizedDescriptor.openCommand, 'Source-control open command');
+          }
+          const disposable = this._contributions.register(ContributionPoint.SOURCE_CONTROL, normalizedDescriptor, {
+            id: normalizedDescriptor.id,
+            owner: manifest.id
+          });
+          let stateHandle;
+          try {
+            stateHandle = this._sourceControls.register(normalizedDescriptor, {
+              owner: manifest.id,
+              commandPrefix: manifest.id + '.'
+            });
+          } catch (error) {
+            disposable.dispose();
+            throw error;
+          }
+          let active = true;
+          const provider = Object.freeze({
+            id: normalizedDescriptor.id,
+            async setState(state) {
+              if (!active) throw new Error('Source-control state provider has been disposed.');
+              return stateHandle.setState(state);
+            },
+            async clearState() {
+              return active ? stateHandle.clearState() : { version: 0 };
+            },
+            dispose: () => {
+              if (!active) return;
+              active = false;
+              stateHandle.dispose();
+              disposable.dispose();
+            }
+          });
+          subscriptions.add(provider);
+          return provider;
+        }
+      }),
+      i18n: this._createPluginI18n(manifest)
+    });
+  }
+
+  _createPluginI18n(manifest) {
+    let source;
+    try {
+      source = this._getPluginI18n(manifest);
+    } catch (_) {
+      source = null;
+    }
+    const locale = source && typeof source.locale === 'string' && source.locale ? source.locale : 'en';
+    const messages = source && source.messages && typeof source.messages === 'object' ? source.messages : Object.create(null);
+    const listeners = new Set();
+    const t = (key, values) => {
+      const sourceKey = String(key == null ? '' : key);
+      const template = Object.prototype.hasOwnProperty.call(messages, sourceKey) ? String(messages[sourceKey]) : sourceKey;
+      if (!values || typeof values !== 'object' || Array.isArray(values)) return template;
+      return template.replace(/\{([A-Za-z0-9_]+)\}/g, (match, name) => (
+        Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match
+      ));
+    };
+    return Object.freeze({
+      locale,
+      t,
+      onDidChange(listener) {
+        if (typeof listener !== 'function') throw new TypeError('Plugin i18n listener must be a function.');
+        listeners.add(listener);
+        return { dispose() { listeners.delete(listener); } };
+      }
     });
   }
 
@@ -352,6 +442,7 @@ export class PluginRuntime {
     record.subscriptions.dispose();
     this._commands.disposeOwner(record.manifest.id);
     this._contributions.disposeOwner(record.manifest.id);
+    this._sourceControls.disposeOwner(record.manifest.id);
     this._services.disposeOwner(record.manifest.id);
   }
 
