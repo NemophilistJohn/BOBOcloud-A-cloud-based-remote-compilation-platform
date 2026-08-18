@@ -371,6 +371,9 @@
     };
     S.workspaceTransitionEditorStates = approval.editorStates;
     try {
+      if (BOBO.terminal && BOBO.terminal.beforeWorkspaceLeave) {
+        await BOBO.terminal.beforeWorkspaceLeave();
+      }
       if (BOBO.dap && BOBO.dap.beforeWorkspaceLeave) {
         await BOBO.dap.beforeWorkspaceLeave();
       }
@@ -428,6 +431,12 @@
     }
     if (S.workspaceRoot && !approval && !options.approved) {
       if (!(await canLeaveWorkspace({ reason: 'switch' }))) return false;
+    }
+    // Main also stops its terminal transport before accepting a switch. Keep
+    // the renderer-side close here as well so xterm's transcript and session
+    // state cannot outlive a direct or already-approved workspace change.
+    if (BOBO.terminal && BOBO.terminal.beforeWorkspaceLeave) {
+      await BOBO.terminal.beforeWorkspaceLeave();
     }
     // Close all tabs from the previous project before switching.
     // Dispose Monaco models (skip image tabs which have no model).
@@ -494,6 +503,7 @@
   async function closeWorkspace(options) {
     options = options || {};
     if (!options.approved && !(await canLeaveWorkspace({ reason: options.reason || 'close' }))) return false;
+    if (BOBO.terminal && BOBO.terminal.beforeWorkspaceLeave) await BOBO.terminal.beforeWorkspaceLeave();
     if (options.approved && BOBO.dap && BOBO.dap.beforeWorkspaceLeave) await BOBO.dap.beforeWorkspaceLeave();
     closeContextMenu({ restoreFocus: false });
     cancelInlineEditor();

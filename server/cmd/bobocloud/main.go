@@ -364,12 +364,14 @@ func main() {
 	}
 	dockerPool.PreWarmAllForUsers(popularImages, preWarmUserIDs)
 
-	// 打印所有用户的 API Key（方便管理员分发）
+	// Startup logs are retained by systemd/journald. Never put reusable
+	// credentials in them; administrators distribute API keys through the
+	// authenticated account flow instead.
 	for _, u := range createdUsers {
 		slog.Info("User ready",
 			"id", u.ID,
 			"name", u.Name,
-			"api_key", u.APIKey,
+			"api_key_configured", u.APIKey != "",
 			"quota", u.ContainerLimit,
 		)
 	}
@@ -564,6 +566,9 @@ func main() {
 	go func() {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/ws", wsHandler.HandleWebSocket)
+		mux.HandleFunc("/terminal", wsHandler.HandleTerminalWebSocket)
+		// Compatibility alias for pre-streaming internal clients. New clients use
+		// /terminal and the terminal.* protocol exclusively.
 		mux.HandleFunc("/term", wsHandler.HandleTerminalWebSocket)
 		mux.HandleFunc("/lsp", wsHandler.HandleLSPWebSocket)
 		mux.HandleFunc("/dap", dapHandler.HandleWebSocket)

@@ -316,11 +316,12 @@
         </div>
       </div>
       <div id="panel-terminal" class="panel-content" role="tabpanel">
-        <div id="terminal-output"></div>
-        <div class="terminal-input-row">
-          <span class="term-prompt">$</span>
-          <input id="terminal-input" type="text" placeholder="e.g. pip install numpy pandas">
+        <div id="terminal-context" class="terminal-context" role="status">
+          <span class="terminal-context-dot" aria-hidden="true"></span>
+          <span data-i18n="Cloud terminal uses the synced workspace. Session file changes are discarded when it closes; dependency caches persist.">Cloud terminal uses the synced workspace. Session file changes are discarded when it closes; dependency caches persist.</span>
         </div>
+        <div id="terminal-host" data-i18n-skip aria-label="Terminal"></div>
+        <div id="terminal-announcements" class="sr-only" aria-live="polite" aria-atomic="true"></div>
       </div>
       <div id="panel-problems" class="panel-content problems-panel-content" role="tabpanel"></div>
       <div id="panel-debug" class="panel-content debug-panel-content" role="tabpanel">

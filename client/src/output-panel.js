@@ -31,14 +31,10 @@
 
         S.activePanel = panelName;
 
-        // Focus terminal input when switching to terminal
+        // The terminal owns its own prompt and focus through xterm.js.
         if (panelName === 'terminal') {
-          var input = document.getElementById('terminal-input');
-          if (input) setTimeout(function() { input.focus(); }, 50);
-
-          // Check docker status on first open
-          if (BOBO.terminal && BOBO.terminal.checkDockerStatus) {
-            BOBO.terminal.checkDockerStatus();
+          if (BOBO.terminal && BOBO.terminal.activate) {
+            BOBO.terminal.activate();
           }
         }
       });
@@ -63,8 +59,6 @@
           S.runLogInitialized = true;
         } else if (S.activePanel === 'terminal') {
           if (BOBO.terminal && BOBO.terminal.clear) BOBO.terminal.clear();
-          var termOut = document.getElementById('terminal-output');
-          if (termOut) termOut.textContent = '';
         } else if (S.activePanel === 'debug') {
           if (BOBO.dap && BOBO.dap.clearConsole) BOBO.dap.clearConsole();
         } else if (S.activePanel === 'problems') {

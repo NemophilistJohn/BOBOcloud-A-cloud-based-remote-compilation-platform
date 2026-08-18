@@ -14,6 +14,9 @@ function certificateFingerprints(certificate) {
   const values = [];
   if (certificate && certificate.fingerprint) values.push(certificate.fingerprint);
   if (certificate && certificate.fingerprint256) values.push(certificate.fingerprint256);
+	if (certificate && certificate.raw) {
+		try { values.push(crypto.createHash('sha256').update(certificate.raw).digest('hex')); } catch (_) {}
+	}
 	if (certificate && certificate.data) {
 		try {
 			let raw = certificate.data;

@@ -84,6 +84,11 @@ const EXPECTED_AI_UI_MODULES = [
   '../src/stream-render-scheduler.js',
   '../src/ai-chat-panel.js'
 ];
+const EXPECTED_TERMINAL_UI_MODULES = [
+  '@xterm/xterm',
+  '@xterm/addon-fit',
+  '@xterm/xterm/css/xterm.css'
+];
 
 test('renderer entry is the single source of truth for legacy module order', () => {
   const entrySource = fs.readFileSync(path.join(ROOT, 'renderer', 'entry.js'), 'utf8');
@@ -94,6 +99,9 @@ test('renderer entry is the single source of truth for legacy module order', () 
 
   const aiUiSource = fs.readFileSync(path.join(ROOT, 'renderer', 'ai-ui-entry.js'), 'utf8');
   assert.deepEqual(readOrderedImports(aiUiSource), EXPECTED_AI_UI_MODULES);
+
+  const terminalUiSource = fs.readFileSync(path.join(ROOT, 'renderer', 'terminal-ui-entry.js'), 'utf8');
+  assert.deepEqual(readOrderedImports(terminalUiSource), EXPECTED_TERMINAL_UI_MODULES);
 });
 
 test('index loads only Monaco AMD loader followed by the renderer bundle', () => {
@@ -112,8 +120,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   const built = await buildRenderer({ mode: 'production', outputDirectory: directory, logLevel: 'silent' });
   const bundle = await fsp.readFile(built.outputFile, 'utf8');
   const aiUiBundle = await fsp.readFile(built.aiUiOutputFile, 'utf8');
+  const terminalUiBundle = await fsp.readFile(built.terminalUiOutputFile, 'utf8');
   const sourceMap = JSON.parse(await fsp.readFile(built.outputFile + '.map', 'utf8'));
   const aiUiSourceMap = JSON.parse(await fsp.readFile(built.aiUiOutputFile + '.map', 'utf8'));
+  const terminalUiSourceMap = JSON.parse(await fsp.readFile(built.terminalUiOutputFile + '.map', 'utf8'));
   const manifest = JSON.parse(await fsp.readFile(built.manifestFile, 'utf8'));
 
   assert.match(bundle, /sourceMappingURL=bobo-renderer\.js\.map/);
@@ -130,12 +140,18 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/file-icons.js')));
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/src/ai-chat-panel.js')));
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/node_modules/temml/dist/temml.mjs')));
+  assert.ok(terminalUiSourceMap.sources.some((source) => source.endsWith('/renderer/terminal-ui-entry.js')));
+  assert.ok(terminalUiSourceMap.sources.some((source) => source.includes('/node_modules/@xterm/xterm/')));
   assert.ok(aiUiBundle.length > 0);
+  assert.ok(terminalUiBundle.length > 0);
   assert.equal(manifest.mode, 'production');
   assert.equal(manifest.compatibilityNamespace, 'window.BOBO');
   assert.deepEqual(manifest.entries.core.orderedModules, EXPECTED_MODULES);
   assert.deepEqual(manifest.entries.aiUi.orderedModules, EXPECTED_AI_UI_MODULES);
   assert.equal(manifest.entries.aiUi.load, 'first-visible-ai-ui');
+  assert.deepEqual(manifest.entries.terminalUi.orderedModules, EXPECTED_TERMINAL_UI_MODULES);
+  assert.equal(manifest.entries.terminalUi.load, 'first-visible-terminal');
+  assert.deepEqual(manifest.entries.terminalUi.outputs, ['bobo-terminal-ui.js', 'bobo-terminal-ui.js.map', 'bobo-terminal-ui.css']);
   assert.equal(manifest.entries.extensionHost.implementation, 'opaque-sandboxed-iframe-worker');
   assert.equal(manifest.entries.extensionHost.directNetwork, 'blocked-by-sandbox-csp');
 });
@@ -153,12 +169,15 @@ test('package and release audit use bundle artifacts instead of raw renderer scr
     '/renderer-dist/bobo-renderer.js.map',
     '/renderer-dist/bobo-ai-ui.js',
     '/renderer-dist/bobo-ai-ui.js.map',
+    '/renderer-dist/bobo-terminal-ui.js',
+    '/renderer-dist/bobo-terminal-ui.js.map',
+    '/renderer-dist/bobo-terminal-ui.css',
     '/renderer-dist/bobo-renderer.manifest.json',
     '/src/ai-settings-schema.js'
   ]), { missingEntries: [], legacyRendererEntries: [] });
 
   const invalid = inspectRendererBundleEntries(['/src/app.js', '/editor-rules/plugins/go.js']);
-  assert.equal(invalid.missingEntries.length, 5);
+  assert.equal(invalid.missingEntries.length, 8);
   assert.deepEqual(invalid.legacyRendererEntries, ['src/app.js', 'editor-rules/plugins/go.js']);
 });
 

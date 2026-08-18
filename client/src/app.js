@@ -408,6 +408,9 @@
 		previousConfig.secureTransport !== config.secureTransport || previousConfig.httpPort !== config.httpPort ||
 		previousConfig.wsPort !== config.wsPort || previousConfig.dapChildWsPort !== config.dapChildWsPort ||
 		previousConfig.certificateFingerprint !== config.certificateFingerprint;
+      if (serverIdentityChanged && BOBO.terminal && typeof BOBO.terminal.close === 'function') {
+        await BOBO.terminal.close('server-change');
+      }
       if (serverIdentityChanged && BOBO.dap && typeof BOBO.dap.abort === 'function') {
         await BOBO.dap.abort('server-change');
       }

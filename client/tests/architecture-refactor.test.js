@@ -110,7 +110,12 @@ const EXPECTED_IPC = new Map([
   ['dap:request', 'handle'],
   ['dap:respond', 'handle'],
   ['dap:stop', 'handle'],
-  ['dap:status', 'handle']
+  ['dap:status', 'handle'],
+  ['terminal:start', 'handle'],
+  ['terminal:write', 'handle'],
+  ['terminal:resize', 'handle'],
+  ['terminal:stop', 'handle'],
+  ['terminal:status', 'handle']
 ]);
 
 const LEGACY_RENDERER_MODULES = [
@@ -193,7 +198,7 @@ test('main.js is a composition root and IPC ownership is complete and unique', (
   assert.doesNotMatch(composition, /\bipcMain\.(?:handle|on)\(/);
 
   for (const moduleName of [
-    'settings-store', 'window-state', 'workspace', 'ai', 'lsp', 'dap', 'auth',
+    'settings-store', 'window-state', 'workspace', 'ai', 'lsp', 'dap', 'terminal', 'auth',
     'diagnostics', 'rclone-ipc', 'language-packs', 'plugins', 'marketplace', 'menu'
   ]) {
     assert.match(composition, new RegExp("require\\('./main/" + moduleName.replace('-', '\\-') + "'\\)"), moduleName + ' is composed');

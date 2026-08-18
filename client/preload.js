@@ -38,6 +38,15 @@ contextBridge.exposeInMainWorld('api', {
   dapStatus: () => ipcRenderer.invoke('dap:status'),
   onDapMessage: (cb) => subscribePayload('dap:message', cb),
   onDapStatus: (cb) => subscribePayload('dap:status', cb),
+  // Cloud terminal. The authenticated WebSocket is owned by the main process;
+  // the renderer can only control its current session and receive its stream.
+  terminalStart: (payload) => ipcRenderer.invoke('terminal:start', payload),
+  terminalWrite: (data) => ipcRenderer.invoke('terminal:write', data),
+  terminalResize: (payload) => ipcRenderer.invoke('terminal:resize', payload),
+  terminalStop: (reason) => ipcRenderer.invoke('terminal:stop', reason),
+  terminalStatus: () => ipcRenderer.invoke('terminal:status'),
+  onTerminalOutput: (cb) => subscribePayload('terminal:output', cb),
+  onTerminalStatus: (cb) => subscribePayload('terminal:status', cb),
   // Incremental file events (lightweight, no full tree rebuild)
   onFileEvent: (cb) => {
     const listener = (_e, data) => cb(data);

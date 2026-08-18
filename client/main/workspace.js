@@ -12,6 +12,7 @@ function createWorkspaceController(options) {
   const getWindow = options.getWindow;
   const t = options.t;
   const disposeLsp = options.disposeLsp || (() => {});
+  const stopTerminal = options.stopTerminal || (() => {});
   const settings = options.settings;
 
   const watchers = new Map();
@@ -346,6 +347,9 @@ function createWorkspaceController(options) {
         return null;
       }
       leaveToken = decision.leaveToken;
+      // The renderer has approved the transition. Terminals are scoped to the
+      // old remote workspace snapshot and must never survive into the new one.
+      await Promise.resolve(stopTerminal('workspace-switch'));
       tree = await scanTreeDirectory(folder);
       if (currentOpenSequence !== openSequence || !tree) {
         abortLeave(leaveToken);

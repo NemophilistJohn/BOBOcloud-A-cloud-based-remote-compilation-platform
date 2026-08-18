@@ -101,6 +101,9 @@ function inspectRendererBundleEntries(entries) {
     'renderer-dist/bobo-renderer.js.map',
     'renderer-dist/bobo-ai-ui.js',
     'renderer-dist/bobo-ai-ui.js.map',
+    'renderer-dist/bobo-terminal-ui.js',
+    'renderer-dist/bobo-terminal-ui.js.map',
+    'renderer-dist/bobo-terminal-ui.css',
     'renderer-dist/bobo-renderer.manifest.json'
   ];
   const missingEntries = requiredEntries.filter((entry) => !entrySet.has(entry));

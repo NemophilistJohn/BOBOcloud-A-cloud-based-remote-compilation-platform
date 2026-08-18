@@ -232,10 +232,13 @@
     var debugStopped = BOBO.dap && typeof BOBO.dap.abort === 'function'
       ? BOBO.dap.abort('auth-expired')
       : Promise.resolve();
+    var terminalStopped = BOBO.terminal && typeof BOBO.terminal.close === 'function'
+      ? BOBO.terminal.close('auth-expired')
+      : Promise.resolve();
     if (BOBO.runner && typeof BOBO.runner.invalidateRunIdentity === 'function') {
       BOBO.runner.invalidateRunIdentity({ skipHttp: true });
     }
-    await debugStopped;
+    await Promise.all([debugStopped, terminalStopped]);
     var ip = S.serverSettings.ip;
     dropCredential();
     if (BOBO.lsp && typeof BOBO.lsp.identityChanged === 'function') BOBO.lsp.identityChanged();
@@ -326,6 +329,7 @@
       var allowed = await BOBO.workspace.canLeaveWorkspace({ reason: 'logout' });
       if (!allowed) return false;
     }
+    if (BOBO.terminal && typeof BOBO.terminal.close === 'function') await BOBO.terminal.close('logout');
     if (BOBO.dap && typeof BOBO.dap.abort === 'function') await BOBO.dap.abort('logout');
 	if (BOBO.collaboration && BOBO.collaboration.releaseForLogout) {
 	  await BOBO.collaboration.releaseForLogout();
@@ -651,6 +655,7 @@
 
   // 服务器设置变更后重新探测（由 app.js 保存设置后调用）
   async function onServerChanged(options) {
+    if (BOBO.terminal && typeof BOBO.terminal.close === 'function') await BOBO.terminal.close('server-change');
     if (BOBO.dap && typeof BOBO.dap.abort === 'function') await BOBO.dap.abort('server-change');
     if (!(options && options.runInvalidated) && BOBO.runner && typeof BOBO.runner.invalidateRunIdentity === 'function') {
       await BOBO.runner.invalidateRunIdentity();

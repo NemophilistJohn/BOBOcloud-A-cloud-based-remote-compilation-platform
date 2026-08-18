@@ -13,6 +13,7 @@ const { createLanguagePackController } = require('./main/language-packs');
 const { createMenuController } = require('./main/menu');
 const { createTasksController } = require('./main/tasks');
 const { createDapController } = require('./main/dap');
+const { createTerminalController } = require('./main/terminal');
 const { createSecureTransportGuard } = require('./main/secure-transport');
 const { createPluginController } = require('./main/plugins');
 const { createMarketplaceController } = require('./main/marketplace');
@@ -24,53 +25,35 @@ const settings = createSettingsStore({ app, rclone });
 const secureTransport = createSecureTransportGuard();
 const lsp = createLspController({ ipcMain, getWindow, settings });
 let dap = null;
+let terminal = null;
 const disposeRemoteEditorServices = () => {
   lsp.dispose();
   if (dap) void dap.dispose();
+  if (terminal) void terminal.dispose();
 };
-const languagePacks = createLanguagePackController({
-  app,
-  ipcMain,
-  dialog,
-  shell,
-  getWindow,
-  builtinRoot: path.join(__dirname, 'language-packs'),
-  onDidChange: () => {
-    if (menu) menu.rebuild();
-  }
-});
+const languagePacks = createLanguagePackController({ app, ipcMain, dialog, shell, getWindow,
+  builtinRoot: path.join(__dirname, 'language-packs'), onDidChange: () => { if (menu) menu.rebuild(); } });
 const workspace = createWorkspaceController({
   ipcMain,
   dialog,
   getWindow,
   settings,
   t: languagePacks.t,
-  disposeLsp: disposeRemoteEditorServices
+  disposeLsp: disposeRemoteEditorServices,
+  stopTerminal: (reason) => terminal ? terminal.stop(reason) : { state: 'idle' }
 });
 const plugins = createPluginController({ app, ipcMain, dialog, shell, getWindow, t: languagePacks.t,
   getWorkspaceIdentity: workspace.getIdentity, onDidChange: () => { if (menu) menu.rebuild(); }
 });
 const marketplace = createMarketplaceController({ app, ipcMain, getWindow, pluginManager: plugins, hostVersion: app.getVersion() });
-const auth = createAuthController({
-  ipcMain,
-  settings,
-  disposeLsp: disposeRemoteEditorServices,
-  onStateChanged: () => {
-    if (menu) menu.rebuild();
-  },
-  onServerSettingsWritten: secureTransport.update
-});
-menu = createMenuController({
-  Menu,
-  dialog,
-  getWindow,
-  languagePacks,
-  getAuthState: auth.getState,
-  pickAndOpenWorkspace: workspace.pickAndOpenWorkspace
-});
+const auth = createAuthController({ ipcMain, settings, disposeLsp: disposeRemoteEditorServices,
+  onStateChanged: () => { if (menu) menu.rebuild(); }, onServerSettingsWritten: secureTransport.update });
+menu = createMenuController({ Menu, dialog, getWindow, languagePacks, getAuthState: auth.getState,
+  pickAndOpenWorkspace: workspace.pickAndOpenWorkspace });
 const ai = createAiController({ ipcMain, getWindow, settings });
 const tasks = createTasksController({ ipcMain, getWorkspaceIdentity: workspace.getIdentity });
 dap = createDapController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity, settings });
+terminal = createTerminalController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity, settings });
 const windowState = createWindowState({ screen, filePath: settings.paths.windowState, getWindow });
 
 workspace.registerIpc();
@@ -79,6 +62,7 @@ auth.registerIpc();
 ai.registerIpc();
 tasks.registerIpc();
 dap.registerIpc();
+terminal.registerIpc();
 languagePacks.registerIpc();
 plugins.registerIpc();
 marketplace.registerIpc();
@@ -87,19 +71,9 @@ registerRcloneIpc({ ipcMain, BrowserWindow, dialog, getWindow, rclone });
 
 function createWindow() {
   const savedState = windowState.load();
-  const browserWindowOptions = {
-    width: savedState ? savedState.width : 1280,
-    height: savedState ? savedState.height : 860,
-    minWidth: 760,
-    minHeight: 520,
-    icon: path.join(__dirname, 'ico', 'app-icon.png'),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false
-    }
-  };
+  const browserWindowOptions = { width: savedState ? savedState.width : 1280, height: savedState ? savedState.height : 860,
+    minWidth: 760, minHeight: 520, icon: path.join(__dirname, 'ico', 'app-icon.png'),
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false } };
   if (savedState && savedState.x !== undefined && savedState.y !== undefined) {
     browserWindowOptions.x = savedState.x;
     browserWindowOptions.y = savedState.y;
@@ -139,10 +113,14 @@ function createWindow() {
     workspace.handleWindowClosed();
     lsp.dispose();
     void dap.dispose();
+    void terminal.dispose();
     ai.dispose();
     window = null;
   });
-  window.webContents.on('render-process-gone', workspace.handleRendererGone);
+  window.webContents.on('render-process-gone', () => {
+    workspace.handleRendererGone();
+    if (terminal) void terminal.dispose();
+  });
   menu.rebuild();
 }
 
@@ -169,6 +147,7 @@ app.on('will-quit', () => {
   languagePacks.dispose();
   lsp.dispose();
   void dap.dispose();
+  void terminal.dispose();
   ai.dispose();
   workspace.clearWatchers();
 });

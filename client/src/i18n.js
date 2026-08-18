@@ -10,6 +10,7 @@
     '#file-tree',
     '#run-log',
     '#terminal-output',
+    '#terminal-host',
     '#history-detail-output',
     '#ai-chat-messages',
     '#workspace-label',

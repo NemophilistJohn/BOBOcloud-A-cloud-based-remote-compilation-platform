@@ -72,6 +72,17 @@ type Config struct {
 	WSPingPeriod int `json:"ws_ping_period_seconds"`
 	ChunkSize    int `json:"chunk_size"`
 
+	// Interactive terminal sessions are independent WebSocket resources. Their
+	// limits deliberately differ from short-lived run sessions so an abandoned
+	// shell cannot retain a user container indefinitely.
+	TerminalHandshakeTimeoutSeconds     int   `json:"terminal_handshake_timeout_seconds"`
+	TerminalIdleTTLSeconds              int   `json:"terminal_idle_ttl_seconds"`
+	TerminalMaxSessionSeconds           int   `json:"terminal_max_session_seconds"`
+	TerminalMaxMessageBytes             int   `json:"terminal_max_message_bytes"`
+	TerminalBandwidthPerMinuteBytes     int64 `json:"terminal_bandwidth_per_minute_bytes"`
+	TerminalWorkspaceCopyTimeoutSeconds int   `json:"terminal_workspace_copy_timeout_seconds"`
+	TerminalWorkspaceCopyMaxBytes       int64 `json:"terminal_workspace_copy_max_bytes"`
+
 	// 认证配置
 	AuthMode             string         `json:"auth_mode"`     // "single"=单机模式 / "multi"=多人模式（留空则按 auth_enabled 推断）
 	AuthEnabled          bool           `json:"auth_enabled"`  // 向后兼容：等价于 auth_mode 的开关形式
@@ -151,58 +162,65 @@ func Default() *Config {
 		DockerRegistryMirrors: []string{
 			"https://docker.m.daocloud.io",
 		},
-		DockerPullTimeout:              600,
-		DockerHardening:                true,
-		DockerReadOnlyRootfs:           false,
-		DefaultCompileTimeout:          30,
-		RustCompileTimeout:             60,
-		DefaultRunTimeout:              30,
-		SessionTTL:                     120,
-		SessionCleanupInterval:         30,
-		WSReadLimit:                    65536,
-		WSWriteWait:                    10,
-		WSPingPeriod:                   30,
-		ChunkSize:                      200000,
-		AuthMode:                       "", // 留空按 auth_enabled 推断
-		AuthEnabled:                    false,
-		Users:                          nil, // 预设用户列表，留空则使用 admin_api_key 创建单用户
-		DefaultQuota:                   5,
-		DefaultRateLimit:               60,
-		DefaultDiskQuotaMB:             2048, // 2GB
-		SessionTokenTTLHours:           720,  // 30 天
-		InviteTTLHours:                 168,  // 7 天
-		LoginRateLimit:                 5,
-		LogLevel:                       "info",
-		LogFormat:                      "json",
-		DBPath:                         "",
-		HistoryMaxPerUser:              200,
-		TeamCacheDefaultQuotaMB:        4096,
-		TeamCacheCleanupIntervalMin:    10,
-		LSPEnabled:                     true,
-		LSPManifestPath:                "lsp_servers.json",
-		LSPMaxSessions:                 8,
-		LSPMaxSessionsPerUser:          2,
-		LSPIdleTTLSeconds:              900,
-		LSPMaxMessageBytes:             1 << 20,
-		LSPBandwidthPerMinuteBytes:     16 << 20,
-		LSPCacheQuotaMB:                1024,
-		LSPCacheRetentionDays:          7,
-		LSPMemoryLimit:                 "512m",
-		LSPCPULimit:                    "1.0",
-		DAPEnabled:                     true,
-		DAPManifestPath:                "dap_adapters.json",
-		DAPMaxSessions:                 1,
-		DAPMaxSessionsPerUser:          1,
-		DAPIdleTTLSeconds:              900,
-		DAPMaxSessionSeconds:           3600,
-		DAPHandshakeTimeoutSeconds:     10,
-		DAPMaxMessageBytes:             1 << 20,
-		DAPBandwidthPerMinuteBytes:     16 << 20,
-		DAPMemoryLimit:                 "384m",
-		DAPCPULimit:                    "1.0",
-		DAPNetworkEnabled:              false,
-		DAPWorkspaceCopyTimeoutSeconds: 30,
-		DAPWorkspaceCopyMaxBytes:       512 << 20,
+		DockerPullTimeout:                   600,
+		DockerHardening:                     true,
+		DockerReadOnlyRootfs:                false,
+		DefaultCompileTimeout:               30,
+		RustCompileTimeout:                  60,
+		DefaultRunTimeout:                   30,
+		SessionTTL:                          120,
+		SessionCleanupInterval:              30,
+		WSReadLimit:                         65536,
+		WSWriteWait:                         10,
+		WSPingPeriod:                        30,
+		ChunkSize:                           200000,
+		TerminalHandshakeTimeoutSeconds:     10,
+		TerminalIdleTTLSeconds:              900,
+		TerminalMaxSessionSeconds:           3600,
+		TerminalMaxMessageBytes:             65536,
+		TerminalBandwidthPerMinuteBytes:     8 << 20,
+		TerminalWorkspaceCopyTimeoutSeconds: 30,
+		TerminalWorkspaceCopyMaxBytes:       512 << 20,
+		AuthMode:                            "", // 留空按 auth_enabled 推断
+		AuthEnabled:                         false,
+		Users:                               nil, // 预设用户列表，留空则使用 admin_api_key 创建单用户
+		DefaultQuota:                        5,
+		DefaultRateLimit:                    60,
+		DefaultDiskQuotaMB:                  2048, // 2GB
+		SessionTokenTTLHours:                720,  // 30 天
+		InviteTTLHours:                      168,  // 7 天
+		LoginRateLimit:                      5,
+		LogLevel:                            "info",
+		LogFormat:                           "json",
+		DBPath:                              "",
+		HistoryMaxPerUser:                   200,
+		TeamCacheDefaultQuotaMB:             4096,
+		TeamCacheCleanupIntervalMin:         10,
+		LSPEnabled:                          true,
+		LSPManifestPath:                     "lsp_servers.json",
+		LSPMaxSessions:                      8,
+		LSPMaxSessionsPerUser:               2,
+		LSPIdleTTLSeconds:                   900,
+		LSPMaxMessageBytes:                  1 << 20,
+		LSPBandwidthPerMinuteBytes:          16 << 20,
+		LSPCacheQuotaMB:                     1024,
+		LSPCacheRetentionDays:               7,
+		LSPMemoryLimit:                      "512m",
+		LSPCPULimit:                         "1.0",
+		DAPEnabled:                          true,
+		DAPManifestPath:                     "dap_adapters.json",
+		DAPMaxSessions:                      1,
+		DAPMaxSessionsPerUser:               1,
+		DAPIdleTTLSeconds:                   900,
+		DAPMaxSessionSeconds:                3600,
+		DAPHandshakeTimeoutSeconds:          10,
+		DAPMaxMessageBytes:                  1 << 20,
+		DAPBandwidthPerMinuteBytes:          16 << 20,
+		DAPMemoryLimit:                      "384m",
+		DAPCPULimit:                         "1.0",
+		DAPNetworkEnabled:                   false,
+		DAPWorkspaceCopyTimeoutSeconds:      30,
+		DAPWorkspaceCopyMaxBytes:            512 << 20,
 	}
 }
 
@@ -334,6 +352,27 @@ func Load(path string) (*Config, error) {
 	if cfg.DAPChildWSPort <= 0 {
 		cfg.DAPChildWSPort = 3102
 	}
+	if cfg.TerminalHandshakeTimeoutSeconds <= 0 {
+		cfg.TerminalHandshakeTimeoutSeconds = 10
+	}
+	if cfg.TerminalIdleTTLSeconds <= 0 {
+		cfg.TerminalIdleTTLSeconds = 900
+	}
+	if cfg.TerminalMaxSessionSeconds <= 0 {
+		cfg.TerminalMaxSessionSeconds = 3600
+	}
+	if cfg.TerminalMaxMessageBytes <= 0 {
+		cfg.TerminalMaxMessageBytes = 64 * 1024
+	}
+	if cfg.TerminalBandwidthPerMinuteBytes <= 0 {
+		cfg.TerminalBandwidthPerMinuteBytes = 8 << 20
+	}
+	if cfg.TerminalWorkspaceCopyTimeoutSeconds <= 0 {
+		cfg.TerminalWorkspaceCopyTimeoutSeconds = 30
+	}
+	if cfg.TerminalWorkspaceCopyMaxBytes <= 0 {
+		cfg.TerminalWorkspaceCopyMaxBytes = 512 << 20
+	}
 	if cfg.TLSEnabled && (strings.TrimSpace(cfg.TLSCertFile) == "" || strings.TrimSpace(cfg.TLSKeyFile) == "") {
 		return nil, fmt.Errorf("tls_enabled requires tls_cert_file and tls_key_file")
 	}
@@ -354,6 +393,26 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("BOBOCLOUD_WS_PORT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.WSPort = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_TERMINAL_IDLE_TTL_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.TerminalIdleTTLSeconds = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_TERMINAL_MAX_SESSION_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.TerminalMaxSessionSeconds = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_TERMINAL_WORKSPACE_COPY_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.TerminalWorkspaceCopyTimeoutSeconds = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_TERMINAL_WORKSPACE_COPY_MAX_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			cfg.TerminalWorkspaceCopyMaxBytes = n
 		}
 	}
 	if v := os.Getenv("BOBOCLOUD_DAP_CHILD_WS_PORT"); v != "" {
@@ -489,6 +548,64 @@ func (c *Config) WSWriteWaitDuration() time.Duration {
 // WSPingDuration 返回 WebSocket ping 间隔的 time.Duration。
 func (c *Config) WSPingDuration() time.Duration {
 	return time.Duration(c.WSPingPeriod) * time.Second
+}
+
+// TerminalHandshakeDuration returns the terminal start-frame deadline.
+func (c *Config) TerminalHandshakeDuration() time.Duration {
+	if c == nil || c.TerminalHandshakeTimeoutSeconds <= 0 {
+		return 10 * time.Second
+	}
+	return time.Duration(c.TerminalHandshakeTimeoutSeconds) * time.Second
+}
+
+// TerminalIdleDuration returns the maximum period without client or process
+// activity before an interactive terminal is stopped.
+func (c *Config) TerminalIdleDuration() time.Duration {
+	if c == nil || c.TerminalIdleTTLSeconds <= 0 {
+		return 15 * time.Minute
+	}
+	return time.Duration(c.TerminalIdleTTLSeconds) * time.Second
+}
+
+// TerminalMaxSessionDuration returns the hard upper bound for one terminal.
+func (c *Config) TerminalMaxSessionDuration() time.Duration {
+	if c == nil || c.TerminalMaxSessionSeconds <= 0 {
+		return time.Hour
+	}
+	return time.Duration(c.TerminalMaxSessionSeconds) * time.Second
+}
+
+// TerminalMaxMessageLimit bounds one terminal WebSocket frame.
+func (c *Config) TerminalMaxMessageLimit() int64 {
+	if c == nil || c.TerminalMaxMessageBytes <= 0 {
+		return 64 * 1024
+	}
+	return int64(c.TerminalMaxMessageBytes)
+}
+
+// TerminalBandwidthLimit bounds aggregate terminal traffic per minute.
+func (c *Config) TerminalBandwidthLimit() int64 {
+	if c == nil || c.TerminalBandwidthPerMinuteBytes <= 0 {
+		return 8 << 20
+	}
+	return c.TerminalBandwidthPerMinuteBytes
+}
+
+// TerminalWorkspaceCopyTimeoutDuration bounds staging one isolated terminal
+// workspace before Docker receives it.
+func (c *Config) TerminalWorkspaceCopyTimeoutDuration() time.Duration {
+	if c == nil || c.TerminalWorkspaceCopyTimeoutSeconds <= 0 {
+		return 30 * time.Second
+	}
+	return time.Duration(c.TerminalWorkspaceCopyTimeoutSeconds) * time.Second
+}
+
+// TerminalWorkspaceCopyLimit bounds the source bytes staged for one terminal.
+func (c *Config) TerminalWorkspaceCopyLimit() int64 {
+	if c == nil || c.TerminalWorkspaceCopyMaxBytes <= 0 {
+		return 512 << 20
+	}
+	return c.TerminalWorkspaceCopyMaxBytes
 }
 
 // TerminalTimeoutDuration 返回终端命令超时的 time.Duration。

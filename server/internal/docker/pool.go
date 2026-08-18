@@ -644,6 +644,46 @@ func (dp *Pool) ReleaseForUser(containerID, userID string) {
 	dp.releaseInternal(containerID, userID)
 }
 
+// DiscardForUser permanently removes an actively leased container instead of
+// returning it to the reuse pool. Callers use this only when the attached
+// process cannot be verified as stopped; retaining such a container could let
+// a later request inherit a live process or a partially cleaned workspace.
+func (dp *Pool) DiscardForUser(containerID, userID string) {
+	if !dp.discardActiveLease(containerID, userID) {
+		return
+	}
+	dp.destroyContainer(containerID)
+	dp.wakeNextQueued()
+}
+
+// discardActiveLease drops pool accounting for a currently acquired container
+// before Docker I/O. It deliberately does not touch an idle or hot container:
+// DiscardForUser is an active-lease-only API.
+func (dp *Pool) discardActiveLease(containerID, userID string) bool {
+	dp.mu.Lock()
+	defer dp.mu.Unlock()
+	owner, known := dp.containerUser[containerID]
+	if !known {
+		return false
+	}
+	if userID == "" || userID != owner {
+		userID = owner
+	}
+	delete(dp.containerUser, containerID)
+	delete(dp.containerContext, containerID)
+	delete(dp.imageByContainerID, containerID)
+	delete(dp.lruByImage, containerID)
+	if dp.activeCount > 0 {
+		dp.activeCount--
+	}
+	if dp.userActiveContainers[userID] > 1 {
+		dp.userActiveContainers[userID]--
+	} else {
+		delete(dp.userActiveContainers, userID)
+	}
+	return true
+}
+
 // releaseInternal 释放容器核心逻辑。
 // Phase 3 复用策略：
 //  1. 清理容器工作区 (rm -rf /workspace/*)
@@ -1516,12 +1556,26 @@ func (dp *Pool) createContainer(ctx context.Context, image string, extraVolumes 
 		return "", fmt.Errorf("docker start failed: %w", err)
 	}
 
-	// 确保 /workspace 存在（否则 exec -w /workspace 会失败）
+	// Ensure /workspace exists before any later exec selects it as a working
+	// directory. The image itself may declare /workspace as WorkingDir while the
+	// directory is absent, so this bootstrap command must run from / explicitly.
 	mkdirCtx, mkdirCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer mkdirCancel()
-	exec.CommandContext(mkdirCtx, "docker", "exec", containerID, "mkdir", "-p", "/workspace").Run()
+	mkdirCmd := exec.CommandContext(mkdirCtx, "docker", containerWorkspaceBootstrapArguments(containerID)...)
+	if output, err := mkdirCmd.CombinedOutput(); err != nil {
+		dp.destroyContainer(containerID)
+		return "", fmt.Errorf("docker workspace initialization failed: %s", strings.TrimSpace(string(output)))
+	}
 
 	return containerID, nil
+}
+
+// containerWorkspaceBootstrapArguments intentionally chooses / rather than
+// inheriting the container WorkingDir. The workspace can be absent in a fresh
+// image, and the terminal reset path deliberately removes it before recreating
+// a clean snapshot.
+func containerWorkspaceBootstrapArguments(containerID string) []string {
+	return []string{"exec", "-w", "/", containerID, "mkdir", "-p", "/workspace"}
 }
 
 func (dp *Pool) containerRunning(containerID string) bool {

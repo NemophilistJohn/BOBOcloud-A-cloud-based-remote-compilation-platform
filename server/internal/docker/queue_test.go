@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -154,6 +155,44 @@ func TestReleaseUnknownContainerIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestDiscardActiveLeaseQuarantinesContainerWithoutTouchingIdlePool(t *testing.T) {
+	pool := &Pool{
+		idlePool: map[string][]string{
+			"python": {"idle"},
+		},
+		containerUser: map[string]string{
+			"active": "alice",
+			"idle":   "alice",
+		},
+		containerContext: map[string]string{"active": "team-context"},
+		imageByContainerID: map[string]string{
+			"active": "python",
+			"idle":   "python",
+		},
+		lruByImage: map[string]time.Time{"idle": time.Now()},
+		userActiveContainers: map[string]int{
+			"alice": 1,
+		},
+		activeCount: 1,
+		idleCount:   1,
+	}
+	if !pool.discardActiveLease("active", "wrong-owner") {
+		t.Fatal("active lease was not discarded")
+	}
+	if pool.activeCount != 0 || pool.idleCount != 1 || pool.userActiveContainers["alice"] != 0 {
+		t.Fatalf("discard accounting active=%d idle=%d users=%#v", pool.activeCount, pool.idleCount, pool.userActiveContainers)
+	}
+	if _, exists := pool.containerUser["active"]; exists {
+		t.Fatal("discarded container remained addressable")
+	}
+	if _, exists := pool.containerContext["active"]; exists {
+		t.Fatal("discarded container context remained addressable")
+	}
+	if len(pool.idlePool["python"]) != 1 || pool.idlePool["python"][0] != "idle" || pool.containerUser["idle"] != "alice" {
+		t.Fatalf("idle container was changed by active discard: %#v", pool)
+	}
+}
+
 func TestIdlePoolRequiresExactCacheContext(t *testing.T) {
 	pool := &Pool{
 		idlePool: map[string][]string{
@@ -223,5 +262,13 @@ func TestAcquireRejectedAfterPoolShutdownBegins(t *testing.T) {
 	pool := &Pool{closed: true}
 	if _, err := pool.acquireForUser(context.Background(), "alice", "gcc", "", nil, nil, nil); err == nil {
 		t.Fatal("closed pool accepted a new acquisition")
+	}
+}
+
+func TestContainerWorkspaceBootstrapUsesStableRootWorkingDirectory(t *testing.T) {
+	got := containerWorkspaceBootstrapArguments("container-id")
+	want := []string{"exec", "-w", "/", "container-id", "mkdir", "-p", "/workspace"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("workspace bootstrap arguments = %#v, want %#v", got, want)
 	}
 }

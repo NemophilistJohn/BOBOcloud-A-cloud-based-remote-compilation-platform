@@ -300,54 +300,14 @@ test('the first output line is visible immediately and stays cleared', async () 
   assert.equal(runLog.childNodes.length, 0);
 });
 
-test('terminal carries ANSI styling across lines and appends safely', () => {
-  const output = createElement('pre');
-  const document = createDocument({ 'terminal-output': output });
-  const windowObject = {
-    document,
-    BOBO: { state: { setupCommands: [], selectedRuntime: '' } }
-  };
-  loadScript('src/terminal.js', windowObject);
-
-  // Drive append through the public Docker status path, which flushes synchronously.
-  windowObject.BOBO.sendToServer = () => Promise.resolve({
-    success: true,
-    message: '\u001b[1;31mred-one\nred-two\u001b[0m\n<script>bad()</script>'
-  });
-  windowObject.BOBO.terminal.checkDockerStatus();
-  return new Promise(resolve => {
-    setTimeout(() => {
-      assert.equal(output.childNodes.length, 3);
-      assert.match(output.childNodes[0].innerHTML, /color:var\(--red\)/);
-      assert.match(output.childNodes[0].innerHTML, /font-weight:bold/);
-      assert.match(output.childNodes[1].innerHTML, /color:var\(--red\)/);
-      assert.match(output.childNodes[1].innerHTML, /font-weight:bold/);
-      assert.doesNotMatch(output.childNodes[1].innerHTML, /<\/span>\s*<\/span>/);
-      assert.match(output.childNodes[2].innerHTML, /&lt;script&gt;bad\(\)&lt;\/script&gt;/);
-      assert.doesNotMatch(output.childNodes[2].innerHTML, /color:var\(--red\)/);
-      assert.doesNotMatch(output.childNodes[2].innerHTML, /<script>/);
-      resolve();
-    }, 0);
-  });
-});
-
-test('terminal DOM stays bounded during repeated command output', async () => {
-  const output = createElement('pre');
-  const input = createElement('input');
-  input.value = 'emit-lines';
-  const document = createDocument({ 'terminal-output': output, 'terminal-input': input });
-  const windowObject = {
-    document,
-    BOBO: { state: { setupCommands: [], selectedRuntime: 'python:3.11' } }
-  };
-  loadScript('src/terminal.js', windowObject);
-  windowObject.BOBO.sendToServer = () => Promise.resolve({
-    success: true,
-    stdout: Array.from({ length: 3050 }, (_value, index) => 'row-' + index).join('\n'),
-    exitCode: 0
-  });
-  await windowObject.BOBO.terminal.sendCommand();
-  assert.equal(output.childNodes.length, 3000);
-  assert.equal(output.childNodes[0].innerHTML, 'row-50');
-  assert.equal(output.childNodes[2999].innerHTML, 'row-3049');
+test('terminal rendering stays behind the sender-bound main-process bridge', () => {
+  const source = fs.readFileSync(path.join(projectRoot, 'src', 'terminal.js'), 'utf8');
+  assert.match(source, /global\.api\.terminalStart\(request\)/);
+  assert.match(source, /global\.api\.terminalWrite\(entry\.data\)/);
+  assert.match(source, /global\.api\.onTerminalOutput\(handleTerminalOutput\)/);
+  assert.match(source, /global\.api\.onTerminalStatus\(handleTerminalStatus\)/);
+  assert.doesNotMatch(source, /sendToServer\(['"]terminal['"]/);
+  assert.doesNotMatch(source, /getElementById\(['"]terminal-input['"]\)/);
+  assert.doesNotMatch(source, /getElementById\(['"]terminal-output['"]\)/);
+  assert.doesNotMatch(source, /setupCommands/);
 });
