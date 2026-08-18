@@ -676,6 +676,7 @@
   "Refresh environment": "Refresh environment",
   "Current project": "Current project",
   "Local runtime": "Local runtime",
+  "Using the latest {language} runtime for this file: {runtime}": "Using the latest {language} runtime for this file: {runtime}",
   "Selected runtime does not match the active language.": "Selected runtime does not match the active language.",
   "Runtime matches the active language.": "Runtime matches the active language.",
   "Select a cloud runtime to verify compatibility.": "Select a cloud runtime to verify compatibility.",

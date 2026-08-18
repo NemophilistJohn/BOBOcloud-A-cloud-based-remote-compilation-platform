@@ -237,6 +237,61 @@ test('chat starters disappear on first message and current file context can be e
   }
 });
 
+test('the AI assistant and primary sidebar remain independently operable at constrained desktop widths', async () => {
+  test.setTimeout(60000);
+  let fixture;
+  try {
+    fixture = await launch();
+    const { page } = fixture;
+    await page.setViewportSize({ width: 1080, height: 720 });
+    if (await page.locator('#settings-modal').isVisible()) {
+      await page.getByRole('button', { name: 'Use local editor only' }).click();
+      await expect(page.locator('#settings-modal')).toBeHidden();
+    }
+
+    await page.evaluate(() => {
+      window.BOBO.workbench.setPrimaryVisible(false);
+      window.BOBO.workbench.setAuxiliaryVisible(true);
+    });
+    await expect(page.locator('#ai-chat-panel')).toBeVisible();
+    await expect(page.locator('#sidebar')).toBeHidden();
+
+    await page.locator('[data-workbench-view="cloud"]').click();
+    await expect(page.locator('[data-sidebar-view="cloud"]')).toHaveClass(/active/);
+    await expect(page.locator('#sidebar')).toBeVisible();
+
+    const regions = await page.evaluate(() => {
+      const layout = document.getElementById('layout');
+      const sidebar = document.getElementById('sidebar');
+      const chat = document.getElementById('ai-chat-panel');
+      const editor = document.getElementById('editor');
+      return {
+        primaryVisible: window.BOBO.workbench.getState().primaryVisible,
+        auxiliaryVisible: window.BOBO.workbench.getState().auxiliaryVisible,
+        layoutHasChat: layout.classList.contains('chat-open'),
+        layoutHidesPrimary: layout.classList.contains('primary-sidebar-hidden'),
+        sidebarWidth: sidebar.getBoundingClientRect().width,
+        chatWidth: chat.getBoundingClientRect().width,
+        editorWidth: editor.getBoundingClientRect().width
+      };
+    });
+    expect(regions).toEqual({
+      primaryVisible: true,
+      auxiliaryVisible: true,
+      layoutHasChat: true,
+      layoutHidesPrimary: false,
+      sidebarWidth: expect.any(Number),
+      chatWidth: expect.any(Number),
+      editorWidth: expect.any(Number)
+    });
+    expect(regions.sidebarWidth).toBeGreaterThan(0);
+    expect(regions.chatWidth).toBeGreaterThan(0);
+    expect(regions.editorWidth).toBeGreaterThan(160);
+  } finally {
+    await close(fixture);
+  }
+});
+
 test('only a real parseable connection test can light the ready LED', async () => {
   test.setTimeout(60000);
   let fixture;

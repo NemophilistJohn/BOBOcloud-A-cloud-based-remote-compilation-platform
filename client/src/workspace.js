@@ -1350,6 +1350,9 @@
     if (!tab) return;
     deactivateWorkbenchTabs();
     S.activeTabPath = filePath;
+    // Docker mode follows the active source language, while an explicit Local
+    // choice remains untouched inside the runtime selector.
+    if (BOBO.runtime && BOBO.runtime.autoSelectForLanguage) BOBO.runtime.autoSelectForLanguage(tab.language);
     if (BOBO.runConfig && BOBO.runConfig.refreshForActiveFile) BOBO.runConfig.refreshForActiveFile();
 
     if (tab.language === 'image') {

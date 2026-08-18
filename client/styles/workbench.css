@@ -516,17 +516,20 @@
   .titlebar-brand-name { display: none; }
   .command-center kbd { display: none; }
   .titlebar-context { max-width: 150px; }
-  #layout.chat-open { --primary-sidebar-track: 0px; --sidebar-resizer-track: 0px; }
-  #layout.chat-open #sidebar,
-  #layout.chat-open #sidebar-resizer { display: none; }
+  /* The AI assistant and primary sidebar are independent regions. Keep both
+     available at constrained desktop widths, while capping their tracks so
+     the editor retains the remaining space. */
+  #layout.chat-open:not(.primary-sidebar-hidden):not(.focus-mode) {
+    --primary-sidebar-track: min(var(--sidebar-width), 28vw);
+    --aux-track: min(var(--chat-width), 36vw);
+  }
 }
 
 @media (max-width: 860px) {
   #layout,
   #layout.chat-open { --primary-sidebar-track: min(var(--sidebar-width), 28vw); }
   #layout.primary-sidebar-hidden,
-  #layout.focus-mode,
-  #layout.chat-open { --primary-sidebar-track: 0px; }
+  #layout.focus-mode { --primary-sidebar-track: 0px; }
   .titlebar-context { display: none; }
   #cloud-sync-btn span,
   .run-control-group #run-code span { display: none; }

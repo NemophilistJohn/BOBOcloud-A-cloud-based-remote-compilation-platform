@@ -676,6 +676,7 @@
   "Refresh environment": "刷新环境",
   "Current project": "当前项目",
   "Local runtime": "本地运行时",
+  "Using the latest {language} runtime for this file: {runtime}": "已为当前文件自动切换到最新的 {language} 运行时：{runtime}",
   "Selected runtime does not match the active language.": "所选运行时与当前语言不一致。",
   "Runtime matches the active language.": "运行时与当前语言一致。",
   "Select a cloud runtime to verify compatibility.": "请选择云端运行时以验证一致性。",

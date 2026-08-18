@@ -676,6 +676,7 @@
   "Refresh environment": "環境を更新",
   "Current project": "現在のプロジェクト",
   "Local runtime": "ローカルランタイム",
+  "Using the latest {language} runtime for this file: {runtime}": "このファイル用に最新の {language} ランタイムへ自動切替しました: {runtime}",
   "Selected runtime does not match the active language.": "選択したランタイムは現在の言語と一致しません。",
   "Runtime matches the active language.": "ランタイムは現在の言語と一致しています。",
   "Select a cloud runtime to verify compatibility.": "クラウドランタイムを選択して整合性を確認してください。",
