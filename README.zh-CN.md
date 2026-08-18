@@ -298,4 +298,4 @@ README 截图使用隔离本地 fixture，不访问真实服务器或用户 AI K
 
 ## 许可证
 
-重新分发 BOBOCLOUD 或其 toolkit 镜像前，请先检查仓库中的许可证信息。
+重新分发 BOBOCLOUD 或其 toolkit 镜像前，请先检查仓库中的许可证信息。。
