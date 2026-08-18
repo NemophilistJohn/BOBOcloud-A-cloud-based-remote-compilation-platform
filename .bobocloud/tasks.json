@@ -7,7 +7,7 @@
       "label": "Build Renderer",
       "type": "process",
       "command": "npm",
-      "args": ["run", "build:renderer"],
+      "args": ["--prefix", "client", "run", "build:renderer"],
       "group": { "kind": "build", "isDefault": true },
       "bobocloud": { "kind": "build" }
     },
@@ -15,7 +15,7 @@
       "label": "Test Client",
       "type": "process",
       "command": "npm",
-      "args": ["test"],
+      "args": ["--prefix", "client", "test"],
       "group": "test",
       "bobocloud": { "kind": "test" }
     },

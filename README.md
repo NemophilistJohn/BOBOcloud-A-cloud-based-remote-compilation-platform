@@ -4,6 +4,12 @@
 
 BOBOCLOUD is an Electron workbench for local projects that uses a self-hosted Linux service for cloud compilation, project tasks, language intelligence, debugging, team collaboration, and optional AI assistance. Client **2.6.0** and server **2.4.0** are developed together. The editor still works locally before a server is configured.
 
+## Repository layout
+
+- `client/` is the self-contained Electron desktop project: application code, renderer, tests, packaging, bundled assets, plugin SDK, and examples.
+- `server/` is the Go cloud-compilation service and its Docker/LSP/DAP/cross-toolchain deployment assets.
+- `docs/` remains at the repository root because it documents the contract shared by both sides. Root `package.json` forwards common client commands; run `npm --prefix client <command>` or work directly in `client/`.
+
 | I am... | Start here |
 | --- | --- |
 | A desktop user | [Use BOBOCLOUD](#for-desktop-users) |
@@ -254,20 +260,21 @@ The client reads [BOBOCloud-Marketplace-Registry](https://github.com/Nemophilist
 4. Update the package entry and SHA-256 in `indexes/<shard>.json`, then update the shard SHA-256/count/date in `registry.json`.
 5. Run `node scripts/validate-registry.mjs` in the registry repository before pushing the change.
 
-The marketplace renders and installs only `latest`. Historical descriptors remain immutable for auditability, but users who deliberately need an older release must download its `.boboplugin` and install it locally. Exact APIs, schemas, lifecycle rules, security limits, packaging commands, and troubleshooting are in [Plugin development](docs/plugin-development.md), [Plugin API](docs/plugin-api.md), and [plugin-sdk/bobocloud-plugin.d.ts](plugin-sdk/bobocloud-plugin.d.ts).
+The marketplace renders and installs only `latest`. Historical descriptors remain immutable for auditability, but users who deliberately need an older release must download its `.boboplugin` and install it locally. Exact APIs, schemas, lifecycle rules, security limits, packaging commands, and troubleshooting are in [Plugin development](docs/plugin-development.md), [Plugin API](docs/plugin-api.md), and [plugin-sdk/bobocloud-plugin.d.ts](client/plugin-sdk/bobocloud-plugin.d.ts).
 
 ## For contributors
 
 ### Develop and test
 
 ```powershell
+Set-Location client
 npm ci
 npm start
 npm test
 npm run test:ui
 npm run build:renderer
 
-Set-Location server
+Set-Location ../server
 $env:GOCACHE = Join-Path $env:TEMP 'bobocloud-go-cache'
 go test ./...
 go vet ./...
@@ -287,6 +294,7 @@ The renderer is built by esbuild into a core bundle and a lazy AI UI bundle. `be
 ### Package and document
 
 ```powershell
+Set-Location client
 npm run build:win
 npm run audit:release
 npm run docs:screenshots

@@ -18,7 +18,7 @@ module is `src/file-icons.js`: it exports an injected service factory,
 same instance through `BOBO.fileIcons`. Follow that pattern one low-coupling
 module at a time; do not move a feature and all of its consumers in one change.
 
-The future third-party contract is specified in `docs/plugin-api.md`. The
+The future third-party contract is specified in `../../docs/plugin-api.md`. The
 current runtime activates only already-loaded trusted modules and is not a
 plugin package loader or security sandbox.
 

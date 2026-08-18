@@ -5,6 +5,10 @@ const {
   normalizeCacheMode: normalizeClientCacheMode,
   normalizeCacheSizeMiB: normalizeClientCacheSizeMiB
 } = require('../client-analysis-cache');
+const {
+  createBootstrapServerSettings,
+  getBootstrapResourcePath
+} = require('./server-settings-bootstrap');
 
 const DEFAULT_SERVER_SETTINGS = Object.freeze({
   ip: '',
@@ -79,6 +83,26 @@ function createSettingsStore(options) {
     return normalized;
   }
 
+  function readBundledServerSettings() {
+    const configuredPath = options.bundledServerSettingsPath;
+    const resourcePath = configuredPath || (app.isPackaged
+      ? getBootstrapResourcePath(options.resourcesPath || process.resourcesPath)
+      : '');
+    if (!resourcePath || !fs.existsSync(resourcePath)) return null;
+
+    try {
+      const bootstrap = createBootstrapServerSettings(JSON.parse(fs.readFileSync(resourcePath, 'utf-8')));
+      if (!bootstrap) {
+        console.error('[server-settings] bundled bootstrap configuration is missing a server address or SSH account');
+        return null;
+      }
+      return bootstrap;
+    } catch (error) {
+      console.error('[server-settings] could not read bundled bootstrap configuration:', error.message);
+      return null;
+    }
+  }
+
   async function readServerSettings() {
     try {
       if (fs.existsSync(paths.server)) {
@@ -89,7 +113,15 @@ function createSettingsStore(options) {
         }
         return settings;
       }
+      const bundled = readBundledServerSettings();
+      if (bundled) {
+        const seeded = normalizeServerSettings(bundled);
+        const saved = await writeServerSettings(seeded);
+        if (!saved) console.error('[server-settings] could not persist bundled bootstrap configuration');
+        return seeded;
+      }
       const defaults = { ...DEFAULT_SERVER_SETTINGS };
+      fs.mkdirSync(path.dirname(paths.server), { recursive: true });
       fs.writeFileSync(paths.server, JSON.stringify(defaults, null, 2), 'utf-8');
       return normalizeServerSettings(defaults);
     } catch (error) {
@@ -103,6 +135,7 @@ function createSettingsStore(options) {
       const persisted = normalizeServerSettings(settings);
       delete persisted.firstRunRequired;
       persisted.setupCompleted = persisted.setupCompleted === true;
+      fs.mkdirSync(path.dirname(paths.server), { recursive: true });
       fs.writeFileSync(paths.server, JSON.stringify(persisted, null, 2), 'utf-8');
       if (persisted.ip && persisted.user) {
         const result = await rclone.ensureConfig(persisted);

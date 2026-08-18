@@ -5,6 +5,7 @@ const path = require('path');
 const asar = require('@electron/asar');
 
 const projectRoot = path.resolve(__dirname, '..');
+const repositoryRoot = path.resolve(projectRoot, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
 
 const forbiddenPaths = [
@@ -79,19 +80,12 @@ function findAppAsars(directory) {
   return results.sort();
 }
 
-function resolveAsarPath(explicitPath, root = projectRoot, version = packageJson.version) {
+function resolveAsarPath(explicitPath, root = projectRoot, _version = packageJson.version) {
   if (explicitPath) return path.resolve(explicitPath);
 
-  const versionDirectory = path.join(root, 'release', version);
-  const candidates = findAppAsars(versionDirectory);
-  if (candidates.length === 1) return candidates[0];
-  if (candidates.length === 0) {
-    throw new Error('no app.asar found for release version ' + version + ' under ' + versionDirectory);
-  }
-  throw new Error(
-    'multiple app.asar files found for release version ' + version +
-    '; pass the intended path explicitly: ' + candidates.join(', ')
-  );
+  const defaultPath = path.join(root, 'dist', 'win-unpacked', 'resources', 'app.asar');
+  if (fs.existsSync(defaultPath)) return defaultPath;
+  throw new Error('no app.asar found at ' + defaultPath + '; pass the intended path explicitly');
 }
 
 function fail(message) {
@@ -151,7 +145,9 @@ function main() {
 
   const sensitiveValues = [
     ...collectSensitiveValues(path.join(projectRoot, 'server-settings.json')),
-    ...collectSensitiveValues(path.join(projectRoot, '.mcp.json'))
+    ...collectSensitiveValues(path.join(projectRoot, '.mcp.json')),
+    ...collectSensitiveValues(path.join(repositoryRoot, 'server-settings.json')),
+    ...collectSensitiveValues(path.join(repositoryRoot, '.mcp.json'))
   ].filter((value, index, values) => values.indexOf(value) === index);
 
   const sensitiveMatches = [];

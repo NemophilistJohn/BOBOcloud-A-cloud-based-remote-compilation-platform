@@ -35,7 +35,7 @@ The reference guide, package checklist, and complete example are in [Plugin Deve
 
 The root file is named `manifest.json`. A `.boboplugin` is a ZIP archive with that file at archive root. The user-facing installer accepts only this archive format; development-folder installation is reserved for internal development and test controllers. A package contains one bundled JavaScript entry in API v1 and the integrity map covers every non-manifest file exactly once.
 
-The matching TypeScript declaration is [plugin-sdk/bobocloud-plugin.d.ts](../plugin-sdk/bobocloud-plugin.d.ts). [examples/plugins/hello-plugin](../examples/plugins/hello-plugin) is a minimal installable directory package with a verified integrity hash.
+The matching TypeScript declaration is [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts). [examples/plugins/hello-plugin](../client/examples/plugins/hello-plugin) is a minimal installable directory package with a verified integrity hash.
 
 ## Execution Boundary
 
@@ -209,7 +209,7 @@ await view.setState({
 
 `id`, `openCommand`, every section-item command, every action command, and every load-more command must use the calling plugin namespace. `icon` currently accepts only `git-branch`; `order` is an integer from `-1000` through `1000`. Disabling, refreshing, or uninstalling a package disposes the provider and removes its activity item and panel.
 
-`SourceControlState` accepts `phase` (`idle`, `loading`, `ready`, `empty`, or `error`), optional localized `title` and `message`, one bounded summary, at most 8 bounded sections, and at most 16 actions. Each section contains bounded item data and may contain one `loadMore` command. An action can be immediate or carry one bounded host-rendered form containing text, textarea, select, and checkbox fields. Actions may request the host-owned `button`, compact `toolbar`, or overflow `menu` placement. Toolbar actions must use a supported semantic icon token; plugins cannot provide SVG, HTML, CSS, or their own menu DOM. The exact TypeScript shapes are in [plugin-sdk/bobocloud-plugin.d.ts](../plugin-sdk/bobocloud-plugin.d.ts).
+`SourceControlState` accepts `phase` (`idle`, `loading`, `ready`, `empty`, or `error`), optional localized `title` and `message`, one bounded summary, at most 8 bounded sections, and at most 16 actions. Each section contains bounded item data and may contain one `loadMore` command. An action can be immediate or carry one bounded host-rendered form containing text, textarea, select, and checkbox fields. Actions may request the host-owned `button`, compact `toolbar`, or overflow `menu` placement. Toolbar actions must use a supported semantic icon token; plugins cannot provide SVG, HTML, CSS, or their own menu DOM. The exact TypeScript shapes are in [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts).
 
 When the user invokes a state command, the registered extension command receives exactly one `SourceControlCommandPayload` argument:
 
@@ -323,7 +323,7 @@ The following methods require `scm.git.write`:
 | `pull` | `repositoryId`, `remote?: string`, `branch?: string` | Bounded operation result. |
 | `push` | `repositoryId`, `remote?: string`, `branch?: string`, `force?: boolean`, `setUpstream?: boolean` | Bounded operation result. |
 
-The exact TypeScript signatures and result shapes are in [plugin-sdk/bobocloud-plugin.d.ts](../plugin-sdk/bobocloud-plugin.d.ts). The host permits only HTTPS and SSH remote URLs; embedded credentials, local-file URLs, custom helpers, arbitrary Git configuration, and interactive prompts are rejected. The plugin never receives credentials. A device's normal local credential helper or SSH agent may satisfy a host-mediated remote operation.
+The exact TypeScript signatures and result shapes are in [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts). The host permits only HTTPS and SSH remote URLs; embedded credentials, local-file URLs, custom helpers, arbitrary Git configuration, and interactive prompts are rejected. The plugin never receives credentials. A device's normal local credential helper or SSH agent may satisfy a host-mediated remote operation.
 
 Stable local-SCM error codes are:
 

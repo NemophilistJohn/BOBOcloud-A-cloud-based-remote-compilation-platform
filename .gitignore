@@ -1,5 +1,14 @@
 node_modules/
 
+# Explicit client project outputs after the repository split.
+client/node_modules/
+client/renderer-dist/
+client/test-results/
+client/dist/
+client/release/
+client/server-settings.json
+client/official-local-scm-plugin/
+
 # Local credentials and agent-generated workspace context
 .mcp.json
 .claude/

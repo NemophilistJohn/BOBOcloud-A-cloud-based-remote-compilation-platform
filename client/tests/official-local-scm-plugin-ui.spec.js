@@ -54,6 +54,18 @@ async function stop(app) {
   await new Promise((resolve) => setTimeout(resolve, 200));
 }
 
+async function installEnabledPluginBeforeLaunch(userData, workspace) {
+  const installer = createPluginController({
+    app: { getPath: () => userData, getVersion: () => '2.6.1' },
+    ipcMain: { handle() {} },
+    getWindow: () => null,
+    getWorkspaceIdentity: () => ({ rootPath: workspace, workspaceIdentity: 1 }),
+    hostVersion: '2.6.1'
+  });
+  await installer.installArchiveFromPath(ARTIFACT);
+  await installer.setEnabled(PLUGIN_ID, true);
+}
+
 test('official local SCM plugin accepts cross-realm broker data and controls file-tree status', async () => {
   test.skip(!fs.existsSync(ARTIFACT), 'Official plugin checkout/artifact is not present beside the app repository.');
   test.setTimeout(120000);
@@ -120,6 +132,13 @@ test('official local SCM plugin accepts cross-realm broker data and controls fil
       return record && record.state && record.state.phase === 'ready';
     }, null, { timeout: 20000 });
 
+    // A dynamically registered source-control view must never prevent the
+    // built-in workbench activities from switching their own sidebar content.
+    for (const view of ['explorer', 'environment', 'extensions']) {
+      await page.locator('[data-workbench-view="' + view + '"]').click();
+      await expect(page.locator('[data-sidebar-view="' + view + '"]')).toHaveClass(/active/);
+    }
+
     const activity = page.locator('.source-control-activity');
     await expect(activity).toBeVisible();
     await activity.click();
@@ -157,6 +176,20 @@ test('official local SCM plugin accepts cross-realm broker data and controls fil
       const label = menu.querySelector('.source-control-overflow-label');
       return Boolean(label && label.getBoundingClientRect().left >= menu.getBoundingClientRect().left + 24);
     })).toBe(true);
+    await expect.poll(() => overflow.evaluate((menu) => {
+      const activityBar = document.getElementById('activitybar');
+      return Boolean(activityBar && menu.getBoundingClientRect().left >= activityBar.getBoundingClientRect().right + 7);
+    })).toBe(true);
+    // The portal menu must dismiss on every covered activity-rail click rather
+    // than absorbing it. This is the real regression path for built-in views.
+    for (const view of ['cloud', 'environment', 'extensions']) {
+      await page.locator('[data-workbench-view="' + view + '"]').click();
+      await expect(page.locator('[data-sidebar-view="' + view + '"]')).toHaveClass(/active/);
+      await expect(page.locator('.source-control-overflow-menu')).toHaveCount(0);
+      await page.locator('.source-control-activity').click();
+      await expect(panel).toBeVisible();
+      await panel.locator('.source-control-more-button').click();
+    }
     await page.screenshot({
       path: path.join(evidenceDirectory, 'official-local-scm-plugin-menu.png'),
       fullPage: true
@@ -252,6 +285,56 @@ test('official local SCM treats an unborn repository as a first-publish workflow
     await expect(panel.locator('.source-control-tool-button[aria-label="Stage all changes"]')).toBeVisible();
     await expect(panel).not.toContainText('Extension payload must contain plain objects only.');
     await page.screenshot({ path: path.join(evidenceDirectory, 'official-local-scm-plugin-unborn.png'), fullPage: true });
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await stop(app);
+    await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+  }
+});
+
+test('a preinstalled source-control plugin cannot block built-in sidebars after opening a workspace', async () => {
+  test.skip(!fs.existsSync(ARTIFACT), 'Official plugin checkout/artifact is not present beside the app repository.');
+  test.setTimeout(120000);
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-official-scm-preinstalled-ui-'));
+  const workspace = path.join(sandbox, 'workspace');
+  const appData = path.join(sandbox, 'appdata');
+  const home = path.join(sandbox, 'home');
+  createRepository(workspace);
+  fs.mkdirSync(appData, { recursive: true });
+  fs.mkdirSync(home, { recursive: true });
+  // --user-data-dir is the Electron userData root in this isolated test.
+  await installEnabledPluginBeforeLaunch(path.join(sandbox, 'chromium'), workspace);
+  let app;
+
+  try {
+    app = await electron.launch({
+      executablePath: electronPath(),
+      args: ['.', '--user-data-dir=' + path.join(sandbox, 'chromium')],
+      env: Object.assign({}, process.env, {
+        APPDATA: appData,
+        HOME: home,
+        USERPROFILE: home,
+        XDG_CONFIG_HOME: path.join(sandbox, 'xdg-config'),
+        BOBO_FORCE_FIRST_RUN: '0',
+        ELECTRON_DISABLE_SECURITY_WARNINGS: 'true'
+      })
+    });
+    const page = await app.firstWindow();
+    const pageErrors = [];
+    page.on('pageerror', (error) => pageErrors.push(error.message));
+    await page.waitForFunction(() => document.documentElement.dataset.boboReady === 'true', null, { timeout: 25000 });
+    await page.waitForFunction(() => Boolean(document.querySelector('.source-control-activity')), null, { timeout: 20000 });
+    await page.evaluate(async (workspacePath) => {
+      const opened = await window.api.pickWorkspace(workspacePath);
+      await window.BOBO.workspace.applyWorkspace(opened.rootPath, opened.tree, opened.workspaceIdentity, opened.leaveToken);
+    }, workspace);
+
+    await page.locator('.source-control-activity').click();
+    await expect(page.locator('.source-control-sidebar.active')).toBeVisible();
+    for (const view of ['explorer', 'cloud', 'environment', 'extensions']) {
+      await page.locator('[data-workbench-view="' + view + '"]').click();
+      await expect(page.locator('[data-sidebar-view="' + view + '"]')).toHaveClass(/active/);
+    }
     expect(pageErrors).toEqual([]);
   } finally {
     await stop(app);

@@ -15,7 +15,7 @@ async function launch(sandbox, firstRun) {
   const home = path.join(sandbox, 'home');
   fs.mkdirSync(appData, { recursive: true });
   fs.mkdirSync(home, { recursive: true });
-  const packagedExe = process.env.BOBO_PACKAGED_EXE || '';
+  const packagedExe = process.env.BOBO_INTERNAL_PACKAGED_EXE || process.env.BOBO_PACKAGED_EXE || '';
   const app = await electron.launch({
     executablePath: packagedExe || electronPath(),
     args: (packagedExe ? [] : ['.']).concat(['--user-data-dir=' + path.join(sandbox, 'chromium')]),
@@ -50,6 +50,8 @@ test('first download guides server setup once and keeps legacy credentials out o
     await expect(page.locator('#server-first-run-intro')).toBeVisible();
     await expect(page.locator('.settings-tabs')).toBeHidden();
     await expect(page.locator('#server-apikey')).toBeHidden();
+    await page.waitForTimeout(250);
+    await expect(page.locator('#settings-modal')).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(page.locator('#settings-modal')).toBeVisible();
     const layout = await page.evaluate(() => {
@@ -71,6 +73,51 @@ test('first download guides server setup once and keeps legacy credentials out o
 
     fixture = await launch(sandbox, true);
     await expect(fixture.page.locator('#settings-modal')).toBeHidden();
+  } finally {
+    if (fixture) await stop(fixture.app);
+    await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+  }
+});
+
+test('a first-run guide that cannot render releases the workbench interaction lock', async () => {
+  test.setTimeout(60000);
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-onboarding-fallback-'));
+  let fixture;
+  try {
+    fixture = await launch(sandbox, true);
+    const { page } = fixture;
+    await expect(page.locator('#settings-modal')).toBeVisible();
+    await page.evaluate(() => {
+      document.querySelector('#settings-modal .settings-card').style.display = 'none';
+      window.BOBO.settings.openFirstRun();
+    });
+    await expect(page.locator('#settings-modal')).toBeHidden();
+    await page.locator('[data-workbench-view="explorer"]').click();
+    await expect(page.locator('[data-sidebar-view="explorer"]')).toHaveClass(/active/);
+    expect(await page.evaluate(() => window.BOBO.settings.isFirstRunOpen())).toBe(false);
+  } finally {
+    if (fixture) await stop(fixture.app);
+    await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+  }
+});
+
+test('an internal packaged build seeds its server connection without blocking the workbench', async () => {
+  test.skip(!process.env.BOBO_INTERNAL_PACKAGED_EXE, 'Set BOBO_INTERNAL_PACKAGED_EXE to verify an internal installer build.');
+  test.setTimeout(60000);
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-internal-bootstrap-ui-'));
+  let fixture;
+  try {
+    fixture = await launch(sandbox, false);
+    const { page } = fixture;
+    await expect(page.locator('#settings-modal')).toBeHidden();
+    const settings = await page.evaluate(() => window.api.readServerSettings());
+    expect(settings.setupCompleted).toBe(true);
+    expect(String(settings.ip || '').trim()).not.toBe('');
+    expect(String(settings.user || '').trim()).not.toBe('');
+    // A configured multi-user server can legitimately open the authentication
+    // overlay. The point of this check is that first-run setup is not the
+    // blocking layer after the bootstrap has been seeded.
+    await expect(page.locator('#settings-modal')).toBeHidden();
   } finally {
     if (fixture) await stop(fixture.app);
     await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });

@@ -6,7 +6,7 @@ Plugins are installed locally. They run in an isolated sandbox and communicate w
 
 For the complete contract, see [Plugin API](./plugin-api.md).
 
-The matching TypeScript declaration is [plugin-sdk/bobocloud-plugin.d.ts](../plugin-sdk/bobocloud-plugin.d.ts). A ready-to-install directory package is available at [examples/plugins/hello-plugin](../examples/plugins/hello-plugin).
+The matching TypeScript declaration is [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts). A ready-to-install directory package is available at [examples/plugins/hello-plugin](../client/examples/plugins/hello-plugin).
 
 ## 1. Quick Start
 
@@ -193,7 +193,7 @@ Do not start background work during activation. API v1's optional activation eve
 
 ## 6. Runtime API
 
-The sandbox receives a frozen `context` object. All methods are asynchronous except adding a subscription. Arguments and results cross a JSON-like data boundary: plain objects, arrays, strings, booleans, finite numbers, and `null`. Functions, DOM nodes, class instances, accessors, circular data, and oversized payloads are rejected. TypeScript projects can reference [plugin-sdk/bobocloud-plugin.d.ts](../plugin-sdk/bobocloud-plugin.d.ts) for the exact API `1.2.0` declarations.
+The sandbox receives a frozen `context` object. All methods are asynchronous except adding a subscription. Arguments and results cross a JSON-like data boundary: plain objects, arrays, strings, booleans, finite numbers, and `null`. Functions, DOM nodes, class instances, accessors, circular data, and oversized payloads are rejected. TypeScript projects can reference [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts) for the exact API `1.2.0` declarations.
 
 ```ts
 interface Disposable { dispose(): void }

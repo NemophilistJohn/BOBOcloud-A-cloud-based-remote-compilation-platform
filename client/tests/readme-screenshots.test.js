@@ -5,18 +5,19 @@ const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const ROOT = path.resolve(__dirname, '..');
-const README = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
-const README_ZH = fs.readFileSync(path.join(ROOT, 'README.zh-CN.md'), 'utf8');
-const PACKAGE = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-const CAPTURE_SCRIPT = fs.readFileSync(path.join(ROOT, 'scripts', 'capture-readme-screenshots.js'), 'utf8');
-const DAP_MANIFEST = JSON.parse(fs.readFileSync(path.join(ROOT, 'server', 'dap_adapters.json'), 'utf8'));
-const DAP_BUILD = fs.readFileSync(path.join(ROOT, 'server', 'deploy', 'dap-toolkit', 'build.sh'), 'utf8');
-const DAP_VERIFY = fs.readFileSync(path.join(ROOT, 'server', 'deploy', 'dap-toolkit', 'verify.sh'), 'utf8');
-const DAP_SMOKE = fs.readFileSync(path.join(ROOT, 'server', 'deploy', 'dap-toolkit', 'dap-smoke.py'), 'utf8');
-const DAP_NODE_SMOKE = fs.readFileSync(path.join(ROOT, 'server', 'deploy', 'dap-toolkit', 'node-dap-smoke.py'), 'utf8');
-const DAP_NODE_DOCKERFILE = fs.readFileSync(path.join(ROOT, 'server', 'deploy', 'dap-toolkit', 'Dockerfile.node'), 'utf8');
-const DAP_DOCS = fs.readFileSync(path.join(ROOT, 'docs', 'dap-server.md'), 'utf8');
+const CLIENT_ROOT = path.resolve(__dirname, '..');
+const REPOSITORY_ROOT = path.resolve(CLIENT_ROOT, '..');
+const README = fs.readFileSync(path.join(REPOSITORY_ROOT, 'README.md'), 'utf8');
+const README_ZH = fs.readFileSync(path.join(REPOSITORY_ROOT, 'README.zh-CN.md'), 'utf8');
+const PACKAGE = JSON.parse(fs.readFileSync(path.join(CLIENT_ROOT, 'package.json'), 'utf8'));
+const CAPTURE_SCRIPT = fs.readFileSync(path.join(CLIENT_ROOT, 'scripts', 'capture-readme-screenshots.js'), 'utf8');
+const DAP_MANIFEST = JSON.parse(fs.readFileSync(path.join(REPOSITORY_ROOT, 'server', 'dap_adapters.json'), 'utf8'));
+const DAP_BUILD = fs.readFileSync(path.join(REPOSITORY_ROOT, 'server', 'deploy', 'dap-toolkit', 'build.sh'), 'utf8');
+const DAP_VERIFY = fs.readFileSync(path.join(REPOSITORY_ROOT, 'server', 'deploy', 'dap-toolkit', 'verify.sh'), 'utf8');
+const DAP_SMOKE = fs.readFileSync(path.join(REPOSITORY_ROOT, 'server', 'deploy', 'dap-toolkit', 'dap-smoke.py'), 'utf8');
+const DAP_NODE_SMOKE = fs.readFileSync(path.join(REPOSITORY_ROOT, 'server', 'deploy', 'dap-toolkit', 'node-dap-smoke.py'), 'utf8');
+const DAP_NODE_DOCKERFILE = fs.readFileSync(path.join(REPOSITORY_ROOT, 'server', 'deploy', 'dap-toolkit', 'Dockerfile.node'), 'utf8');
+const DAP_DOCS = fs.readFileSync(path.join(REPOSITORY_ROOT, 'docs', 'dap-server.md'), 'utf8');
 const IMAGE_NAMES = ['workbench.png', 'environment-center.png', 'ai-control-center.png'];
 
 function pngMetadata(filePath) {
@@ -78,7 +79,7 @@ test('README screenshot references exist and are presentation-sized PNG files', 
   for (const name of IMAGE_NAMES) {
     const relative = 'docs/screenshots/' + name;
     assert.match(README, new RegExp('!\\[[^\\]]+\\]\\(' + relative.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\)'));
-    const metadata = pngMetadata(path.join(ROOT, relative));
+    const metadata = pngMetadata(path.join(REPOSITORY_ROOT, relative));
     assert.deepEqual({ width: metadata.width, height: metadata.height }, { width: 1440, height: 900 });
     assert.ok(metadata.bytes >= 10000, name + ' must contain non-trivial rendered content');
   }
@@ -102,7 +103,7 @@ test('docs screenshot command uses isolated local fixtures and all-or-nothing pr
 test('AI screenshot is publishable only after README references it', () => {
   const reference = 'docs/screenshots/ai-control-center.png';
   if (!README.includes(reference)) return;
-  const metadata = pngMetadata(path.join(ROOT, reference));
+  const metadata = pngMetadata(path.join(REPOSITORY_ROOT, reference));
   assert.deepEqual({ width: metadata.width, height: metadata.height }, { width: 1440, height: 900 });
   assert.ok(metadata.bytes >= 10000, 'AI control center must contain non-trivial rendered content');
 });

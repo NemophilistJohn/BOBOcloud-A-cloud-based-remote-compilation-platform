@@ -6,8 +6,9 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { _electron: electron } = require('playwright');
 
-const PROJECT_ROOT = path.resolve(__dirname, '..');
-const SCREENSHOT_DIR = path.join(PROJECT_ROOT, 'docs', 'screenshots');
+const CLIENT_ROOT = path.resolve(__dirname, '..');
+const REPOSITORY_ROOT = path.resolve(CLIENT_ROOT, '..');
+const SCREENSHOT_DIR = path.join(REPOSITORY_ROOT, 'docs', 'screenshots');
 const VIEWPORT = { width: 1440, height: 900 };
 const SCREENSHOTS = [
   { name: 'workbench.png', capture: captureWorkbench },
@@ -16,7 +17,7 @@ const SCREENSHOTS = [
 ];
 
 function electronExecutablePath() {
-  const dist = path.join(PROJECT_ROOT, 'node_modules', 'electron', 'dist');
+  const dist = path.join(CLIENT_ROOT, 'node_modules', 'electron', 'dist');
   if (process.platform === 'win32') return path.join(dist, 'electron.exe');
   if (process.platform === 'darwin') return path.join(dist, 'Electron.app', 'Contents', 'MacOS', 'Electron');
   return path.join(dist, 'electron');
@@ -86,7 +87,7 @@ async function screenshotFixture(name, files, targetPath, render) {
   try {
     app = await electron.launch({
       executablePath: electronExecutablePath(),
-      args: [PROJECT_ROOT, '--user-data-dir=' + path.join(fixtureRoot, 'chromium')],
+      args: [CLIENT_ROOT, '--user-data-dir=' + path.join(fixtureRoot, 'chromium')],
       env: fixtureEnvironment(appData, home)
     });
     const page = await app.firstWindow();
@@ -459,7 +460,7 @@ function publishScreenshots(staging) {
 }
 
 async function main() {
-  process.chdir(PROJECT_ROOT);
+  process.chdir(CLIENT_ROOT);
   const executable = electronExecutablePath();
   if (!fs.existsSync(executable)) throw new Error('Electron is not installed; run npm ci first');
   fs.mkdirSync(path.dirname(SCREENSHOT_DIR), { recursive: true });

@@ -4,6 +4,12 @@
 
 BOBOCLOUD 是一个 Electron 云编译工作台：代码保留在本地工作区，编译、项目任务、语言服务、断点调试、团队协作和可选 AI 能力按需连接自托管 Linux 服务。当前客户端 **2.6.0**、服务端 **2.4.0**；没有配置服务器时仍可作为本地编辑器使用。
 
+## 仓库结构
+
+- `client/` 是独立的 Electron 用户端工程，包含应用代码、Renderer、测试、打包工具、内置资源、插件 SDK 和示例。
+- `server/` 是 Go 云编译服务及其 Docker、LSP、DAP、交叉工具链部署资产。
+- `docs/` 保留在根目录，用于记录两端共享的契约。根 `package.json` 会转发常用用户端命令；也可以直接使用 `npm --prefix client <command>`，或进入 `client/` 后执行命令。
+
 | 你是... | 从这里开始 |
 | --- | --- |
 | 用户端使用者 | [开始使用](#用户端使用者) |
@@ -254,18 +260,19 @@ export async function deactivate() {}
 4. 更新 `indexes/<shard>.json` 中该插件的版本和 SHA-256，再更新 `registry.json` 中分片的 SHA-256、数量和时间。
 5. 在市场仓库执行 `node scripts/validate-registry.mjs`，通过后再推送。
 
-在线市场只渲染并安装 `latest`。历史版本描述会保留用于审计，但需要旧版的用户只能下载相应 `.boboplugin` 后手动安装。完整 API、schema、生命周期、安全限制、打包命令和排错说明见 [插件开发文档](docs/plugin-development.md)、[插件 API](docs/plugin-api.md) 和 [plugin-sdk/bobocloud-plugin.d.ts](plugin-sdk/bobocloud-plugin.d.ts)。
+在线市场只渲染并安装 `latest`。历史版本描述会保留用于审计，但需要旧版的用户只能下载相应 `.boboplugin` 后手动安装。完整 API、schema、生命周期、安全限制、打包命令和排错说明见 [插件开发文档](docs/plugin-development.md)、[插件 API](docs/plugin-api.md) 和 [plugin-sdk/bobocloud-plugin.d.ts](client/plugin-sdk/bobocloud-plugin.d.ts)。
 
 ## 贡献者
 
 ```powershell
+Set-Location client
 npm ci
 npm start
 npm test
 npm run test:ui
 npm run build:renderer
 
-Set-Location server
+Set-Location ../server
 $env:GOCACHE = Join-Path $env:TEMP 'bobocloud-go-cache'
 go test ./...
 go vet ./...
@@ -281,6 +288,7 @@ Renderer 使用 esbuild 产出 core bundle 和延迟加载的 AI UI bundle，`be
 - `window.BOBO` 只是兼容外观；新增 Renderer 功能应优先采用显式 import、注册服务和可释放 contribution。
 
 ```powershell
+Set-Location client
 npm run build:win
 npm run audit:release
 npm run docs:screenshots

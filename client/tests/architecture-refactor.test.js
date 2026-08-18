@@ -218,7 +218,13 @@ test('HTML has at most two startup scripts and the renderer build covers every f
   ]);
 
   const metadata = JSON.parse(read('renderer-dist/bobo-renderer.meta.json'));
-  const inputs = new Set(Object.keys(metadata.inputs).map((entry) => entry.replace(/\\/g, '/')));
+  const inputs = new Set(
+    Object.keys(metadata.inputs).map((entry) => entry
+      .replace(/\\/g, '/')
+      // During this transition Node can resolve installed dependencies from the
+      // repository parent. The bundle still contains the same dependency.
+      .replace(/^(?:\.\.\/)+node_modules\//, 'node_modules/')),
+  );
   for (const moduleName of LEGACY_RENDERER_MODULES) {
     assert.ok(inputs.has(moduleName), 'renderer build omitted ' + moduleName);
   }

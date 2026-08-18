@@ -10,6 +10,31 @@
   var previousFocus = null;
   var firstRunOpen = false;
 
+  function isVisible(element) {
+    if (!element || !global.getComputedStyle) return false;
+    var style = global.getComputedStyle(element);
+    var bounds = element.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0.01 &&
+      bounds.width > 16 && bounds.height > 16;
+  }
+
+  function releaseBrokenFirstRunModal() {
+    finishFirstRun();
+    if (!modal) return;
+    modal.style.display = 'none';
+    modal.style.pointerEvents = 'none';
+  }
+
+  function verifyFirstRunModal() {
+    global.setTimeout(function() {
+      if (!firstRunOpen || !modal) return;
+      var card = modal.querySelector('.settings-card');
+      if (isVisible(modal) && isVisible(card)) return;
+      console.error('Server setup guide could not render; returning control to the workbench.');
+      releaseBrokenFirstRunModal();
+    }, 160);
+  }
+
   function t(key, params) {
     return BOBO.i18n && BOBO.i18n.t ? BOBO.i18n.t(key, params) : String(key);
   }
@@ -280,6 +305,7 @@
     }
     ensureDOM();
     if (!modal) return;
+    modal.style.pointerEvents = '';
     previousFocus = document.activeElement;
     loadLocalSettings();
 
@@ -332,7 +358,14 @@
     var skip = document.getElementById('server-skip-first-run');
     if (intro) intro.hidden = false;
     if (skip) skip.hidden = false;
-    open('server');
+    try {
+      open('server');
+    } catch (error) {
+      console.error('Server setup guide could not open:', error);
+      releaseBrokenFirstRunModal();
+      return false;
+    }
+    verifyFirstRunModal();
     setTimeout(function() {
       var input = document.getElementById('server-ip');
       if (input) input.focus();

@@ -235,7 +235,14 @@
         var trigger = menuButton.getBoundingClientRect();
         var bounds = menu.getBoundingClientRect();
         var margin = 8;
-        var left = Math.max(margin, Math.min(trigger.right - bounds.width, global.innerWidth - bounds.width - margin));
+        // Keep the portal menu out of the activity rail. Before this lower
+        // bound existed, a narrow source-control header could place the menu
+        // at the very left edge and physically intercept every built-in
+        // sidebar activity button beneath it.
+        var activityBar = document.getElementById('activitybar');
+        var activityRailRight = activityBar ? activityBar.getBoundingClientRect().right : 0;
+        var minimumLeft = Math.max(margin, Math.ceil(activityRailRight + margin));
+        var left = Math.max(minimumLeft, Math.min(trigger.right - bounds.width, global.innerWidth - bounds.width - margin));
         var top = Math.max(margin, Math.min(trigger.bottom + 4, global.innerHeight - bounds.height - margin));
         menu.style.left = Math.round(left) + 'px';
         menu.style.top = Math.round(top) + 'px';
