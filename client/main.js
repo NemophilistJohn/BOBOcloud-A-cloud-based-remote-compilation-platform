@@ -4,6 +4,7 @@ const rclone = require('./rclone');
 const { createSettingsStore } = require('./main/settings-store');
 const { createWindowState } = require('./main/window-state');
 const { createWorkspaceController } = require('./main/workspace');
+const { createWorkspaceSettingsController } = require('./main/workspace-settings');
 const { createAiController } = require('./main/ai');
 const { createLspController } = require('./main/lsp');
 const { createAuthController } = require('./main/auth');
@@ -28,6 +29,7 @@ const navigationSecurity = createNavigationSecurity({ shell, trustedRendererPath
 const lsp = createLspController({ ipcMain, getWindow, settings });
 let dap = null;
 let terminal = null;
+let workspaceSettings = null;
 const disposeRemoteEditorServices = () => {
   lsp.dispose();
   if (dap) void dap.dispose();
@@ -42,7 +44,16 @@ const workspace = createWorkspaceController({
   settings,
   t: languagePacks.t,
   disposeLsp: disposeRemoteEditorServices,
-  stopTerminal: (reason) => terminal ? terminal.stop(reason) : { state: 'idle' }
+  stopTerminal: (reason) => terminal ? terminal.stop(reason) : { state: 'idle' },
+  onWorkspaceChanged: () => { if (workspaceSettings) workspaceSettings.workspaceChanged(); },
+  onWorkspaceFilesystemEvent: (rootPath, workspaceIdentity, changedPath) => {
+    if (workspaceSettings) workspaceSettings.notifyFilesystemEvent(rootPath, workspaceIdentity, changedPath);
+  }
+});
+workspaceSettings = createWorkspaceSettingsController({
+  ipcMain,
+  getWindow,
+  getWorkspaceIdentity: workspace.getIdentity
 });
 const plugins = createPluginController({ app, ipcMain, dialog, shell, getWindow, t: languagePacks.t,
   getWorkspaceIdentity: workspace.getIdentity, onDidChange: () => { if (menu) menu.rebuild(); }
@@ -59,6 +70,7 @@ terminal = createTerminalController({ ipcMain, getWindow, getWorkspaceIdentity: 
 const windowState = createWindowState({ screen, filePath: settings.paths.windowState, getWindow });
 
 workspace.registerIpc();
+workspaceSettings.registerIpc();
 lsp.registerIpc();
 auth.registerIpc();
 ai.registerIpc();

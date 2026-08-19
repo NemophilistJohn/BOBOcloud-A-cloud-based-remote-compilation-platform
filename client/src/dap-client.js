@@ -29,6 +29,13 @@
   var consoleRenderPasses = 0;
   var MAX_CONSOLE_LINES = 2000;
   var MAX_CONSOLE_EVENT_CHARS = 65536;
+  var CATALOG_CACHE_TTL_MS = 30000;
+  var CATALOG_FAILURE_CACHE_TTL_MS = 3000;
+  var catalogCache = { key: '', expiresAt: 0, value: null, promise: null };
+  var debugLifecycle = null;
+  var activeLifecycleTaskHandle = null;
+  var finalizePromise = null;
+  var finalizeState = null;
   var stopReasonKeys = {
     breakpoint: 'Breakpoint',
     step: 'Step',
@@ -94,6 +101,7 @@
     if (value === 'Debug adapter did not send the initialized event') return tr('The debug adapter did not finish initialization.');
     if (value === 'Project files could not be saved') return tr('Project files could not be saved.');
     if (value === 'Workspace synchronization failed') return tr('Workspace synchronization failed.');
+    if (value === 'Debug lifecycle task support is unavailable') return tr('Debug lifecycle task support is unavailable.');
     if (value === 'Debug session ended while starting') return tr('The debug session ended while it was starting.');
     if (value === 'The active file is outside the workspace') return tr('The active file is outside the workspace.');
     if (value === 'Open a source file before starting a debug session') return tr('Open a source file before starting a debug session.');
@@ -125,6 +133,17 @@
     if (value === 'go' || value === 'delve' || value.indexOf('dlv') >= 0) return 'go';
     if (value === 'node' || value === 'pwa-node' || value.indexOf('javascript') >= 0 || value.indexOf('typescript') >= 0) return 'node';
     return value;
+  }
+
+  function dapFeatureDecision() {
+    if (BOBO.cloudFeaturePolicy && typeof BOBO.cloudFeaturePolicy.evaluate === 'function') {
+      return BOBO.cloudFeaturePolicy.evaluate('dap');
+    }
+    return { available: false, state: 'unknown', reason: 'policy_unavailable' };
+  }
+
+  function dapUnavailableText() {
+    return tr('Cloud debugging is unavailable on this server.');
   }
 
   function activeModel() {
@@ -166,6 +185,7 @@
       activeFile: model && model.uri ? model.uri.fsPath : '',
       languageId: model ? normalizeLanguage(model.getLanguageId()) : '',
       lineNumber: position ? position.lineNumber : 1,
+      columnNumber: position ? position.column : 1,
       selectedText: model && selection ? model.getValueInRange(selection) : ''
     };
   }
@@ -214,11 +234,17 @@
       else button.disabled = phase === 'preparing' || phase === 'connecting';
     });
     var start = document.getElementById('debug-start');
-    if (start) start.disabled = phase !== 'idle' && phase !== 'error';
+    if (start) start.disabled = !dapFeatureDecision().available || (phase !== 'idle' && phase !== 'error');
     var run = document.getElementById('run-code');
     var runTarget = document.getElementById('run-target-btn');
-    if (run) run.disabled = isActive();
-    if (runTarget) runTarget.disabled = isActive();
+    var runConfig = document.getElementById('run-config-btn');
+    if (isActive()) {
+      if (run) run.disabled = true;
+      if (runTarget) runTarget.disabled = true;
+      if (runConfig) runConfig.disabled = true;
+    } else if (BOBO.runner && typeof BOBO.runner.refreshControls === 'function') {
+      BOBO.runner.refreshControls();
+    }
   }
 
   function relativeWorkspacePath(filePath) {
@@ -527,7 +553,8 @@
       index: item.index || 0,
       name: item.name || '',
       request: item.request || '',
-      task: item.task || ''
+      task: item.task || '',
+      field: item.field || ''
     };
     var keys = {
       'read-error': 'Debug configuration could not be loaded: {reason}',
@@ -538,8 +565,7 @@
       'missing-name': 'Configuration #{index} has no name in {path}.',
       'missing-type': 'Configuration "{name}" has no debugger type.',
       'unsupported-request': 'Configuration "{name}" uses unsupported request "{request}".',
-      'unsupported-prelaunch-task': 'Configuration "{name}" uses preLaunchTask "{task}", which is not supported by cloud debugging yet.',
-      'unsupported-postdebug-task': 'Configuration "{name}" uses postDebugTask "{task}", which is not supported by cloud debugging yet.',
+      'invalid-lifecycle-task': 'Configuration "{name}" has an invalid {field} task label.',
       'unsupported-variable': 'Configuration "{name}" uses an input, command, or configuration variable that is not available.',
       'unsupported-compounds': 'Configuration file {path} defines compounds, which are not supported by cloud debugging yet.',
       'unsupported-inputs': 'Configuration file {path} defines inputs, which are not supported by cloud debugging yet.',
@@ -558,24 +584,94 @@
     }
   }
 
+  function catalogCacheKey() {
+    var settings = S.serverSettings || {};
+    var snapshot = S.serverCapabilities || {};
+    var fingerprints = snapshot.catalogFingerprints || {};
+    var revisions = snapshot.catalogRevisions || {};
+    var user = S.auth && S.auth.user || {};
+    var certificateFingerprints = Array.isArray(settings.certificateFingerprints)
+      ? settings.certificateFingerprints.map(String)
+      : [String(settings.certificateFingerprint || '')];
+    return [
+      String(settings.ip || ''),
+      settings.secureTransport === true ? 'secure' : 'plain',
+      String(settings.httpPort || ''),
+      String(settings.wsPort || ''),
+      String(settings.dapChildWsPort || ''),
+      certificateFingerprints.join(','),
+      String(snapshot.state || 'unknown'),
+      String(fingerprints.dap || ''),
+      String(revisions.dap || ''),
+      String(S.auth && S.auth.mode || ''),
+      String(user.id || user.uid || user.username || ''),
+      String(S.runIdentityEpoch || 0)
+    ].join('|');
+  }
+
+  function cloneCatalog(value) {
+    value = value || {};
+    return {
+      loaded: value.loaded === true,
+      error: String(value.error || ''),
+      adapters: Array.isArray(value.adapters) ? value.adapters.map(function(adapter) { return Object.assign({}, adapter); }) : [],
+      virtualRootUri: String(value.virtualRootUri || 'bobocloud-dap:///')
+    };
+  }
+
+  function invalidateCatalogCache() {
+    catalogCache = { key: '', expiresAt: 0, value: null, promise: null };
+  }
+
   async function loadCatalog() {
-    catalog = { loaded: false, error: '', adapters: [] };
+    var feature = dapFeatureDecision();
+    if (!feature.available) {
+      catalog = { loaded: false, error: dapUnavailableText(), adapters: [] };
+      return catalog;
+    }
     if (!S.serverSettings || !S.serverSettings.ip) {
-      catalog.error = tr('Server address is not configured');
+      catalog = { loaded: false, error: tr('Server address is not configured'), adapters: [] };
       return catalog;
     }
-    var response = await BOBO.sendToServer('getDAPInfo', {}, { quiet: true });
-    var data = response && response.success && response.data;
-    if (!data || data.enabled !== true || !Array.isArray(data.adapters)) {
-      catalog.error = tr('Cloud debug service is unavailable');
-      if (response && response.error) console.warn('[DAP catalog]', response.error);
+    var key = catalogCacheKey();
+    var now = Date.now();
+    if (catalogCache.key === key && catalogCache.value && catalogCache.expiresAt > now) {
+      catalog = cloneCatalog(catalogCache.value);
       return catalog;
     }
-    catalog = { loaded: true, error: '', adapters: data.adapters.slice(), virtualRootUri: data.virtualRootUri || 'bobocloud-dap:///' };
+    if (catalogCache.key === key && catalogCache.promise) {
+      var joinedRecord = catalogCache;
+      var joined = await joinedRecord.promise;
+      if (catalogCache !== joinedRecord || catalogCacheKey() !== key) return catalog;
+      catalog = cloneCatalog(joined);
+      return catalog;
+    }
+    var pending = (async function() {
+      var response = await BOBO.sendToServer('getDAPInfo', {}, { quiet: true });
+      var data = response && response.success && response.data;
+      if (!data || data.enabled !== true || !Array.isArray(data.adapters)) {
+        if (response && response.error) console.warn('[DAP catalog]', response.error);
+        return { loaded: false, error: tr('Cloud debug service is unavailable'), adapters: [] };
+      }
+      return { loaded: true, error: '', adapters: data.adapters.slice(), virtualRootUri: data.virtualRootUri || 'bobocloud-dap:///' };
+    })();
+    var cacheRecord = { key: key, expiresAt: 0, value: null, promise: pending };
+    catalogCache = cacheRecord;
+    var loaded;
+    try {
+      loaded = await pending;
+    } finally {
+      if (catalogCache === cacheRecord && cacheRecord.promise === pending) cacheRecord.promise = null;
+    }
+    if (catalogCache !== cacheRecord || catalogCacheKey() !== key) return catalog;
+    cacheRecord.value = cloneCatalog(loaded);
+    cacheRecord.expiresAt = Date.now() + (loaded.loaded ? CATALOG_CACHE_TTL_MS : CATALOG_FAILURE_CACHE_TTL_MS);
+    catalog = cloneCatalog(loaded);
     return catalog;
   }
 
   function availability(configuration) {
+    if (!dapFeatureDecision().available) return { available: false, reason: dapUnavailableText() };
     if (!configuration.executable) return { available: false, reason: (configuration.warnings || []).map(warningText).join('\n') };
     if (!S.selectedRuntime) return { available: false, reason: tr('Select a cloud runtime before debugging.') };
     var language = configuration.id === 'builtin:current-file' ? currentLanguage() : languageForType(configuration.type);
@@ -624,7 +720,11 @@
     if (!button) return;
     var selected = S.dap.configurations.find(function(item) { return item.id === S.dap.configurationId; }) || builtinConfiguration();
     var label = selected.id === 'builtin:current-file' ? tr('Current File') : selected.name;
-    button.title = tr('Start Debugging: {configuration} (F5)', { configuration: label });
+    var feature = dapFeatureDecision();
+    button.disabled = !feature.available || isActive();
+    button.title = feature.available
+      ? tr('Start Debugging: {configuration} (F5)', { configuration: label })
+      : dapUnavailableText();
     button.setAttribute('aria-label', button.title);
   }
 
@@ -1155,8 +1255,7 @@
     } else if (message.event === 'exited') {
       appendConsole(tr('Process exited with code {code}', { code: body.exitCode }), 'console');
     } else if (message.event === 'terminated') {
-      finishSession('idle', tr('Debug session ended'));
-      global.api.dapStop('terminated').catch(function() {});
+      finalizeDebugSession('terminated', { runPost: true, message: tr('Debug session ended') }).catch(function() {});
     } else if (message.event === 'thread' && isPaused()) {
       refreshStoppedState(S.dap.selectedThreadId, 'thread');
     }
@@ -1166,14 +1265,15 @@
     var status = payload && payload.status;
     if (!status || !payload.context || !contextIsCurrent(payload.context)) return;
     if (status.state === 'idle' && isActive() && !stopping) {
-      finishSession('idle', tr('Debug session ended'));
+      finalizeDebugSession('transport-idle', { runPost: true, message: tr('Debug session ended') }).catch(function() {});
       return;
     }
     if ((status.state === 'disconnected' || status.state === 'error') && isActive() && !stopping) {
       var friendly = dapServiceError(status.code);
-      finishSession('error', friendly);
       var detail = status.details && status.details.reason ? String(status.details.reason) : String(status.error || '');
-      if (detail && detail !== friendly) appendConsole(tr('Details: {message}', { message: detail }), 'stderr');
+      finalizeDebugSession(status.state, { runPost: true, phase: 'error', message: friendly }).then(function() {
+        if (detail && detail !== friendly) appendConsole(tr('Details: {message}', { message: detail }), 'stderr');
+      }).catch(function() {});
       if (BOBO.toast) BOBO.toast.error(friendly);
     }
   }
@@ -1199,8 +1299,125 @@
     return S.dap.configurations.find(function(item) { return item.id === S.dap.configurationId; }) || builtinConfiguration();
   }
 
+  function lifecycleTaskRequest(label, context) {
+    return {
+      label: label,
+      context: {
+        activeFile: context.activeFile || '',
+        lineNumber: context.lineNumber || 1,
+        columnNumber: context.columnNumber || 1,
+        selectedText: context.selectedText || ''
+      }
+    };
+  }
+
+  async function runLifecycleTask(label, stage, context) {
+    if (!label) return { success: true, returnCode: 0, cancelled: false, code: 'skipped', message: '' };
+    if (!BOBO.runner || typeof BOBO.runner.startProjectTaskExecution !== 'function') {
+      throw new Error('Debug lifecycle task support is unavailable');
+    }
+    if (!contextIsCurrent(context)) {
+      return { success: false, returnCode: null, cancelled: true, code: 'context-changed', message: '' };
+    }
+    var isPreLaunch = stage === 'preLaunchTask';
+    var runningMessage = isPreLaunch
+      ? tr('Running pre-launch task: {task}', { task: label })
+      : tr('Running post-debug task: {task}', { task: label });
+    appendConsole(runningMessage, 'console');
+    setPhase('preparing', runningMessage);
+    var handle = BOBO.runner.startProjectTaskExecution(lifecycleTaskRequest(label, context), { owner: 'dap-lifecycle' });
+    activeLifecycleTaskHandle = handle;
+    var outcome;
+    try {
+      outcome = await handle.completion;
+    } finally {
+      if (activeLifecycleTaskHandle === handle) activeLifecycleTaskHandle = null;
+    }
+    if (outcome.success) {
+      appendConsole(isPreLaunch
+        ? tr('Pre-launch task completed: {task}', { task: label })
+        : tr('Post-debug task completed: {task}', { task: label }), 'console');
+    }
+    return outcome;
+  }
+
+  function lifecycleTaskError(stage, label, outcome) {
+    var isPreLaunch = stage === 'preLaunchTask';
+    if (outcome && outcome.cancelled) {
+      return new Error(isPreLaunch
+        ? tr('Pre-launch task was cancelled: {task}', { task: label })
+        : tr('Post-debug task was cancelled: {task}', { task: label }));
+    }
+    if (outcome && Number.isInteger(outcome.returnCode)) {
+      return new Error(isPreLaunch
+        ? tr('Pre-launch task "{task}" failed with exit code {code}.', { task: label, code: outcome.returnCode })
+        : tr('Post-debug task "{task}" failed with exit code {code}.', { task: label, code: outcome.returnCode }));
+    }
+    return new Error(isPreLaunch
+      ? tr('Pre-launch task failed: {task}', { task: label })
+      : tr('Post-debug task failed: {task}', { task: label }));
+  }
+
+  async function runPostDebugTask(lifecycle) {
+    if (!lifecycle || !lifecycle.reachedRunning || !lifecycle.postDebugTask || lifecycle.postStarted) return;
+    if (!contextIsCurrent(lifecycle.context)) return;
+    lifecycle.postStarted = true;
+    try {
+      var outcome = await runLifecycleTask(lifecycle.postDebugTask, 'postDebugTask', lifecycle.context);
+      if (!outcome.success && !outcome.cancelled) {
+        var error = lifecycleTaskError('postDebugTask', lifecycle.postDebugTask, outcome);
+        appendConsole(error.message, 'stderr');
+        if (BOBO.toast) BOBO.toast.error(error.message);
+      }
+    } catch (error) {
+      var message = localizeDebugError(error);
+      appendConsole(message, 'stderr');
+      if (BOBO.toast) BOBO.toast.error(message);
+    }
+  }
+
+  async function finalizeDebugSession(reason, options) {
+    options = options || {};
+    if (finalizePromise) {
+      if (options.runPost === false) {
+        if (finalizeState) finalizeState.suppressPost = true;
+        if (activeLifecycleTaskHandle && typeof activeLifecycleTaskHandle.cancel === 'function') {
+          try { await activeLifecycleTaskHandle.cancel(reason || 'identity-change'); } catch (_) {}
+        }
+      }
+      return finalizePromise;
+    }
+    var lifecycle = debugLifecycle;
+    var state = { suppressPost: options.runPost === false };
+    finalizeState = state;
+    var operation = (async function() {
+      stopping = true;
+      invalidateAllBreakpointSyncs();
+      if (activeLifecycleTaskHandle && typeof activeLifecycleTaskHandle.cancel === 'function') {
+        try { await activeLifecycleTaskHandle.cancel(reason || 'debug-ended'); } catch (_) {}
+      }
+      if (options.disconnect === true && lifecycle && lifecycle.transportStarted) {
+        try { await global.api.dapRequest('disconnect', { restart: false, terminateDebuggee: true }, 2500); } catch (_) {}
+      }
+      try { await global.api.dapStop(reason || 'stop'); } catch (_) {}
+      if (options.runPost === true && !state.suppressPost) await runPostDebugTask(lifecycle);
+      if (debugLifecycle === lifecycle) debugLifecycle = null;
+      finishSession(options.phase === 'error' ? 'error' : 'idle', options.message || tr('Debug session ended'));
+      return true;
+    })();
+    finalizePromise = operation;
+    try {
+      return await operation;
+    } finally {
+      if (finalizePromise === operation) finalizePromise = null;
+      if (finalizeState === state) finalizeState = null;
+      stopping = false;
+    }
+  }
+
   async function startInternal(configurationId) {
     if (isActive()) return false;
+    if (!dapFeatureDecision().available) { reportError(new Error(dapUnavailableText())); updateStartButton(); return false; }
     if (!S.workspaceRoot) { reportError(new Error(tr('No workspace is open.'))); return false; }
     if (BOBO.runner && BOBO.runner.isBusy && BOBO.runner.isBusy()) { reportError(new Error(tr('Cannot start debugging while code is running.'))); return false; }
     if (!S.selectedRuntime) { reportError(new Error(tr('Select a cloud runtime before debugging.'))); return false; }
@@ -1212,6 +1429,10 @@
     setPhase('preparing');
     clearConsole();
     try {
+      var hadDirtyTabs = Array.isArray(S.tabs) && S.tabs.some(function(tab) { return tab && tab.dirty; });
+      if (!BOBO.workspace || !await BOBO.workspace.saveAllTabs()) throw new Error(tr('Project files could not be saved.'));
+      if (hadDirtyTabs && BOBO.runner && typeof BOBO.runner.markWorkspaceChanged === 'function') BOBO.runner.markWorkspaceChanged();
+      if (!contextIsCurrent(initialContext)) throw new Error(tr('The workspace changed while starting the debug session.'));
       await refreshConfigurations();
       if (!contextIsCurrent(initialContext)) throw new Error(tr('The workspace changed while starting the debug session.'));
       if (configurationId) S.dap.configurationId = configurationId;
@@ -1228,11 +1449,23 @@
       S.dap.breakpoints.forEach(function(items) {
         items.forEach(function(item) { item.verified = null; item.message = ''; item.id = 0; item.stale = false; });
       });
-      if (!BOBO.workspace || !await BOBO.workspace.saveAllTabs()) throw new Error(tr('Project files could not be saved.'));
-      if (!contextIsCurrent(initialContext)) throw new Error(tr('The workspace changed while starting the debug session.'));
-      if (!BOBO.runner || !await BOBO.runner.ensureWorkspaceSyncedForRun()) throw new Error(tr('Workspace synchronization failed.'));
-      if (!contextIsCurrent(initialContext)) throw new Error(tr('The workspace changed while starting the debug session.'));
       var resolved = await global.api.dapResolve(selected.id, initialContext);
+      if (!contextIsCurrent(initialContext)) throw new Error(tr('The workspace changed while starting the debug session.'));
+      debugLifecycle = {
+        context: initialContext,
+        preLaunchTask: String(resolved.preLaunchTask || ''),
+        postDebugTask: String(resolved.postDebugTask || ''),
+        transportStarted: false,
+        reachedRunning: false,
+        postStarted: false
+      };
+      if (debugLifecycle.preLaunchTask) {
+        var preLaunchOutcome = await runLifecycleTask(debugLifecycle.preLaunchTask, 'preLaunchTask', initialContext);
+        if (!preLaunchOutcome.success) throw lifecycleTaskError('preLaunchTask', debugLifecycle.preLaunchTask, preLaunchOutcome);
+      } else {
+        if (!BOBO.runner || !await BOBO.runner.ensureWorkspaceSyncedForRun()) throw new Error(tr('Workspace synchronization failed.'));
+      }
+      if (!contextIsCurrent(initialContext)) throw new Error(tr('The workspace changed while starting the debug session.'));
       var language = available.language || languageForType(resolved.type);
       setPhase('connecting');
       var started = await global.api.dapStart({
@@ -1247,6 +1480,7 @@
         throw startError;
       }
       if (!contextIsCurrent(initialContext)) throw new Error(tr('The workspace changed while starting the debug session.'));
+      debugLifecycle.transportStarted = true;
       expectedTransportGeneration = Number(started && started.status && started.status.generation) || 0;
       S.dap.adapter = started.status && started.status.adapter;
       S.dap.capabilities = await global.api.dapRequest('initialize', {
@@ -1283,13 +1517,18 @@
       var launch = await launchOutcome;
       if (!launch.ok) throw launch.error;
       if (!contextIsCurrent(initialContext) || !isActive()) throw new Error(tr('The debug session ended while it was starting.'));
+      debugLifecycle.reachedRunning = true;
       if (S.dap.phase !== 'stopped') setPhase('running', S.dap.adapter ? tr('Adapter: {adapter}', { adapter: S.dap.adapter.label || S.dap.adapter.id }) : '');
       if (BOBO.switchToPanel) BOBO.switchToPanel('debug');
       return true;
     } catch (error) {
-      if (!contextIsCurrent(initialContext)) return false;
+      if (finalizePromise || stopping || !contextIsCurrent(initialContext)) return false;
+      if (activeLifecycleTaskHandle && typeof activeLifecycleTaskHandle.cancel === 'function') {
+        try { await activeLifecycleTaskHandle.cancel('start-failed'); } catch (_) {}
+      }
       try { await global.api.dapStop('start-failed'); } catch (_) {}
       var friendly = localizeDebugError(error);
+      debugLifecycle = null;
       finishSession('error', tr('Debug session failed: {message}', { message: friendly }));
       var detail = plainErrorText(error);
       if (detail && detail !== friendly) appendConsole(tr('Details: {message}', { message: detail }), 'stderr');
@@ -1336,29 +1575,20 @@
 
   async function stop(reason) {
     if (!isActive() && !S.dap.clientSessionId) return true;
-    stopping = true;
-    invalidateAllBreakpointSyncs();
-    try {
-      if (isActive()) {
-        try { await global.api.dapRequest('disconnect', { restart: false, terminateDebuggee: true }, 2500); } catch (_) {}
-      }
-      await global.api.dapStop(reason || 'stop');
-    } finally {
-      stopping = false;
-      finishSession('idle', tr('Debug session ended'));
-    }
-    return true;
+    return finalizeDebugSession(reason || 'stop', {
+      disconnect: Boolean(debugLifecycle && debugLifecycle.transportStarted),
+      runPost: true,
+      message: tr('Debug session ended')
+    });
   }
 
   async function abort(reason) {
     if (!isActive() && !S.dap.clientSessionId) return true;
-    stopping = true;
-    invalidateAllBreakpointSyncs();
-    finishSession('idle', tr('Debug session ended'));
-    try { await global.api.dapStop(reason || 'identity-change'); }
-    catch (_) {}
-    finally { stopping = false; }
-    return true;
+    return finalizeDebugSession(reason || 'identity-change', {
+      disconnect: false,
+      runPost: false,
+      message: tr('Debug session ended')
+    });
   }
 
   function finishSession(phase, message) {
@@ -1400,7 +1630,7 @@
   async function beforeWorkspaceLeave() {
     refreshGeneration += 1;
     closeConfigMenu(false);
-    if (isActive() || S.dap.clientSessionId) await stop('workspace-change');
+    if (isActive() || S.dap.clientSessionId) await abort('workspace-change');
     return true;
   }
 
@@ -1529,6 +1759,14 @@
     var onWorkspace = function() { workspaceChanged(); };
     global.addEventListener('bobo:workspace-changed', onWorkspace);
     disposers.push(function() { global.removeEventListener('bobo:workspace-changed', onWorkspace); });
+    var onServerCapabilities = function() {
+      invalidateCatalogCache();
+      updateStartButton();
+      if (!dapFeatureDecision().available && (isActive() || S.dap.clientSessionId)) abort('capability-disabled');
+      refreshConfigurations().catch(function() {});
+    };
+    global.addEventListener('bobo:server-capabilities-changed', onServerCapabilities);
+    disposers.push(function() { global.removeEventListener('bobo:server-capabilities-changed', onServerCapabilities); });
     disposers.push(global.api.onFileEvent(function(event) {
       var filePath = String(event && event.path || '').replace(/\\/g, '/').toLowerCase();
       if (filePath.endsWith('/.vscode/launch.json') || filePath.endsWith('/.bobocloud/launch.json')) refreshConfigurations().catch(reportError);

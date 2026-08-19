@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('api', {
   respondWorkspaceLeave: (requestId, allowed) => ipcRenderer.send('workspace-leave-response', { requestId, allowed }),
   chooseWorkspaceLeave: (details) => ipcRenderer.invoke('workspace-leave-choice', details),
   getWorkspaceIdentity: () => ipcRenderer.invoke('workspace-identity'),
+  readWorkspaceSettings: (identity) => ipcRenderer.invoke('workspace-settings-read', identity),
+  onWorkspaceSettingsChanged: (cb) => subscribePayload('workspace-settings-changed', cb),
   workspaceSwitchApplied: (details) => ipcRenderer.invoke('workspace-switch-applied', details),
   rejectWorkspaceSwitch: (details) => ipcRenderer.invoke('workspace-switch-reject', details),
   setArtifactRunContext: (context) => ipcRenderer.invoke('artifact-run-context', context),

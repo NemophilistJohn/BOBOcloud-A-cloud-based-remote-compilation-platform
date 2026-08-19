@@ -196,6 +196,12 @@ func TestServerInfoPreservesLegacyFieldsAndAddsSanitizedCapabilities(t *testing.
 	if capabilities.CatalogRevisions.LSP != 1 || capabilities.Limits.LSP.MaxSessions != h.Config.LSPMaxSessions || capabilities.Limits.LSP.MaxPerUser != h.Config.LSPMaxSessionsPerUser {
 		t.Fatalf("unexpected LSP capabilities: %+v", capabilities)
 	}
+	if capabilities.CatalogFingerprints.LSP == "" || capabilities.CatalogFingerprints.LSP != h.LSP.CatalogFingerprint() {
+		t.Fatalf("unexpected LSP catalog fingerprint: %+v", capabilities.CatalogFingerprints)
+	}
+	if capabilities.CatalogFingerprints.DAP != "" {
+		t.Fatalf("disabled DAP advertised a catalog fingerprint: %+v", capabilities.CatalogFingerprints)
+	}
 	if !containsCapabilityLanguage(capabilities.Capabilities.LSP.Languages, "python") {
 		t.Fatalf("LSP language catalogue missing python: %v", capabilities.Capabilities.LSP.Languages)
 	}

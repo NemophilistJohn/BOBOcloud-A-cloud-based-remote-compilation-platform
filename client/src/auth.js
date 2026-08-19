@@ -219,6 +219,9 @@
     await saveCredential(S.serverSettings.ip, res.token, expiresAt, res.user);
     closeAuthModal();
     renderChip();
+    if (BOBO.serverCapabilities && typeof BOBO.serverCapabilities.notify === 'function') {
+      BOBO.serverCapabilities.notify('auth-success');
+    }
     if (BOBO.lsp && BOBO.lsp.credentialsChanged) BOBO.lsp.credentialsChanged();
     BOBO.updateRunOutput('Logged in as ' + (res.user.username || res.user.id) +
       ' (role: ' + (res.user.role || 'member') + ')');
@@ -617,14 +620,18 @@
   async function detectModeAndAuth() {
     var res = await BOBO.sendToServer('serverInfo', {}, { quiet: true });
     if (!res || !res.success) {
-      // 服务器不可达：不改变已有状态；云功能调用时会自然报错
+      // 服务器不可达：清除旧握手，避免服务器切换后沿用过期能力。
       S.auth.mode = 'unknown';
-      S.serverCapabilities = null;
+      if (BOBO.serverCapabilities && typeof BOBO.serverCapabilities.clear === 'function') {
+        BOBO.serverCapabilities.clear('probe-failed');
+      } else {
+        S.serverCapabilities = null;
+      }
       renderChip();
       return res || { success: false, error: 'Connection failed' };
     }
     var capabilities = BOBO.serverCapabilities && BOBO.serverCapabilities.applyServerInfo
-      ? BOBO.serverCapabilities.applyServerInfo(res)
+      ? BOBO.serverCapabilities.applyServerInfo(res, 'server-info')
       : null;
     if (capabilities && capabilities.state === 'incompatible') {
       S.auth.mode = 'unknown';
@@ -638,6 +645,7 @@
     }
     if (capabilities && BOBO.serverCapabilities.requiresSecureTransport &&
       BOBO.serverCapabilities.requiresSecureTransport(capabilities, S.serverSettings)) {
+      if (typeof BOBO.serverCapabilities.clear === 'function') BOBO.serverCapabilities.clear('secure-transport-required');
       S.auth.mode = 'unknown';
       S.auth.serverVersion = '';
       renderChip();
@@ -652,6 +660,9 @@
     if (S.auth.mode !== 'multi') {
       dropCredential();
       renderChip();
+      if (BOBO.serverCapabilities && typeof BOBO.serverCapabilities.notify === 'function') {
+        BOBO.serverCapabilities.notify('auth-ready');
+      }
       return res;
     }
     // 多人模式：尝试本地计时凭证免登
@@ -665,6 +676,9 @@
         S.auth.user = who.user;
         saveCredential(S.serverSettings.ip, S.auth.token, S.auth.expiresAt, who.user);
         renderChip();
+        if (BOBO.serverCapabilities && typeof BOBO.serverCapabilities.notify === 'function') {
+          BOBO.serverCapabilities.notify('auth-restored');
+        }
         // 免登自动登录成功后补齐运行时列表（multi 模式下需要 token 才能拿到）
         if (BOBO.runtime && BOBO.runtime.fetchRuntimes) BOBO.runtime.fetchRuntimes();
       } else if (who && who.status === 401) {
@@ -687,7 +701,11 @@
     }
     dropCredential();
     S.auth.mode = 'unknown';
-    S.serverCapabilities = null;
+    if (BOBO.serverCapabilities && typeof BOBO.serverCapabilities.clear === 'function') {
+      BOBO.serverCapabilities.clear('server-change');
+    } else {
+      S.serverCapabilities = null;
+    }
     renderChip();
     var result = await detectModeAndAuth();
     if (BOBO.lsp && typeof BOBO.lsp.credentialsChanged === 'function') {

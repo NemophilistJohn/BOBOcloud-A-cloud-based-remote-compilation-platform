@@ -2,8 +2,10 @@ package dap
 
 import (
 	"context"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -81,5 +83,84 @@ func TestCatalogAcceptsPrivateUnixChildTransport(t *testing.T) {
 	spec, ok := catalog.Lookup("javascript", "node:20")
 	if !ok || spec.Transport != "unix" || !spec.SupportsChildSessions {
 		t.Fatalf("private child transport was not retained: %#v", spec)
+	}
+}
+
+func TestCatalogFingerprintIsStableAcrossManifestOrdering(t *testing.T) {
+	first, err := LoadCatalog(writeCatalogTestManifest(t, `{
+		"version":"1.0",
+		"adapters":[
+			{"id":"node","label":"Node","languageId":"node","runtimeId":"node:20","image":"first-node-image","command":["first-node-command"],"adapterVersion":"1","supportsLaunch":true,"launchDefaults":{"cwd":"workspace","console":"internalConsole"},"constraints":["two","one"]},
+			{"id":"python","label":"Python","languageId":"python","runtimeId":"python:3.11","image":"first-python-image","command":["first-python-command"],"adapterVersion":"2","supportsLaunch":true}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := LoadCatalog(writeCatalogTestManifest(t, `{
+		"version":"1.0",
+		"adapters":[
+			{"id":"python","label":"Python","languageId":"py","runtimeId":"python:3.11","image":"second-python-image","command":["second-python-command"],"adapterVersion":"2","supportsLaunch":true},
+			{"id":"node","label":"Node","languageId":"typescript","runtimeId":"node:20","image":"second-node-image","command":["second-node-command"],"adapterVersion":"1","supportsLaunch":true,"launchDefaults":{"console":"internalConsole","cwd":"workspace"},"constraints":["one","two"]}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first.Fingerprint() == "" || first.Fingerprint() != second.Fingerprint() {
+		t.Fatalf("order-independent fingerprints differ: %q != %q", first.Fingerprint(), second.Fingerprint())
+	}
+	if len(first.Fingerprint()) != 64 {
+		t.Fatalf("fingerprint length = %d, want 64", len(first.Fingerprint()))
+	}
+	if _, err := hex.DecodeString(first.Fingerprint()); err != nil {
+		t.Fatalf("fingerprint is not opaque hexadecimal: %v", err)
+	}
+}
+
+func TestCatalogFingerprintChangesWithPublicProjection(t *testing.T) {
+	base, err := LoadCatalog(writeCatalogTestManifest(t, `{
+		"version":"1.0","adapters":[{"id":"go","label":"Go","languageId":"go","runtimeId":"go:1.24","image":"image","command":["adapter"],"adapterVersion":"1","supportsLaunch":true}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := LoadCatalog(writeCatalogTestManifest(t, `{
+		"version":"1.0","adapters":[{"id":"go","label":"Go Delve","languageId":"go","runtimeId":"go:1.24","image":"image","command":["adapter"],"adapterVersion":"1","supportsLaunch":true}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.Fingerprint() == changed.Fingerprint() {
+		t.Fatal("public adapter label change did not revise the catalog fingerprint")
+	}
+}
+
+func TestCatalogFingerprintExcludesPrivateAndDynamicDetails(t *testing.T) {
+	first, err := LoadCatalog(writeCatalogTestManifest(t, `{
+		"version":"1.0","adapters":[{"id":"go","label":"Go","languageId":"go","runtimeId":"go:1.24","image":"private.registry/secret:first","command":["/private/bin/dlv","--token=first"],"adapterVersion":"1","supportsLaunch":true}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := LoadCatalog(writeCatalogTestManifest(t, `{
+		"version":"1.0","adapters":[{"id":"go","label":"Go","languageId":"go","runtimeId":"go:1.24","image":"other.registry/second","command":["/different/bin/dlv","--token=second"],"adapterVersion":"1","supportsLaunch":true}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first.Fingerprint() != second.Fingerprint() {
+		t.Fatal("private command or image details affected the public catalog fingerprint")
+	}
+	for _, secret := range []string{"private", "secret", "dlv"} {
+		if strings.Contains(first.Fingerprint(), secret) {
+			t.Fatalf("fingerprint leaked %q: %s", secret, first.Fingerprint())
+		}
+	}
+	var nilCatalog *Catalog
+	if got := nilCatalog.Fingerprint(); got != "" {
+		t.Fatalf("nil catalog fingerprint = %q, want empty", got)
 	}
 }

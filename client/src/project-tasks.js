@@ -17,6 +17,20 @@
     });
   }
 
+  function featureDecision(type) {
+    var feature = type === 'task' ? 'tasks' : 'run';
+    if (BOBO.cloudFeaturePolicy && typeof BOBO.cloudFeaturePolicy.evaluate === 'function') {
+      return BOBO.cloudFeaturePolicy.evaluate(feature);
+    }
+    return { available: false, state: 'unknown', reason: 'policy_unavailable' };
+  }
+
+  function unavailableText(type) {
+    return type === 'task'
+      ? tr('Cloud tasks are unavailable on this server.')
+      : tr('Cloud run is unavailable on this server.');
+  }
+
   function selectionStorageKey() {
     return 'bobocloud.runTarget.' + String(S.workspaceRoot || '_global');
   }
@@ -86,6 +100,7 @@
     var button = document.getElementById('run-code');
     if (!button) return;
     var target = selected.type === 'task' ? selected.label : tr('Current File');
+    var targetFeature = featureDecision(selected.type);
     if (BOBO.i18n && BOBO.i18n.bindAttribute) {
       BOBO.i18n.bindAttribute(button, 'title', 'Run {target}', { target: target });
       BOBO.i18n.bindAttribute(button, 'aria-label', 'Run {target}', { target: target });
@@ -95,15 +110,19 @@
     }
     button.dataset.runTargetType = selected.type;
     button.dataset.runTargetLabel = selected.label || '';
+    if (!targetFeature.available) {
+      button.title = unavailableText(selected.type);
+      button.setAttribute('aria-label', button.title);
+    }
     var configButton = document.getElementById('run-config-btn');
     if (configButton) {
-      configButton.disabled = selected.type === 'task';
       var configTitle = selected.type === 'task'
         ? tr('Run configuration is only available for Current File')
         : tr('Run configuration');
       configButton.title = configTitle;
       configButton.setAttribute('aria-label', configTitle);
     }
+    if (BOBO.runner && typeof BOBO.runner.refreshControls === 'function') BOBO.runner.refreshControls();
   }
 
   function closeMenu(options) {
@@ -132,8 +151,11 @@
     button.className = 'run-target-item';
     button.setAttribute('role', 'menuitemradio');
     button.setAttribute('aria-checked', String(isFile ? selected.type === 'file' : selected.type === 'task' && selected.label === task.label));
-    button.disabled = Boolean(task && !task.executable);
-    if (task && task.warnings && task.warnings.length) button.title = task.warnings.map(warningText).join('\n');
+    var itemType = isFile ? 'file' : 'task';
+    var itemFeature = featureDecision(itemType);
+    button.disabled = !itemFeature.available || Boolean(task && !task.executable);
+    if (!itemFeature.available) button.title = unavailableText(itemType);
+    else if (task && task.warnings && task.warnings.length) button.title = task.warnings.map(warningText).join('\n');
 
     var check = document.createElement('span');
     check.className = 'run-target-check';
@@ -273,6 +295,11 @@
   }
 
   async function runSelected() {
+    var targetFeature = featureDecision(selected.type);
+    if (!targetFeature.available) {
+      BOBO.updateRunOutput(unavailableText(selected.type));
+      return false;
+    }
     if (selected.type !== 'task') return BOBO.runner.runActive();
     if (!S.selectedRuntime) {
       BOBO.updateRunOutput(tr('Project tasks require a Docker runtime. Select a cloud runtime before running {task}.', { task: selected.label }));
@@ -329,6 +356,12 @@
     };
     global.addEventListener('bobo:workspace-changed', onWorkspaceChanged);
     disposers.push(function() { global.removeEventListener('bobo:workspace-changed', onWorkspaceChanged); });
+    var onServerCapabilities = function() {
+      closeMenu();
+      updatePrimaryButton();
+    };
+    global.addEventListener('bobo:server-capabilities-changed', onServerCapabilities);
+    disposers.push(function() { global.removeEventListener('bobo:server-capabilities-changed', onServerCapabilities); });
     disposers.push(global.api.onWorkspaceOpened(function() { setTimeout(refresh, 50); }));
     disposers.push(global.api.onFileEvent(function(event) {
       var filePath = String(event && event.path || '').replace(/\\/g, '/').toLowerCase();

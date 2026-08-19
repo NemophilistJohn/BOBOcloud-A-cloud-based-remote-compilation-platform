@@ -364,7 +364,7 @@ test('only file-derived launch variables require an active editor', () => {
   }
 });
 
-test('unsupported VS Code task and compound features are explicit and non-executable', () => {
+test('launch lifecycle tasks are retained for orchestration but not sent to the adapter', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-dap-vscode-subset-'));
   try {
     fs.mkdirSync(path.join(root, '.vscode'));
@@ -372,13 +372,36 @@ test('unsupported VS Code task and compound features are explicit and non-execut
       version: '0.2.0',
       inputs: [{ id: 'target', type: 'promptString' }],
       compounds: [{ name: 'All', configurations: ['Project'] }],
-      configurations: [{ name: 'Project', type: 'python', request: 'launch', program: '${workspaceFolder}/app.py', preLaunchTask: 'Build' }]
+      configurations: [{
+        name: 'Project', type: 'python', request: 'launch', program: '${workspaceFolder}/app.py',
+        preLaunchTask: 'Build', postDebugTask: 'Clean'
+      }]
+    }));
+    const parsed = readLaunchConfigurations(root);
+    assert.equal(parsed.configurations[0].executable, true);
+    assert.equal(parsed.warnings.some((item) => item.code === 'unsupported-compounds'), true);
+    assert.equal(parsed.warnings.some((item) => item.code === 'unsupported-inputs'), true);
+    const resolved = resolveLaunchConfiguration(parsed, parsed.configurations[0].id, {});
+    assert.equal(resolved.preLaunchTask, 'Build');
+    assert.equal(resolved.postDebugTask, 'Clean');
+    assert.equal(Object.hasOwn(resolved.configuration, 'preLaunchTask'), false);
+    assert.equal(Object.hasOwn(resolved.configuration, 'postDebugTask'), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('launch lifecycle tasks must be non-empty string labels', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-dap-task-label-'));
+  try {
+    fs.mkdirSync(path.join(root, '.vscode'));
+    fs.writeFileSync(path.join(root, '.vscode', 'launch.json'), JSON.stringify({
+      version: '0.2.0',
+      configurations: [{ name: 'Project', type: 'python', request: 'launch', program: '/workspace/app.py', preLaunchTask: { label: 'Build' } }]
     }));
     const parsed = readLaunchConfigurations(root);
     assert.equal(parsed.configurations[0].executable, false);
-    assert.equal(parsed.configurations[0].warnings.some((item) => item.code === 'unsupported-prelaunch-task'), true);
-    assert.equal(parsed.warnings.some((item) => item.code === 'unsupported-compounds'), true);
-    assert.equal(parsed.warnings.some((item) => item.code === 'unsupported-inputs'), true);
+    assert.equal(parsed.configurations[0].warnings.some((item) => item.code === 'invalid-lifecycle-task'), true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

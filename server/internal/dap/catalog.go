@@ -2,6 +2,7 @@ package dap
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,8 +71,25 @@ type Capability struct {
 }
 
 type Catalog struct {
-	version string
-	byKey   map[string]AdapterSpec
+	version     string
+	fingerprint string
+	byKey       map[string]AdapterSpec
+}
+
+type catalogFingerprintEntry struct {
+	ID                    string         `json:"id"`
+	Label                 string         `json:"label"`
+	LanguageID            string         `json:"languageId"`
+	RuntimeID             string         `json:"runtimeId"`
+	AdapterVersion        string         `json:"adapterVersion"`
+	SupportsLaunch        bool           `json:"supportsLaunch"`
+	SupportsAttach        bool           `json:"supportsAttach"`
+	RequiresPtrace        bool           `json:"requiresPtrace,omitempty"`
+	Transport             string         `json:"transport"`
+	SupportsChildSessions bool           `json:"supportsChildSessions,omitempty"`
+	LaunchDefaults        map[string]any `json:"launchDefaults,omitempty"`
+	DependencyMode        string         `json:"dependencyMode,omitempty"`
+	Constraints           []string       `json:"constraints,omitempty"`
 }
 
 func normalizeLanguage(value string) string {
@@ -104,6 +122,7 @@ func LoadCatalog(path string) (*Catalog, error) {
 		return nil, fmt.Errorf("unsupported DAP manifest version %q", manifest.Version)
 	}
 	catalog := &Catalog{version: manifest.Version, byKey: make(map[string]AdapterSpec)}
+	fingerprintEntries := make([]catalogFingerprintEntry, 0, len(manifest.Adapters))
 	for index, spec := range manifest.Adapters {
 		spec.ID = strings.TrimSpace(spec.ID)
 		spec.Label = strings.TrimSpace(spec.Label)
@@ -136,8 +155,38 @@ func LoadCatalog(path string) (*Catalog, error) {
 			return nil, fmt.Errorf("duplicate DAP adapter for %s and %s", spec.LanguageID, spec.RuntimeID)
 		}
 		catalog.byKey[key] = spec
+		constraints := append([]string(nil), spec.Constraints...)
+		sort.Strings(constraints)
+		fingerprintEntries = append(fingerprintEntries, catalogFingerprintEntry{
+			ID: spec.ID, Label: spec.Label, LanguageID: spec.LanguageID, RuntimeID: spec.RuntimeID,
+			AdapterVersion: spec.AdapterVersion, SupportsLaunch: spec.SupportsLaunch,
+			SupportsAttach: spec.SupportsAttach, RequiresPtrace: spec.RequiresPtrace,
+			Transport: spec.Transport, SupportsChildSessions: spec.SupportsChildSessions,
+			LaunchDefaults: cloneMap(spec.LaunchDefaults), DependencyMode: spec.DependencyMode,
+			Constraints: constraints,
+		})
 	}
+	catalog.fingerprint = fingerprintCatalog(fingerprintEntries)
 	return catalog, nil
+}
+
+func fingerprintCatalog(entries []catalogFingerprintEntry) string {
+	encoded := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			return ""
+		}
+		encoded = append(encoded, string(data))
+	}
+	sort.Strings(encoded)
+	hash := sha256.New()
+	_, _ = hash.Write([]byte("bobocloud:dap-catalog:v1\x00"))
+	for _, entry := range encoded {
+		_, _ = hash.Write([]byte(entry))
+		_, _ = hash.Write([]byte{0})
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 func ResolveManifestPath(execDir, configured string) string {
@@ -156,6 +205,15 @@ func (c *Catalog) Version() string {
 		return CatalogVersion
 	}
 	return c.version
+}
+
+// Fingerprint identifies the client-observable static catalog projection. It
+// excludes adapter commands, images, ports, and dynamic Docker availability.
+func (c *Catalog) Fingerprint() string {
+	if c == nil {
+		return ""
+	}
+	return c.fingerprint
 }
 
 func (c *Catalog) Lookup(languageID, runtimeID string) (AdapterSpec, bool) {

@@ -50,6 +50,15 @@ function containsUnsupportedVariable(value) {
   return Object.values(value).some(containsUnsupportedVariable);
 }
 
+function lifecycleTaskLabel(value, field, itemWarnings, name) {
+  if (value[field] === undefined) return '';
+  if (typeof value[field] !== 'string' || !value[field].trim()) {
+    itemWarnings.push(warning('invalid-lifecycle-task', { name, field }));
+    return '';
+  }
+  return value[field].trim();
+}
+
 function normalizeConfiguration(raw, index, sourceKind, sourcePath) {
   const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const name = String(value.name || '').trim();
@@ -58,8 +67,9 @@ function normalizeConfiguration(raw, index, sourceKind, sourcePath) {
   if (!String(value.type || '').trim()) itemWarnings.push(warning('missing-type', { name: name || `#${index + 1}` }));
   const request = String(value.request || 'launch').trim();
   if (request !== 'launch') itemWarnings.push(warning('unsupported-request', { name: name || `#${index + 1}`, request }));
-  if (value.preLaunchTask) itemWarnings.push(warning('unsupported-prelaunch-task', { name: name || `#${index + 1}`, task: String(value.preLaunchTask) }));
-  if (value.postDebugTask) itemWarnings.push(warning('unsupported-postdebug-task', { name: name || `#${index + 1}`, task: String(value.postDebugTask) }));
+  const displayName = name || `#${index + 1}`;
+  const preLaunchTask = lifecycleTaskLabel(value, 'preLaunchTask', itemWarnings, displayName);
+  const postDebugTask = lifecycleTaskLabel(value, 'postDebugTask', itemWarnings, displayName);
   if (containsUnsupportedVariable(value)) itemWarnings.push(warning('unsupported-variable', { name: name || `#${index + 1}` }));
   return {
     id: `${sourceKind}:${name || index + 1}`,
@@ -69,8 +79,12 @@ function normalizeConfiguration(raw, index, sourceKind, sourcePath) {
     sourceKind,
     sourcePath,
     configuration: value,
+    preLaunchTask,
+    postDebugTask,
     warnings: itemWarnings,
-    executable: Boolean(name && value.type && request === 'launch' && !value.preLaunchTask && !value.postDebugTask && !containsUnsupportedVariable(value))
+    executable: Boolean(name && value.type && request === 'launch' &&
+      !itemWarnings.some((item) => item.code === 'invalid-lifecycle-task') &&
+      !containsUnsupportedVariable(value))
   };
 }
 
@@ -186,7 +200,10 @@ function resolveLaunchConfiguration(configurationSet, id, context = {}) {
     if (!item) throw new Error(`Debug configuration not found: ${id}`);
     if (!item.executable) throw new Error(`Debug configuration is not executable: ${item.name}`);
   }
-  const requiresActiveFile = item.id === BUILTIN_CONFIGURATION_ID || needsActiveEditorContext(item.configuration);
+  const adapterConfiguration = Object.assign({}, item.configuration);
+  delete adapterConfiguration.preLaunchTask;
+  delete adapterConfiguration.postDebugTask;
+  const requiresActiveFile = item.id === BUILTIN_CONFIGURATION_ID || needsActiveEditorContext(adapterConfiguration);
   const relativeFile = context.activeFile ? posixRelative(configurationSet.workspaceRoot, context.activeFile) : '';
   if (requiresActiveFile && !relativeFile) throw new Error('Open a source file before starting a debug session');
   const basename = path.posix.basename(relativeFile);
@@ -205,7 +222,7 @@ function resolveLaunchConfiguration(configurationSet, id, context = {}) {
     lineNumber: String(Number(context.lineNumber) || 1),
     selectedText: String(context.selectedText || '')
   };
-  const resolved = substitute(item.configuration, variables);
+  const resolved = substitute(adapterConfiguration, variables);
   if (!resolved.cwd) resolved.cwd = '/workspace';
   return {
     id: item.id,
@@ -214,6 +231,8 @@ function resolveLaunchConfiguration(configurationSet, id, context = {}) {
     request: item.request,
     sourceKind: item.sourceKind,
     sourcePath: item.sourcePath,
+    preLaunchTask: item.preLaunchTask || '',
+    postDebugTask: item.postDebugTask || '',
     configuration: resolved
   };
 }

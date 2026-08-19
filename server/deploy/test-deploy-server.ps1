@@ -52,11 +52,15 @@ try {
     }
     $expectedHash = ('a' * 64) -join ''
     $expectedUnitHash = ('b' * 64) -join ''
+    $prepareCommand = Get-RemotePrepareCommand -Profile $remoteProfile
     $releaseCommand = Get-RemoteReleaseCommand -Profile $remoteProfile -ArtifactPath '/root/cloudeEditor/.deploy/bobocloud-server-test.tmp' -ExpectedHash $expectedHash -UnitArtifactPath '/root/cloudeEditor/.deploy/bobocloud.service-test.tmp' -ExpectedUnitHash $expectedUnitHash -Transport http -ProbeHost '81.70.51.43'
     $expectedHashBinding = 'expected_sha="' + $expectedHash + '"'
     $expectedUnitHashBinding = 'expected_unit_sha="' + $expectedUnitHash + '"'
     if ($releaseCommand.Contains('__') -or -not $releaseCommand.Contains($expectedHashBinding) -or -not $releaseCommand.Contains($expectedUnitHashBinding)) {
         throw 'Remote release command did not bind the expected checksums safely.'
+    }
+    if ($prepareCommand.Contains('__') -or -not $prepareCommand.Contains('flock -n 9') -or -not $prepareCommand.Contains('-mmin +1440')) {
+        throw 'Remote preparation must lock and preserve fresh concurrent uploads.'
     }
 
     $scriptText = Get-Content -LiteralPath $deployScript -Raw
@@ -65,7 +69,7 @@ try {
     if ($shouldProcessIndex -lt 0 -or $sshLookupIndex -lt 0 -or $shouldProcessIndex -ge $sshLookupIndex) {
         throw 'ShouldProcess must run before SSH resolution so WhatIf stays offline.'
     }
-    foreach ($requiredFragment in @('Get-ChildItem -LiteralPath $releaseRoot', "'^bobocloud-server(?:[-.]|$)'", 'systemctl daemon-reload', 'install -m 0644', 'systemctl stop', "'/healthz'", "'/readyz'", 'serverInfo', 'sha256sum', "-name 'bobocloud-server*'", 'flock -n')) {
+    foreach ($requiredFragment in @('Get-ChildItem -LiteralPath $releaseRoot', "'^bobocloud-server'", 'systemd-analyze verify "$unit_artifact"', 'systemctl daemon-reload', 'install -m 0644', 'systemctl stop', "'/healthz'", "'/readyz'", 'serverInfo', 'sha256sum', "-name 'bobocloud-server*'", 'flock -n')) {
         if (-not $scriptText.Contains($requiredFragment)) {
             throw "Deployment script is missing required release step: $requiredFragment"
         }

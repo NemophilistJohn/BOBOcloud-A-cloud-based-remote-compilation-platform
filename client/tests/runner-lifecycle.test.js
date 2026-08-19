@@ -77,6 +77,7 @@ function loadRunner(overrides) {
     updateRunOutput(message) { outputs.push(String(message)); },
     clearRunOutput() {},
     projectKey() { return 'workspace-key'; },
+    cloudFeaturePolicy: { evaluate() { return { available: true, state: 'legacy', reason: '' }; } },
     runConfig: {
       languageForFile(filePath) {
         return /\.js$/i.test(filePath) ? 'javascript' : null;
@@ -86,8 +87,10 @@ function loadRunner(overrides) {
   }, overrides.BOBO || {});
 
   let webSocketConstructions = 0;
+  const webSockets = [];
   function FakeWebSocket(url) {
     webSocketConstructions += 1;
+    webSockets.push(this);
     this.url = url;
     this.readyState = 0;
     this.close = function() { this.readyState = 3; };
@@ -119,6 +122,7 @@ function loadRunner(overrides) {
     elements,
     outputs,
     apiCalls,
+    webSockets,
     webSocketConstructions: () => webSocketConstructions
   };
 }
@@ -443,4 +447,177 @@ test('a dirty tasks file is saved and re-resolved before the current project run
   const runCall = serverCalls.find((call) => call.action === 'runTask');
   assert.ok(runCall);
   assert.deepEqual(runCall.payload.task.steps[0].argv, ['npm', 'run', 'fresh-build']);
+});
+
+test('an internal project task handle waits for the final server result and exposes its exit code', async () => {
+  const execution = {
+    schemaVersion: 1,
+    label: 'Build before debug',
+    kind: 'build',
+    steps: [{ id: 'build', label: 'Build', kind: 'build', type: 'process', argv: ['npm', 'run', 'build'], cwd: '', env: {}, dependsOn: [] }]
+  };
+  const fixture = loadRunner({
+    BOBO: {
+      dap: { isActive: () => true },
+      environmentActivity: { record: () => { throw new Error('observer failed'); } },
+      sendToServer(action) {
+        if (action === 'runTask') return Promise.resolve({ success: true, token: 'task-token', wsPath: '/ws' });
+        if (action === 'cancelRun') return Promise.resolve({ success: true });
+        throw new Error('Unexpected server action: ' + action);
+      }
+    }
+  });
+
+  const handle = fixture.BOBO.runner.startProjectTaskExecution(execution, { owner: 'dap-lifecycle' });
+  await waitFor(() => fixture.webSockets.length === 1);
+  assert.equal(handle.getState().state, 'running');
+  fixture.webSockets[0].readyState = 1;
+  fixture.webSockets[0].onopen();
+  fixture.webSockets[0].onmessage({ data: JSON.stringify({ type: 'result', success: false, returncode: 7 }) });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(await handle.completion)), {
+    success: false,
+    returnCode: 7,
+    cancelled: false,
+    code: 'task-failed',
+    message: '',
+    runId: 'run-id-1',
+    label: 'Build before debug'
+  });
+  assert.equal(handle.getState().state, 'failed');
+  assert.equal(fixture.BOBO.runner.isBusy(), false);
+});
+
+test('a project task stream close settles even when problem cleanup throws', async () => {
+  const execution = {
+    schemaVersion: 1,
+    label: 'Interrupted build',
+    kind: 'build',
+    problemMatcher: ['$test'],
+    steps: [{ id: 'build', label: 'Build', kind: 'build', type: 'process', argv: ['build'], cwd: '', env: {}, dependsOn: [] }]
+  };
+  const fixture = loadRunner({
+    BOBO: {
+      dap: { isActive: () => true },
+      taskProblemMatcher: {
+        begin: () => ({ consume() {}, finish() { throw new Error('matcher cleanup failed'); } })
+      },
+      sendToServer(action) {
+        if (action === 'runTask') return Promise.resolve({ success: true, token: 'task-token', wsPath: '/ws' });
+        if (action === 'cancelRun') return Promise.resolve({ success: true });
+        throw new Error('Unexpected server action: ' + action);
+      }
+    }
+  });
+
+  const handle = fixture.BOBO.runner.startProjectTaskExecution(execution, { owner: 'dap-lifecycle' });
+  await waitFor(() => fixture.webSockets.length === 1);
+  fixture.webSockets[0].readyState = 1;
+  fixture.webSockets[0].onopen();
+  fixture.webSockets[0].onclose();
+
+  const outcome = await handle.completion;
+  assert.equal(outcome.success, false);
+  assert.equal(outcome.code, 'stream-closed');
+  assert.equal(fixture.BOBO.runner.isBusy(), false);
+});
+
+test('cancelling an internal project task during sync prevents runTask from being sent', async () => {
+  const syncResult = deferred();
+  const serverCalls = [];
+  const execution = {
+    schemaVersion: 1,
+    label: 'Cancelled build',
+    kind: 'build',
+    steps: [{ id: 'build', label: 'Build', kind: 'build', type: 'process', argv: ['npm', 'run', 'build'], cwd: '', env: {}, dependsOn: [] }]
+  };
+  const fixture = loadRunner({
+    state: { workspaceChangeVersion: 2, lastSyncedVersion: 1 },
+    BOBO: {
+      dap: { isActive: () => true },
+      rclone: { sync: () => syncResult.promise },
+      sendToServer(action, payload) {
+        serverCalls.push({ action, payload });
+        if (action === 'checkFolder') return Promise.resolve({ success: true, folderPath: '/remote/workspace' });
+        if (action === 'cancelRun') return Promise.resolve({ success: true });
+        if (action === 'runTask') return Promise.resolve({ success: true, token: 'unexpected', wsPath: '/ws' });
+        throw new Error('Unexpected server action: ' + action);
+      }
+    }
+  });
+
+  const handle = fixture.BOBO.runner.startProjectTaskExecution(execution, { owner: 'dap-lifecycle' });
+  await waitFor(() => serverCalls.some((call) => call.action === 'checkFolder'));
+  assert.equal(await handle.cancel('debug-cancelled'), true);
+  const outcome = await handle.completion;
+  assert.equal(outcome.cancelled, true);
+  assert.equal(outcome.code, 'debug-cancelled');
+  syncResult.resolve({ success: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(serverCalls.some((call) => call.action === 'runTask'), false);
+  assert.equal(fixture.webSocketConstructions(), 0);
+});
+
+test('identity invalidation marks an internal task handle as cancelled', async () => {
+  const syncResult = deferred();
+  const serverCalls = [];
+  const fixture = loadRunner({
+    state: { workspaceChangeVersion: 2, lastSyncedVersion: 1 },
+    BOBO: {
+      dap: { isActive: () => true },
+      rclone: { sync: () => syncResult.promise },
+      sendToServer(action, payload) {
+        serverCalls.push({ action, payload });
+        if (action === 'checkFolder') return Promise.resolve({ success: true, folderPath: '/remote/workspace' });
+        if (action === 'cancelRun') return Promise.resolve({ success: true });
+        throw new Error('Unexpected server action: ' + action);
+      }
+    }
+  });
+  const handle = fixture.BOBO.runner.startProjectTaskExecution({
+    schemaVersion: 1,
+    label: 'Invalidated build',
+    kind: 'build',
+    steps: [{ id: 'build', label: 'Build', kind: 'build', type: 'process', argv: ['build'], cwd: '', env: {}, dependsOn: [] }]
+  }, { owner: 'dap-lifecycle' });
+
+  await waitFor(() => serverCalls.some((call) => call.action === 'checkFolder'));
+  await fixture.BOBO.runner.invalidateRunIdentity({ skipHttp: true });
+  const outcome = await handle.completion;
+  assert.equal(outcome.cancelled, true);
+  assert.equal(outcome.code, 'identity-change');
+  assert.deepEqual(JSON.parse(JSON.stringify(handle.getState())), { state: 'cancelled', runId: '', cancelled: true });
+  syncResult.resolve({ success: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(serverCalls.some((call) => call.action === 'runTask'), false);
+});
+
+test('negotiated run and task gates stop requests before server transport', async () => {
+  const serverCalls = [];
+  const fixture = loadRunner({
+    state: {
+      tabs: [{ path: 'C:\\workspace\\main.js', dirty: false }],
+      activeTabPath: 'C:\\workspace\\main.js'
+    },
+    BOBO: {
+      cloudFeaturePolicy: { evaluate: feature => ({ available: false, state: 'compatible', reason: 'feature_disabled', feature }) },
+      sendToServer(action, payload) {
+        serverCalls.push({ action, payload });
+        return Promise.resolve({ success: true });
+      }
+    }
+  });
+
+  assert.equal(await fixture.BOBO.runner.runActive(), false);
+  const handle = fixture.BOBO.runner.startProjectTaskExecution({
+    schemaVersion: 1,
+    label: 'Blocked task',
+    kind: 'build',
+    steps: [{ id: 'build', label: 'Build', kind: 'build', type: 'process', argv: ['build'], cwd: '', env: {}, dependsOn: [] }]
+  }, { owner: 'dap-lifecycle' });
+  const outcome = await handle.completion;
+  assert.equal(outcome.success, false);
+  assert.equal(outcome.code, 'feature-disabled');
+  assert.equal(serverCalls.length, 0);
+  assert.equal(fixture.webSocketConstructions(), 0);
 });

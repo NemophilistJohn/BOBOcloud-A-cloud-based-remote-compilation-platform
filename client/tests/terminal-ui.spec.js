@@ -164,6 +164,7 @@ test('cloud terminal streams through the main bridge and confirms only multi-lin
       };
       await window.api.writeServerSettings(settings);
       window.BOBO.state.serverSettings = settings;
+      window.BOBO.serverCapabilities.applyServerInfo({ success: true, data: {} }, 'test-legacy-server');
       window.BOBO.state.selectedRuntime = 'python:3.12';
       window.BOBO.workspace.saveAllTabs = async () => true;
       window.BOBO.runner.syncWithServer = async () => true;

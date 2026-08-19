@@ -29,13 +29,19 @@
   var pendingCacheClear = null;
   var restartButtonTimer = null;
   var dependencyRefreshCoordinator = null;
+  var capabilityReconnectCoordinator = null;
   var indexStatus = '';
   var fallbackSupportedLanguages = ['c', 'cpp', 'java', 'go', 'rust', 'python', 'javascript', 'typescript'];
   var supportedLanguages = fallbackSupportedLanguages.slice();
+  var LEGACY_CAPABILITY_CACHE_TTL_MS = 30000;
+  var legacyCapabilityCache = { key: '', expiresAt: 0, languages: null, promise: null };
   var registeredProviderLanguages = Object.create(null);
   var registeredCompletionProviders = Object.create(null);
   var globalProvidersRegistered = false;
-  var serverCapabilities = {};
+  // Capabilities returned by the LSP initialize response. This is independent
+  // from the BOBO serverInfo feature descriptor in S.serverCapabilities.
+  var lspProtocolCapabilities = {};
+  var remoteTransportActive = false;
   var documentSyncGeneration = 0;
   var documentSyncQueue = createDocumentSyncQueue();
   var completionCoordinator = createRemoteCompletionCoordinator({ cancel: cancelRequestKey });
@@ -79,6 +85,32 @@
     return BOBO.i18n && BOBO.i18n.t ? BOBO.i18n.t(source, replacements) : source;
   }
 
+  function lspFeatureDecision(language) {
+    if (BOBO.cloudFeaturePolicy && typeof BOBO.cloudFeaturePolicy.evaluate === 'function') {
+      return BOBO.cloudFeaturePolicy.evaluate('lsp', language ? { language: language } : undefined);
+    }
+    return { feature: 'lsp', available: false, state: 'unknown', reason: 'policy_unavailable' };
+  }
+
+  function lspUnavailableText(decision, language) {
+    if (decision && decision.reason === 'unsupported_language' && language) {
+      return t('Remote analysis is not available for {language}', {
+        language: BOBO.langDisplayName ? BOBO.langDisplayName(language) : language
+      });
+    }
+    return t('Remote analysis is unavailable on this server.');
+  }
+
+  function activeLspDecision() {
+    var model = currentModel();
+    var language = activeLanguage || (model && model.getLanguageId ? model.getLanguageId() : '');
+    var decision = lspFeatureDecision(language);
+    if (decision.state === 'legacy' && language && supportedLanguages.indexOf(language) < 0) {
+      return { feature: 'lsp', available: false, state: 'legacy', reason: 'unsupported_language', language: language };
+    }
+    return decision;
+  }
+
   function createDependencyRefreshCoordinator(options) {
     var config = options || {};
     var setTimer = config.setTimer || setTimeout;
@@ -114,6 +146,86 @@
       request: request,
       settle: settle,
       isPending: function() { return !!pending; }
+    };
+  }
+
+  function createCapabilityReconnectCoordinator(options) {
+    var config = options || {};
+    var active = null;
+
+    function currentIdentity() {
+      try { return String(config.identity ? config.identity() : ''); } catch (_) { return ''; }
+    }
+
+    function reportError(error) {
+      if (!config.onError) return;
+      try { config.onError(error); } catch (_) {}
+    }
+
+    function handle(previousState, nextState) {
+      if (previousState !== 'ready' || ['disconnected', 'error'].indexOf(nextState) < 0) {
+        return Promise.resolve({ handled: false });
+      }
+      var key = currentIdentity();
+      if (!key) return Promise.resolve({ handled: false, stale: true });
+      if (active && active.key === key) return active.promise;
+
+      var record = { key: key, promise: null };
+      var pending = Promise.resolve().then(function() {
+        if (!config.stop) return true;
+        try {
+          return Promise.resolve(config.stop()).then(function() { return true; }, function(error) {
+            reportError(error);
+            return false;
+          });
+        } catch (error) {
+          reportError(error);
+          return false;
+        }
+      }).then(function(stopped) {
+        if (!stopped) return { handled: true, reconnected: false, reason: 'stop_failed' };
+        if (active !== record || currentIdentity() !== key) {
+          return { handled: true, reconnected: false, stale: true };
+        }
+        if (!config.refresh) return null;
+        try {
+          return Promise.resolve(config.refresh()).catch(function(error) {
+            reportError(error);
+            return { success: false, reason: 'probe_failed' };
+          });
+        } catch (error) {
+          reportError(error);
+          return { success: false, reason: 'probe_failed' };
+        }
+      }).then(function(refreshResult) {
+        if (refreshResult && refreshResult.reason === 'stop_failed') return refreshResult;
+        if (active !== record || currentIdentity() !== key) {
+          return { handled: true, reconnected: false, stale: true };
+        }
+        if (!config.reconnect) return { handled: true, reconnected: false };
+        try {
+          return Promise.resolve(config.reconnect(refreshResult)).then(function(reconnected) {
+            return { handled: true, reconnected: reconnected !== false, refresh: refreshResult || null };
+          });
+        } catch (error) {
+          reportError(error);
+          return { handled: true, reconnected: false, reason: 'reconnect_failed' };
+        }
+      }).catch(function(error) {
+        reportError(error);
+        return { handled: true, reconnected: false, reason: 'reconnect_failed' };
+      }).finally(function() {
+        if (active === record) active = null;
+      });
+      record.promise = pending;
+      active = record;
+      return pending;
+    }
+
+    return {
+      handle: handle,
+      isActive: function() { return !!active; },
+      activeIdentity: function() { return active ? active.key : ''; }
     };
   }
 
@@ -751,6 +863,18 @@
     };
   }
 
+  function lspReconnectIdentityKey() {
+    var model = currentModel();
+    return JSON.stringify({
+      cloud: legacyCapabilityCacheKey(),
+      workspace: workspaceIdentity(),
+      workspaceGeneration: Number(S.workspaceGeneration || 0),
+      mode: String(settings.mode || 'local'),
+      language: model && model.getLanguageId ? String(model.getLanguageId() || '') : '',
+      runtime: String(S.selectedRuntime || '')
+    });
+  }
+
   function currentModel() {
     return S.editor && S.editor.getModel ? S.editor.getModel() : null;
   }
@@ -759,11 +883,13 @@
     var model = currentModel();
     if (!model) return '';
     var language = model.getLanguageId();
-    return supportedLanguages.indexOf(language) >= 0 ? language : '';
+    var decision = lspFeatureDecision(language);
+    return supportedLanguages.indexOf(language) >= 0 || (decision.state === 'compatible' && decision.available) ? language : '';
   }
 
   function protocolLanguageId(language) {
-    return supportedLanguages.indexOf(language) >= 0 ? language : '';
+    var decision = lspFeatureDecision(language);
+    return supportedLanguages.indexOf(language) >= 0 || (decision.state === 'compatible' && decision.available) ? language : '';
   }
 
   function canonicalRuntimeLanguage(language) {
@@ -794,17 +920,80 @@
     return unique;
   }
 
-  async function refreshCapabilities() {
-    if (!BOBO.sendToServer || !S.serverSettings || !S.serverSettings.ip) return supportedLanguages;
-    try {
-      var result = await BOBO.sendToServer('getLSPInfo', {}, { quiet: true });
+  function legacyCapabilityCacheKey() {
+    var server = S.serverSettings || {};
+    var user = S.auth && S.auth.user;
+    return JSON.stringify({
+      ip: String(server.ip || ''),
+      httpPort: Number(server.httpPort || 0),
+      wsPort: Number(server.wsPort || 0),
+      secureTransport: server.secureTransport === true,
+      fingerprints: Array.isArray(server.certificateFingerprints)
+        ? server.certificateFingerprints.map(String)
+        : [String(server.certificateFingerprint || '')],
+      authMode: String(S.auth && S.auth.mode || ''),
+      userId: String(user && (user.id || user.username) || ''),
+      authEpoch: Number(S.runIdentityEpoch || 0)
+    });
+  }
+
+  function applySupportedLanguages(languages) {
+    supportedLanguages = languages.slice();
+    if (monacoRef) registerProviders();
+    return supportedLanguages;
+  }
+
+  function invalidateLegacyCapabilityCache() {
+    legacyCapabilityCache = { key: '', expiresAt: 0, languages: null, promise: null };
+  }
+
+  function refreshLegacyCapabilities() {
+    var key = legacyCapabilityCacheKey();
+    if (legacyCapabilityCache.key === key && legacyCapabilityCache.languages && legacyCapabilityCache.expiresAt > Date.now()) {
+      return Promise.resolve(applySupportedLanguages(legacyCapabilityCache.languages));
+    }
+    if (legacyCapabilityCache.key === key && legacyCapabilityCache.promise) return legacyCapabilityCache.promise;
+
+    var record = { key: key, expiresAt: 0, languages: null, promise: null };
+    var pending = Promise.resolve().then(function() {
+      return BOBO.sendToServer('getLSPInfo', {}, { quiet: true });
+    }).then(function(result) {
+      if (legacyCapabilityCache !== record) return supportedLanguages;
       var languages = normalizeCapabilities(result);
       if (result && result.success !== false && languages.length) {
-        supportedLanguages = languages;
-        if (monacoRef) registerProviders();
+        record.languages = languages.slice();
+        record.expiresAt = Date.now() + LEGACY_CAPABILITY_CACHE_TTL_MS;
+        return applySupportedLanguages(languages);
       }
-    } catch (_) {}
-    return supportedLanguages;
+      return supportedLanguages;
+    }).catch(function() {
+      return supportedLanguages;
+    }).finally(function() {
+      if (legacyCapabilityCache === record) record.promise = null;
+    });
+    record.promise = pending;
+    legacyCapabilityCache = record;
+    return pending;
+  }
+
+  async function refreshCapabilities() {
+    var decision = lspFeatureDecision();
+    if (decision.state === 'compatible') {
+      invalidateLegacyCapabilityCache();
+      supportedLanguages = decision.available && BOBO.cloudFeaturePolicy && typeof BOBO.cloudFeaturePolicy.languages === 'function'
+        ? BOBO.cloudFeaturePolicy.languages()
+        : [];
+      if (monacoRef) registerProviders();
+      return supportedLanguages;
+    }
+    if (!decision.available) {
+      invalidateLegacyCapabilityCache();
+      supportedLanguages = [];
+      if (monacoRef) registerProviders();
+      return supportedLanguages;
+    }
+    if (!BOBO.sendToServer || !S.serverSettings || !S.serverSettings.ip) return supportedLanguages;
+    return refreshLegacyCapabilities();
   }
 
   function scheduleConfigure() {
@@ -819,6 +1008,10 @@
     var language = desiredLanguage();
     var workspace = workspaceIdentity();
     var mode = settings.mode;
+    var serviceDecision = lspFeatureDecision();
+    var capabilityDecision = lspFeatureDecision(editorLanguage);
+    var blockedByCapability = mode !== 'local' && !capabilityDecision.available;
+    if (blockedByCapability) mode = 'local';
     if (!workspace || !language || !S.serverSettings || !S.serverSettings.ip) mode = 'local';
     var nextConfig = mode === 'local' ? { mode: 'local' } : {
       mode: mode,
@@ -826,7 +1019,11 @@
       runtimeId: runtimeForLanguage(language, S.selectedRuntime),
       workspace: workspace
     };
-    var signature = JSON.stringify({ server: S.serverSettings && S.serverSettings.ip || '', transport: nextConfig });
+    var signature = JSON.stringify({
+      server: S.serverSettings && S.serverSettings.ip || '',
+      transport: nextConfig,
+      capability: { state: capabilityDecision.state, reason: capabilityDecision.reason }
+    });
     activeLanguage = language;
     if (signature === lastConfigSignature) {
       if (status.state === 'ready') openDocument(currentModel());
@@ -844,10 +1041,22 @@
     clearChangeQueues();
     clearRemoteMarkers();
     try {
-      var nextStatus = await global.api.lspConfigure(nextConfig);
+      // A server that advertises LSP=false must not cause a fresh renderer IPC
+      // call. A local configure is sent only when it is needed to tear down an
+      // already active remote transport.
+      var nextStatus = (blockedByCapability || !serviceDecision.available) && !remoteTransportActive
+        ? { state: 'local', mode: 'local', bytesSent: 0, bytesReceived: 0, latencyMs: null, cache: null }
+        : await global.api.lspConfigure(nextConfig);
       if (generation !== configureGeneration) return;
+      remoteTransportActive = mode !== 'local';
       status = nextStatus;
-      if (settings.mode !== 'local' && workspace && editorLanguage && !language) {
+      if (settings.mode !== 'local' && blockedByCapability) {
+        status = Object.assign({}, status, {
+          state: capabilityDecision.reason === 'unsupported_language' ? 'unsupported' : 'disabled',
+          mode: 'local',
+          error: lspUnavailableText(capabilityDecision, editorLanguage)
+        });
+      } else if (settings.mode !== 'local' && workspace && editorLanguage && !language) {
         status = Object.assign({}, status, {
           state: 'unsupported',
           mode: settings.mode,
@@ -873,7 +1082,7 @@
   }
 
   function sendNotification(method, params) {
-    if (status.state !== 'ready') return Promise.resolve(false);
+    if (status.state !== 'ready' || !activeLspDecision().available) return Promise.resolve(false);
     return global.api.lspNotify({ method: method, params: params })
       .then(function(result) { return result !== false; })
       .catch(function() { return false; });
@@ -988,7 +1197,7 @@
   }
 
   function request(method, params, token, timeoutMs, requestKey, undefinedOnFailure) {
-    if (status.state !== 'ready') return Promise.resolve(null);
+    if (status.state !== 'ready' || !activeLspDecision().available) return Promise.resolve(null);
     var key = requestKey || (method + ':' + requestSequence++);
     var unsubscribe = null;
     if (token && token.onCancellationRequested) {
@@ -1061,8 +1270,8 @@
   }
 
   function updateCompletionCapabilities(capabilities) {
-    serverCapabilities = capabilities && typeof capabilities === 'object' ? capabilities : {};
-    var advertised = completionTriggerCharacters(serverCapabilities);
+    lspProtocolCapabilities = capabilities && typeof capabilities === 'object' ? capabilities : {};
+    var advertised = completionTriggerCharacters(lspProtocolCapabilities);
     Object.keys(registeredCompletionProviders).forEach(function(language) {
       var desired = status.state === 'ready' && language === activeLanguage ? advertised : [];
       installRemoteCompletionProvider(language, desired);
@@ -1766,7 +1975,7 @@
   }
 
   function provideRemoteCompletion(model, position, context, token) {
-    var providerCapability = completionProviderCapability(serverCapabilities);
+    var providerCapability = completionProviderCapability(lspProtocolCapabilities);
     if (settings.mode === 'local' || status.state !== 'ready' || !providerCapability || model.getLanguageId() !== activeLanguage || (token && token.isCancellationRequested)) {
       return { suggestions: [] };
     }
@@ -1835,7 +2044,7 @@
     var registration = registeredCompletionProviders[language];
     if (!registration || !monacoRef) return;
     var triggers = (triggerCharacters || []).slice();
-    var capability = completionProviderCapability(serverCapabilities);
+    var capability = completionProviderCapability(lspProtocolCapabilities);
     var resolveEnabled = status.state === 'ready' && language === activeLanguage && !!(capability && capability.resolveProvider === true);
     var providerKey = JSON.stringify({ triggers: triggers, resolveProvider: resolveEnabled });
     if (registration.disposable && registration.providerKey === providerKey) return;
@@ -1953,7 +2162,7 @@
       }));
     });
 
-    updateCompletionCapabilities(serverCapabilities);
+    updateCompletionCapabilities(lspProtocolCapabilities);
 
     if (globalProvidersRegistered) return;
     globalProvidersRegistered = true;
@@ -2056,7 +2265,7 @@
   function credentialsChanged() {
     lastConfigSignature = '';
     invalidateCompletionContext();
-    if (settings.mode !== 'local' && global.api && global.api.lspControl) {
+    if (settings.mode !== 'local' && lspFeatureDecision().available && global.api && global.api.lspControl) {
       global.api.lspControl({ type: 'lsp.restart' }).catch(function() {});
     }
     return refreshCapabilities().finally(scheduleConfigure);
@@ -2170,7 +2379,7 @@
   }
 
   function applyDiagnostics(params) {
-    if (!params || !params.uri || !monacoRef) return;
+    if (!params || !params.uri || !monacoRef || !activeLspDecision().available) return;
     var resource = localUriFromWire(params.uri);
     if (!resource) return;
     var model = monacoRef.editor.getModel(resource);
@@ -2201,10 +2410,21 @@
   }
 
   function onStatus(next) {
+    if (next && next.state !== 'local' && next.state !== 'disconnected' && !activeLspDecision().available) {
+      clearRemoteMarkers();
+      return;
+    }
     var previousState = status.state;
     var previousSessionId = status.sessionId;
     status = next || status;
-    if (status.state === 'ready') updateCompletionCapabilities(status.capabilities || serverCapabilities);
+    if (status.state === 'ready' || status.state === 'connecting' || status.state === 'initializing') remoteTransportActive = true;
+    if (status.state === 'local' || status.state === 'disconnected' || status.state === 'error') remoteTransportActive = false;
+    if (capabilityReconnectCoordinator) {
+      capabilityReconnectCoordinator.handle(previousState, status.state).catch(function(error) {
+        console.error('LSP capability refresh:', error);
+      });
+    }
+    if (status.state === 'ready') updateCompletionCapabilities(status.capabilities || lspProtocolCapabilities);
     else updateCompletionCapabilities({});
     if (next && next.dependencyRefresh) {
       if (next.dependencyRefresh.success !== false && next.dependencyRefresh.changed === true) {
@@ -2258,6 +2478,7 @@
 
   function stateLabel() {
     if (settings.mode === 'local') return t('Local completion');
+    if (!lspFeatureDecision().available) return t('Remote analysis is unavailable on this server.');
     if (status.state === 'ready') return t('Remote analysis ready');
     if (status.state === 'connecting') return t('Connecting to remote analysis...');
     if (status.state === 'initializing') return t('Initializing remote analysis...');
@@ -2627,12 +2848,12 @@
   }
 
   async function restartAnalysis() {
-    if (!global.api || typeof global.api.lspControl !== 'function') throw new Error(t('Remote analysis is not ready'));
+    if (!activeLspDecision().available || !global.api || typeof global.api.lspControl !== 'function') throw new Error(t('Remote analysis is not ready'));
     return global.api.lspControl({ type: 'lsp.restart' });
   }
 
   async function clearAnalysisCache() {
-    if (status.state !== 'ready') throw new Error(t('Remote analysis is not ready'));
+    if (status.state !== 'ready' || !activeLspDecision().available) throw new Error(t('Remote analysis is not ready'));
     if (!global.api || typeof global.api.lspControl !== 'function') throw new Error(t('Remote analysis is not ready'));
     if (pendingCacheClear) throw new Error(t('Analysis cache request is already in progress'));
     var response = new Promise(function(resolve, reject) {
@@ -2692,9 +2913,14 @@
       index.textContent = visibleIndexStatus ? (indexLabels[visibleIndexStatus.toLowerCase()] || visibleIndexStatus) : '--';
     }
     renderDependencyMetrics();
-    document.querySelectorAll('input[name="lsp-mode"]').forEach(function(input) { input.checked = input.value === settings.mode; });
+    var baseDecision = lspFeatureDecision();
+    document.querySelectorAll('input[name="lsp-mode"]').forEach(function(input) {
+      input.checked = input.value === settings.mode;
+      input.disabled = input.value !== 'local' && !baseDecision.available;
+      if (input.value !== 'local') input.title = baseDecision.available ? '' : lspUnavailableText(baseDecision);
+    });
     var actions = document.getElementById('lsp-settings-actions');
-    if (actions) actions.hidden = settings.mode === 'local';
+    if (actions) actions.hidden = settings.mode === 'local' || !baseDecision.available;
     renderClientCacheUi();
   }
 
@@ -2716,7 +2942,7 @@
   }
 
   function dependenciesChanged() {
-    if (settings.mode === 'local' || status.state !== 'ready' || !global.api || !global.api.lspControl) return Promise.resolve(false);
+    if (settings.mode === 'local' || status.state !== 'ready' || !activeLspDecision().available || !global.api || !global.api.lspControl) return Promise.resolve(false);
     return getDependencyRefreshCoordinator().request(function() {
       return global.api.lspControl({ type: 'lsp.dependency.refresh' });
     });
@@ -2806,6 +3032,36 @@
     await refreshCapabilities();
     registerProviders();
     bindUi();
+    capabilityReconnectCoordinator = createCapabilityReconnectCoordinator({
+      identity: lspReconnectIdentityKey,
+      stop: function() {
+        if (configureTimer) {
+          clearTimeout(configureTimer);
+          configureTimer = null;
+        }
+        configureGeneration += 1;
+        lastConfigSignature = '';
+        remoteTransportActive = false;
+        return global.api.lspConfigure({ mode: 'local' });
+      },
+      refresh: function() {
+        if (!BOBO.serverCapabilities || typeof BOBO.serverCapabilities.refresh !== 'function') {
+          return Promise.resolve({ success: false, reason: 'refresh_unavailable' });
+        }
+        return BOBO.serverCapabilities.refresh({ reason: 'lsp-reconnect' });
+      },
+      reconnect: function() {
+        return refreshCapabilities().then(function() {
+          if (settings.mode === 'local' || !activeLspDecision().available) {
+            renderStatus();
+            return false;
+          }
+          lastConfigSignature = '';
+          return configure().then(function() { return true; });
+        });
+      },
+      onError: function(error) { console.error('LSP capability reconnect:', error); }
+    });
     global.api.onLspStatus(onStatus);
     global.api.onLspNotification(function(message) {
       if (message && message.method === 'textDocument/publishDiagnostics') applyDiagnostics(message.params);
@@ -2833,6 +3089,28 @@
     if (typeof global.api.onLspDependencyIndex === 'function') global.api.onLspDependencyIndex(handleDependencyApiIndexMessage);
     global.addEventListener('bobo:language-changed', renderStatus);
     global.addEventListener('bobo:dependencies-changed', dependenciesChanged);
+    global.addEventListener('bobo:server-capabilities-changed', function(event) {
+      var controlledReconnectRefresh = !!(capabilityReconnectCoordinator && capabilityReconnectCoordinator.isActive() &&
+        event && event.detail && event.detail.reason === 'lsp-reconnect');
+      configureGeneration += 1;
+      lastConfigSignature = '';
+      invalidateCompletionContext();
+      updateCompletionCapabilities({});
+      if (!activeLspDecision().available) {
+        var currentDecision = activeLspDecision();
+        status = Object.assign({}, status, {
+          state: settings.mode === 'local' ? 'local' : 'disabled',
+          mode: 'local',
+          error: settings.mode === 'local' ? '' : lspUnavailableText(currentDecision, currentDecision.language || activeLanguage)
+        });
+        clearRemoteMarkers();
+        if (S.lsp) S.lsp.status = status;
+        renderStatus();
+      }
+      refreshCapabilities().finally(function() {
+        if (!controlledReconnectRefresh) scheduleConfigure();
+      });
+    });
     monacoRef.editor.onDidCreateModel(function(model) {
       model.onDidChangeContent(function(event) { queueChanges(model, event); });
       model.onWillDispose(function() { closeDocument(model); });
@@ -2912,6 +3190,7 @@
       protocolLanguageId: protocolLanguageId,
       runtimeForLanguage: runtimeForLanguage,
       normalizeCapabilities: normalizeCapabilities,
+      createCapabilityReconnectCoordinator: createCapabilityReconnectCoordinator,
       createDependencyRefreshCoordinator: createDependencyRefreshCoordinator,
       createDocumentSyncQueue: createDocumentSyncQueue,
       createRemoteCompletionCoordinator: createRemoteCompletionCoordinator,

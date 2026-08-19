@@ -99,7 +99,7 @@ function Invoke-LocalLinuxAmd64Build {
     $releaseRoot = (Resolve-Path -LiteralPath $releaseDir).Path
     $releasePrefix = [System.IO.Path]::GetFullPath($releaseRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
     $previousArtifacts = Get-ChildItem -LiteralPath $releaseRoot -File | Where-Object {
-        $_.Name -match '^bobocloud-server(?:[-.]|$)'
+        $_.Name -match '^bobocloud-server'
     }
     foreach ($previousArtifact in $previousArtifacts) {
         $resolvedArtifact = (Resolve-Path -LiteralPath $previousArtifact.FullName).Path
@@ -184,7 +184,14 @@ function Get-RemotePrepareCommand {
 set -eu
 umask 077
 install -d -m 0700 "__ROOT__/.deploy"
-find "__ROOT__/.deploy" -maxdepth 1 -type f \( -name 'bobocloud-server-*.tmp' -o -name 'bobocloud.service-*.tmp' \) -delete
+exec 9>"__ROOT__/.deploy/bobocloud-release.lock"
+if ! flock -n 9; then
+  echo "Another BOBOCLOUD release is already in progress." >&2
+  exit 75
+fi
+# Content-addressed uploads are safe to coexist. Only reap abandoned files
+# old enough that they cannot belong to another active upload.
+find "__ROOT__/.deploy" -maxdepth 1 -type f \( -name 'bobocloud-server-*.tmp' -o -name 'bobocloud.service-*.tmp.service' \) -mmin +1440 -delete
 '@
     return $template.Replace('__ROOT__', $Profile.RemoteRoot)
 }
@@ -267,6 +274,7 @@ actual_sha="$(sha256sum "$artifact" | awk '{print $1}')"
 test "$actual_sha" = "$expected_sha"
 actual_unit_sha="$(sha256sum "$unit_artifact" | awk '{print $1}')"
 test "$actual_unit_sha" = "$expected_unit_sha"
+systemd-analyze verify "$unit_artifact"
 
 install -m 0644 "$unit_artifact" "/etc/systemd/system/$service"
 systemctl daemon-reload
@@ -385,7 +393,7 @@ if ($unitHash -notmatch '^[a-f0-9]{64}$') {
 }
 
 $artifactPath = "$($profile.RemoteRoot)/.deploy/bobocloud-server-$($localHash.Substring(0, 16)).tmp"
-$unitArtifactPath = "$($profile.RemoteRoot)/.deploy/bobocloud.service-$($unitHash.Substring(0, 16)).tmp"
+$unitArtifactPath = "$($profile.RemoteRoot)/.deploy/bobocloud.service-$($unitHash.Substring(0, 16)).tmp.service"
 Write-Output "Preflight passed for $Target ($($profile.User)@$($profile.Host))."
 Write-Output "Local Linux/amd64 ELF SHA-256: $localHash"
 Write-Output "Local systemd unit SHA-256: $unitHash"

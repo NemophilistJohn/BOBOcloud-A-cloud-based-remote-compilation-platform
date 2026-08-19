@@ -42,6 +42,10 @@
         automaticLayout: true,
         readOnly: S.workspaceTransitionLocked === true || Boolean(BOBO.collaboration && BOBO.collaboration.isActiveFileReadOnly && BOBO.collaboration.isActiveFileReadOnly())
       });
+      if (BOBO.workspaceSettings && BOBO.workspaceSettings.attachEditor) {
+        BOBO.workspaceSettings.attachEditor(S.splitEditor);
+        BOBO.workspaceSettings.attachEditor(S.splitEditor.rightEditor);
+      }
 
       // Debounced sync from right to left (avoids per-keystroke full-content copy)
       var splitSyncTimer = null;

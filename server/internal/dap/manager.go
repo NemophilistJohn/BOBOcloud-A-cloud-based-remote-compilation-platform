@@ -312,6 +312,14 @@ func (m *Manager) CatalogVersion() string {
 	return m.catalog.Version()
 }
 
+// CatalogFingerprint returns an opaque revision of the public static catalog.
+func (m *Manager) CatalogFingerprint() string {
+	if m == nil || m.catalog == nil {
+		return ""
+	}
+	return m.catalog.Fingerprint()
+}
+
 func (m *Manager) Capabilities(ctx context.Context) []Capability {
 	if m == nil || m.catalog == nil {
 		return []Capability{}

@@ -370,7 +370,9 @@
 
   function initEditor(monaco) {
     monacoRef = monaco;
+    if (BOBO.workspaceSettings && BOBO.workspaceSettings.setMonaco) BOBO.workspaceSettings.setMonaco(monacoRef);
     createEditor();
+    if (BOBO.workspaceSettings && BOBO.workspaceSettings.attachEditor) BOBO.workspaceSettings.attachEditor(S.editor);
     // Load diagnostics settings in the background (defaults apply until loaded,
     // then every model is re-checked with the user's config).
     loadDiagnosticsSettings();

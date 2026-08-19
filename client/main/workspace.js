@@ -13,6 +13,8 @@ function createWorkspaceController(options) {
   const t = options.t;
   const disposeLsp = options.disposeLsp || (() => {});
   const stopTerminal = options.stopTerminal || (() => {});
+  const onWorkspaceChanged = options.onWorkspaceChanged || (() => {});
+  const onWorkspaceFilesystemEvent = options.onWorkspaceFilesystemEvent || (() => {});
   const settings = options.settings;
 
   const watchers = new Map();
@@ -269,6 +271,7 @@ function createWorkspaceController(options) {
     try {
       watcher = fs.watch(directory, { recursive: Boolean(recursive) }, (eventType, filename) => {
         const changedPath = filename ? path.resolve(directory, String(filename)) : null;
+        onWorkspaceFilesystemEvent(root, identity, changedPath);
         if (changedPath && isIgnoredPath(root, changedPath)) return;
         if (eventType === 'change' && changedPath) {
           const changedStat = safeStat(changedPath);
@@ -361,6 +364,7 @@ function createWorkspaceController(options) {
     workspaceIdentity += 1;
     activeArtifactRunContext = null;
     const targetIdentity = workspaceIdentity;
+    onWorkspaceChanged({ rootPath: folder, workspaceIdentity: targetIdentity });
     watchFolderRecursive(folder, targetIdentity);
     setTreeCache(tree);
     if (leaveToken) committedSwitches.set(leaveToken, { sourceRoot, sourceTree, targetRoot: folder, targetIdentity });
@@ -436,6 +440,7 @@ function createWorkspaceController(options) {
       workspaceRoot = committed.sourceRoot;
       workspaceIdentity += 1;
       activeArtifactRunContext = null;
+      onWorkspaceChanged({ rootPath: workspaceRoot, workspaceIdentity });
       const restoredTree = committed.sourceTree || (workspaceRoot ? await scanTreeDirectory(workspaceRoot) : null);
       if (workspaceRoot) {
         setTreeCache(restoredTree);
@@ -501,6 +506,7 @@ function createWorkspaceController(options) {
       workspaceRoot = null;
       workspaceIdentity += 1;
       activeArtifactRunContext = null;
+      onWorkspaceChanged({ rootPath: null, workspaceIdentity });
       invalidateTreeCache();
       send('workspace-closed', {});
       return true;

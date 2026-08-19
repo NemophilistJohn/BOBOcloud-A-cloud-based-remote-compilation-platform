@@ -11,13 +11,14 @@ const (
 // gates. It must not carry host paths, credentials, user data, Docker state, or
 // raw adapter commands.
 type serverCapabilityDescriptor struct {
-	SchemaVersion    int                       `json:"schemaVersion"`
-	Protocol         serverProtocolDescriptor  `json:"protocol"`
-	Release          serverReleaseDescriptor   `json:"release"`
-	Transport        serverTransportDescriptor `json:"transport"`
-	Capabilities     serverFeatureCapabilities `json:"capabilities"`
-	Limits           serverCapabilityLimits    `json:"limits"`
-	CatalogRevisions serverCatalogRevisions    `json:"catalogRevisions"`
+	SchemaVersion       int                       `json:"schemaVersion"`
+	Protocol            serverProtocolDescriptor  `json:"protocol"`
+	Release             serverReleaseDescriptor   `json:"release"`
+	Transport           serverTransportDescriptor `json:"transport"`
+	Capabilities        serverFeatureCapabilities `json:"capabilities"`
+	Limits              serverCapabilityLimits    `json:"limits"`
+	CatalogRevisions    serverCatalogRevisions    `json:"catalogRevisions"`
+	CatalogFingerprints serverCatalogFingerprints `json:"catalogFingerprints"`
 }
 
 type serverProtocolDescriptor struct {
@@ -68,6 +69,11 @@ type serverSessionLimits struct {
 
 type serverCatalogRevisions struct {
 	LSP int    `json:"lsp"`
+	DAP string `json:"dap"`
+}
+
+type serverCatalogFingerprints struct {
+	LSP string `json:"lsp"`
 	DAP string `json:"dap"`
 }
 
@@ -129,6 +135,7 @@ func (h *HTTPHandler) serverCapabilities() serverCapabilityDescriptor {
 			MaxPerUser:  cfg.LSPMaxSessionsPerUser,
 		}
 		descriptor.CatalogRevisions.LSP = h.LSP.CatalogVersion()
+		descriptor.CatalogFingerprints.LSP = h.LSP.CatalogFingerprint()
 	}
 	if cfg.DAPEnabled && h.DAP != nil {
 		descriptor.Capabilities.DAP.Enabled = true
@@ -137,6 +144,7 @@ func (h *HTTPHandler) serverCapabilities() serverCapabilityDescriptor {
 			MaxPerUser:  cfg.DAPMaxSessionsPerUser,
 		}
 		descriptor.CatalogRevisions.DAP = h.DAP.CatalogVersion()
+		descriptor.CatalogFingerprints.DAP = h.DAP.CatalogFingerprint()
 	}
 
 	return descriptor

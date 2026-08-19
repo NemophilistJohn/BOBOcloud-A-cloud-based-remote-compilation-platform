@@ -824,6 +824,14 @@ func (m *Manager) CatalogVersion() int {
 	return m.catalog.Version()
 }
 
+// CatalogFingerprint returns an opaque revision of the public static catalog.
+func (m *Manager) CatalogFingerprint() string {
+	if m == nil || m.catalog == nil {
+		return ""
+	}
+	return m.catalog.Fingerprint()
+}
+
 // StopOwner terminates matching processes before an account/team/project is
 // deleted. It waits briefly so cache leases are released deterministically.
 func (m *Manager) stopMatching(match func(*Session) bool) error {

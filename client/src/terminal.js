@@ -38,6 +38,7 @@ import {
   var presentationPromise = null;
   var presentationGeneration = 0;
   var terminalUiLoadPromise = null;
+  var capabilitySubscription = null;
 
   function t(key, params) {
     return BOBO.i18n && typeof BOBO.i18n.t === 'function' ? BOBO.i18n.t(key, params) : key;
@@ -167,6 +168,42 @@ import {
       typeof global.api.onTerminalStatus === 'function');
   }
 
+  function terminalAvailability() {
+    if (BOBO.cloudFeaturePolicy && typeof BOBO.cloudFeaturePolicy.evaluate === 'function') {
+      return BOBO.cloudFeaturePolicy.evaluate('terminal');
+    }
+    return { feature: 'terminal', available: false, state: 'unknown', reason: 'policy_unavailable' };
+  }
+
+  function terminalUnavailableText() {
+    return t('Cloud terminal is unavailable on this server.');
+  }
+
+  function renderCapabilityState() {
+    var availability = terminalAvailability();
+    var tab = document.querySelector('#panel-tabs .panel-tab[data-panel="terminal"]');
+    if (tab) {
+      tab.disabled = !availability.available;
+      tab.setAttribute('aria-disabled', availability.available ? 'false' : 'true');
+      if (availability.available) {
+        if (tab.dataset.boboCapabilityTitle === 'true') tab.removeAttribute('title');
+        delete tab.dataset.boboCapabilityTitle;
+      } else {
+        tab.title = terminalUnavailableText();
+        tab.dataset.boboCapabilityTitle = 'true';
+      }
+    }
+    return availability;
+  }
+
+  function capabilitiesChanged() {
+    var availability = renderCapabilityState();
+    if (availability.available) return;
+    if (sessionId || startPromise) closeTerminal('capability-disabled');
+    showUnavailable(terminalUnavailableText());
+    if (S.activePanel === 'terminal' && typeof BOBO.switchToPanel === 'function') BOBO.switchToPanel('output');
+  }
+
   function currentRuntime() {
     return String(S.selectedRuntime || '');
   }
@@ -285,6 +322,10 @@ import {
 
   async function startTerminal() {
     if (!terminal) return false;
+    if (!terminalAvailability().available) {
+      showUnavailable(terminalUnavailableText());
+      return false;
+    }
     if (!S.workspaceRoot) {
       showUnavailable(t('Open a workspace before starting a cloud terminal.'));
       return false;
@@ -327,6 +368,13 @@ import {
         sessionPhase = 'error';
         clearQueuedInput();
         showUnavailable(t('Could not synchronize the workspace for the cloud terminal.'));
+        return false;
+      }
+
+      if (!terminalAvailability().available) {
+        sessionPhase = 'idle';
+        clearQueuedInput();
+        showUnavailable(terminalUnavailableText());
         return false;
       }
 
@@ -572,6 +620,10 @@ import {
   function initTerminal() {
     if (initialized) return true;
     initialized = true;
+    renderCapabilityState();
+    if (!capabilitySubscription && BOBO.serverCapabilities && typeof BOBO.serverCapabilities.subscribe === 'function') {
+      capabilitySubscription = BOBO.serverCapabilities.subscribe(capabilitiesChanged);
+    }
     var host = terminalHost();
     if (host && BOBO.i18n && typeof BOBO.i18n.bindAttribute === 'function') {
       BOBO.i18n.bindAttribute(host, 'aria-label', 'Terminal');
@@ -645,6 +697,10 @@ import {
     initialized = false;
     presentationGeneration += 1;
     presentationPromise = null;
+    if (capabilitySubscription) {
+      try { capabilitySubscription(); } catch (_) {}
+      capabilitySubscription = null;
+    }
     if (eventDispose) {
       try { eventDispose(); } catch (_) {}
       eventDispose = null;
@@ -664,6 +720,10 @@ import {
   BOBO.terminal = {
     init: initTerminal,
     activate: async function() {
+      if (!renderCapabilityState().available) {
+        showUnavailable(terminalUnavailableText());
+        return false;
+      }
       if (!(await ensureTerminalPresentation())) return false;
       focusTerminal();
       deferFit();

@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -35,8 +36,15 @@ type Manifest struct {
 }
 
 type Catalog struct {
-	version    int
-	byLanguage map[string]ServerSpec
+	version     int
+	fingerprint string
+	byLanguage  map[string]ServerSpec
+}
+
+type catalogFingerprintEntry struct {
+	LanguageID  string   `json:"languageId"`
+	Aliases     []string `json:"aliases,omitempty"`
+	Fingerprint string   `json:"fingerprint,omitempty"`
 }
 
 func normalizeLanguage(value string) string {
@@ -57,6 +65,7 @@ func NewCatalog(manifest Manifest) (*Catalog, error) {
 		return nil, fmt.Errorf("unsupported LSP manifest version %d", manifest.Version)
 	}
 	catalog := &Catalog{version: manifest.Version, byLanguage: make(map[string]ServerSpec)}
+	fingerprintEntries := make([]catalogFingerprintEntry, 0, len(manifest.Servers))
 	for _, spec := range manifest.Servers {
 		spec.LanguageID = normalizeLanguage(spec.LanguageID)
 		if spec.LanguageID == "" || len(spec.Command) == 0 || strings.TrimSpace(spec.Command[0]) == "" {
@@ -77,6 +86,11 @@ func NewCatalog(manifest Manifest) (*Catalog, error) {
 		if len(spec.Docker.FullCommand) == 0 {
 			spec.Docker.FullCommand = append([]string(nil), spec.Docker.Command...)
 		}
+		fingerprintEntries = append(fingerprintEntries, catalogFingerprintEntry{
+			LanguageID:  spec.LanguageID,
+			Aliases:     publicAliases(spec.LanguageID, spec.Aliases),
+			Fingerprint: spec.Fingerprint,
+		})
 		keys := append([]string{spec.LanguageID}, spec.Aliases...)
 		for _, key := range keys {
 			key = normalizeLanguage(key)
@@ -89,7 +103,45 @@ func NewCatalog(manifest Manifest) (*Catalog, error) {
 			catalog.byLanguage[key] = spec
 		}
 	}
+	catalog.fingerprint = fingerprintCatalog(fingerprintEntries)
 	return catalog, nil
+}
+
+func publicAliases(languageID string, aliases []string) []string {
+	seen := make(map[string]struct{}, len(aliases))
+	values := make([]string, 0, len(aliases))
+	for _, alias := range aliases {
+		alias = strings.ToLower(strings.TrimSpace(alias))
+		if alias == "" || alias == languageID {
+			continue
+		}
+		if _, exists := seen[alias]; exists {
+			continue
+		}
+		seen[alias] = struct{}{}
+		values = append(values, alias)
+	}
+	sort.Strings(values)
+	return values
+}
+
+func fingerprintCatalog(entries []catalogFingerprintEntry) string {
+	encoded := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			return ""
+		}
+		encoded = append(encoded, string(data))
+	}
+	sort.Strings(encoded)
+	hash := sha256.New()
+	_, _ = hash.Write([]byte("bobocloud:lsp-catalog:v1\x00"))
+	for _, entry := range encoded {
+		_, _ = hash.Write([]byte(entry))
+		_, _ = hash.Write([]byte{0})
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 func LoadCatalog(path string) (*Catalog, error) {
@@ -152,6 +204,16 @@ func (c *Catalog) Version() int {
 		return 0
 	}
 	return c.version
+}
+
+// Fingerprint identifies the client-observable static catalog projection. It
+// deliberately excludes executable commands, environment values, host paths,
+// Docker images, and other administrator-owned launch details.
+func (c *Catalog) Fingerprint() string {
+	if c == nil {
+		return ""
+	}
+	return c.fingerprint
 }
 
 func ResolveManifestPath(execDir, configured string) string {

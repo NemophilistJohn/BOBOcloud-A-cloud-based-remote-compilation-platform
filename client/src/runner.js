@@ -13,12 +13,31 @@
   var activeRunPreparation = null;
   var cancellingRun = false;
   var syncedIdentityEpoch = S.runIdentityEpoch || 0;
+  var taskExecutionSequence = 0;
+  var activeTaskExecution = null;
 
   function tr(source, replacements) {
     if (BOBO.i18n && BOBO.i18n.t) return BOBO.i18n.t(source, replacements);
     return String(source).replace(/\{([^}]+)\}/g, function(match, key) {
       return replacements && replacements[key] !== undefined ? replacements[key] : match;
     });
+  }
+
+  function cloudFeatureDecision(feature) {
+    if (BOBO.cloudFeaturePolicy && typeof BOBO.cloudFeaturePolicy.evaluate === 'function') {
+      return BOBO.cloudFeaturePolicy.evaluate(feature);
+    }
+    return { available: false, state: 'unknown', reason: 'policy_unavailable' };
+  }
+
+  function cloudFeatureUnavailableText(feature) {
+    return feature === 'tasks'
+      ? tr('Cloud tasks are unavailable on this server.')
+      : tr('Cloud run is unavailable on this server.');
+  }
+
+  function bestEffort(callback) {
+    try { return callback(); } catch (_) { return undefined; }
   }
 
   function taskInteractiveStage(taskExecution) {
@@ -31,6 +50,57 @@
     var terminalId = Array.from(terminals)[0];
     var terminalStep = taskExecution.steps.find(function(step) { return step.id === terminalId; });
     return terminalStep ? 'task:' + (terminalStep.kind || 'custom').toLowerCase() + ':' + terminalStep.id : '';
+  }
+
+  function createTaskExecutionHandle(label) {
+    var resolveCompletion;
+    var record = {
+      id: 'task-execution-' + (++taskExecutionSequence),
+      label: String(label || ''),
+      state: 'preparing',
+      runId: '',
+      settled: false,
+      cancelRequested: false,
+      cancelled: false,
+      runContext: null,
+      completion: new Promise(function(resolve) { resolveCompletion = resolve; }),
+      resolveCompletion: resolveCompletion
+    };
+    record.public = Object.freeze({
+      id: record.id,
+      label: record.label,
+      completion: record.completion,
+      cancel: function(reason) { return cancelTaskExecution(record, reason); },
+      getState: function() {
+        return Object.freeze({ state: record.state, runId: record.runId, cancelled: record.cancelRequested || record.cancelled });
+      }
+    });
+    return record;
+  }
+
+  function settleTaskExecution(record, outcome) {
+    if (!record || record.settled) return false;
+    record.settled = true;
+    outcome = outcome || {};
+    var cancelled = outcome.cancelled === true;
+    var success = outcome.success === true && !cancelled;
+    record.cancelled = cancelled;
+    record.state = cancelled ? 'cancelled' : (success ? 'completed' : 'failed');
+    if (activeTaskExecution === record) activeTaskExecution = null;
+    record.resolveCompletion(Object.freeze({
+      success: success,
+      returnCode: Number.isInteger(outcome.returnCode) ? outcome.returnCode : null,
+      cancelled: cancelled,
+      code: String(outcome.code || (success ? 'completed' : (cancelled ? 'cancelled' : 'failed'))),
+      message: String(outcome.message || ''),
+      runId: String(outcome.runId || record.runId || ''),
+      label: record.label
+    }));
+    return true;
+  }
+
+  function settleTaskForContext(context, outcome) {
+    return settleTaskExecution(context && context.taskExecutionHandle, outcome);
   }
 
   function createRunContext() {
@@ -73,15 +143,22 @@
   }
 
   function setRunControlsIdle() {
-    var unavailable = Boolean(S.workspaceTransitionLocked || cancellingRun);
+    var debugActive = Boolean(BOBO.dap && typeof BOBO.dap.isActive === 'function' && BOBO.dap.isActive());
+    var unavailable = Boolean(S.workspaceTransitionLocked || cancellingRun || debugActive);
+    var selection = BOBO.projectTasks && typeof BOBO.projectTasks.getSelected === 'function'
+      ? BOBO.projectTasks.getSelected()
+      : { type: 'file' };
+    var runAvailable = cloudFeatureDecision('run').available;
+    var tasksAvailable = cloudFeatureDecision('tasks').available;
+    var selectedAvailable = selection.type === 'task' ? tasksAvailable : runAvailable;
     var stopButton = document.getElementById('stop-code');
     if (stopButton) { stopButton.disabled = true; stopButton.style.opacity = '0.5'; }
     var runButton = document.getElementById('run-code');
-    if (runButton) runButton.disabled = unavailable;
-    ['run-target-btn', 'run-config-btn'].forEach(function(id) {
-      var control = document.getElementById(id);
-      if (control) control.disabled = unavailable;
-    });
+    if (runButton) runButton.disabled = unavailable || !selectedAvailable;
+    var targetButton = document.getElementById('run-target-btn');
+    if (targetButton) targetButton.disabled = unavailable || (!runAvailable && !tasksAvailable);
+    var configButton = document.getElementById('run-config-btn');
+    if (configButton) configButton.disabled = unavailable || selection.type === 'task' || !runAvailable;
     hideStdinInput();
   }
 
@@ -95,6 +172,11 @@
       var control = document.getElementById(id);
       if (control) control.disabled = true;
     });
+  }
+
+  function refreshRunControls() {
+    if (activeRunPreparation || S.activeRunSocket || S.activeRunId || S.activeRunContext) setRunControlsActive();
+    else setRunControlsIdle();
   }
 
   function requestRunCancellation(runId) {
@@ -127,6 +209,13 @@
     S.artifactInflight = new Map();
     S.activeRunSocket = null;
     S.activeRunId = null;
+    settleTaskForContext(runContext, {
+      success: false,
+      cancelled: true,
+      code: String(options.reason || 'cancelled'),
+      message: String(options.message || ''),
+      runId: runId
+    });
     cancellingRun = true;
     // The cancellation request may take up to the HTTP fallback timeout.
     // Disable controls before awaiting it so Stop is visibly single-flight.
@@ -148,18 +237,45 @@
     return true;
   }
 
+  async function cancelTaskExecution(record, reason) {
+    if (!record || record.settled) return false;
+    record.cancelRequested = true;
+    var cancelReason = String(reason || 'cancelled');
+    var context = record.runContext;
+    if (context && activeRunPreparation === context) {
+      runPreparationSequence += 1;
+      activeRunPreparation = null;
+      setRunControlsIdle();
+    }
+    if (context && S.activeRunContext === context) {
+      await cancelActiveRun({ reason: cancelReason });
+      return true;
+    }
+    settleTaskExecution(record, {
+      success: false,
+      cancelled: true,
+      code: cancelReason,
+      message: tr('Project task was cancelled.')
+    });
+    return true;
+  }
+
   async function prepareWorkspaceLeave(options) {
+    var preparingTask = activeRunPreparation && activeRunPreparation.taskExecutionHandle;
     runPreparationSequence += 1;
     activeRunPreparation = null;
+    settleTaskExecution(preparingTask, { success: false, cancelled: true, code: 'workspace-change', message: tr('Project task was cancelled.') });
     var cancelled = await cancelActiveRun(options);
     if (!cancelled) setRunControlsIdle();
     return cancelled;
   }
 
   async function invalidateRunIdentity(options) {
+    var preparingTask = activeRunPreparation && activeRunPreparation.taskExecutionHandle;
     S.runIdentityEpoch = (S.runIdentityEpoch || 0) + 1;
     runPreparationSequence += 1;
     activeRunPreparation = null;
+    settleTaskExecution(preparingTask, { success: false, cancelled: true, code: 'identity-change', message: tr('Project task was cancelled.') });
     var cancelled = await cancelActiveRun(options);
     if (!cancelled) setRunControlsIdle();
     return cancelled;
@@ -172,6 +288,12 @@
     S.activeRunId = null;
     S.activeRunCancelled = false;
     S.artifactInflight = new Map();
+    settleTaskForContext(runContext, {
+      success: false,
+      code: 'stream-closed',
+      message: tr('The project task output stream closed before reporting a result.'),
+      runId: runId
+    });
     if (global.api && global.api.setArtifactRunContext && runContext) {
       try { await global.api.setArtifactRunContext({ clear: true, runNonce: runContext.nonce }); } catch (e) {}
     }
@@ -466,9 +588,11 @@
   // 中止当前运行：通过 WebSocket 发送 cancel 消息，服务端取消运行上下文
   async function stopActiveRun() {
     var hadPreparation = !!activeRunPreparation;
+    var preparingTask = activeRunPreparation && activeRunPreparation.taskExecutionHandle;
     if (hadPreparation) {
       runPreparationSequence += 1;
       activeRunPreparation = null;
+      settleTaskExecution(preparingTask, { success: false, cancelled: true, code: 'user-cancelled', message: tr('Project task was cancelled.') });
     }
     if (!hadPreparation && !S.activeRunSocket && !S.activeRunId && !S.activeRunContext) {
       BOBO.updateRunOutput('[Stop] No active run to stop');
@@ -500,21 +624,66 @@
     });
   }
 
+  function startProjectTaskExecution(taskRequest, options) {
+    options = options || {};
+    var record = createTaskExecutionHandle(taskRequest && taskRequest.label);
+    if (!taskRequest || !taskRequest.label || (typeof taskRequest.context !== 'object' && !Array.isArray(taskRequest.steps))) {
+      settleTaskExecution(record, { success: false, code: 'invalid-task-request', message: tr('Error: Invalid project task request') });
+      return record.public;
+    }
+    if (!S.selectedRuntime) {
+      settleTaskExecution(record, { success: false, code: 'runtime-required', message: tr('Project tasks require a Docker runtime; Local cannot execute workspace tasks.') });
+      return record.public;
+    }
+    if (activeTaskExecution && !activeTaskExecution.settled) {
+      settleTaskExecution(record, { success: false, code: 'task-busy', message: tr('A run is already in progress. Stop it before starting another one.') });
+      return record.public;
+    }
+    activeTaskExecution = record;
+    Promise.resolve(runOnServer({
+      filePath: null,
+      taskExecution: Array.isArray(taskRequest.steps) ? taskRequest : null,
+      taskRequest: Array.isArray(taskRequest.steps) ? null : taskRequest,
+      taskExecutionHandle: record,
+      owner: String(options.owner || 'internal')
+    })).then(function(started) {
+      if (started === false && !record.settled) {
+        settleTaskExecution(record, { success: false, code: 'start-failed', message: tr('Project task could not be started.') });
+      }
+    }, function(error) {
+      settleTaskExecution(record, { success: false, code: 'start-failed', message: error && error.message ? error.message : String(error || '') });
+    });
+    return record.public;
+  }
+
   async function runOnServer(options) {
     options = options || {};
     var filePath = options.filePath;
     var taskExecution = options.taskExecution;
     var taskRequest = options.taskRequest;
+    var executionHandle = options.taskExecutionHandle || null;
     var taskProblemSession = null;
     var isProjectTask = Boolean(taskExecution || taskRequest);
-    if (S.workspaceTransitionLocked) return false;
-    if (BOBO.dap && BOBO.dap.isActive && BOBO.dap.isActive()) {
+    var cloudFeature = isProjectTask ? 'tasks' : 'run';
+    if (S.workspaceTransitionLocked) {
+      settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'workspace-transition', message: tr('Project task was cancelled.') });
+      return false;
+    }
+    if (BOBO.dap && BOBO.dap.isActive && BOBO.dap.isActive() && options.owner !== 'dap-lifecycle') {
       BOBO.updateRunOutput(tr('Cannot run code while a debug session is active.'));
+      settleTaskExecution(executionHandle, { success: false, code: 'debug-active', message: tr('Cannot run code while a debug session is active.') });
+      return false;
+    }
+    if (!cloudFeatureDecision(cloudFeature).available) {
+      var unavailableMessage = cloudFeatureUnavailableText(cloudFeature);
+      BOBO.updateRunOutput(unavailableMessage);
+      settleTaskExecution(executionHandle, { success: false, code: 'feature-disabled', message: unavailableMessage });
       return false;
     }
     if (!S.workspaceRoot || !S.serverSettings.ip) {
       BOBO.updateRunOutput('Error: Workspace not opened or server not configured');
-      return;
+      settleTaskExecution(executionHandle, { success: false, code: 'workspace-or-server-missing', message: tr('Workspace not opened or server not configured') });
+      return false;
     }
 
     // 多人模式下未登录：云编译（含 Local 直跑）需要登录态，直接拦截并提示
@@ -523,10 +692,14 @@
       if (BOBO.auth && typeof BOBO.auth.openAuthModal === 'function') {
         BOBO.auth.openAuthModal('Cloud compile requires login');
       }
-      return;
+      settleTaskExecution(executionHandle, { success: false, code: 'unauthorized', message: tr('Account not logged in. Cloud compile requires login.') });
+      return false;
     }
 
     var runContext = createRunContext();
+    runContext.feature = cloudFeature;
+    runContext.taskExecutionHandle = executionHandle;
+    if (executionHandle) executionHandle.runContext = runContext;
     var projectName = runContext.rootPath.split(/[/\\]/).pop();
     var relativeFilePath = isProjectTask ? '' : filePath.replace(runContext.rootPath, '').replace(/^[/\\]/, '');
     var rcLang = !isProjectTask && BOBO.runConfig ? BOBO.runConfig.languageForFile(relativeFilePath) : null;
@@ -536,6 +709,7 @@
     }
     if (activeRunPreparation || S.activeRunSocket || S.activeRunId || S.activeRunContext) {
       BOBO.updateRunOutput(tr('A run is already in progress. Stop it before starting another one.'));
+      settleTaskExecution(executionHandle, { success: false, code: 'run-busy', message: tr('A run is already in progress. Stop it before starting another one.') });
       return false;
     }
     beginRunPreparation(runContext);
@@ -553,13 +727,17 @@
         var saved = isProjectTask && BOBO.workspace.saveAllTabs
           ? await BOBO.workspace.saveAllTabs()
           : await BOBO.workspace.saveActiveTab();
-        if (!isRunPreparationCurrent(runContext)) return;
+        if (!isRunPreparationCurrent(runContext)) {
+          settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.') });
+          return false;
+        }
         if (!saved) {
           finishRunPreparation(runContext);
           BOBO.updateRunOutput(isProjectTask
             ? tr('Error: Project files could not be saved, so the task was cancelled.')
             : 'Error: The active file could not be saved, so the run was cancelled.');
-          return;
+          settleTaskExecution(executionHandle, { success: false, code: 'save-failed', message: tr('Project files could not be saved.') });
+          return false;
         }
         // File watcher delivery is asynchronous. Mark this save immediately so
         // the pre-run version check can never race ahead of the watcher event.
@@ -570,7 +748,10 @@
     if (taskRequest) {
       try {
         var resolvedTask = await global.api.tasksResolve(taskRequest.label, taskRequest.context || {});
-        if (!isRunPreparationCurrent(runContext)) return;
+        if (!isRunPreparationCurrent(runContext)) {
+          settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.') });
+          return false;
+        }
         if (!resolvedTask || !resolvedTask.success || !resolvedTask.execution) {
           var taskError = resolvedTask && resolvedTask.error || { code: 'TASK_RESOLVE_FAILED', message: 'Unknown task resolution error' };
           finishRunPreparation(runContext);
@@ -578,12 +759,14 @@
             code: taskError.code,
             message: taskError.message
           }));
+          settleTaskExecution(executionHandle, { success: false, code: taskError.code, message: taskError.message });
           return false;
         }
         taskExecution = resolvedTask.execution;
       } catch (error) {
         finishRunPreparation(runContext);
         BOBO.updateRunOutput(tr('Error: Task configuration could not be loaded: {message}', { message: error.message }));
+        settleTaskExecution(executionHandle, { success: false, code: 'task-resolve-failed', message: error.message });
         return false;
       }
     }
@@ -594,11 +777,15 @@
 
     try {
       var syncSuccess = await ensureWorkspaceSyncedForRun();
-      if (!isRunPreparationCurrent(runContext)) return;
+      if (!isRunPreparationCurrent(runContext)) {
+        settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.') });
+        return false;
+      }
       if (!syncSuccess) {
         finishRunPreparation(runContext);
         BOBO.updateRunOutput('Error: Failed to sync with server before running');
-        return;
+        settleTaskExecution(executionHandle, { success: false, code: 'sync-failed', message: tr('Workspace synchronization failed.') });
+        return false;
       }
 
       var runId = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
@@ -609,11 +796,18 @@
       var rc = (BOBO.runConfig && rcLang) ? BOBO.runConfig.getArgs(rcLang) : { compileArgs: [], runArgs: [], buildTarget: '' };
 
       await cancelActiveRun();
-      if (!isRunPreparationCurrent(runContext)) return;
+      if (!isRunPreparationCurrent(runContext)) {
+        settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.') });
+        return false;
+      }
 
       S.activeRunContext = runContext;
       S.activeRunSocket = null;
       S.activeRunId = runId;
+      if (executionHandle) {
+        executionHandle.runId = runId;
+        executionHandle.state = 'running';
+      }
       S.activeRunCancelled = false;
       S.artifactInflight = new Map();
       activeRunPreparation = null;
@@ -625,12 +819,16 @@
             runNonce: runContext.nonce
           });
         } catch (error) {
+          settleTaskExecution(executionHandle, { success: false, code: 'artifact-context-failed', message: error.message, runId: runId });
           await clearRunContext(runContext, runId);
           BOBO.updateRunOutput('Run error: ' + error.message);
-          return;
+          return false;
         }
       }
-      if (!isRunContextCurrent(runContext)) return;
+      if (!isRunContextCurrent(runContext)) {
+        settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.'), runId: runId });
+        return false;
+      }
       setRunControlsActive();
 
       BOBO.updateRunOutput(taskExecution
@@ -664,19 +862,24 @@
         requestPayload.buildTarget = rc.buildTarget || undefined;
       }
       var runResult = await BOBO.sendToServer(taskExecution ? 'runTask' : 'runCode', requestPayload);
-      if (!isRunContextCurrent(runContext)) return;
+      if (!isRunContextCurrent(runContext)) {
+        settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.'), runId: runId });
+        return false;
+      }
 
       if (!runResult) {
         BOBO.updateRunOutput('Error: Failed to get run result from server');
+        settleTaskExecution(executionHandle, { success: false, code: 'empty-run-response', message: tr('Failed to get a run response from the server.'), runId: runId });
         await cancelActiveRun();
-        return;
+        return false;
       }
 
       if (!runResult.success) {
         BOBO.updateRunOutput('\n=== RUN FAILED ===');
         if (runResult.error) BOBO.updateRunOutput('Error: ' + runResult.error);
+        settleTaskExecution(executionHandle, { success: false, code: String(runResult.code || 'run-rejected'), message: String(runResult.error || ''), runId: runId });
         await cancelActiveRun();
-        return;
+        return false;
       }
 
       // WebSocket streaming
@@ -766,27 +969,40 @@
               await refreshWorkspaceTree(runContext);
             }
             if (payload.type === 'result') {
-              BOBO.updateRunOutput('Return code: ' + payload.returncode);
-              BOBO.updateRunOutput(payload.success ? 'Run finished successfully' : 'Run finished with errors');
-              if (BOBO.environmentActivity && typeof BOBO.environmentActivity.record === 'function') {
+              settleTaskExecution(executionHandle, {
+                success: payload.success === true,
+                returnCode: Number(payload.returncode),
+                code: payload.success === true ? 'completed' : 'task-failed',
+                message: String(payload.message || ''),
+                runId: runId
+              });
+              bestEffort(function() { BOBO.updateRunOutput('Return code: ' + payload.returncode); });
+              bestEffort(function() { BOBO.updateRunOutput(payload.success ? 'Run finished successfully' : 'Run finished with errors'); });
+              bestEffort(function() {
+                if (!BOBO.environmentActivity || typeof BOBO.environmentActivity.record !== 'function') return;
                 BOBO.environmentActivity.record('compile', { outcome: payload.success ? 'completed' : 'failed' });
-                if (payload.success && S.setupCommands.length > 0) {
-                  BOBO.environmentActivity.record('install', { outcome: 'completed' });
-                }
-              }
-              if (S.setupCommands.length > 0 && BOBO.lsp && typeof BOBO.lsp.dependenciesChanged === 'function') {
-                BOBO.lsp.dependenciesChanged();
-              }
+                if (payload.success && S.setupCommands.length > 0) BOBO.environmentActivity.record('install', { outcome: 'completed' });
+              });
+              bestEffort(function() {
+                if (S.setupCommands.length > 0 && BOBO.lsp && typeof BOBO.lsp.dependenciesChanged === 'function') BOBO.lsp.dependenciesChanged();
+              });
               if (stdinFallbackTimer) { clearTimeout(stdinFallbackTimer); stdinFallbackTimer = null; }
-              hideStdinInput();
-              if (taskProblemSession) taskProblemSession.finish();
+              bestEffort(hideStdinInput);
+              bestEffort(function() { if (taskProblemSession) taskProblemSession.finish(); });
+              if (executionHandle) {
+                try { await clearRunContext(runContext, runId); } finally { try { socket.close(); } catch (_) {} }
+              }
             }
             if (payload.type === 'error' && payload.message) {
-              BOBO.updateRunOutput('Error: ' + payload.message);
-              if (taskProblemSession) taskProblemSession.finish();
+              settleTaskExecution(executionHandle, { success: false, code: String(payload.code || 'stream-error'), message: payload.message, runId: runId });
+              bestEffort(function() { BOBO.updateRunOutput('Error: ' + payload.message); });
+              bestEffort(function() { if (taskProblemSession) taskProblemSession.finish(); });
+              if (executionHandle) {
+                try { await clearRunContext(runContext, runId); } finally { try { socket.close(); } catch (_) {} }
+              }
             }
           } catch (error) {
-            BOBO.updateRunOutput('Stream parse error: ' + error.message);
+            bestEffort(function() { BOBO.updateRunOutput('Stream parse error: ' + error.message); });
           }
         };
 
@@ -801,27 +1017,34 @@
           if (!settled) { settled = true; resolve(false); }
           if (stdinFallbackTimer) { clearTimeout(stdinFallbackTimer); stdinFallbackTimer = null; }
           if (isRunContextCurrent(runContext)) {
-            BOBO.updateRunOutput('WebSocket stream closed');
-            if (taskProblemSession) taskProblemSession.finish();
-            clearRunContext(runContext, runId);
+            var cleanup = clearRunContext(runContext, runId);
+            bestEffort(function() { BOBO.updateRunOutput('WebSocket stream closed'); });
+            bestEffort(function() { if (taskProblemSession) taskProblemSession.finish(); });
+            Promise.resolve(cleanup).catch(function(error) {
+              bestEffort(function() { BOBO.updateRunOutput('Run cleanup failed: ' + error.message); });
+            });
           }
         };
       });
 
       if (!streamReady) {
+        settleTaskExecution(executionHandle, { success: false, code: 'stream-connect-failed', message: tr('Failed to establish the project task output stream.'), runId: runId });
         if (isRunContextCurrent(runContext)) {
           BOBO.updateRunOutput('Error: Failed to establish output stream (check server port 3101 and WS endpoint)');
           await cancelActiveRun();
         }
         if (taskProblemSession) taskProblemSession.finish();
       }
+      return streamReady;
     } catch (error) {
       if (isRunPreparationCurrent(runContext) || isRunContextCurrent(runContext)) {
         BOBO.updateRunOutput('Run error: ' + error.message);
       }
       finishRunPreparation(runContext);
+      settleTaskExecution(executionHandle, { success: false, code: 'run-error', message: error.message, runId: executionHandle && executionHandle.runId });
       if (isRunContextCurrent(runContext)) await cancelActiveRun();
       if (taskProblemSession) taskProblemSession.finish();
+      return false;
     }
   }
 
@@ -905,11 +1128,24 @@
     runActive: runActive,
     runCodeOnServer: runCodeOnServer,
     runProjectTask: runProjectTask,
+    startProjectTaskExecution: startProjectTaskExecution,
     stopActiveRun: stopActiveRun,
     prepareWorkspaceLeave: prepareWorkspaceLeave,
     invalidateRunIdentity: invalidateRunIdentity,
     isRunContextCurrent: isRunContextCurrent,
     isBusy: function() { return Boolean(activeRunPreparation || S.activeRunSocket || S.activeRunId || S.activeRunContext); },
+    refreshControls: refreshRunControls,
     refreshWorkspaceTree: refreshWorkspaceTree
   };
+
+  if (typeof global.addEventListener === 'function') {
+    global.addEventListener('bobo:server-capabilities-changed', function() {
+      var context = activeRunPreparation || S.activeRunContext;
+      if (context && !cloudFeatureDecision(context.feature || 'run').available) {
+        stopActiveRun();
+        return;
+      }
+      if (!activeRunPreparation && !S.activeRunContext && !S.activeRunId && !S.activeRunSocket) setRunControlsIdle();
+    });
+  }
 })(window);

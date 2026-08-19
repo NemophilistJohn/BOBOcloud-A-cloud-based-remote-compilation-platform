@@ -44,7 +44,12 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
     // VS Code JSONC
     "version": "0.2.0",
     "configurations": [
-      { "name": "Debug project", "type": "python", "request": "launch", "program": "${'${workspaceFolder}'}/main.py" },
+      {
+        "name": "Debug project", "type": "python", "request": "launch",
+        "program": "${'${workspaceFolder}'}/main.py",
+        "preLaunchTask": "Build before debug",
+        "postDebugTask": "Clean after debug"
+      },
     ]
   }`, 'utf8');
 
@@ -157,8 +162,14 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
     await page.evaluate(async ({ workspacePath, filePath }) => {
       await window.api.writeServerSettings({ ip: 'cloud.test', user: 'root', pass: 'test', setupCompleted: true });
       window.BOBO.state.serverSettings = { ip: 'cloud.test', user: 'root', pass: 'test' };
+      window.BOBO.state.serverCapabilities = window.BOBO.serverCapabilities.inspectServerInfo({ success: true, data: {} });
       window.BOBO.state.selectedRuntime = 'python:3.11';
-      window.BOBO.sendToServer = async action => action === 'getDAPInfo' ? {
+      window.__boboDapCatalogCalls = 0;
+      window.__boboDebugLifecycleTasks = [];
+      window.__boboDebugLifecycleTaskRequests = [];
+      window.BOBO.sendToServer = async action => action === 'getDAPInfo' ? (() => {
+        window.__boboDapCatalogCalls += 1;
+        return {
         success: true,
         data: {
           enabled: true,
@@ -172,8 +183,18 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
             available: true, supportsLaunch: true, supportsAttach: false
           }]
         }
-      } : { success: false };
+        };
+      })() : { success: false };
       window.BOBO.runner.ensureWorkspaceSyncedForRun = async () => true;
+      window.BOBO.runner.startProjectTaskExecution = request => {
+        window.__boboDebugLifecycleTasks.push(request.label);
+        window.__boboDebugLifecycleTaskRequests.push(request);
+        return {
+          completion: Promise.resolve({ success: true, returnCode: 0, cancelled: false, code: 'completed', message: '', runId: request.label, label: request.label }),
+          cancel: async () => true,
+          getState: () => ({ state: 'completed', runId: request.label, cancelled: false })
+        };
+      };
       const opened = await window.api.pickWorkspace(workspacePath);
       await window.BOBO.workspace.applyWorkspace(opened.rootPath, opened.tree, opened.workspaceIdentity, opened.leaveToken);
       await window.BOBO.workspace.openFile(filePath, 'main.py');
@@ -281,11 +302,42 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
     await page.locator('[data-debug-command="stop"]').click();
     await expect(page.locator('#debug-toolbar')).toBeHidden();
     await expect(page.locator('#run-code')).toBeEnabled();
+    expect(await page.evaluate(() => window.__boboDebugLifecycleTasks)).toEqual(['Build before debug', 'Clean after debug']);
+    expect(await page.evaluate(() => window.__boboDapCatalogCalls)).toBe(1);
+
+    expect(await page.evaluate(() => window.BOBO.dap.start())).toBe(true);
+    await app.evaluate(() => globalThis.__boboDapSocket.close());
+    await expect(page.locator('#debug-toolbar')).toBeHidden();
+    await page.waitForFunction(() => window.__boboDebugLifecycleTasks.length === 4);
+    expect(await page.evaluate(() => window.__boboDebugLifecycleTasks)).toEqual([
+      'Build before debug', 'Clean after debug', 'Build before debug', 'Clean after debug'
+    ]);
+
+    expect(await page.evaluate(async () => {
+      if (!await window.BOBO.dap.start()) return false;
+      const normalStop = window.BOBO.dap.stop('normal-stop');
+      const identityAbort = window.BOBO.dap.abort('workspace-change');
+      await Promise.all([normalStop, identityAbort]);
+      return true;
+    })).toBe(true);
+    await expect(page.locator('#debug-toolbar')).toBeHidden();
+    expect(await page.evaluate(() => window.__boboDebugLifecycleTasks)).toEqual([
+      'Build before debug', 'Clean after debug',
+      'Build before debug', 'Clean after debug',
+      'Build before debug'
+    ]);
+    expect(await page.evaluate(() => window.__boboDapCatalogCalls)).toBe(1);
+    expect(await page.evaluate(() => window.__boboDebugLifecycleTaskRequests.every(request =>
+      Number.isInteger(request.context.columnNumber) && request.context.columnNumber >= 1
+    ))).toBe(true);
 
     const probe = await app.evaluate(() => globalThis.__boboDapProbe);
     expect(probe.starts[0].url).toBe('ws://cloud.test:3100/dap');
-    expect(probe.starts).toHaveLength(1);
+    expect(probe.starts).toHaveLength(3);
     expect(probe.starts[0].message).toMatchObject({ type: 'dap.start', runtimeId: 'python:3.11', languageId: 'python' });
+    const launchRequest = probe.requests.find(item => item.command === 'launch');
+    expect(launchRequest.arguments).not.toHaveProperty('preLaunchTask');
+    expect(launchRequest.arguments).not.toHaveProperty('postDebugTask');
     expect(probe.requests.map(item => item.command)).toEqual(expect.arrayContaining([
       'initialize', 'launch', 'setBreakpoints', 'configurationDone', 'threads', 'stackTrace', 'scopes', 'variables', 'continue', 'pause', 'disconnect'
     ]));

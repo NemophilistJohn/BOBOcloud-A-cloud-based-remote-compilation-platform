@@ -464,6 +464,9 @@
     S.workspaceGeneration = (S.workspaceGeneration || 0) + 1;
     S.workspaceChangeVersion = 0;
     S.lastSyncedVersion = -1;
+    if (BOBO.workspaceSettings && BOBO.workspaceSettings.refreshForWorkspace) {
+      await BOBO.workspaceSettings.refreshForWorkspace(rootPath, S.workspaceIdentity);
+    }
     syncDirtyPaths.clear();
     if (BOBO.runner && BOBO.runner.markWorkspaceChanged) BOBO.runner.markWorkspaceChanged();
     if (BOBO.workspaceSyncStatus) BOBO.workspaceSyncStatus.resetWorkspace(rootPath, tree);
@@ -524,6 +527,7 @@
     S.workspaceGeneration = (S.workspaceGeneration || 0) + 1;
     S.workspaceChangeVersion = 0;
     S.lastSyncedVersion = -1;
+    if (BOBO.workspaceSettings && BOBO.workspaceSettings.clear) BOBO.workspaceSettings.clear();
     S.expandedPaths.clear();
     syncDirtyPaths.clear();
     if (BOBO.workspaceSyncStatus) BOBO.workspaceSyncStatus.clearWorkspace();
@@ -1334,7 +1338,10 @@
     }
 
     var content = await window.api.readFile(filePath);
-    var language = BOBO.detectLanguage(name, content);
+    var detectedLanguage = BOBO.detectLanguage(name, content);
+    var language = BOBO.workspaceSettings && BOBO.workspaceSettings.languageForFile
+      ? BOBO.workspaceSettings.languageForFile(name, detectedLanguage)
+      : detectedLanguage;
     var uri = monaco.Uri.file(filePath);
 
     var model = monaco.editor.getModel(uri);

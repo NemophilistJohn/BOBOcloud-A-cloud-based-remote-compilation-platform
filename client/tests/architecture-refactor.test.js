@@ -17,6 +17,7 @@ const EXPECTED_IPC = new Map([
   ['workspace-leave-response', 'on'],
   ['workspace-leave-choice', 'handle'],
   ['workspace-identity', 'handle'],
+  ['workspace-settings-read', 'handle'],
   ['workspace-switch-applied', 'handle'],
   ['workspace-switch-reject', 'handle'],
   ['artifact-run-context', 'handle'],
@@ -198,7 +199,7 @@ test('main.js is a composition root and IPC ownership is complete and unique', (
   assert.doesNotMatch(composition, /\bipcMain\.(?:handle|on)\(/);
 
   for (const moduleName of [
-    'settings-store', 'window-state', 'workspace', 'ai', 'lsp', 'dap', 'terminal', 'auth',
+    'settings-store', 'window-state', 'workspace', 'workspace-settings', 'ai', 'lsp', 'dap', 'terminal', 'auth',
     'diagnostics', 'rclone-ipc', 'language-packs', 'plugins', 'marketplace', 'menu'
   ]) {
     assert.match(composition, new RegExp("require\\('./main/" + moduleName.replace('-', '\\-') + "'\\)"), moduleName + ' is composed');

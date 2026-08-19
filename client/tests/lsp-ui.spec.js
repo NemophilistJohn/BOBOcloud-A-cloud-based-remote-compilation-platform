@@ -58,6 +58,7 @@ test('configured LSP address, strategy settings and status bar work in all built
           this.url = String(url);
           this.readyState = 0;
           this.listeners = new Map();
+          globalThis.__boboCurrentLspSocket = this;
           setTimeout(() => {
             this.readyState = 1;
             this.emit('open', {});
@@ -264,7 +265,45 @@ test('configured LSP address, strategy settings and status bar work in all built
       };
       await window.api.writeServerSettings(serverSettings);
       window.BOBO.state.serverSettings = serverSettings;
+      const appliedCapabilities = window.BOBO.serverCapabilities.applyServerInfo({
+        success: true,
+        data: {
+          serverCapabilities: {
+            schemaVersion: 1,
+            protocol: { name: 'bobocloud', version: 1 },
+            release: { version: 'test' },
+            transport: {
+              http: { scheme: 'http', paths: ['/'] },
+              websocket: { scheme: 'ws', paths: ['/lsp'] }
+            },
+            capabilities: {
+              run: false,
+              tasks: false,
+              terminal: false,
+              projectEnvironment: false,
+              collaboration: false,
+              lsp: { enabled: true, languages: ['rust', 'python', 'html', 'css', 'scss', 'less', 'json', 'jsonc', 'yaml', 'shell'] },
+              dap: { enabled: false }
+            },
+            limits: {},
+            catalogRevisions: { lsp: 1, dap: '' },
+            catalogFingerprints: { lsp: 'lsp-ui-test', dap: '' }
+          }
+        }
+      }, 'test-compatible-server');
+      window.__boboServerCapabilityDescriptor = JSON.parse(JSON.stringify(appliedCapabilities));
+      window.__boboServerInfoProbes = 0;
+      window.__boboServerInfoDelayMs = 0;
       window.BOBO.sendToServer = async function(action) {
+        if (action === 'serverInfo') {
+          window.__boboServerInfoProbes += 1;
+          if (window.__boboServerInfoDelayMs) {
+            await new Promise(resolve => setTimeout(resolve, window.__boboServerInfoDelayMs));
+          }
+          const descriptor = JSON.parse(JSON.stringify(window.__boboServerCapabilityDescriptor));
+          descriptor.catalogFingerprints.lsp = 'lsp-ui-reconnect-' + window.__boboServerInfoProbes;
+          return { success: true, data: { serverCapabilities: descriptor } };
+        }
         if (action === 'getLSPInfo') {
           return { success: true, data: { enabled: true, languages: ['rust', 'python', 'html', 'css', 'scss', 'less', 'json', 'jsonc', 'yaml', 'shell'] } };
         }
@@ -575,6 +614,20 @@ test('configured LSP address, strategy settings and status bar work in all built
     });
     await expect(page.locator('.suggest-widget.visible')).toContainText('array', { timeout: 700 });
     await app.evaluate(() => { globalThis.__boboLspProbe.completionDelayMs = 900; });
+
+    const startsBeforeReconnect = await app.evaluate(() => globalThis.__boboLspProbe.starts.length);
+    await page.evaluate(() => { window.__boboServerInfoDelayMs = 850; });
+    await app.evaluate(() => globalThis.__boboCurrentLspSocket.close(1012, 'catalog refresh test'));
+    await expect.poll(async () => page.evaluate(() => window.__boboServerInfoProbes)).toBe(1);
+    await page.waitForTimeout(700);
+    expect(await app.evaluate(() => globalThis.__boboLspProbe.starts.length)).toBe(startsBeforeReconnect);
+    await expect.poll(async () => app.evaluate(() => globalThis.__boboLspProbe.starts.length), { timeout: 5000 }).toBe(startsBeforeReconnect + 1);
+    await expect.poll(async () => page.evaluate(() => window.BOBO.lsp.getStatus().state), { timeout: 5000 }).toBe('ready');
+    const refreshedCatalog = await page.evaluate(() => ({
+      probes: window.__boboServerInfoProbes,
+      fingerprint: window.BOBO.state.serverCapabilities.catalogFingerprints.lsp
+    }));
+    expect(refreshedCatalog).toEqual({ probes: 1, fingerprint: 'lsp-ui-reconnect-1' });
 
     await page.screenshot({ path: testInfo.outputPath('lsp-settings-ja.png'), fullPage: true });
     expect(pageErrors).toEqual([]);

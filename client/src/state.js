@@ -21,6 +21,7 @@
     workspaceTransitionLocked: false,
     workspaceTransitionToken: null,
     workspaceTransitionEditorStates: null,
+    workspaceSettings: null,
     expandedPaths: new Set(),
     ALWAYS_COLLAPSED: ALWAYS_COLLAPSED,
 
