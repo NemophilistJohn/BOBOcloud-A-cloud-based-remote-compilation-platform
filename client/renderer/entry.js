@@ -36,6 +36,7 @@ import '../src/language-packs-panel.js';
 import '../src/utils.js';
 import '../src/server-transport.js';
 import '../src/server-comm.js';
+import '../src/server-capabilities.js';
 import '../src/lsp-client.js';
 import '../src/output-panel.js';
 import '../src/terminal.js';

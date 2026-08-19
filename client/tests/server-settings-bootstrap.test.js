@@ -50,6 +50,7 @@ test('a packaged bootstrap seeds only server connection fields into a fresh user
     wsPort: 4101,
     dapChildWsPort: 4102,
     certificateFingerprint: 'AA:BB',
+    certificateFingerprints: ['CC:DD', 'AA:BB'],
     syncInterval: 45000,
     apiKey: 'must-not-be-copied',
     rclonePath: 'must-not-be-copied',
@@ -71,6 +72,7 @@ test('a packaged bootstrap seeds only server connection fields into a fresh user
   assert.equal(persisted.pass, 'bootstrap-secret');
   assert.equal(persisted.apiKey, '');
   assert.equal(persisted.rclonePath, '');
+  assert.deepEqual(persisted.certificateFingerprints, ['AA:BB', 'CC:DD']);
   assert.equal(Object.hasOwn(persisted, 'unrelatedPreference'), false);
   assert.equal(configured.length, 1);
   assert.equal(configured[0].apiKey, '');

@@ -619,8 +619,33 @@
     if (!res || !res.success) {
       // 服务器不可达：不改变已有状态；云功能调用时会自然报错
       S.auth.mode = 'unknown';
+      S.serverCapabilities = null;
       renderChip();
       return res || { success: false, error: 'Connection failed' };
+    }
+    var capabilities = BOBO.serverCapabilities && BOBO.serverCapabilities.applyServerInfo
+      ? BOBO.serverCapabilities.applyServerInfo(res)
+      : null;
+    if (capabilities && capabilities.state === 'incompatible') {
+      S.auth.mode = 'unknown';
+      S.auth.serverVersion = '';
+      renderChip();
+      return {
+        success: false,
+        error: t('The server returned an invalid response. Check the server address and transport setting.'),
+        errorCode: 'server_capabilities_incompatible'
+      };
+    }
+    if (capabilities && BOBO.serverCapabilities.requiresSecureTransport &&
+      BOBO.serverCapabilities.requiresSecureTransport(capabilities, S.serverSettings)) {
+      S.auth.mode = 'unknown';
+      S.auth.serverVersion = '';
+      renderChip();
+      return {
+        success: false,
+        error: t('The server requires HTTPS, but secure transport is disabled in Server Settings.'),
+        errorCode: 'secure_transport_required'
+      };
     }
     S.auth.mode = res.authMode || 'single';
     S.auth.serverVersion = res.version || '';
@@ -662,6 +687,7 @@
     }
     dropCredential();
     S.auth.mode = 'unknown';
+    S.serverCapabilities = null;
     renderChip();
     var result = await detectModeAndAuth();
     if (BOBO.lsp && typeof BOBO.lsp.credentialsChanged === 'function') {

@@ -15,6 +15,7 @@ const { createTasksController } = require('./main/tasks');
 const { createDapController } = require('./main/dap');
 const { createTerminalController } = require('./main/terminal');
 const { createSecureTransportGuard } = require('./main/secure-transport');
+const { createNavigationSecurity } = require('./main/navigation-security');
 const { createPluginController } = require('./main/plugins');
 const { createMarketplaceController } = require('./main/marketplace');
 
@@ -23,6 +24,7 @@ let menu = null;
 const getWindow = () => window;
 const settings = createSettingsStore({ app, rclone });
 const secureTransport = createSecureTransportGuard();
+const navigationSecurity = createNavigationSecurity({ shell, trustedRendererPath: path.join(__dirname, 'index.html') });
 const lsp = createLspController({ ipcMain, getWindow, settings });
 let dap = null;
 let terminal = null;
@@ -73,13 +75,14 @@ function createWindow() {
   const savedState = windowState.load();
   const browserWindowOptions = { width: savedState ? savedState.width : 1280, height: savedState ? savedState.height : 860,
     minWidth: 760, minHeight: 520, icon: path.join(__dirname, 'ico', 'app-icon.png'),
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false } };
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false, webviewTag: false } };
   if (savedState && savedState.x !== undefined && savedState.y !== undefined) {
     browserWindowOptions.x = savedState.x;
     browserWindowOptions.y = savedState.y;
   }
 
   window = new BrowserWindow(browserWindowOptions);
+  navigationSecurity.protectWindow(window);
   if (savedState && savedState.isMaximized) window.maximize();
   window.loadFile(path.join(__dirname, 'index.html'));
 
@@ -132,6 +135,7 @@ app.whenReady().then(async () => {
     // A damaged user plugin must not prevent the core workbench from opening.
     console.error('[plugins] startup scan failed:', error && error.message ? error.message : error);
   }
+  navigationSecurity.protectSession(electronSession.defaultSession);
   electronSession.defaultSession.setCertificateVerifyProc((request, callback) => callback(secureTransport.verify(request)));
   settings.readServerSettings().then(secureTransport.update).catch(() => {});
   lsp.initializeRetentionPolicy();

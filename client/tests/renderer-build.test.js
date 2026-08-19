@@ -42,6 +42,7 @@ const EXPECTED_MODULES = [
   '../src/utils.js',
   '../src/server-transport.js',
   '../src/server-comm.js',
+  '../src/server-capabilities.js',
   '../src/lsp-client.js',
   '../src/output-panel.js',
   '../src/terminal.js',

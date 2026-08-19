@@ -20,6 +20,7 @@ const DEFAULT_SERVER_SETTINGS = Object.freeze({
 	wsPort: 3101,
 	dapChildWsPort: 3102,
 	certificateFingerprint: '',
+	certificateFingerprints: [],
   rclonePath: '',
   syncInterval: 30000,
   setupCompleted: false
@@ -75,7 +76,13 @@ function createSettingsStore(options) {
 			normalized[field] = Number.isInteger(port) && port > 0 && port <= 65535 ? port : fallback;
 		}
 		normalized.secureTransport = normalized.secureTransport === true;
-		normalized.certificateFingerprint = String(normalized.certificateFingerprint || '').trim();
+		const fingerprints = [];
+		if (normalized.certificateFingerprint) fingerprints.push(normalized.certificateFingerprint);
+		if (Array.isArray(source.certificateFingerprints)) fingerprints.push(...source.certificateFingerprints);
+		normalized.certificateFingerprints = [...new Set(fingerprints
+			.map((fingerprint) => String(fingerprint || '').trim())
+			.filter(Boolean))].slice(0, 4);
+		normalized.certificateFingerprint = normalized.certificateFingerprints[0] || '';
     normalized.setupCompleted = source.setupCompleted === true ||
       (source.setupCompleted === undefined && Boolean(source.ip));
     normalized.firstRunRequired = !normalized.setupCompleted &&

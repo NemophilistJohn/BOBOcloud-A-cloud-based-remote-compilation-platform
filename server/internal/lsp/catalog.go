@@ -35,6 +35,7 @@ type Manifest struct {
 }
 
 type Catalog struct {
+	version    int
 	byLanguage map[string]ServerSpec
 }
 
@@ -55,7 +56,7 @@ func NewCatalog(manifest Manifest) (*Catalog, error) {
 	if manifest.Version != 1 {
 		return nil, fmt.Errorf("unsupported LSP manifest version %d", manifest.Version)
 	}
-	catalog := &Catalog{byLanguage: make(map[string]ServerSpec)}
+	catalog := &Catalog{version: manifest.Version, byLanguage: make(map[string]ServerSpec)}
 	for _, spec := range manifest.Servers {
 		spec.LanguageID = normalizeLanguage(spec.LanguageID)
 		if spec.LanguageID == "" || len(spec.Command) == 0 || strings.TrimSpace(spec.Command[0]) == "" {
@@ -143,6 +144,14 @@ func (c *Catalog) Languages() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// Version returns the validated manifest revision used by this catalog.
+func (c *Catalog) Version() int {
+	if c == nil {
+		return 0
+	}
+	return c.version
 }
 
 func ResolveManifestPath(execDir, configured string) string {

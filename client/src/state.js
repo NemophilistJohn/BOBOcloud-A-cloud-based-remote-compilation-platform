@@ -30,6 +30,9 @@
 
     // Server
     serverSettings: {},
+    // Snapshot negotiated from serverInfo. Missing descriptors intentionally
+    // remain compatible with pre-handshake servers.
+    serverCapabilities: null,
 
 	// Team collaboration. current is null for personal projects and otherwise
 	// {teamId, projectId, projectName, branch, remotePath, localPath}.

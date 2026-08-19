@@ -6,6 +6,14 @@ function normalizeFingerprint(value) {
   return String(value || '').replace(/[^a-fA-F0-9]/g, '').toUpperCase();
 }
 
+function configuredFingerprints(settings) {
+  const value = settings && typeof settings === 'object' ? settings : {};
+  const candidates = [];
+  if (value.certificateFingerprint) candidates.push(value.certificateFingerprint);
+  if (Array.isArray(value.certificateFingerprints)) candidates.push(...value.certificateFingerprints);
+  return [...new Set(candidates.map(normalizeFingerprint).filter(Boolean))];
+}
+
 function normalizeHost(value) {
   return String(value || '').trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[/?#].*$/, '').replace(/^\[|\]$/g, '').toLowerCase();
 }
@@ -36,12 +44,14 @@ function createSecureTransportGuard() {
   }
   function verify(request) {
     if (current.secureTransport !== true) return -3; // Chromium's normal validation.
-    const expected = normalizeFingerprint(current.certificateFingerprint);
+    const expected = configuredFingerprints(current);
     const requestedHost = normalizeHost(request && (request.hostname || request.host));
     if (!expected || !requestedHost || requestedHost !== normalizeHost(current.ip)) return -3;
-    return certificateFingerprints(request && request.certificate).includes(expected) ? 0 : -2;
+    if (expected.length === 0) return -3;
+    const received = certificateFingerprints(request && request.certificate);
+    return expected.some((fingerprint) => received.includes(fingerprint)) ? 0 : -2;
   }
   return { update, verify };
 }
 
-module.exports = { createSecureTransportGuard, normalizeFingerprint, certificateFingerprints, normalizeHost };
+module.exports = { createSecureTransportGuard, normalizeFingerprint, configuredFingerprints, certificateFingerprints, normalizeHost };

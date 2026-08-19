@@ -4,15 +4,25 @@ Documentation=https://github.com/bobocloud
 After=network-online.target docker.service
 Wants=network-online.target
 Requires=docker.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
+# The Go server does not use sd_notify, so Type=simple is intentional.
+# Deploy-BoboCloudServer.ps1 waits for /healthz, /readyz, and serverInfo
+# before considering a release successful.
 Type=simple
 User=root
 WorkingDirectory=/root/cloudeEditor
+# Keep production secrets and per-host configuration out of this unit and Git.
+# The leading dash makes a missing environment file safe for development hosts.
+EnvironmentFile=-/etc/bobocloud/bobocloud.env
 ExecStart=/root/cloudeEditor/bobocloud-server
 # 优雅停止：发 SIGTERM，服务会回收所有 Docker 容器后退出
 KillSignal=SIGTERM
 TimeoutStopSec=20
+# Startup can initialize storage and Docker-backed services before it listens.
+TimeoutStartSec=90
 # 崩溃自动重启（3 秒后），避免裸 nohup 运行时挂了没人管
 Restart=on-failure
 RestartSec=3
@@ -23,6 +33,9 @@ RestartSec=3
 # 日志走 journald（服务自身也写 data/logs/bobocloud.log）
 StandardOutput=journal
 StandardError=journal
+# Files created by process-level environment configuration must not become
+# world-readable by default. Docker access still requires this service user.
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

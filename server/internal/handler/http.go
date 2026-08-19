@@ -64,6 +64,7 @@ type HTTPHandler struct {
 	DAP              *dap.Manager            // 独立远程调试适配器会话
 	DependencyViews  *lsp.DependencyRegistry
 	Lifecycle        *lifecycle.Manager // 运行/终端与破坏性存储操作的用户级互斥
+	Readiness        ReadinessProbe     // 无认证 /readyz 的依赖检查；由 main 在组件装配后注入
 
 	// SetUserLimit 把用户容器配额变更同步到 Docker 池（可为 nil，仅重启生效）
 	SetUserLimit func(userID string, limit int)
@@ -83,6 +84,12 @@ type HTTPHandler struct {
 
 	// 磁盘占用缓存（60s TTL，避免每次 checkFolder 都 du）
 	diskCache *diskUsageCache
+
+	// Readiness probes are unauthenticated. Cache the short-lived dependency
+	// result so callers cannot make each request spawn a Docker health process.
+	readinessMu        sync.Mutex
+	readinessCheckedAt time.Time
+	readinessErr       error
 }
 
 // NewHTTPHandler 创建 HTTP 处理器
@@ -112,8 +119,11 @@ func NewHTTPHandler(
 }
 
 // ServeHTTP 实现 http.Handler 接口。
-// 流程：方法/解码检查 → 预认证动作（serverInfo/login/register）→ 认证 → 限流 → 路由
+// 流程：健康探针 → 方法/解码检查 → 预认证动作（serverInfo/login/register）→ 认证 → 限流 → 路由
 func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.handleHealthProbe(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, model.Response{Success: false, Error: "Method not allowed"})
 		return

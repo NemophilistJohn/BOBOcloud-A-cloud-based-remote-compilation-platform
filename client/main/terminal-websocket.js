@@ -6,7 +6,7 @@
 
 const crypto = require('crypto');
 const NodeWebSocket = require('ws');
-const { normalizeFingerprint } = require('./secure-transport');
+const { normalizeFingerprint, configuredFingerprints } = require('./secure-transport');
 
 function terminalTlsError(code, message) {
   const error = new Error(message);
@@ -28,37 +28,39 @@ function peerFingerprint(socket) {
   return crypto.createHash('sha256').update(certificate.raw).digest('hex').toUpperCase();
 }
 
-function verifyTerminalPeer(socket, expectedFingerprint, url) {
-  const expected = normalizeFingerprint(expectedFingerprint);
+function verifyTerminalPeer(socket, expectedFingerprints, url) {
+  const expected = Array.isArray(expectedFingerprints)
+    ? [...new Set(expectedFingerprints.map(normalizeFingerprint).filter(Boolean))]
+    : [normalizeFingerprint(expectedFingerprints)].filter(Boolean);
   const scheme = new URL(String(url)).protocol;
-  if (!expected) return;
+  if (expected.length === 0) return;
   if (scheme !== 'wss:') {
     throw terminalTlsError('certificate_unavailable', 'A certificate fingerprint requires secure terminal transport');
   }
   const actual = peerFingerprint(socket);
-  if (!actual || !timingSafeFingerprintMatch(expected, actual)) {
+  if (!actual || !expected.some((fingerprint) => timingSafeFingerprintMatch(fingerprint, actual))) {
     throw terminalTlsError('certificate_mismatch', 'The cloud terminal certificate does not match the configured fingerprint');
   }
 }
 
 function createTerminalWebSocketFactory(settings, options = {}) {
   const WebSocket = options.WebSocket || NodeWebSocket;
-  const expectedFingerprint = normalizeFingerprint(settings && settings.certificateFingerprint);
+  const expectedFingerprints = configuredFingerprints(settings);
   return function createTerminalWebSocket(url) {
     const secure = new URL(String(url)).protocol === 'wss:';
     // Never disable standard TLS validation for an unpinned server. A pin is
     // the explicit opt-in that permits a private/self-signed server cert.
     return new WebSocket(url, {
       perMessageDeflate: false,
-      rejectUnauthorized: secure ? !expectedFingerprint : undefined
+      rejectUnauthorized: secure ? expectedFingerprints.length === 0 : undefined
     });
   };
 }
 
 function createTerminalPeerVerifier(settings) {
-  const expectedFingerprint = normalizeFingerprint(settings && settings.certificateFingerprint);
+  const expectedFingerprints = configuredFingerprints(settings);
   return function verify(socket, url) {
-    verifyTerminalPeer(socket, expectedFingerprint, url);
+    verifyTerminalPeer(socket, expectedFingerprints, url);
   };
 }
 

@@ -181,7 +181,7 @@ func (h *HTTPHandler) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		Success:  true,
 		AuthMode: mode,
 		Version:  h.Version,
-		Data:     h.dapInfo(r.Context()),
+		Data:     h.serverInfoData(r.Context()),
 	})
 }
 

@@ -417,6 +417,7 @@ func main() {
 	httpHandler.DAP = dapManager
 	httpHandler.DependencyViews = dependencyViews
 	httpHandler.Lifecycle = resourceLifecycle
+	httpHandler.Readiness = serverReadinessProbe(db, dockerPool, cfg, lspManager, dapManager)
 	httpHandler.EnvironmentSetup = makeEnvironmentSetupExecutor(dockerPool, sec)
 	httpHandler.OnBuildCacheCleared = dockerPool.InvalidateIdleBuildCacheContainers
 	httpHandler.SetUserLimit = func(userID string, limit int) {
@@ -609,6 +610,31 @@ func serveBOBOHTTP(server *http.Server, cfg *config.Config) error {
 		return server.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
 	}
 	return server.ListenAndServe()
+}
+
+// serverReadinessProbe confirms the startup dependencies needed for cloud
+// compilation without creating containers or disclosing infrastructure errors.
+func serverReadinessProbe(db *bolt.DB, dockerPool *docker.Pool, cfg *config.Config, lspManager *lsp.Manager, dapManager *dap.Manager) handler.ReadinessProbe {
+	return func(ctx context.Context) error {
+		if cfg == nil {
+			return errors.New("server configuration is unavailable")
+		}
+		if cfg.LSPEnabled && lspManager == nil {
+			return errors.New("LSP manager is unavailable")
+		}
+		if cfg.DAPEnabled && dapManager == nil {
+			return errors.New("DAP manager is unavailable")
+		}
+		if db != nil {
+			if err := db.View(func(*bolt.Tx) error { return nil }); err != nil {
+				return fmt.Errorf("check persistent store: %w", err)
+			}
+		}
+		if err := dockerPool.CheckReady(ctx); err != nil {
+			return err
+		}
+		return nil
+	}
 }
 
 // ──── 后台协程 ────

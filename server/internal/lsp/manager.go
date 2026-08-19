@@ -815,6 +815,15 @@ func (m *Manager) ClearCache(ownerKind, ownerID, scope, projectID, namespaceKey 
 
 func (m *Manager) Languages() []string { return m.catalog.Languages() }
 
+// CatalogVersion is a sanitized revision for capability negotiation. It does
+// not expose manifest paths or executable commands.
+func (m *Manager) CatalogVersion() int {
+	if m == nil || m.catalog == nil {
+		return 0
+	}
+	return m.catalog.Version()
+}
+
 // StopOwner terminates matching processes before an account/team/project is
 // deleted. It waits briefly so cache leases are released deterministically.
 func (m *Manager) stopMatching(match func(*Session) bool) error {

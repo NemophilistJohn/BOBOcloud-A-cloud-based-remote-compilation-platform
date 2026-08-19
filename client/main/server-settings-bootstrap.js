@@ -14,6 +14,13 @@ function secret(value) {
   return typeof value === 'string' ? value : '';
 }
 
+function fingerprints(value, legacy) {
+  const values = [];
+  if (typeof legacy === 'string') values.push(legacy);
+  if (Array.isArray(value)) values.push(...value);
+  return [...new Set(values.map(text).filter(Boolean))].slice(0, 4);
+}
+
 function port(value, fallback) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : fallback;
@@ -32,6 +39,7 @@ function createBootstrapServerSettings(value) {
   const user = text(value.user);
   if (!ip || !user) return null;
 
+  const certificateFingerprints = fingerprints(value.certificateFingerprints, value.certificateFingerprint);
   return {
     ip,
     user,
@@ -40,7 +48,8 @@ function createBootstrapServerSettings(value) {
     httpPort: port(value.httpPort, 3100),
     wsPort: port(value.wsPort, 3101),
     dapChildWsPort: port(value.dapChildWsPort, 3102),
-    certificateFingerprint: text(value.certificateFingerprint),
+    certificateFingerprint: certificateFingerprints[0] || '',
+    certificateFingerprints,
     syncInterval: syncInterval(value.syncInterval),
     setupCompleted: true
   };
@@ -54,5 +63,6 @@ function getBootstrapResourcePath(resourcesPath) {
 module.exports = {
   BOOTSTRAP_RESOURCE_DESTINATION,
   createBootstrapServerSettings,
-  getBootstrapResourcePath
+  getBootstrapResourcePath,
+  fingerprints
 };

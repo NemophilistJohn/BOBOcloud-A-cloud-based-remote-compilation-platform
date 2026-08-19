@@ -391,7 +391,14 @@
 		httpPort: Number(document.getElementById('server-http-port').value) || 3100,
 		wsPort: Number(document.getElementById('server-ws-port').value) || 3101,
 		dapChildWsPort: Number(document.getElementById('server-dap-child-port').value) || 3102,
-		certificateFingerprint: document.getElementById('server-cert-fingerprint').value.trim(),
+        certificateFingerprint: document.getElementById('server-cert-fingerprint').value.trim(),
+		certificateFingerprints: (function() {
+		  var entered = document.getElementById('server-cert-fingerprint').value.trim();
+		  if (!entered) return [];
+		  var existing = S.serverSettings && Array.isArray(S.serverSettings.certificateFingerprints)
+		    ? S.serverSettings.certificateFingerprints : [];
+		  return [entered].concat(existing.filter(function(fingerprint) { return fingerprint !== entered; }));
+		})(),
         rclonePath: document.getElementById('rclone-path').value || '',
         syncInterval: (parseInt(document.getElementById('sync-interval').value) || 30) * 1000,
         setupCompleted: !firstRunConnection

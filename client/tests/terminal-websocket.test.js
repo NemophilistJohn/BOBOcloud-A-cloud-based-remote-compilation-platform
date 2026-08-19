@@ -54,6 +54,12 @@ test('terminal WebSocket factory keeps CA verification unless a configured pin e
   assert.equal(calls.every((call) => call.options.perMessageDeflate === false), true);
 });
 
+test('terminal peer validation accepts either active certificate pin during rotation', () => {
+  const raw = Buffer.from('rotated-terminal-certificate');
+  const expected = crypto.createHash('sha256').update(raw).digest('hex');
+  assert.doesNotThrow(() => verifyTerminalPeer(fakeSocket(raw), ['00'.repeat(32), expected], 'wss://cloud.example:3101/terminal'));
+});
+
 async function createSelfSignedTerminalServer() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-terminal-wss-'));
   const key = path.join(directory, 'key.pem');
