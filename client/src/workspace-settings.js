@@ -16,6 +16,11 @@
     'sql', 'typescript', 'xml', 'yaml'
   ]);
   var WORD_WRAP_VALUES = new Set(['off', 'on', 'wordWrapColumn', 'bounded']);
+  var RENDER_WHITESPACE_VALUES = new Set(['none', 'boundary', 'selection', 'trailing', 'all']);
+  var EDITOR_FIELDS = [
+    'wordWrap', 'wordWrapColumn', 'rulers', 'renderWhitespace',
+    'minimapEnabled', 'bracketPairColorizationEnabled'
+  ];
 
   function deepFreeze(value) {
     if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
@@ -29,7 +34,7 @@
       schemaVersion: 1,
       rootPath: null,
       workspaceIdentity: null,
-      settings: { editor: {}, languages: {}, associations: [] },
+      settings: { editor: {}, languages: {}, associations: [], files: { exclude: [] } },
       warnings: []
     });
   }
@@ -44,7 +49,31 @@
     if (Number.isInteger(value.tabSize) && value.tabSize >= 1 && value.tabSize <= 16) result.tabSize = value.tabSize;
     if (typeof value.insertSpaces === 'boolean') result.insertSpaces = value.insertSpaces;
     if (typeof value.wordWrap === 'string' && WORD_WRAP_VALUES.has(value.wordWrap)) result.wordWrap = value.wordWrap;
+    if (Number.isInteger(value.wordWrapColumn) && value.wordWrapColumn >= 1 && value.wordWrapColumn <= 1000) result.wordWrapColumn = value.wordWrapColumn;
+    if (Array.isArray(value.rulers) && value.rulers.length <= 32 && value.rulers.every(function(column) {
+      return Number.isInteger(column) && column >= 1 && column <= 1000;
+    })) result.rulers = value.rulers.slice();
+    if (typeof value.renderWhitespace === 'string' && RENDER_WHITESPACE_VALUES.has(value.renderWhitespace)) {
+      result.renderWhitespace = value.renderWhitespace;
+    }
+    if (typeof value.minimapEnabled === 'boolean') result.minimapEnabled = value.minimapEnabled;
+    if (typeof value.bracketPairColorizationEnabled === 'boolean') {
+      result.bracketPairColorizationEnabled = value.bracketPairColorizationEnabled;
+    }
     return result;
+  }
+
+  function normalizeExcludeRules(value) {
+    var rules = [];
+    if (!isRecord(value) || !Array.isArray(value.exclude)) return rules;
+    value.exclude.slice(0, 128).forEach(function(rule) {
+      if (!isRecord(rule) || typeof rule.pattern !== 'string' || rule.pattern.length > 256 ||
+          typeof rule.regexp !== 'string' || rule.regexp.length > 4096 || (rule.flags !== '' && rule.flags !== 'i')) return;
+      try {
+        rules.push({ pattern: rule.pattern, regexp: rule.regexp, flags: rule.flags, matcher: new RegExp(rule.regexp, rule.flags) });
+      } catch (_) {}
+    });
+    return rules;
   }
 
   function normalizeSnapshot(raw) {
@@ -65,6 +94,7 @@
         associations.push({ pattern: association.pattern, languageId: association.languageId });
       });
     }
+    var files = { exclude: normalizeExcludeRules(raw.settings.files) };
     var warnings = [];
     if (Array.isArray(raw.warnings)) {
       raw.warnings.forEach(function(warning) {
@@ -79,7 +109,8 @@
       settings: {
         editor: normalizeEditorSettings(raw.settings.editor),
         languages: languages,
-        associations: associations
+        associations: associations,
+        files: files
       },
       warnings: warnings
     });
@@ -108,6 +139,54 @@
   function effectiveEditorSettings(languageId) {
     var snapshot = S.workspaceSettings || emptySnapshot();
     return Object.assign({}, snapshot.settings.editor || {}, snapshot.settings.languages[languageId] || {});
+  }
+
+  function configValue(key, languageId) {
+    var names = {
+      'editor.tabSize': 'tabSize',
+      'editor.insertSpaces': 'insertSpaces',
+      'editor.wordWrap': 'wordWrap',
+      'editor.wordWrapColumn': 'wordWrapColumn',
+      'editor.renderWhitespace': 'renderWhitespace',
+      'editor.minimap.enabled': 'minimapEnabled',
+      'editor.bracketPairColorization.enabled': 'bracketPairColorizationEnabled'
+    };
+    var field = names[String(key || '')];
+    if (!field) return undefined;
+    var effective = effectiveEditorSettings(languageId || 'plaintext');
+    return effective[field];
+  }
+
+  function normalizedPath(value) {
+    return String(value || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  }
+
+  function relativeWorkspacePath(value) {
+    var target = normalizedPath(value);
+    var root = normalizedPath(S.workspaceRoot);
+    if (!target || !root) return target;
+    if (target === root) return '';
+    if (target.indexOf(root + '/') === 0) return target.slice(root.length + 1);
+    return target;
+  }
+
+  function isPathExcluded(value) {
+    var relative = relativeWorkspacePath(value);
+    if (!relative) return false;
+    var snapshot = S.workspaceSettings || emptySnapshot();
+    var files = snapshot.settings.files || {};
+    var rules = Array.isArray(files.exclude) ? files.exclude : [];
+    for (var i = 0; i < rules.length; i++) {
+      rules[i].matcher.lastIndex = 0;
+      if (rules[i].matcher.test(relative)) return true;
+    }
+    return false;
+  }
+
+  function filterTreeChildren(children) {
+    return Array.isArray(children) ? children.filter(function(node) {
+      return node && !isPathExcluded(node.path);
+    }) : [];
   }
 
   function tabForModel(model) {
@@ -179,40 +258,83 @@
     return languageChanged;
   }
 
+  function editorValue(options, field) {
+    if (field === 'minimapEnabled') return options.minimap && typeof options.minimap.enabled === 'boolean' ? options.minimap.enabled : undefined;
+    if (field === 'bracketPairColorizationEnabled') {
+      return options.bracketPairColorization && typeof options.bracketPairColorization.enabled === 'boolean'
+        ? options.bracketPairColorization.enabled
+        : undefined;
+    }
+    return options[field];
+  }
+
+  function validEditorValue(field, value) {
+    if (field === 'wordWrap') return WORD_WRAP_VALUES.has(value);
+    if (field === 'wordWrapColumn') return Number.isInteger(value) && value >= 1 && value <= 1000;
+    if (field === 'rulers') return Array.isArray(value);
+    if (field === 'renderWhitespace') return RENDER_WHITESPACE_VALUES.has(value);
+    return typeof value === 'boolean';
+  }
+
+  function cloneEditorValue(value) {
+    return Array.isArray(value) ? value.slice() : value;
+  }
+
+  function editorUpdate(field, value) {
+    if (field === 'minimapEnabled') return { minimap: { enabled: value } };
+    if (field === 'bracketPairColorizationEnabled') return { bracketPairColorization: { enabled: value } };
+    var update = {};
+    update[field] = cloneEditorValue(value);
+    return update;
+  }
+
   function baselineForEditor(editor) {
     var baseline = editorDefaults.get(editor);
     if (baseline) return baseline;
     var options = typeof editor.getRawOptions === 'function' ? editor.getRawOptions() : {};
-    baseline = { wordWrap: WORD_WRAP_VALUES.has(options.wordWrap) ? options.wordWrap : 'off' };
+    baseline = {
+      wordWrap: WORD_WRAP_VALUES.has(options.wordWrap) ? options.wordWrap : 'off',
+      wordWrapColumn: Number.isInteger(options.wordWrapColumn) ? options.wordWrapColumn : 80,
+      rulers: Array.isArray(options.rulers) ? options.rulers.slice() : [],
+      renderWhitespace: RENDER_WHITESPACE_VALUES.has(options.renderWhitespace) ? options.renderWhitespace : 'selection',
+      minimapEnabled: options.minimap && typeof options.minimap.enabled === 'boolean' ? options.minimap.enabled : true,
+      bracketPairColorizationEnabled: options.bracketPairColorization && typeof options.bracketPairColorization.enabled === 'boolean'
+        ? options.bracketPairColorization.enabled
+        : true
+    };
     editorDefaults.set(editor, baseline);
     return baseline;
   }
 
-  function updateEditorWordWrap(editor) {
+  function updateEditorOptions(editor) {
     if (!editor || typeof editor.updateOptions !== 'function') return;
     var model = typeof editor.getModel === 'function' ? editor.getModel() : null;
     var languageId = model && typeof model.getLanguageId === 'function' ? model.getLanguageId() : 'plaintext';
     var settings = effectiveEditorSettings(languageId);
-    var controlled = editorControlled.get(editor) === true;
+    var previous = editorControlled.get(editor) || {};
+    var next = {};
     var baseline = baselineForEditor(editor);
-    var current = typeof editor.getRawOptions === 'function' ? editor.getRawOptions().wordWrap : baseline.wordWrap;
-    if (settings.wordWrap !== undefined) {
-      if (!controlled && WORD_WRAP_VALUES.has(current)) baseline.wordWrap = current;
-      editor.updateOptions({ wordWrap: settings.wordWrap });
-      editorControlled.set(editor, true);
-    } else if (controlled) {
-      editor.updateOptions({ wordWrap: baseline.wordWrap });
-      editorControlled.set(editor, false);
-    } else if (WORD_WRAP_VALUES.has(current)) {
-      baseline.wordWrap = current;
-    }
+    var raw = typeof editor.getRawOptions === 'function' ? editor.getRawOptions() : {};
+    EDITOR_FIELDS.forEach(function(field) {
+      var current = editorValue(raw, field);
+      if (settings[field] !== undefined) {
+        if (!previous[field] && validEditorValue(field, current)) baseline[field] = cloneEditorValue(current);
+        editor.updateOptions(editorUpdate(field, settings[field]));
+        next[field] = true;
+      } else if (previous[field]) {
+        editor.updateOptions(editorUpdate(field, baseline[field]));
+      } else if (validEditorValue(field, current)) {
+        baseline[field] = cloneEditorValue(current);
+      }
+    });
+    editorControlled.set(editor, next);
   }
 
   function applyActiveEditors() {
-    updateEditorWordWrap(S.editor);
+    updateEditorOptions(S.editor);
     if (S.splitEditor) {
-      updateEditorWordWrap(S.splitEditor);
-      updateEditorWordWrap(S.splitEditor.rightEditor);
+      updateEditorOptions(S.splitEditor);
+      updateEditorOptions(S.splitEditor.rightEditor);
     }
   }
 
@@ -255,8 +377,20 @@
   function applySnapshot(raw) {
     var snapshot = normalizeSnapshot(raw);
     if (!snapshotMatchesWorkspace(snapshot)) return false;
+    var previousRules = S.workspaceSettings && S.workspaceSettings.settings && S.workspaceSettings.settings.files
+      ? S.workspaceSettings.settings.files.exclude
+      : [];
     S.workspaceSettings = snapshot;
     applyAll();
+    var nextRules = snapshot.settings.files.exclude;
+    var changed = JSON.stringify(previousRules.map(function(rule) { return [rule.pattern, rule.regexp, rule.flags]; })) !==
+      JSON.stringify(nextRules.map(function(rule) { return [rule.pattern, rule.regexp, rule.flags]; }));
+    if (changed && S.workspaceTree && BOBO.workspace && typeof BOBO.workspace.renderTree === 'function') {
+      BOBO.workspace.renderTree(S.workspaceTree);
+    }
+    if (changed && BOBO.fileSearch && typeof BOBO.fileSearch.refreshCache === 'function') {
+      BOBO.fileSearch.refreshCache(true);
+    }
     return true;
   }
 
@@ -294,17 +428,17 @@
     if (!editor) return;
     baselineForEditor(editor);
     if (attachedEditors.has(editor)) {
-      updateEditorWordWrap(editor);
+      updateEditorOptions(editor);
       return;
     }
     attachedEditors.add(editor);
     if (typeof editor.onDidChangeModel === 'function') {
       editor.onDidChangeModel(function(event) {
         if (event && event.newModel) applyModel(event.newModel);
-        updateEditorWordWrap(editor);
+        updateEditorOptions(editor);
       });
     }
-    updateEditorWordWrap(editor);
+    updateEditorOptions(editor);
   }
 
   function installSubscription() {
@@ -325,6 +459,9 @@
     applyAll: applyAll,
     applyModel: applyModel,
     languageForFile: languageForFile,
-    effectiveEditorSettings: effectiveEditorSettings
+    effectiveEditorSettings: effectiveEditorSettings,
+    configValue: configValue,
+    isPathExcluded: isPathExcluded,
+    filterTreeChildren: filterTreeChildren
   };
 })(window);

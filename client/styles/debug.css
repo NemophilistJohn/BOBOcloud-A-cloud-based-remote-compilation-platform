@@ -115,7 +115,7 @@
 .debug-inspector-tab:hover { color: var(--text-primary); background: var(--bg-hover); }
 .debug-inspector-tab:focus-visible { outline: 1px solid var(--brand); outline-offset: -2px; }
 .debug-inspector-tab.active { color: var(--text-primary); border-bottom-color: var(--brand); }
-.debug-inspector-panels { min-height: 0; flex: 1 1 auto; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.2fr) minmax(180px, 1fr); grid-template-rows: minmax(54px, .55fr) minmax(138px, 1.85fr); }
+.debug-inspector-panels { min-height: 0; flex: 1 1 auto; display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); grid-template-rows: minmax(54px, .55fr) minmax(138px, 1.85fr); }
 .debug-section { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border-default); overflow: hidden; }
 .debug-section > header { height: 28px; flex: 0 0 28px; display: flex; align-items: center; justify-content: space-between; padding: 0 9px; border-bottom: 1px solid var(--border-default); color: var(--text-tertiary); font-size: 11px; font-weight: 600; text-transform: uppercase; }
 .debug-section > header button { width: 22px; height: 22px; border: 0; border-radius: 3px; background: transparent; color: var(--text-primary); font-size: 18px; line-height: 18px; cursor: pointer; }
@@ -136,6 +136,32 @@ button.debug-tree-row:hover, button.debug-tree-row.active { background: var(--bg
 .debug-empty { padding: 9px; color: var(--text-tertiary); font-family: var(--font-ui, sans-serif); font-size: 11px; }
 .debug-watch-remove { margin-left: auto; border: 0; background: transparent; color: var(--text-tertiary); cursor: pointer; opacity: 0; }
 .debug-tree-row:hover .debug-watch-remove, .debug-watch-remove:focus-visible { opacity: 1; }
+.debug-breakpoint-group-title { padding: 7px 8px 4px; color: var(--text-tertiary); font-family: var(--font-ui, sans-serif); font-size: 10px; font-weight: 600; text-transform: uppercase; }
+.debug-breakpoint-row,
+.debug-exception-breakpoint-row { min-height: 28px; display: grid; grid-template-columns: 18px minmax(0, 1fr) minmax(0, .9fr) 22px 22px; align-items: center; gap: 4px; padding: 3px 6px; }
+.debug-exception-breakpoint-row { grid-template-columns: 18px minmax(0, 1fr) 22px; }
+.debug-breakpoint-row:hover,
+.debug-exception-breakpoint-row:hover { background: var(--bg-hover); }
+.debug-breakpoint-enabled,
+.debug-exception-enabled { width: 14px; height: 14px; margin: 0; accent-color: var(--brand); }
+.debug-breakpoint-location { min-width: 0; border: 0; padding: 0; overflow: hidden; background: transparent; color: var(--text-primary); font: inherit; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.debug-breakpoint-location:hover { text-decoration: underline; }
+.debug-breakpoint-summary { min-width: 0; overflow: hidden; color: var(--text-tertiary); text-overflow: ellipsis; white-space: nowrap; }
+.debug-breakpoint-problem .debug-breakpoint-summary { color: var(--yellow); }
+.debug-breakpoint-edit,
+.debug-breakpoint-remove { width: 22px; height: 22px; border: 0; border-radius: 3px; padding: 0; background: transparent; color: var(--text-tertiary); font-size: 16px; line-height: 22px; cursor: pointer; opacity: .35; }
+.debug-breakpoint-row:hover .debug-breakpoint-edit,
+.debug-breakpoint-row:hover .debug-breakpoint-remove,
+.debug-exception-breakpoint-row:hover .debug-breakpoint-edit,
+.debug-breakpoint-edit:focus-visible,
+.debug-breakpoint-remove:focus-visible { opacity: 1; }
+.debug-breakpoint-edit:hover,
+.debug-breakpoint-remove:hover { background: var(--bg-hover); color: var(--text-primary); }
+.debug-exception-copy { min-width: 0; display: flex; flex-direction: column; }
+.debug-exception-label,
+.debug-exception-copy small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.debug-exception-label { color: var(--text-primary); }
+.debug-exception-copy small { color: var(--text-tertiary); font-size: 10px; }
 .debug-console-section { grid-column: 1 / -1; border-top: 1px solid var(--border-default); border-right: 0; }
 .debug-console-output { min-height: 0; flex: 1; overflow: auto; padding: 6px 9px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono, Consolas, monospace); font-size: 11px; line-height: 1.5; }
 .debug-console-line[data-category="stderr"], .debug-console-line[data-category="important"] { color: var(--red); }
@@ -145,21 +171,49 @@ button.debug-tree-row:hover, button.debug-tree-row.active { background: var(--bg
 
 .monaco-editor .dap-breakpoint,
 .monaco-editor .dap-breakpoint-unverified,
-.monaco-editor .dap-breakpoint-rejected { position: relative; cursor: pointer; }
+.monaco-editor .dap-breakpoint-rejected,
+.monaco-editor .dap-breakpoint-disabled,
+.monaco-editor .dap-logpoint { position: relative; cursor: pointer; }
 .monaco-editor .dap-breakpoint::after,
 .monaco-editor .dap-breakpoint-unverified::after,
-.monaco-editor .dap-breakpoint-rejected::after { content: ""; position: absolute; width: 11px; height: 11px; top: 4px; left: 3px; border-radius: 50%; background: #e34d59; }
+.monaco-editor .dap-breakpoint-rejected::after,
+.monaco-editor .dap-breakpoint-disabled::after,
+.monaco-editor .dap-logpoint::after { content: ""; position: absolute; width: 11px; height: 11px; top: 4px; left: 3px; border-radius: 50%; background: #e34d59; }
 .monaco-editor .dap-breakpoint-unverified::after { box-sizing: border-box; background: transparent; border: 2px solid #e34d59; }
 .monaco-editor .dap-breakpoint-rejected::after { background: #777; }
+.monaco-editor .dap-breakpoint-disabled::after { background: #777; }
+.monaco-editor .dap-logpoint::after { border-radius: 2px; transform: rotate(45deg) scale(.78); }
+.monaco-editor .dap-breakpoint-conditional::before { content: "="; position: absolute; z-index: 1; top: 2px; left: 5px; color: #fff; font-size: 8px; font-weight: 700; line-height: 11px; }
 .monaco-editor .dap-current-line { background: rgba(255, 198, 0, .12); }
 .monaco-editor .dap-current-line-glyph::after { content: ""; position: absolute; left: 3px; top: 3px; border-top: 6px solid transparent; border-bottom: 6px solid transparent; border-left: 9px solid #f0c000; }
+
+.debug-breakpoint-popup { position: fixed; z-index: 4300; width: min(360px, calc(100vw - 16px)); max-height: min(520px, calc(100vh - 16px)); overflow: auto; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--bg-elevated); box-shadow: var(--shadow-lg); color: var(--text-primary); }
+.debug-breakpoint-menu { width: min(250px, calc(100vw - 16px)); padding: 4px; }
+.debug-breakpoint-menu-item { width: 100%; min-height: 30px; border: 0; border-radius: 3px; padding: 5px 8px; background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; }
+.debug-breakpoint-menu-item:hover:not(:disabled),
+.debug-breakpoint-menu-item:focus-visible { background: var(--bg-hover); outline: none; }
+.debug-breakpoint-menu-item:disabled { opacity: .45; cursor: default; }
+.debug-breakpoint-editor { display: flex; flex-direction: column; gap: 9px; padding: 11px; }
+.debug-breakpoint-editor > strong { font-size: 12px; }
+.debug-breakpoint-editor > small { overflow: hidden; color: var(--text-tertiary); text-overflow: ellipsis; white-space: nowrap; }
+.debug-breakpoint-field { display: flex; flex-direction: column; gap: 4px; color: var(--text-secondary); font-size: 11px; }
+.debug-breakpoint-field input,
+.debug-breakpoint-field textarea { width: 100%; min-height: 29px; box-sizing: border-box; border: 1px solid var(--border-default); border-radius: 3px; padding: 5px 7px; resize: vertical; background: var(--bg-input, var(--bg-surface)); color: var(--text-primary); font: 12px var(--font-mono, Consolas, monospace); }
+.debug-breakpoint-field textarea { min-height: 56px; }
+.debug-breakpoint-field input:focus,
+.debug-breakpoint-field textarea:focus { border-color: var(--brand); outline: 1px solid var(--brand); }
+.debug-breakpoint-field input:disabled,
+.debug-breakpoint-field textarea:disabled { opacity: .55; cursor: not-allowed; }
+.debug-breakpoint-editor-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.debug-breakpoint-editor-actions button { min-height: 28px; border: 1px solid var(--border-default); border-radius: 3px; padding: 4px 10px; background: var(--bg-surface); color: var(--text-primary); cursor: pointer; }
+.debug-breakpoint-editor-actions button.primary { border-color: var(--brand); background: var(--brand); color: var(--button-primary-text, #fff); }
 
 @media (max-width: 900px) {
   .debug-control-group #debug-start span { display: none; }
   .debug-control-group #debug-start { width: 30px; padding: 0; }
   .debug-toolbar-status { display: none; }
   .debug-inspector-panels { grid-template-columns: 1fr 1fr; grid-template-rows: minmax(44px, .45fr) minmax(44px, .45fr) minmax(138px, 2fr); }
-  .debug-section[data-debug-section="watch"] { grid-column: 1 / -1; }
+  .debug-section[data-debug-section="watch"] { grid-column: auto; }
   .debug-console-section { grid-row: 3; }
 }
 
@@ -188,5 +242,7 @@ button.debug-tree-row:hover, button.debug-tree-row.active { background: var(--bg
   #debug-watch-list .debug-tree-name { grid-column: 1; grid-row: 1; }
   #debug-watch-list .debug-watch-remove { grid-column: 2; grid-row: 1; }
   #debug-watch-list .debug-tree-value { grid-column: 1 / -1; grid-row: 2; }
+  .debug-breakpoint-row { grid-template-columns: 18px minmax(0, 1fr) 22px 22px; }
+  .debug-breakpoint-summary { grid-column: 2 / -1; grid-row: 2; }
   .debug-console-input-row { height: 32px; flex-basis: 32px; }
 }

@@ -22,6 +22,8 @@
     var result = [];
     function walk(node) {
       if (!node) return;
+      if (node !== tree && BOBO.workspaceSettings && BOBO.workspaceSettings.isPathExcluded &&
+          BOBO.workspaceSettings.isPathExcluded(node.path)) return;
       if (node.type === 'file') {
         var parts = (node.path || '').split(/[/\\]/);
         result.push({

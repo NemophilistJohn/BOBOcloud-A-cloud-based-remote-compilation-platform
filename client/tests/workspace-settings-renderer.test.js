@@ -211,3 +211,124 @@ test('uncontrolled indentation survives unrelated settings refreshes', () => {
   assert.equal(model.options().insertSpaces, false);
   assert.equal(model.options().tabSize, 6);
 });
+
+test('second-phase editor options and file excludes apply live and restore prior editor values', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../src/workspace-settings.js'), 'utf8');
+  const root = path.resolve('C:/work/settings-phase-two');
+  const model = createModel(path.join(root, 'src', 'main.js'), 'javascript');
+  const rawOptions = {
+    wordWrap: 'off',
+    wordWrapColumn: 80,
+    rulers: [100],
+    renderWhitespace: 'selection',
+    minimap: { enabled: true },
+    bracketPairColorization: { enabled: false }
+  };
+  const editor = {
+    getModel: () => model,
+    getRawOptions: () => Object.assign({}, rawOptions, {
+      rulers: rawOptions.rulers.slice(),
+      minimap: Object.assign({}, rawOptions.minimap),
+      bracketPairColorization: Object.assign({}, rawOptions.bracketPairColorization)
+    }),
+    updateOptions: (update) => {
+      if (update.minimap) rawOptions.minimap = Object.assign({}, rawOptions.minimap, update.minimap);
+      if (update.bracketPairColorization) {
+        rawOptions.bracketPairColorization = Object.assign({}, rawOptions.bracketPairColorization, update.bracketPairColorization);
+      }
+      Object.keys(update).forEach((key) => {
+        if (key !== 'minimap' && key !== 'bracketPairColorization') rawOptions[key] = Array.isArray(update[key]) ? update[key].slice() : update[key];
+      });
+    },
+    onDidChangeModel: () => {},
+    getPosition: () => ({ lineNumber: 1, column: 1 })
+  };
+  const state = {
+    workspaceRoot: root,
+    workspaceIdentity: 14,
+    workspaceSettings: null,
+    workspaceTree: {
+      type: 'folder', path: root, name: 'settings-phase-two', children: [
+        { type: 'folder', path: path.join(root, 'node_modules'), name: 'node_modules', children: [] },
+        { type: 'folder', path: path.join(root, 'src'), name: 'src', children: [] }
+      ]
+    },
+    tabs: [{ name: 'main.js', path: path.join(root, 'src', 'main.js'), model, language: 'javascript' }],
+    editor,
+    splitEditor: null
+  };
+  let treeRefreshes = 0;
+  let searchRefreshes = 0;
+  const window = {
+    api: { onWorkspaceSettingsChanged: () => {} },
+    BOBO: {
+      state,
+      detectLanguage: () => 'javascript',
+      workspace: { renderTree: () => { treeRefreshes += 1; } },
+      fileSearch: { refreshCache: (force) => { if (force === true) searchRefreshes += 1; } },
+      editorCore: { updateStatusBar: () => {} }
+    }
+  };
+  const monaco = {
+    editor: {
+      getModels: () => [model],
+      onDidCreateModel: () => {},
+      setModelLanguage: () => {}
+    }
+  };
+  vm.runInContext(source, vm.createContext({ window, Set, Map, WeakMap, WeakSet, Object, Array, Number, String, Boolean, RegExp, JSON, Math, Promise }));
+  const service = window.BOBO.workspaceSettings;
+  service.setMonaco(monaco);
+  service.attachEditor(editor);
+
+  assert.equal(service.applySnapshot({
+    schemaVersion: 1,
+    rootPath: root,
+    workspaceIdentity: 14,
+    settings: {
+      editor: {
+        wordWrap: 'wordWrapColumn',
+        wordWrapColumn: 110,
+        rulers: [80, 110],
+        renderWhitespace: 'all',
+        minimapEnabled: false,
+        bracketPairColorizationEnabled: true
+      },
+      languages: {},
+      associations: [],
+      files: {
+        exclude: [{ pattern: '**/node_modules', regexp: '^(?:node_modules|.+/node_modules)$', flags: 'i' }]
+      }
+    },
+    warnings: []
+  }), true);
+
+  assert.equal(rawOptions.wordWrap, 'wordWrapColumn');
+  assert.equal(rawOptions.wordWrapColumn, 110);
+  assert.deepEqual(rawOptions.rulers, [80, 110]);
+  assert.equal(rawOptions.renderWhitespace, 'all');
+  assert.equal(rawOptions.minimap.enabled, false);
+  assert.equal(rawOptions.bracketPairColorization.enabled, true);
+  assert.equal(service.configValue('editor.wordWrapColumn', 'javascript'), 110);
+  assert.equal(service.configValue('terminal.integrated.shell', 'javascript'), undefined);
+  assert.equal(service.isPathExcluded(path.join(root, 'node_modules')), true);
+  assert.deepEqual(service.filterTreeChildren(state.workspaceTree.children).map((item) => item.name), ['src']);
+  assert.equal(treeRefreshes, 1);
+  assert.equal(searchRefreshes, 1);
+
+  service.applySnapshot({
+    schemaVersion: 1,
+    rootPath: root,
+    workspaceIdentity: 14,
+    settings: { editor: {}, languages: {}, associations: [], files: { exclude: [] } },
+    warnings: []
+  });
+  assert.equal(rawOptions.wordWrap, 'off');
+  assert.equal(rawOptions.wordWrapColumn, 80);
+  assert.deepEqual(rawOptions.rulers, [100]);
+  assert.equal(rawOptions.renderWhitespace, 'selection');
+  assert.equal(rawOptions.minimap.enabled, true);
+  assert.equal(rawOptions.bracketPairColorization.enabled, false);
+  assert.equal(treeRefreshes, 2);
+  assert.equal(searchRefreshes, 2);
+});

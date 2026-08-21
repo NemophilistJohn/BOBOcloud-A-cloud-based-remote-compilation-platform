@@ -3,14 +3,21 @@
 const fs = require('fs');
 const path = require('path');
 const { parse } = require('jsonc-parser');
+const minimatch = require('minimatch');
 
 const SCHEMA_VERSION = 1;
 const MAX_SETTINGS_BYTES = 256 * 1024;
 const WORD_WRAP_VALUES = new Set(['off', 'on', 'wordWrapColumn', 'bounded']);
+const RENDER_WHITESPACE_VALUES = new Set(['none', 'boundary', 'selection', 'trailing', 'all']);
 const EDITOR_SETTING_KEYS = new Set([
   'editor.tabSize',
   'editor.insertSpaces',
-  'editor.wordWrap'
+  'editor.wordWrap',
+  'editor.wordWrapColumn',
+  'editor.rulers',
+  'editor.renderWhitespace',
+  'editor.minimap.enabled',
+  'editor.bracketPairColorization.enabled'
 ]);
 const KNOWN_LANGUAGE_IDS = new Set([
   'c', 'cpp', 'css', 'go', 'html', 'java', 'javascript', 'json', 'less',
@@ -68,6 +75,22 @@ function normalizedEditorSettings(source, warnings) {
     } else if (key === 'editor.wordWrap') {
       if (typeof value === 'string' && WORD_WRAP_VALUES.has(value)) result.wordWrap = value;
       else warnings.add('WORKSPACE_SETTING_INVALID');
+    } else if (key === 'editor.wordWrapColumn') {
+      if (Number.isInteger(value) && value >= 1 && value <= 1000) result.wordWrapColumn = value;
+      else warnings.add('WORKSPACE_SETTING_INVALID');
+    } else if (key === 'editor.rulers') {
+      if (Array.isArray(value) && value.length <= 32 && value.every((column) => Number.isInteger(column) && column >= 1 && column <= 1000)) {
+        result.rulers = value.slice();
+      } else warnings.add('WORKSPACE_SETTING_INVALID');
+    } else if (key === 'editor.renderWhitespace') {
+      if (typeof value === 'string' && RENDER_WHITESPACE_VALUES.has(value)) result.renderWhitespace = value;
+      else warnings.add('WORKSPACE_SETTING_INVALID');
+    } else if (key === 'editor.minimap.enabled') {
+      if (typeof value === 'boolean') result.minimapEnabled = value;
+      else warnings.add('WORKSPACE_SETTING_INVALID');
+    } else if (key === 'editor.bracketPairColorization.enabled') {
+      if (typeof value === 'boolean') result.bracketPairColorizationEnabled = value;
+      else warnings.add('WORKSPACE_SETTING_INVALID');
     }
   }
   return result;
@@ -107,11 +130,60 @@ function normalizedAssociations(source, warnings) {
     });
 }
 
+function normalizedFileExcludes(source, warnings) {
+  if (!isRecord(source)) {
+    warnings.add('WORKSPACE_FILE_EXCLUDES_INVALID');
+    return [];
+  }
+  const rules = [];
+  const entries = Object.entries(source);
+  if (entries.length > 128) warnings.add('WORKSPACE_FILE_EXCLUDES_LIMIT', entries.length - 128);
+  for (const [rawPattern, enabled] of entries.slice(0, 128)) {
+    if (enabled === false) continue;
+    if (enabled !== true) {
+      warnings.add('WORKSPACE_FILE_EXCLUDE_CONDITION_UNSUPPORTED');
+      continue;
+    }
+    let pattern = typeof rawPattern === 'string' ? rawPattern.trim().replace(/\/+$/, '') : '';
+    if (!pattern || pattern.length > 256 || pattern.startsWith('!') || pattern.includes('\\') ||
+        /[\u0000-\u001f]/.test(pattern) || path.posix.isAbsolute(pattern) || /^[A-Za-z]:/.test(pattern) ||
+        pattern.split('/').includes('..')) {
+      warnings.add('WORKSPACE_FILE_EXCLUDE_PATTERN_IGNORED');
+      continue;
+    }
+    let expression;
+    try {
+      const options = {
+        dot: true,
+        nocase: process.platform === 'win32',
+        nocomment: true,
+        nonegate: true,
+        matchBase: false
+      };
+      const expressions = [minimatch.makeRe(pattern, options)];
+      if (pattern.startsWith('**/')) expressions.push(minimatch.makeRe(pattern.slice(3), options));
+      if (expressions.some((entry) => !entry)) expression = null;
+      else if (expressions.length === 1) expression = expressions[0];
+      else expression = new RegExp(expressions.map((entry) => `(?:${entry.source})`).join('|'), options.nocase ? 'i' : '');
+    } catch (_) {
+      expression = null;
+    }
+    if (!expression || expression.source.length > 4096) {
+      warnings.add('WORKSPACE_FILE_EXCLUDE_PATTERN_IGNORED');
+      continue;
+    }
+    rules.push({ pattern, regexp: expression.source, flags: expression.ignoreCase ? 'i' : '' });
+  }
+  return rules;
+}
+
 function normalizeWorkspaceSettings(document) {
   const warnings = warningCollector();
   const editorSource = {};
   const languages = {};
+  const languageScopes = [];
   let associations = [];
+  let fileExcludes = [];
 
   if (!isRecord(document)) {
     warnings.add('WORKSPACE_SETTINGS_ROOT_INVALID');
@@ -125,6 +197,10 @@ function normalizeWorkspaceSettings(document) {
         associations = normalizedAssociations(document[key], warnings);
         continue;
       }
+      if (key === 'files.exclude') {
+        fileExcludes = normalizedFileExcludes(document[key], warnings);
+        continue;
+      }
       if (key.startsWith('[')) {
         const languageIds = languageIdsFromScope(key);
         if (!languageIds) {
@@ -132,20 +208,30 @@ function normalizeWorkspaceSettings(document) {
           continue;
         }
         const scoped = normalizedEditorSettings(document[key], warnings);
-        for (const languageId of languageIds) {
-          languages[languageId] = Object.assign({}, languages[languageId] || {}, scoped);
-        }
+        languageScopes.push({ languageIds, scoped });
         continue;
       }
       warnings.add('WORKSPACE_SETTING_UNSUPPORTED');
     }
   }
 
+  // VS Code gives a single-language block precedence over a combined block,
+  // independent of their textual order in settings.json.
+  languageScopes
+    .slice()
+    .sort((left, right) => Number(left.languageIds.length === 1) - Number(right.languageIds.length === 1))
+    .forEach(({ languageIds, scoped }) => {
+      for (const languageId of languageIds) {
+        languages[languageId] = Object.assign({}, languages[languageId] || {}, scoped);
+      }
+    });
+
   return {
     settings: {
       editor: normalizedEditorSettings(editorSource, warnings),
       languages,
-      associations
+      associations,
+      files: { exclude: fileExcludes }
     },
     warnings: warnings.value()
   };
@@ -165,7 +251,7 @@ function emptySnapshot(rootPath, workspaceIdentity, warnings = []) {
     schemaVersion: SCHEMA_VERSION,
     rootPath: rootPath || null,
     workspaceIdentity,
-    settings: { editor: {}, languages: {}, associations: [] },
+    settings: { editor: {}, languages: {}, associations: [], files: { exclude: [] } },
     warnings
   });
 }
@@ -313,5 +399,6 @@ module.exports = {
   deepFreeze,
   loadWorkspaceSettings,
   normalizeWorkspaceSettings,
+  normalizedFileExcludes,
   safeAssociationPattern
 };

@@ -57,9 +57,40 @@
 .run-target-check { color: var(--brand); text-align: center; }
 .run-target-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-target-source { color: var(--text-tertiary); font-size: var(--text-xs); }
+.run-target-divider { height: 1px; margin: 5px 4px; background: var(--border-default); }
+.run-target-command { grid-template-columns: 18px minmax(0, 1fr); }
+.run-target-command-icon { color: var(--text-secondary); }
 .run-target-empty,
 .run-target-warning { padding: 7px 8px; color: var(--text-tertiary); font-size: var(--text-xs); line-height: 1.45; }
 .run-target-warning { margin-top: 4px; border-top: 1px solid var(--border-default); color: var(--yellow); }
+
+#task-input-dialog {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 6700;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+#task-input-dialog.open { display: flex; }
+
+.task-input-card {
+  width: min(440px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-xl);
+}
+
+.task-input-body { padding: 18px 20px; }
+.task-input-title { margin: 0 0 14px; color: var(--text-primary); font-size: var(--text-lg); letter-spacing: 0; }
+.task-input-description { display: block; margin-bottom: 8px; color: var(--text-secondary); line-height: 1.45; }
+.task-input-field { min-height: 34px; }
+.task-input-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 20px; border-top: 1px solid var(--border-default); }
 
 @media (max-width: 860px) {
   #titlebar .run-control-group #run-target-btn { width: 22px; }

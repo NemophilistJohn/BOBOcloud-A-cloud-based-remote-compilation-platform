@@ -21,7 +21,13 @@
   var staleSources = new Set();
   var staleSourceNotified = new Set();
   var breakpointSyncStates = new Map();
+  var exceptionBreakpointSyncState = { revision: 0, tail: Promise.resolve() };
+  var adapterCapabilityProfiles = new Map();
+  var exceptionBreakpointSelections = new Map();
+  var exceptionBreakpointSelectionKey = '';
+  var breakpointPopup = null;
   var VARIABLE_PAGE_SIZE = 200;
+  var MAX_BREAKPOINT_TEXT_CHARS = 4096;
   var startPromise = null;
   var activeInspectorSection = 'stack';
   var consoleQueue = [];
@@ -293,16 +299,129 @@
     return 'bobocloud.debug.breakpoints.' + debugStorageScope();
   }
 
+  function exceptionBreakpointStorageKey() {
+    return 'bobocloud.debug.exceptions.' + debugStorageScope() + '|' + encodeURIComponent(String(S.dap.configurationId || ''));
+  }
+
   function watchStorageKey() {
     return 'bobocloud.debug.watches.' + debugStorageScope();
   }
 
   function saveBreakpoints() {
-    var value = {};
+    var value = Object.create(null);
     S.dap.breakpoints.forEach(function(items, relative) {
-      value[relative] = items.map(function(item) { return { line: item.line }; });
+      value[relative] = items.map(function(item) {
+        var saved = { line: item.line, enabled: item.enabled !== false };
+        if (Number.isSafeInteger(item.column) && item.column > 0) saved.column = item.column;
+        if (item.condition) saved.condition = item.condition;
+        if (item.hitCondition) saved.hitCondition = item.hitCondition;
+        if (item.logMessage) saved.logMessage = item.logMessage;
+        return saved;
+      });
     });
     try { localStorage.setItem(breakpointStorageKey(), JSON.stringify(value)); } catch (_) {}
+  }
+
+  function boundedBreakpointText(value, preserveWhitespace) {
+    if (typeof value !== 'string') return '';
+    var text = preserveWhitespace ? value : value.trim();
+    return text.slice(0, MAX_BREAKPOINT_TEXT_CHARS);
+  }
+
+  function normalizeBreakpoint(item) {
+    if (!item || !Number.isSafeInteger(item.line) || item.line < 1) return null;
+    var normalized = {
+      line: item.line,
+      enabled: item.enabled !== false,
+      verified: null,
+      message: '',
+      id: 0,
+      condition: boundedBreakpointText(item.condition),
+      hitCondition: boundedBreakpointText(item.hitCondition),
+      logMessage: boundedBreakpointText(item.logMessage, true)
+    };
+    if (Number.isSafeInteger(item.column) && item.column > 0) normalized.column = item.column;
+    return normalized;
+  }
+
+  function capabilityProfileKey() {
+    return [debugStorageScope(), String(S.dap.configurationId || ''), String(S.selectedRuntime || '')].join('|');
+  }
+
+  function normalizeBreakpointCapabilities(value) {
+    var known = Boolean(value && typeof value === 'object');
+    value = known ? value : {};
+    var seen = new Set();
+    var filters = Array.isArray(value.exceptionBreakpointFilters) ? value.exceptionBreakpointFilters.map(function(filter) {
+      var id = String(filter && filter.filter || '').trim();
+      if (!id || id.length > 256 || seen.has(id)) return null;
+      seen.add(id);
+      return {
+        filter: id,
+        label: String(filter.label || id).slice(0, 512),
+        description: String(filter.description || '').slice(0, 2048),
+        default: filter.default === true,
+        supportsCondition: filter.supportsCondition === true,
+        conditionDescription: String(filter.conditionDescription || '').slice(0, 1024)
+      };
+    }).filter(Boolean) : [];
+    return {
+      known: known,
+      supportsConditionalBreakpoints: value.supportsConditionalBreakpoints === true,
+      supportsHitConditionalBreakpoints: value.supportsHitConditionalBreakpoints === true,
+      supportsLogPoints: value.supportsLogPoints === true,
+      supportsExceptionFilterOptions: value.supportsExceptionFilterOptions === true,
+      exceptionBreakpointFilters: filters
+    };
+  }
+
+  function currentBreakpointCapabilities() {
+    if (S.dap.capabilities && typeof S.dap.capabilities === 'object') return normalizeBreakpointCapabilities(S.dap.capabilities);
+    return adapterCapabilityProfiles.get(capabilityProfileKey()) || normalizeBreakpointCapabilities(null);
+  }
+
+  function rememberBreakpointCapabilities(value) {
+    var normalized = normalizeBreakpointCapabilities(value);
+    adapterCapabilityProfiles.set(capabilityProfileKey(), normalized);
+    ensureExceptionBreakpointSelections(normalized);
+    renderBreakpoints();
+    refreshBreakpointDecorations();
+    return normalized;
+  }
+
+  function ensureExceptionBreakpointSelections(capabilities) {
+    capabilities = capabilities || currentBreakpointCapabilities();
+    if (!capabilities.known) return;
+    var key = exceptionBreakpointStorageKey();
+    var identity = key + '|' + capabilities.exceptionBreakpointFilters.map(function(filter) { return filter.filter; }).join('|');
+    if (exceptionBreakpointSelectionKey === identity) return;
+    exceptionBreakpointSelectionKey = identity;
+    exceptionBreakpointSelections = new Map();
+    var raw = null;
+    try { raw = JSON.parse(localStorage.getItem(key) || 'null'); } catch (_) {}
+    var hasLegacyFilters = Array.isArray(raw);
+    var legacyFilters = hasLegacyFilters ? raw.filter(function(value) { return typeof value === 'string'; }) : [];
+    var storedFilters = raw && !Array.isArray(raw) && raw.filters && typeof raw.filters === 'object' ? raw.filters : {};
+    capabilities.exceptionBreakpointFilters.forEach(function(filter) {
+      var stored = Object.prototype.hasOwnProperty.call(storedFilters, filter.filter) ? storedFilters[filter.filter] : null;
+      var enabled = stored && typeof stored === 'object' && typeof stored.enabled === 'boolean'
+        ? stored.enabled
+        : (hasLegacyFilters ? legacyFilters.indexOf(filter.filter) >= 0 : filter.default);
+      exceptionBreakpointSelections.set(filter.filter, {
+        enabled: enabled,
+        condition: stored && typeof stored === 'object' ? boundedBreakpointText(stored.condition) : '',
+        verified: null,
+        message: ''
+      });
+    });
+  }
+
+  function saveExceptionBreakpoints() {
+    var filters = Object.create(null);
+    exceptionBreakpointSelections.forEach(function(value, id) {
+      filters[id] = { enabled: value.enabled === true, condition: boundedBreakpointText(value.condition) };
+    });
+    try { localStorage.setItem(exceptionBreakpointStorageKey(), JSON.stringify({ version: 1, filters: filters })); } catch (_) {}
   }
 
   function breakpointSyncState(relative) {
@@ -329,8 +448,18 @@
     var changed = false;
     items.forEach(function(item, index) {
       var range = breakpointDecorations.getRange(index);
-      if (range && range.startLineNumber !== item.line) {
-        item.line = range.startLineNumber;
+      if (!range) return;
+      var displayLine = Number.isSafeInteger(item.actualLine) && item.actualLine > 0 ? item.actualLine : item.line;
+      var displayColumn = Number.isSafeInteger(item.actualColumn) && item.actualColumn > 0
+        ? item.actualColumn
+        : (Number.isSafeInteger(item.column) && item.column > 0 ? item.column : 1);
+      var lineDelta = range.startLineNumber - displayLine;
+      var columnDelta = range.startColumn - displayColumn;
+      if (lineDelta || columnDelta) {
+        item.line = Math.max(1, item.line + lineDelta);
+        if (Number.isSafeInteger(item.actualLine) && item.actualLine > 0) item.actualLine = Math.max(1, item.actualLine + lineDelta);
+        if (Number.isSafeInteger(item.column) && item.column > 0) item.column = Math.max(1, item.column + columnDelta);
+        if (Number.isSafeInteger(item.actualColumn) && item.actualColumn > 0) item.actualColumn = Math.max(1, item.actualColumn + columnDelta);
         item.verified = isActive() ? false : item.verified;
         changed = true;
       }
@@ -350,8 +479,7 @@
       Object.keys(raw || {}).forEach(function(relative) {
         if (relativeWorkspacePath(String(S.workspaceRoot) + (BOBO.isWindows ? '\\' : '/') + relative) !== relative) return;
         var items = Array.isArray(raw[relative]) ? raw[relative] : [];
-        var normalized = items.filter(function(item) { return Number.isInteger(item.line) && item.line > 0; })
-          .map(function(item) { return { line: item.line, verified: null, message: '', id: 0 }; });
+        var normalized = items.map(normalizeBreakpoint).filter(Boolean);
         if (normalized.length) S.dap.breakpoints.set(relative, normalized);
       });
     } catch (_) {}
@@ -359,12 +487,48 @@
       var watches = JSON.parse(localStorage.getItem(watchStorageKey()) || '[]');
       S.dap.watches = Array.isArray(watches) ? watches.filter(function(value) { return typeof value === 'string' && value.trim(); }) : [];
     } catch (_) { S.dap.watches = []; }
+    exceptionBreakpointSelectionKey = '';
+    exceptionBreakpointSelections = new Map();
+    exceptionBreakpointSyncState = { revision: 0, tail: Promise.resolve() };
     refreshBreakpointDecorations();
+    renderBreakpoints();
     renderWatches();
   }
 
   function saveWatches() {
     try { localStorage.setItem(watchStorageKey(), JSON.stringify(S.dap.watches)); } catch (_) {}
+  }
+
+  function sortBreakpoints(items) {
+    items.sort(function(left, right) {
+      return left.line - right.line || (Number(left.column) || 0) - (Number(right.column) || 0);
+    });
+    return items;
+  }
+
+  function breakpointCapabilityProblem(item, capabilities) {
+    capabilities = capabilities || currentBreakpointCapabilities();
+    if (item.condition && !capabilities.supportsConditionalBreakpoints) return tr('Conditional breakpoints are not supported by this debugger.');
+    if (item.hitCondition && !capabilities.supportsHitConditionalBreakpoints) return tr('Hit count breakpoints are not supported by this debugger.');
+    if (item.logMessage && !capabilities.supportsLogPoints) return tr('Logpoints are not supported by this debugger.');
+    return '';
+  }
+
+  function breakpointDescription(item) {
+    var values = [];
+    if (item.condition) values.push(tr('Expression: {value}', { value: item.condition }));
+    if (item.hitCondition) values.push(tr('Hit Count: {value}', { value: item.hitCondition }));
+    if (item.logMessage) values.push(tr('Log Message: {value}', { value: item.logMessage }));
+    return values.join(' | ');
+  }
+
+  function actualBreakpointLine(item) {
+    return Number.isSafeInteger(item.actualLine) && item.actualLine > 0 ? item.actualLine : item.line;
+  }
+
+  function actualBreakpointColumn(item) {
+    if (Number.isSafeInteger(item.actualColumn) && item.actualColumn > 0) return item.actualColumn;
+    return Number.isSafeInteger(item.column) && item.column > 0 ? item.column : 1;
   }
 
   function refreshBreakpointDecorations(options) {
@@ -374,14 +538,27 @@
     var relative = model && model.uri ? relativeWorkspacePath(model.uri.fsPath) : '';
     var items = relative ? (S.dap.breakpoints.get(relative) || []) : [];
     breakpointDecorations.set(items.map(function(item) {
-      var className = item.verified === false
-        ? (item.stale ? 'dap-breakpoint-unverified' : (item.message ? 'dap-breakpoint-rejected' : 'dap-breakpoint-unverified'))
-        : 'dap-breakpoint';
-      var title = item.verified === false
-        ? (item.message ? tr('Breakpoint rejected: {message}', { message: item.message }) : tr('Unverified breakpoint'))
-        : tr('Breakpoint');
+      var capabilityProblem = breakpointCapabilityProblem(item);
+      var className = item.enabled === false || capabilityProblem
+        ? 'dap-breakpoint-disabled'
+        : (item.verified === false
+          ? (item.stale ? 'dap-breakpoint-unverified' : (item.message ? 'dap-breakpoint-rejected' : 'dap-breakpoint-unverified'))
+          : (item.logMessage ? 'dap-logpoint' : 'dap-breakpoint'));
+      if (item.condition || item.hitCondition) className += ' dap-breakpoint-conditional';
+      var title = capabilityProblem || (item.enabled === false
+        ? tr('Disabled breakpoint')
+        : (item.verified === false
+          ? (item.message ? tr('Breakpoint rejected: {message}', { message: item.message }) : tr('Unverified breakpoint'))
+          : (item.logMessage ? tr('Logpoint') : tr('Breakpoint'))));
+      var description = breakpointDescription(item);
+      if (description) title += '\n' + description;
+      if (actualBreakpointLine(item) !== item.line || actualBreakpointColumn(item) !== (Number(item.column) || 1)) {
+        title += '\n' + tr('Actual breakpoint location: {line}:{column}', {
+          line: actualBreakpointLine(item), column: actualBreakpointColumn(item)
+        });
+      }
       return {
-        range: new monacoRef.Range(item.line, 1, item.line, 1),
+        range: new monacoRef.Range(actualBreakpointLine(item), actualBreakpointColumn(item), actualBreakpointLine(item), actualBreakpointColumn(item)),
         options: { isWholeLine: false, glyphMarginClassName: className, glyphMarginHoverMessage: { value: title } }
       };
     }));
@@ -393,15 +570,17 @@
     var relative = relativeWorkspacePath(filePath);
     if (!relative || !Number.isInteger(line) || line < 1) return false;
     var items = (S.dap.breakpoints.get(relative) || []).slice();
-    var index = items.findIndex(function(item) { return item.line === line; });
+    var index = items.findIndex(function(item) { return item.actualLine === line; });
+    if (index < 0) index = items.findIndex(function(item) { return item.line === line; });
     if (index >= 0) items.splice(index, 1);
-    else items.push({ line: line, verified: isActive() ? false : null, message: '', id: 0 });
-    items.sort(function(a, b) { return a.line - b.line; });
+    else items.push({ line: line, enabled: true, verified: isActive() ? false : null, message: '', id: 0, condition: '', hitCondition: '', logMessage: '' });
+    sortBreakpoints(items);
     if (items.length) S.dap.breakpoints.set(relative, items);
     else S.dap.breakpoints.delete(relative);
     invalidateBreakpointSync(relative);
     saveBreakpoints();
     refreshBreakpointDecorations();
+    renderBreakpoints();
     if (canSendBreakpoints() && !staleSources.has(relative)) setBreakpointsForSource(relative).catch(reportError);
     return index < 0;
   }
@@ -425,26 +604,51 @@
   async function sendBreakpointsForSource(relative, state, revision) {
     if (state.revision !== revision || !canSendBreakpoints() || staleSources.has(relative)) return;
     var items = S.dap.breakpoints.get(relative) || [];
-    var requestedLines = items.map(function(item) { return item.line; });
+    var capabilities = currentBreakpointCapabilities();
+    var requestedItems = items.filter(function(item) {
+      return item.enabled !== false && !breakpointCapabilityProblem(item, capabilities);
+    });
+    var requestedBreakpoints = requestedItems.map(function(item) {
+      var request = { line: item.line };
+      if (Number.isSafeInteger(item.column) && item.column > 0) request.column = item.column;
+      if (item.condition && capabilities.supportsConditionalBreakpoints) request.condition = item.condition;
+      if (item.hitCondition && capabilities.supportsHitConditionalBreakpoints) request.hitCondition = item.hitCondition;
+      if (item.logMessage && capabilities.supportsLogPoints) request.logMessage = item.logMessage;
+      return request;
+    });
     var body = await global.api.dapRequest('setBreakpoints', {
       source: sourceForRelative(relative),
-      breakpoints: requestedLines.map(function(line) { return { line: line }; }),
+      breakpoints: requestedBreakpoints,
       sourceModified: false
     });
     if (state.revision !== revision || !canSendBreakpoints() || staleSources.has(relative)) return;
     items = S.dap.breakpoints.get(relative) || [];
-    if (items.length !== requestedLines.length || items.some(function(item, index) { return item.line !== requestedLines[index]; })) return;
+    if (requestedItems.some(function(item) { return items.indexOf(item) < 0 || item.enabled === false; })) return;
     var returned = body && Array.isArray(body.breakpoints) ? body.breakpoints : [];
-    items.forEach(function(item, index) {
+    items.forEach(function(item) {
+      if (requestedItems.indexOf(item) >= 0) return;
+      item.verified = null;
+      item.message = '';
+      item.id = 0;
+      item.stale = false;
+      delete item.actualLine;
+      delete item.actualColumn;
+    });
+    requestedItems.forEach(function(item, index) {
       var remote = returned[index];
       item.verified = remote ? remote.verified !== false : false;
-      item.message = remote ? String(remote.message || '') : '';
+      item.message = remote ? String(remote.message || '').slice(0, 2048) : '';
       item.stale = false;
       item.id = remote && Number.isInteger(remote.id) ? remote.id : 0;
-      if (remote && Number.isInteger(remote.line)) item.line = remote.line;
+      delete item.actualLine;
+      delete item.actualColumn;
+      if (remote && Number.isSafeInteger(remote.line) && remote.line > 0) item.actualLine = remote.line;
+      if (remote && Number.isSafeInteger(remote.column) && remote.column > 0) item.actualColumn = remote.column;
     });
+    sortBreakpoints(items);
     saveBreakpoints();
     refreshBreakpointDecorations({ skipReconcile: true });
+    renderBreakpoints();
   }
 
   function renameBreakpoints(oldPath, newPath) {
@@ -467,6 +671,7 @@
     if (moved.length) {
       saveBreakpoints();
       refreshBreakpointDecorations();
+      renderBreakpoints();
       if (canSendBreakpoints()) moved.forEach(function(entry) {
         var state = breakpointSyncState(entry.from);
         var revision = state.revision;
@@ -495,6 +700,7 @@
     if (removed.length) {
       saveBreakpoints();
       refreshBreakpointDecorations();
+      renderBreakpoints();
       if (canSendBreakpoints()) removed.forEach(function(relative) {
         var state = breakpointSyncState(relative);
         var revision = state.revision;
@@ -511,6 +717,58 @@
   async function syncAllBreakpoints() {
     var sources = Array.from(S.dap.breakpoints.keys());
     for (var index = 0; index < sources.length; index++) await setBreakpointsForSource(sources[index]);
+  }
+
+  function invalidateExceptionBreakpointSync() {
+    exceptionBreakpointSyncState.revision += 1;
+  }
+
+  function setExceptionBreakpoints() {
+    if (!canSendBreakpoints()) return;
+    var state = exceptionBreakpointSyncState;
+    var revision = state.revision;
+    var task = state.tail.catch(function() {}).then(function() {
+      return sendExceptionBreakpoints(state, revision);
+    });
+    state.tail = task.catch(function() {});
+    return task;
+  }
+
+  async function sendExceptionBreakpoints(state, revision) {
+    if (state.revision !== revision || !canSendBreakpoints()) return;
+    var capabilities = currentBreakpointCapabilities();
+    ensureExceptionBreakpointSelections(capabilities);
+    var filters = [];
+    var filterOptions = [];
+    var requestedSelections = [];
+    capabilities.exceptionBreakpointFilters.forEach(function(filter) {
+      var selection = exceptionBreakpointSelections.get(filter.filter);
+      if (!selection || !selection.enabled) return;
+      var condition = boundedBreakpointText(selection.condition);
+      if (capabilities.supportsExceptionFilterOptions) {
+        var option = { filterId: filter.filter };
+        if (condition && filter.supportsCondition) option.condition = condition;
+        filterOptions.push(option);
+      } else {
+        filters.push(filter.filter);
+      }
+      requestedSelections.push(selection);
+    });
+    var args = { filters: filters };
+    if (capabilities.supportsExceptionFilterOptions && filterOptions.length) args.filterOptions = filterOptions;
+    var body = await global.api.dapRequest('setExceptionBreakpoints', args);
+    if (state.revision !== revision || !canSendBreakpoints()) return;
+    var returned = body && Array.isArray(body.breakpoints) ? body.breakpoints : [];
+    exceptionBreakpointSelections.forEach(function(selection) {
+      selection.verified = null;
+      selection.message = '';
+    });
+    requestedSelections.forEach(function(selection, index) {
+      var remote = returned[index];
+      selection.verified = remote ? remote.verified !== false : null;
+      selection.message = remote ? String(remote.message || '').slice(0, 2048) : '';
+    });
+    renderBreakpoints();
   }
 
   function clearCurrentLine() {
@@ -777,8 +1035,11 @@
     }
     button.addEventListener('click', function() {
       S.dap.configurationId = configuration.id;
+      exceptionBreakpointSelectionKey = '';
+      ensureExceptionBreakpointSelections(currentBreakpointCapabilities());
       try { localStorage.setItem('bobocloud.debug.configuration.' + S.workspaceRoot, configuration.id); } catch (_) {}
       updateStartButton();
+      renderBreakpoints();
       closeConfigMenu(true);
     });
     return button;
@@ -914,8 +1175,395 @@
     });
   }
 
+  function closeBreakpointPopup() {
+    if (!breakpointPopup) return;
+    document.removeEventListener('pointerdown', breakpointPopup.onOutside, true);
+    global.removeEventListener('resize', breakpointPopup.close);
+    global.removeEventListener('blur', breakpointPopup.close);
+    if (breakpointPopup.element && breakpointPopup.element.isConnected) breakpointPopup.element.remove();
+    breakpointPopup = null;
+  }
+
+  function showBreakpointPopup(element, x, y, focusTarget) {
+    closeBreakpointPopup();
+    element.classList.add('debug-breakpoint-popup');
+    document.body.appendChild(element);
+    var left = Math.max(8, Math.min(Number(x) || 8, global.innerWidth - element.offsetWidth - 8));
+    var top = Math.max(8, Math.min(Number(y) || 8, global.innerHeight - element.offsetHeight - 8));
+    element.style.left = left + 'px';
+    element.style.top = top + 'px';
+    var state = {
+      element: element,
+      close: closeBreakpointPopup,
+      onOutside: function(event) { if (!element.contains(event.target)) closeBreakpointPopup(); }
+    };
+    breakpointPopup = state;
+    element.addEventListener('keydown', function(event) {
+      if (event.key === 'Escape') { event.preventDefault(); closeBreakpointPopup(); }
+    });
+    setTimeout(function() {
+      if (breakpointPopup !== state) return;
+      document.addEventListener('pointerdown', state.onOutside, true);
+      global.addEventListener('resize', state.close);
+      global.addEventListener('blur', state.close);
+      if (focusTarget) focusTarget.focus();
+    }, 0);
+  }
+
+  function popupCoordinates(anchor) {
+    if (!anchor || typeof anchor.getBoundingClientRect !== 'function') return { x: global.innerWidth / 2 - 120, y: global.innerHeight / 2 - 80 };
+    var rect = anchor.getBoundingClientRect();
+    return { x: rect.right + 4, y: rect.top };
+  }
+
+  function createToolButton(className, label, glyph) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    button.textContent = glyph;
+    return button;
+  }
+
+  function requestedBreakpointLocation(relative, item) {
+    return relative + ':' + item.line + (Number.isSafeInteger(item.column) && item.column > 0 ? ':' + item.column : '');
+  }
+
+  function breakpointLocation(relative, item) {
+    var requested = requestedBreakpointLocation(relative, item);
+    var requestedColumn = Number.isSafeInteger(item.column) && item.column > 0 ? item.column : 1;
+    if (actualBreakpointLine(item) === item.line && actualBreakpointColumn(item) === requestedColumn) return requested;
+    var actual = relative + ':' + actualBreakpointLine(item) + ':' + actualBreakpointColumn(item);
+    return tr('{requested} (actual: {actual})', { requested: requested, actual: actual });
+  }
+
+  function updateBreakpoint(relative, item, values) {
+    var items = S.dap.breakpoints.get(relative) || [];
+    if (items.indexOf(item) < 0) return false;
+    Object.keys(values || {}).forEach(function(key) { item[key] = values[key]; });
+    item.verified = canSendBreakpoints() && item.enabled !== false ? false : null;
+    item.message = '';
+    item.id = 0;
+    item.stale = false;
+    delete item.actualLine;
+    delete item.actualColumn;
+    sortBreakpoints(items);
+    invalidateBreakpointSync(relative);
+    saveBreakpoints();
+    refreshBreakpointDecorations({ skipReconcile: true });
+    renderBreakpoints();
+    if (canSendBreakpoints() && !staleSources.has(relative)) setBreakpointsForSource(relative).catch(reportError);
+    return true;
+  }
+
+  function addBreakpoint(relative, values) {
+    var normalized = normalizeBreakpoint(Object.assign({ enabled: true }, values || {}));
+    if (!relative || !normalized) return null;
+    var items = (S.dap.breakpoints.get(relative) || []).slice();
+    var existing = items.find(function(item) {
+      return item.line === normalized.line && (Number(item.column) || 0) === (Number(normalized.column) || 0);
+    });
+    if (existing) {
+      updateBreakpoint(relative, existing, normalized);
+      return existing;
+    }
+    items.push(normalized);
+    sortBreakpoints(items);
+    S.dap.breakpoints.set(relative, items);
+    invalidateBreakpointSync(relative);
+    saveBreakpoints();
+    refreshBreakpointDecorations();
+    renderBreakpoints();
+    if (canSendBreakpoints() && !staleSources.has(relative)) setBreakpointsForSource(relative).catch(reportError);
+    return normalized;
+  }
+
+  function deleteBreakpoint(relative, item) {
+    var items = (S.dap.breakpoints.get(relative) || []).slice();
+    var index = items.indexOf(item);
+    if (index < 0) return false;
+    items.splice(index, 1);
+    if (items.length) S.dap.breakpoints.set(relative, items);
+    else S.dap.breakpoints.delete(relative);
+    invalidateBreakpointSync(relative);
+    saveBreakpoints();
+    refreshBreakpointDecorations();
+    renderBreakpoints();
+    if (canSendBreakpoints() && !staleSources.has(relative)) setBreakpointsForSource(relative).catch(reportError);
+    return true;
+  }
+
+  function createBreakpointField(form, labelText, className, value, supported, options) {
+    options = options || {};
+    var label = document.createElement('label');
+    label.className = 'debug-breakpoint-field';
+    var caption = document.createElement('span');
+    caption.textContent = labelText;
+    var input = document.createElement(options.multiline ? 'textarea' : 'input');
+    input.className = className;
+    if (!options.multiline) input.type = options.type || 'text';
+    input.value = value === undefined || value === null ? '' : String(value);
+    input.maxLength = options.maxLength || MAX_BREAKPOINT_TEXT_CHARS;
+    if (options.placeholder) input.placeholder = options.placeholder;
+    if (options.min) input.min = String(options.min);
+    input.disabled = supported === false;
+    if (supported === false) label.title = tr('This option is not supported by the current debugger.');
+    label.append(caption, input);
+    form.appendChild(label);
+    return input;
+  }
+
+  function openBreakpointEditor(relative, item, seed, mode, anchor, coordinates) {
+    var capabilities = currentBreakpointCapabilities();
+    var existing = item || null;
+    var values = Object.assign({ line: 1, enabled: true, condition: '', hitCondition: '', logMessage: '' }, existing || {}, seed || {});
+    var editor = document.createElement('form');
+    editor.className = 'debug-breakpoint-editor';
+    editor.setAttribute('role', 'dialog');
+    editor.setAttribute('aria-label', existing ? tr('Edit Breakpoint') : tr('Add Breakpoint'));
+    var heading = document.createElement('strong');
+    heading.textContent = existing ? tr('Edit Breakpoint') : tr('Add Breakpoint');
+    var location = document.createElement('small');
+    location.textContent = requestedBreakpointLocation(relative, values);
+    editor.append(heading, location);
+    var column = createBreakpointField(editor, tr('Column'), 'debug-breakpoint-column', values.column || '', true, { type: 'number', min: 1, maxLength: 16 });
+    var condition = null;
+    var hitCondition = null;
+    var logMessage = null;
+    if (capabilities.supportsConditionalBreakpoints || values.condition) {
+      condition = createBreakpointField(editor, tr('Expression'), 'debug-breakpoint-condition', values.condition, capabilities.supportsConditionalBreakpoints, { placeholder: tr('Expression to evaluate') });
+    }
+    if (capabilities.supportsHitConditionalBreakpoints || values.hitCondition) {
+      hitCondition = createBreakpointField(editor, tr('Hit Count'), 'debug-breakpoint-hit-condition', values.hitCondition, capabilities.supportsHitConditionalBreakpoints, { placeholder: tr('Break after a number of hits') });
+    }
+    if (capabilities.supportsLogPoints || values.logMessage) {
+      logMessage = createBreakpointField(editor, tr('Log Message'), 'debug-breakpoint-log-message', values.logMessage, capabilities.supportsLogPoints, { placeholder: tr('Message to log; expressions use {expression}') });
+    }
+    var actions = document.createElement('div');
+    actions.className = 'debug-breakpoint-editor-actions';
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = tr('Cancel');
+    var save = document.createElement('button');
+    save.type = 'submit';
+    save.className = 'primary';
+    save.textContent = tr('Save');
+    actions.append(cancel, save);
+    editor.appendChild(actions);
+    cancel.addEventListener('click', closeBreakpointPopup);
+    editor.addEventListener('submit', function(event) {
+      event.preventDefault();
+      var parsedColumn = column.value ? Number(column.value) : 0;
+      var next = {
+        column: Number.isSafeInteger(parsedColumn) && parsedColumn > 0 ? parsedColumn : undefined,
+        condition: condition && !condition.disabled ? boundedBreakpointText(condition.value) : values.condition,
+        hitCondition: hitCondition && !hitCondition.disabled ? boundedBreakpointText(hitCondition.value) : values.hitCondition,
+        logMessage: logMessage && !logMessage.disabled ? boundedBreakpointText(logMessage.value, true) : values.logMessage
+      };
+      if (existing) updateBreakpoint(relative, existing, next);
+      else addBreakpoint(relative, Object.assign({}, values, next));
+      closeBreakpointPopup();
+    });
+    var point = coordinates || popupCoordinates(anchor);
+    var focus = mode === 'log' && logMessage && !logMessage.disabled
+      ? logMessage
+      : (mode === 'condition' && condition && !condition.disabled ? condition : column);
+    showBreakpointPopup(editor, point.x, point.y, focus);
+  }
+
+  function addBreakpointMenuItem(menu, label, action, disabled) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'debug-breakpoint-menu-item';
+    button.setAttribute('role', 'menuitem');
+    button.textContent = label;
+    button.disabled = Boolean(disabled);
+    button.addEventListener('click', function() { closeBreakpointPopup(); action(); });
+    menu.appendChild(button);
+    return button;
+  }
+
+  function openBreakpointContextMenu(relative, line, column, coordinates) {
+    var items = S.dap.breakpoints.get(relative) || [];
+    var item = items.find(function(candidate) { return candidate.actualLine === line; }) ||
+      items.find(function(candidate) { return candidate.line === line; });
+    var capabilities = currentBreakpointCapabilities();
+    var menu = document.createElement('div');
+    menu.className = 'debug-breakpoint-menu';
+    menu.setAttribute('role', 'menu');
+    if (item) {
+      addBreakpointMenuItem(menu, tr('Edit Breakpoint'), function() { openBreakpointEditor(relative, item, null, '', null, coordinates); });
+      addBreakpointMenuItem(menu, item.enabled === false ? tr('Enable Breakpoint') : tr('Disable Breakpoint'), function() {
+        updateBreakpoint(relative, item, { enabled: item.enabled === false });
+      });
+      addBreakpointMenuItem(menu, tr('Remove Breakpoint'), function() { deleteBreakpoint(relative, item); });
+    } else {
+      addBreakpointMenuItem(menu, tr('Add Breakpoint'), function() { addBreakpoint(relative, { line: line, column: column }); });
+      if (capabilities.supportsConditionalBreakpoints || capabilities.supportsHitConditionalBreakpoints) {
+        addBreakpointMenuItem(menu, tr('Add Conditional Breakpoint'), function() {
+          openBreakpointEditor(relative, null, { line: line, column: column }, 'condition', null, coordinates);
+        });
+      }
+      if (capabilities.supportsLogPoints) {
+        addBreakpointMenuItem(menu, tr('Add Logpoint'), function() {
+          openBreakpointEditor(relative, null, { line: line, column: column }, 'log', null, coordinates);
+        });
+      }
+    }
+    showBreakpointPopup(menu, coordinates.x, coordinates.y, menu.querySelector('button:not(:disabled)'));
+  }
+
+  function openExceptionBreakpointEditor(filter, selection, anchor) {
+    var capabilities = currentBreakpointCapabilities();
+    if (!filter.supportsCondition || !capabilities.supportsExceptionFilterOptions) return;
+    var editor = document.createElement('form');
+    editor.className = 'debug-breakpoint-editor';
+    editor.setAttribute('role', 'dialog');
+    editor.setAttribute('aria-label', tr('Edit Exception Breakpoint'));
+    var heading = document.createElement('strong');
+    heading.textContent = filter.label;
+    editor.appendChild(heading);
+    var condition = createBreakpointField(editor, tr('Expression'), 'debug-exception-condition', selection.condition, true, {
+      placeholder: filter.conditionDescription || tr('Exception condition')
+    });
+    var actions = document.createElement('div');
+    actions.className = 'debug-breakpoint-editor-actions';
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = tr('Cancel');
+    var save = document.createElement('button');
+    save.type = 'submit';
+    save.className = 'primary';
+    save.textContent = tr('Save');
+    actions.append(cancel, save);
+    editor.appendChild(actions);
+    cancel.addEventListener('click', closeBreakpointPopup);
+    editor.addEventListener('submit', function(event) {
+      event.preventDefault();
+      selection.enabled = true;
+      selection.condition = boundedBreakpointText(condition.value);
+      selection.verified = null;
+      selection.message = '';
+      invalidateExceptionBreakpointSync();
+      saveExceptionBreakpoints();
+      renderBreakpoints();
+      if (canSendBreakpoints()) setExceptionBreakpoints().catch(reportError);
+      closeBreakpointPopup();
+    });
+    var point = popupCoordinates(anchor);
+    showBreakpointPopup(editor, point.x, point.y, condition);
+  }
+
+  function renderBreakpoints() {
+    var container = document.getElementById('debug-breakpoints');
+    if (!container) return;
+    container.replaceChildren();
+    var sourceCount = 0;
+    S.dap.breakpoints.forEach(function(items) { sourceCount += items.length; });
+    if (sourceCount) {
+      var sourceHeading = document.createElement('div');
+      sourceHeading.className = 'debug-breakpoint-group-title';
+      sourceHeading.textContent = tr('Source Breakpoints');
+      container.appendChild(sourceHeading);
+    }
+    S.dap.breakpoints.forEach(function(items, relative) {
+      items.forEach(function(item) {
+        var row = document.createElement('div');
+        row.className = 'debug-breakpoint-row';
+        row.dataset.path = relative;
+        row.dataset.line = String(item.line);
+        var enabled = document.createElement('input');
+        enabled.type = 'checkbox';
+        enabled.className = 'debug-breakpoint-enabled';
+        enabled.checked = item.enabled !== false;
+        enabled.setAttribute('aria-label', item.enabled === false ? tr('Enable Breakpoint') : tr('Disable Breakpoint'));
+        var location = document.createElement('button');
+        location.type = 'button';
+        location.className = 'debug-breakpoint-location';
+        location.textContent = breakpointLocation(relative, item);
+        location.title = location.textContent;
+        var summary = document.createElement('span');
+        summary.className = 'debug-breakpoint-summary';
+        var capabilityProblem = breakpointCapabilityProblem(item);
+        summary.textContent = capabilityProblem || item.message || breakpointDescription(item);
+        summary.title = summary.textContent;
+        if (capabilityProblem || item.message) row.classList.add('debug-breakpoint-problem');
+        var edit = createToolButton('debug-breakpoint-edit', tr('Edit Breakpoint'), '\u270e');
+        var remove = createToolButton('debug-breakpoint-remove', tr('Remove Breakpoint'), '\u00d7');
+        enabled.addEventListener('change', function() { updateBreakpoint(relative, item, { enabled: enabled.checked }); });
+        location.addEventListener('click', async function() {
+          var filePath = localPathForSource(sourceForRelative(relative));
+          if (!filePath || !BOBO.workspace || !BOBO.workspace.openFile) return;
+          await BOBO.workspace.openFile(filePath, relative.split('/').pop());
+          if (S.editor) {
+            S.editor.setPosition({ lineNumber: actualBreakpointLine(item), column: actualBreakpointColumn(item) });
+            S.editor.revealLineInCenter(actualBreakpointLine(item));
+            S.editor.focus();
+          }
+        });
+        edit.addEventListener('click', function() { openBreakpointEditor(relative, item, null, '', edit); });
+        remove.addEventListener('click', function() { deleteBreakpoint(relative, item); });
+        row.append(enabled, location, summary, edit, remove);
+        container.appendChild(row);
+      });
+    });
+    var capabilities = currentBreakpointCapabilities();
+    ensureExceptionBreakpointSelections(capabilities);
+    if (capabilities.exceptionBreakpointFilters.length) {
+      var exceptionHeading = document.createElement('div');
+      exceptionHeading.className = 'debug-breakpoint-group-title';
+      exceptionHeading.textContent = tr('Exception Breakpoints');
+      container.appendChild(exceptionHeading);
+      capabilities.exceptionBreakpointFilters.forEach(function(filter) {
+        var selection = exceptionBreakpointSelections.get(filter.filter);
+        if (!selection) return;
+        var row = document.createElement('div');
+        row.className = 'debug-exception-breakpoint-row';
+        row.dataset.filter = filter.filter;
+        var enabled = document.createElement('input');
+        enabled.type = 'checkbox';
+        enabled.className = 'debug-exception-enabled';
+        enabled.checked = selection.enabled === true;
+        enabled.setAttribute('aria-label', tr('Toggle exception breakpoint: {label}', { label: filter.label }));
+        var copy = document.createElement('span');
+        copy.className = 'debug-exception-copy';
+        var label = document.createElement('span');
+        label.className = 'debug-exception-label';
+        label.textContent = filter.label;
+        var description = document.createElement('small');
+        description.textContent = selection.message || selection.condition || filter.description;
+        copy.append(label, description);
+        row.append(enabled, copy);
+        if (filter.supportsCondition && capabilities.supportsExceptionFilterOptions) {
+          var edit = createToolButton('debug-breakpoint-edit', tr('Edit Exception Breakpoint'), '\u270e');
+          edit.addEventListener('click', function() { openExceptionBreakpointEditor(filter, selection, edit); });
+          row.appendChild(edit);
+        }
+        enabled.addEventListener('change', function() {
+          selection.enabled = enabled.checked;
+          selection.verified = null;
+          selection.message = '';
+          invalidateExceptionBreakpointSync();
+          saveExceptionBreakpoints();
+          renderBreakpoints();
+          if (canSendBreakpoints()) setExceptionBreakpoints().catch(reportError);
+        });
+        container.appendChild(row);
+      });
+    }
+    if (!sourceCount && !capabilities.exceptionBreakpointFilters.length) {
+      var empty = document.createElement('div');
+      empty.className = 'debug-empty';
+      empty.textContent = capabilities.known
+        ? tr('No breakpoints')
+        : tr('No breakpoints. Start debugging to discover debugger capabilities.');
+      container.appendChild(empty);
+    }
+  }
+
   function selectInspectorSection(section, focus) {
-    var allowed = ['stack', 'variables', 'watch', 'console'];
+    var allowed = ['stack', 'variables', 'watch', 'breakpoints', 'console'];
     if (allowed.indexOf(section) < 0) return;
     activeInspectorSection = section;
     document.querySelectorAll('[data-debug-inspector-tab]').forEach(function(tab) {
@@ -1198,17 +1846,43 @@
     if (!remote) return;
     var local = localPathForSource(remote.source || {});
     var relative = relativeWorkspacePath(local);
-    if (!relative || staleSources.has(relative)) return;
-    var items = S.dap.breakpoints.get(relative) || [];
+    var items = relative ? (S.dap.breakpoints.get(relative) || []) : [];
     var item = items.find(function(candidate) { return remote.id && candidate.id === remote.id; }) ||
-      items.find(function(candidate) { return remote.line && candidate.line === remote.line; });
-    if (!item) return;
+      items.find(function(candidate) {
+        var lineMatches = remote.line && (candidate.line === remote.line || candidate.actualLine === remote.line);
+        var columnMatches = !remote.column || (!candidate.column && !candidate.actualColumn) ||
+          candidate.column === remote.column || candidate.actualColumn === remote.column;
+        return lineMatches && columnMatches;
+      });
+    if (!item && remote.id) {
+      S.dap.breakpoints.forEach(function(candidates, candidateRelative) {
+        if (item) return;
+        var candidate = candidates.find(function(value) { return value.id === remote.id; });
+        if (candidate) { relative = candidateRelative; items = candidates; item = candidate; }
+      });
+    }
+    if (!item || !relative || staleSources.has(relative)) return;
+    if (body.reason === 'removed') {
+      var index = items.indexOf(item);
+      if (index >= 0) items.splice(index, 1);
+      if (!items.length) S.dap.breakpoints.delete(relative);
+      invalidateBreakpointSync(relative);
+      saveBreakpoints();
+      refreshBreakpointDecorations({ skipReconcile: true });
+      renderBreakpoints();
+      return;
+    }
     item.verified = remote.verified !== false;
-    item.message = String(remote.message || '');
+    item.message = String(remote.message || '').slice(0, 2048);
     item.stale = false;
-    if (Number.isInteger(remote.line)) item.line = remote.line;
+    delete item.actualLine;
+    delete item.actualColumn;
+    if (Number.isSafeInteger(remote.line) && remote.line > 0) item.actualLine = remote.line;
+    if (Number.isSafeInteger(remote.column) && remote.column > 0) item.actualColumn = remote.column;
+    sortBreakpoints(items);
     saveBreakpoints();
     refreshBreakpointDecorations({ skipReconcile: true });
+    renderBreakpoints();
   }
 
   async function handleReverseRequest(request) {
@@ -1252,6 +1926,15 @@
       appendConsole(body.output || '', body.category || 'stdout');
     } else if (message.event === 'breakpoint') {
       handleBreakpointEvent(body);
+    } else if (message.event === 'capabilities' && body.capabilities && typeof body.capabilities === 'object') {
+      S.dap.capabilities = Object.assign({}, S.dap.capabilities || {}, body.capabilities);
+      rememberBreakpointCapabilities(S.dap.capabilities);
+      invalidateAllBreakpointSyncs();
+      invalidateExceptionBreakpointSync();
+      if (canSendBreakpoints()) {
+        syncAllBreakpoints().catch(reportError);
+        setExceptionBreakpoints().catch(reportError);
+      }
     } else if (message.event === 'exited') {
       appendConsole(tr('Process exited with code {code}', { code: body.exitCode }), 'console');
     } else if (message.event === 'terminated') {
@@ -1393,6 +2076,7 @@
     var operation = (async function() {
       stopping = true;
       invalidateAllBreakpointSyncs();
+      invalidateExceptionBreakpointSync();
       if (activeLifecycleTaskHandle && typeof activeLifecycleTaskHandle.cancel === 'function') {
         try { await activeLifecycleTaskHandle.cancel(reason || 'debug-ended'); } catch (_) {}
       }
@@ -1424,6 +2108,7 @@
     var sessionId = clientSessionId();
     S.dap.clientSessionId = sessionId;
     adapterInitialized = false;
+    exceptionBreakpointSyncState = { revision: 0, tail: Promise.resolve() };
     var initialContext = contextSnapshot(sessionId);
     S.dap.authEpoch = initialContext.authEpoch;
     setPhase('preparing');
@@ -1447,7 +2132,14 @@
       staleSources.clear();
       staleSourceNotified.clear();
       S.dap.breakpoints.forEach(function(items) {
-        items.forEach(function(item) { item.verified = null; item.message = ''; item.id = 0; item.stale = false; });
+        items.forEach(function(item) {
+          item.verified = null;
+          item.message = '';
+          item.id = 0;
+          item.stale = false;
+          delete item.actualLine;
+          delete item.actualColumn;
+        });
       });
       var resolved = await global.api.dapResolve(selected.id, initialContext);
       if (!contextIsCurrent(initialContext)) throw new Error(tr('The workspace changed while starting the debug session.'));
@@ -1496,6 +2188,7 @@
         supportsProgressReporting: false,
         locale: document.documentElement.lang || 'en'
       }, 20000);
+      rememberBreakpointCapabilities(S.dap.capabilities || {});
       if (!contextIsCurrent(initialContext) || !isActive()) throw new Error(tr('The debug session ended while it was starting.'));
       setPhase('configuring');
       var initializedEvent = waitForInitialized(12000);
@@ -1505,6 +2198,8 @@
       await initializedEvent;
       if (!contextIsCurrent(initialContext) || !isActive()) throw new Error(tr('The debug session ended while it was starting.'));
       await syncAllBreakpoints();
+      if (!contextIsCurrent(initialContext) || !isActive()) throw new Error(tr('The debug session ended while it was starting.'));
+      await setExceptionBreakpoints();
       if (!contextIsCurrent(initialContext) || !isActive()) throw new Error(tr('The debug session ended while it was starting.'));
       if (!S.dap.capabilities || S.dap.capabilities.supportsConfigurationDoneRequest !== false) {
         await global.api.dapRequest('configurationDone', {}, 15000);
@@ -1608,6 +2303,7 @@
     renderCallStack();
     renderVariables([]);
     renderWatches();
+    renderBreakpoints();
     setPhase(phase === 'error' ? 'error' : 'idle');
     if (message) appendConsole(message, phase === 'error' ? 'stderr' : 'console');
     flushConsole();
@@ -1630,6 +2326,7 @@
   async function beforeWorkspaceLeave() {
     refreshGeneration += 1;
     closeConfigMenu(false);
+    closeBreakpointPopup();
     if (isActive() || S.dap.clientSessionId) await abort('workspace-change');
     return true;
   }
@@ -1638,6 +2335,7 @@
     refreshGeneration += 1;
     expectedTransportGeneration = 0;
     S.dap.clientSessionId = '';
+    closeBreakpointPopup();
     S.dap.configurationId = 'builtin:current-file';
     try {
       var saved = localStorage.getItem('bobocloud.debug.configuration.' + S.workspaceRoot);
@@ -1664,6 +2362,10 @@
   }
 
   function bindDom() {
+    var breakpointTab = document.getElementById('debug-inspector-tab-breakpoints');
+    if (breakpointTab) breakpointTab.textContent = tr('Breakpoints');
+    var breakpointHeading = document.querySelector('#debug-section-breakpoints > header > span');
+    if (breakpointHeading) breakpointHeading.textContent = tr('Breakpoints');
     var startButton = document.getElementById('debug-start');
     if (startButton) startButton.addEventListener('click', function() { start(); });
     var configButton = document.getElementById('debug-config-button');
@@ -1713,6 +2415,7 @@
       });
       saveBreakpoints();
       refreshBreakpointDecorations();
+      renderBreakpoints();
       if (!staleSourceNotified.has(activeDecorationRelative)) {
         staleSourceNotified.add(activeDecorationRelative);
         appendConsole(tr('Source changed; restart debugging to apply updated breakpoints.'), 'important');
@@ -1723,6 +2426,21 @@
       if (type !== monacoRef.editor.MouseTargetType.GUTTER_GLYPH_MARGIN || !event.target.position) return;
       var model = S.editor.getModel();
       if (!model || !model.uri) return;
+      var relative = relativeWorkspacePath(model.uri.fsPath);
+      if (!relative) return;
+      var mouse = event.event || {};
+      var browserEvent = mouse.browserEvent || {};
+      var rightButton = mouse.rightButton === true || browserEvent.button === 2;
+      if (rightButton) {
+        if (typeof mouse.preventDefault === 'function') mouse.preventDefault();
+        if (typeof mouse.stopPropagation === 'function') mouse.stopPropagation();
+        openBreakpointContextMenu(relative, event.target.position.lineNumber, event.target.position.column || 1, {
+          x: Number(mouse.posx) || Number(browserEvent.clientX) || 8,
+          y: Number(mouse.posy) || Number(browserEvent.clientY) || 8
+        });
+        return;
+      }
+      if (mouse.leftButton === false || browserEvent.button > 0) return;
       toggleBreakpoint(model.uri.fsPath, event.target.position.lineNumber);
     }));
   }
@@ -1739,6 +2457,13 @@
         event.preventDefault(); event.stopImmediatePropagation(); execute('restart');
       } else if (event.key === 'F6' && isActive()) {
         event.preventDefault(); event.stopImmediatePropagation(); execute('pause');
+      } else if (event.key === 'F9' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        var model = activeModel();
+        var position = S.editor && S.editor.getPosition ? S.editor.getPosition() : null;
+        if (model && model.uri && position) {
+          event.preventDefault(); event.stopImmediatePropagation();
+          toggleBreakpoint(model.uri.fsPath, position.lineNumber);
+        }
       } else if (event.key === 'F10' && isPaused()) {
         event.preventDefault(); event.stopImmediatePropagation(); execute('next');
       } else if (event.key === 'F11' && isPaused()) {
@@ -1761,6 +2486,9 @@
     disposers.push(function() { global.removeEventListener('bobo:workspace-changed', onWorkspace); });
     var onServerCapabilities = function() {
       invalidateCatalogCache();
+      adapterCapabilityProfiles = new Map();
+      exceptionBreakpointSelectionKey = '';
+      renderBreakpoints();
       updateStartButton();
       if (!dapFeatureDecision().available && (isActive() || S.dap.clientSessionId)) abort('capability-disabled');
       refreshConfigurations().catch(function() {});
@@ -1797,6 +2525,14 @@
       S.dap.breakpoints.forEach(function(items, path) { result.push({ path: path, breakpoints: items.map(function(item) { return Object.assign({}, item); }) }); });
       return result;
     },
+    getExceptionBreakpoints: function() {
+      var capabilities = currentBreakpointCapabilities();
+      ensureExceptionBreakpointSelections(capabilities);
+      return capabilities.exceptionBreakpointFilters.map(function(filter) {
+        return Object.assign({}, filter, exceptionBreakpointSelections.get(filter.filter) || { enabled: false, condition: '', verified: null, message: '' });
+      });
+    },
+    getBreakpointCapabilities: function() { return Object.assign({}, currentBreakpointCapabilities()); },
     beforeWorkspaceLeave: beforeWorkspaceLeave,
     workspaceChanged: workspaceChanged,
     renameBreakpoints: renameBreakpoints,
@@ -1808,6 +2544,7 @@
     },
     dispose: function() {
       abort('dispose');
+      closeBreakpointPopup();
       disposers.splice(0).forEach(function(dispose) { try { if (typeof dispose === 'function') dispose(); else if (dispose && dispose.dispose) dispose.dispose(); } catch (_) {} });
       initialized = false;
     }

@@ -129,6 +129,29 @@ test('uses one gateway handshake then exchanges raw DAP messages', async () => {
   assert.deepEqual(await pending, { supportsConfigurationDoneRequest: true });
   assert.equal(events.at(-1).value.message.type, 'response');
   assert.equal(events.at(-1).value.generation, status.generation);
+
+  const sourceBreakpointArguments = {
+    source: { path: 'bobocloud-dap:///main.py' },
+    breakpoints: [{ line: 7, column: 5, condition: 'ready', hitCondition: '3', logMessage: 'value={value}' }],
+    sourceModified: false
+  };
+  const sourceBreakpoints = transport.request('setBreakpoints', sourceBreakpointArguments);
+  assert.deepEqual(socket.sent[2], {
+    seq: 2, type: 'request', command: 'setBreakpoints', arguments: sourceBreakpointArguments
+  });
+  socket.fire('message', { seq: 51, type: 'response', request_seq: 2, command: 'setBreakpoints', success: true, body: { breakpoints: [] } });
+  await sourceBreakpoints;
+
+  const exceptionArguments = {
+    filters: ['uncaught'],
+    filterOptions: [{ filterId: 'caught', condition: 'error.name === "Expected"' }]
+  };
+  const exceptionBreakpoints = transport.request('setExceptionBreakpoints', exceptionArguments);
+  assert.deepEqual(socket.sent[3], {
+    seq: 3, type: 'request', command: 'setExceptionBreakpoints', arguments: exceptionArguments
+  });
+  socket.fire('message', { seq: 52, type: 'response', request_seq: 3, command: 'setExceptionBreakpoints', success: true, body: {} });
+  await exceptionBreakpoints;
 });
 
 test('adapter request failures use a stable client error and retain raw details only as protocol data', async () => {

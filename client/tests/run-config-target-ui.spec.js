@@ -59,6 +59,10 @@ test('compiled files retain a target preset while interpreted files do not expos
       if (window.BOBO.state.autoSyncInterval) clearInterval(window.BOBO.state.autoSyncInterval);
       const opened = await window.api.pickWorkspace(workspacePath);
       await window.BOBO.workspace.applyWorkspace(opened.rootPath, opened.tree, opened.workspaceIdentity, opened.leaveToken);
+      window.BOBO.serverCapabilities.applyServerInfo(
+        { success: true, data: {} },
+        'run-config-target-ui-legacy'
+      );
       await window.BOBO.workspace.openFile(workspacePath.replace(/\\/g, '/') + '/main.c', 'main.c');
     }, workspace);
 

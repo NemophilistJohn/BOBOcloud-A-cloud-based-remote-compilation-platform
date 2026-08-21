@@ -32,12 +32,24 @@ test('JSONC settings are reduced to the editor whitelist without reflecting igno
     "editor.tabSize": 2,
     "editor.insertSpaces": false,
     "editor.wordWrap": "bounded",
+    "editor.wordWrapColumn": 96,
+    "editor.rulers": [80, 120],
+    "editor.renderWhitespace": "all",
+    "editor.minimap.enabled": false,
+    "editor.bracketPairColorization.enabled": true,
     "terminal.integrated.profiles.windows": { "unsafe": "C:/private/tool.exe" },
     "files.associations": {
       "*.component.html": "html",
       "*.templ": "go",
       "../private/*": "python",
       "*.secret": "not-a-language",
+    },
+    "files.exclude": {
+      "**/node_modules": true,
+      "build/": true,
+      "**/*.tmp": false,
+      "**/*.generated": { "when": "$(basename).source" },
+      "../private": true,
     },
     "[javascript][typescript]": {
       "editor.tabSize": 4,
@@ -51,7 +63,16 @@ test('JSONC settings are reduced to the editor whitelist without reflecting igno
   assert.equal(snapshot.schemaVersion, 1);
   assert.equal(snapshot.rootPath, path.resolve(root));
   assert.equal(snapshot.workspaceIdentity, 7);
-  assert.deepEqual(snapshot.settings.editor, { tabSize: 2, insertSpaces: false, wordWrap: 'bounded' });
+  assert.deepEqual(snapshot.settings.editor, {
+    tabSize: 2,
+    insertSpaces: false,
+    wordWrap: 'bounded',
+    wordWrapColumn: 96,
+    rulers: [80, 120],
+    renderWhitespace: 'all',
+    minimapEnabled: false,
+    bracketPairColorizationEnabled: true
+  });
   assert.deepEqual(snapshot.settings.languages, {
     javascript: { tabSize: 4, insertSpaces: true },
     typescript: { tabSize: 4, insertSpaces: true }
@@ -60,6 +81,12 @@ test('JSONC settings are reduced to the editor whitelist without reflecting igno
     { pattern: '*.component.html', languageId: 'html' },
     { pattern: '*.templ', languageId: 'go' }
   ]);
+  assert.deepEqual(snapshot.settings.files.exclude.map((rule) => rule.pattern), ['**/node_modules', 'build']);
+  const nodeModulesRule = snapshot.settings.files.exclude[0];
+  const nodeModulesMatcher = new RegExp(nodeModulesRule.regexp, nodeModulesRule.flags);
+  assert.equal(nodeModulesMatcher.test('node_modules'), true);
+  assert.equal(nodeModulesMatcher.test('packages/web/node_modules'), true);
+  assert.equal(nodeModulesMatcher.test('src/modules'), false);
   assert.equal(Object.isFrozen(snapshot), true);
   assert.equal(Object.isFrozen(snapshot.settings.editor), true);
 
@@ -69,6 +96,8 @@ test('JSONC settings are reduced to the editor whitelist without reflecting igno
   assert.ok(warningCodes.has('WORKSPACE_SETTING_UNSUPPORTED'));
   assert.ok(warningCodes.has('WORKSPACE_ASSOCIATION_IGNORED'));
   assert.ok(warningCodes.has('WORKSPACE_LANGUAGE_SCOPE_IGNORED'));
+  assert.ok(warningCodes.has('WORKSPACE_FILE_EXCLUDE_CONDITION_UNSUPPORTED'));
+  assert.ok(warningCodes.has('WORKSPACE_FILE_EXCLUDE_PATTERN_IGNORED'));
 });
 
 test('invalid values, unsafe patterns and partial JSONC never become executable settings', async (t) => {
@@ -76,6 +105,11 @@ test('invalid values, unsafe patterns and partial JSONC never become executable 
     'editor.tabSize': 0,
     'editor.insertSpaces': 'yes',
     'editor.wordWrap': 'viewport',
+    'editor.wordWrapColumn': 0,
+    'editor.rulers': [80, '100'],
+    'editor.renderWhitespace': 'sometimes',
+    'editor.minimap.enabled': 'no',
+    'editor.bracketPairColorization.enabled': 1,
     'files.associations': {
       '*.ok': 'python',
       '*.{js,ts}': 'javascript',
@@ -91,8 +125,25 @@ test('invalid values, unsafe patterns and partial JSONC never become executable 
   const root = createWorkspace(t);
   writeSettings(root, '{ "editor.tabSize": 2, trailing }');
   const snapshot = await loadWorkspaceSettings(root, 3);
-  assert.deepEqual(snapshot.settings, { editor: {}, languages: {}, associations: [] });
+  assert.deepEqual(snapshot.settings, { editor: {}, languages: {}, associations: [], files: { exclude: [] } });
   assert.equal(snapshot.warnings[0].code, 'WORKSPACE_SETTINGS_PARSE_FAILED');
+});
+
+test('single-language settings override combined language blocks regardless of JSON order', () => {
+  const normalized = normalizeWorkspaceSettings({
+    '[javascript]': {
+      'editor.tabSize': 2,
+      'editor.renderWhitespace': 'all'
+    },
+    '[javascript][typescript]': {
+      'editor.tabSize': 8,
+      'editor.wordWrap': 'on'
+    }
+  });
+  assert.deepEqual(normalized.settings.languages, {
+    javascript: { tabSize: 2, wordWrap: 'on', renderWhitespace: 'all' },
+    typescript: { tabSize: 8, wordWrap: 'on' }
+  });
 });
 
 test('settings.json symlinks are refused instead of resolving through the workspace', async (t) => {

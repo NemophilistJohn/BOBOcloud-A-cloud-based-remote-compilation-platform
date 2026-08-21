@@ -96,18 +96,65 @@ test('Run target menu merges project tasks and remains keyboard-accessible and w
       }
       const opened = await window.api.pickWorkspace(workspacePath);
       await window.BOBO.workspace.applyWorkspace(opened.rootPath, opened.tree, opened.workspaceIdentity, opened.leaveToken);
+      window.BOBO.serverCapabilities.applyServerInfo(
+        { success: true, data: {} },
+        'project-tasks-ui-legacy'
+      );
       await window.BOBO.projectTasks.refresh();
     }, workspace);
+
+    await page.evaluate(() => {
+      window.__taskInputResult = 'pending';
+      window.BOBO.projectTasks.resolveInputRequests([
+        { id: 'token', type: 'promptString', description: 'Access token', default: '', password: true, options: [] },
+        { id: 'mode', type: 'pickString', description: 'Execution mode', default: '', password: false, options: [
+          { label: 'Fast', value: 'fast' }, { label: 'Empty', value: '' }, { label: 'Careful', value: 'safe' }
+        ] }
+      ]).then(value => { window.__taskInputResult = value; });
+    });
+    const inputDialog = page.locator('#task-input-dialog');
+    await expect(inputDialog).toBeVisible();
+    await expect(inputDialog.locator('.task-input-title')).toHaveText('Task input');
+    const passwordInput = inputDialog.locator('input[type="password"]');
+    await expect(passwordInput).toBeFocused();
+    await passwordInput.fill('local-secret');
+    await expect(inputDialog).not.toContainText('local-secret');
+    await page.screenshot({ path: evidencePath('project-task-input.png'), fullPage: false });
+    await inputDialog.locator('button[type="submit"]').click();
+    const picker = inputDialog.locator('select');
+    await expect(inputDialog.locator('input[type="password"]')).toHaveCount(0);
+    await expect(picker).toBeVisible();
+    await expect(picker).toBeFocused();
+    await expect(picker).toHaveValue('');
+    await inputDialog.locator('button[type="submit"]').click();
+    await expect(inputDialog).toBeHidden();
+    await expect.poll(() => page.evaluate(() => window.__taskInputResult)).toEqual({ token: 'local-secret', mode: '' });
+
+    await page.evaluate(() => {
+      window.__cancelledTaskInput = 'pending';
+      window.BOBO.projectTasks.resolveInputRequests([
+        { id: 'cancel-me', type: 'promptString', description: 'Cancel this input', default: '', password: false, options: [] }
+      ]).then(value => { window.__cancelledTaskInput = value; });
+    });
+    await expect(inputDialog).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(inputDialog).toBeHidden();
+    await expect.poll(() => page.evaluate(() => window.__cancelledTaskInput)).toBe(null);
 
     const trigger = page.locator('#run-target-btn');
     const menu = page.locator('#run-target-menu');
     await trigger.click();
     await expect(menu).toBeVisible();
     await expect(menu.locator('.run-target-section')).toHaveText(['Single File', 'Build Tasks', 'Test Tasks', 'Run Tasks', 'Custom Tasks']);
-    await expect(menu.locator('.run-target-label')).toHaveText([
+    await expect(menu.locator('[role="menuitemradio"] .run-target-label')).toHaveText([
       'Current File', 'Build shared', 'Test project', 'Run app', 'Unsupported npm', 'Custom cleanup'
     ]);
-    await expect(menu.locator('.run-target-item').first()).toBeFocused();
+    const rerun = menu.locator('.run-target-command');
+    await expect(rerun).toHaveAttribute('role', 'menuitem');
+    await expect(rerun).not.toHaveAttribute('aria-checked', /.+/);
+    await expect(rerun).toContainText('Rerun Last Task');
+    await expect(rerun).toBeDisabled();
+    await expect(menu.locator('[role="menuitemradio"]').first()).toBeFocused();
     await expect(menu.locator('.run-target-item', { hasText: 'Build shared' }).locator('.run-target-source')).toHaveText('BOBO');
     const unsupported = menu.locator('.run-target-item', { hasText: 'Unsupported npm' });
     await expect(unsupported).toBeDisabled();
@@ -124,6 +171,18 @@ test('Run target menu merges project tasks and remains keyboard-accessible and w
     await expect(menu).toBeHidden();
     await expect(page.locator('#run-code')).toHaveAttribute('aria-label', 'Run Build shared');
     await expect(page.locator('#run-config-btn')).toBeDisabled();
+    expect(await page.evaluate(() => window.BOBO.projectTasks.getSelected())).toEqual({ type: 'task', label: 'Build shared' });
+
+    await page.evaluate(() => {
+      window.__projectTaskReruns = 0;
+      window.BOBO.runner.canRerunLastProjectTask = () => true;
+      window.BOBO.runner.rerunLastProjectTask = () => { window.__projectTaskReruns += 1; return false; };
+    });
+    await trigger.click();
+    await expect(rerun).toBeEnabled();
+    await rerun.click();
+    await expect(menu).toBeHidden();
+    expect(await page.evaluate(() => window.__projectTaskReruns)).toBe(1);
     expect(await page.evaluate(() => window.BOBO.projectTasks.getSelected())).toEqual({ type: 'task', label: 'Build shared' });
 
     await trigger.click();

@@ -15,6 +15,7 @@
   var syncedIdentityEpoch = S.runIdentityEpoch || 0;
   var taskExecutionSequence = 0;
   var activeTaskExecution = null;
+  var lastProjectTask = null;
 
   function tr(source, replacements) {
     if (BOBO.i18n && BOBO.i18n.t) return BOBO.i18n.t(source, replacements);
@@ -38,6 +39,65 @@
 
   function bestEffort(callback) {
     try { return callback(); } catch (_) { return undefined; }
+  }
+
+  function cancelTaskInputPrompt() {
+    if (BOBO.projectTasks && typeof BOBO.projectTasks.cancelInput === 'function') {
+      bestEffort(function() { BOBO.projectTasks.cancelInput(); });
+    }
+  }
+
+  function hasTaskProblemMatcher(taskExecution) {
+    var matcher = taskExecution && taskExecution.problemMatcher;
+    if (Array.isArray(matcher)) return matcher.length > 0;
+    return Boolean(matcher);
+  }
+
+  function applyTaskPresentation(taskExecution) {
+    var presentation = taskExecution && taskExecution.presentation || {};
+    if (presentation.clear === true) BOBO.clearRunOutput();
+    var reveal = presentation.reveal || 'always';
+    var shouldReveal = reveal === 'always' || (reveal === 'silent' && !hasTaskProblemMatcher(taskExecution));
+    if (!shouldReveal) return;
+    if (typeof BOBO.switchToPanel === 'function') BOBO.switchToPanel('output');
+    else if (BOBO.workbench && typeof BOBO.workbench.revealPanel === 'function') BOBO.workbench.revealPanel();
+    if (presentation.focus === true) {
+      var outputPanel = document.getElementById('panel-output');
+      if (outputPanel && typeof outputPanel.focus === 'function') {
+        if (typeof outputPanel.setAttribute === 'function') outputPanel.setAttribute('tabindex', '-1');
+        outputPanel.focus();
+      } else if (typeof document.querySelector === 'function') {
+        var outputTab = document.querySelector('#panel-tabs .panel-tab[data-panel="output"]');
+        if (outputTab && typeof outputTab.focus === 'function') outputTab.focus();
+      }
+    }
+  }
+
+  function echoTaskCommands(taskExecution) {
+    (taskExecution && taskExecution.steps || []).forEach(function(step) {
+      if (step && step.echo !== false && step.displayCommand) BOBO.updateRunOutput('$ ' + step.displayCommand);
+    });
+  }
+
+  function cloudTaskExecution(taskExecution) {
+    return {
+      schemaVersion: taskExecution.schemaVersion,
+      label: taskExecution.label,
+      kind: taskExecution.kind,
+      source: taskExecution.source,
+      steps: (taskExecution.steps || []).map(function(step) {
+        return {
+          id: step.id,
+          label: step.label,
+          kind: step.kind,
+          type: step.type,
+          argv: Array.isArray(step.argv) ? step.argv.slice() : [],
+          cwd: step.cwd,
+          env: Object.assign({}, step.env || {}),
+          dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn.slice() : []
+        };
+      })
+    };
   }
 
   function taskInteractiveStage(taskExecution) {
@@ -240,6 +300,7 @@
   async function cancelTaskExecution(record, reason) {
     if (!record || record.settled) return false;
     record.cancelRequested = true;
+    cancelTaskInputPrompt();
     var cancelReason = String(reason || 'cancelled');
     var context = record.runContext;
     if (context && activeRunPreparation === context) {
@@ -261,6 +322,8 @@
   }
 
   async function prepareWorkspaceLeave(options) {
+    cancelTaskInputPrompt();
+    lastProjectTask = null;
     var preparingTask = activeRunPreparation && activeRunPreparation.taskExecutionHandle;
     runPreparationSequence += 1;
     activeRunPreparation = null;
@@ -271,6 +334,8 @@
   }
 
   async function invalidateRunIdentity(options) {
+    cancelTaskInputPrompt();
+    lastProjectTask = null;
     var preparingTask = activeRunPreparation && activeRunPreparation.taskExecutionHandle;
     S.runIdentityEpoch = (S.runIdentityEpoch || 0) + 1;
     runPreparationSequence += 1;
@@ -590,6 +655,7 @@
     var hadPreparation = !!activeRunPreparation;
     var preparingTask = activeRunPreparation && activeRunPreparation.taskExecutionHandle;
     if (hadPreparation) {
+      cancelTaskInputPrompt();
       runPreparationSequence += 1;
       activeRunPreparation = null;
       settleTaskExecution(preparingTask, { success: false, cancelled: true, code: 'user-cancelled', message: tr('Project task was cancelled.') });
@@ -620,7 +686,30 @@
     return runOnServer({
       filePath: null,
       taskExecution: hasExecutionPlan ? taskRequest : null,
-      taskRequest: hasExecutionPlan ? null : taskRequest
+      taskRequest: hasExecutionPlan ? null : taskRequest,
+      rememberForRerun: true
+    });
+  }
+
+  function canRerunLastProjectTask() {
+    return Boolean(lastProjectTask &&
+      lastProjectTask.rootPath === S.workspaceRoot &&
+      lastProjectTask.workspaceIdentity === S.workspaceIdentity &&
+      lastProjectTask.generation === (S.workspaceGeneration || 0) &&
+      lastProjectTask.identityEpoch === (S.runIdentityEpoch || 0));
+  }
+
+  function rerunLastProjectTask(context) {
+    if (!canRerunLastProjectTask()) {
+      BOBO.updateRunOutput(tr('No project task is available to rerun in this workspace.'));
+      return false;
+    }
+    if (lastProjectTask.execution && lastProjectTask.execution.runOptions && lastProjectTask.execution.runOptions.reevaluateOnRerun === false) {
+      return runProjectTask(lastProjectTask.execution);
+    }
+    return runProjectTask({
+      label: lastProjectTask.label,
+      context: context && typeof context === 'object' ? context : Object.assign({}, lastProjectTask.context || {})
     });
   }
 
@@ -663,6 +752,7 @@
     var taskRequest = options.taskRequest;
     var executionHandle = options.taskExecutionHandle || null;
     var taskProblemSession = null;
+    var presentationApplied = false;
     var isProjectTask = Boolean(taskExecution || taskRequest);
     var cloudFeature = isProjectTask ? 'tasks' : 'run';
     if (S.workspaceTransitionLocked) {
@@ -714,10 +804,14 @@
     }
     beginRunPreparation(runContext);
 
-    BOBO.clearRunOutput();
-    BOBO.updateRunOutput(isProjectTask
-      ? tr('Preparing project task: {task}', { task: taskExecution ? taskExecution.label : taskRequest.label })
-      : 'Preparing run: ' + relativeFilePath);
+    if (!isProjectTask) {
+      BOBO.clearRunOutput();
+      BOBO.updateRunOutput('Preparing run: ' + relativeFilePath);
+    } else if (taskExecution) {
+      applyTaskPresentation(taskExecution);
+      presentationApplied = true;
+      BOBO.updateRunOutput(tr('Preparing project task: {task}', { task: taskExecution.label }));
+    }
 
     // Save before running
     var tab = !isProjectTask && S.tabs.find(function(t) { return t.path === filePath; });
@@ -747,10 +841,30 @@
 
     if (taskRequest) {
       try {
-        var resolvedTask = await global.api.tasksResolve(taskRequest.label, taskRequest.context || {});
+        var resolvedTask = await global.api.tasksResolve(taskRequest.label, taskRequest.context || {}, undefined);
         if (!isRunPreparationCurrent(runContext)) {
           settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.') });
           return false;
+        }
+        if (resolvedTask && resolvedTask.inputRequired && Array.isArray(resolvedTask.inputRequests)) {
+          var inputValues = BOBO.projectTasks && typeof BOBO.projectTasks.resolveInputRequests === 'function'
+            ? await BOBO.projectTasks.resolveInputRequests(resolvedTask.inputRequests)
+            : null;
+          if (!isRunPreparationCurrent(runContext)) {
+            settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.') });
+            return false;
+          }
+          if (inputValues === null) {
+            finishRunPreparation(runContext);
+            BOBO.updateRunOutput(tr('Project task was cancelled.'));
+            settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'input-cancelled', message: tr('Project task was cancelled.') });
+            return false;
+          }
+          resolvedTask = await global.api.tasksResolve(taskRequest.label, taskRequest.context || {}, inputValues);
+          if (!isRunPreparationCurrent(runContext)) {
+            settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.') });
+            return false;
+          }
         }
         if (!resolvedTask || !resolvedTask.success || !resolvedTask.execution) {
           var taskError = resolvedTask && resolvedTask.error || { code: 'TASK_RESOLVE_FAILED', message: 'Unknown task resolution error' };
@@ -763,6 +877,9 @@
           return false;
         }
         taskExecution = resolvedTask.execution;
+        applyTaskPresentation(taskExecution);
+        presentationApplied = true;
+        BOBO.updateRunOutput(tr('Preparing project task: {task}', { task: taskExecution.label }));
       } catch (error) {
         finishRunPreparation(runContext);
         BOBO.updateRunOutput(tr('Error: Task configuration could not be loaded: {message}', { message: error.message }));
@@ -770,6 +887,19 @@
         return false;
       }
     }
+
+    if (taskExecution && options.rememberForRerun) {
+      lastProjectTask = {
+        rootPath: runContext.rootPath,
+        workspaceIdentity: runContext.workspaceIdentity,
+        generation: runContext.generation,
+        identityEpoch: runContext.identityEpoch,
+        label: taskExecution.label,
+        context: Object.assign({}, taskRequest && taskRequest.context || {}),
+        execution: taskExecution
+      };
+    }
+    if (taskExecution && !presentationApplied) applyTaskPresentation(taskExecution);
 
     if (taskExecution && BOBO.taskProblemMatcher && BOBO.taskProblemMatcher.begin) {
       taskProblemSession = BOBO.taskProblemMatcher.begin(taskExecution);
@@ -834,6 +964,7 @@
       BOBO.updateRunOutput(taskExecution
         ? tr('Running project task: {task}', { task: taskExecution.label })
         : 'Running code: ' + relativeFilePath);
+      if (taskExecution) echoTaskCommands(taskExecution);
       if (!taskExecution && rc.compileArgs.length > 0) BOBO.updateRunOutput('Compile args: ' + rc.compileArgs.join(' '));
       if (!taskExecution && rc.runArgs.length > 0) BOBO.updateRunOutput('Program args: ' + rc.runArgs.join(' '));
       if (!taskExecution && rc.buildTarget) {
@@ -852,9 +983,9 @@
 		branch: S.collaboration && S.collaboration.current ? S.collaboration.current.branch : undefined
       };
       if (taskExecution) {
-        // Matchers are renderer-only UI rules. The cloud runner receives only the execution DAG.
-        requestPayload.task = Object.assign({}, taskExecution);
-        delete requestPayload.task.problemMatcher;
+        // Matchers, presentation and rerun state are renderer-only. The cloud
+        // runner receives only the resolved execution DAG.
+        requestPayload.task = cloudTaskExecution(taskExecution);
       } else {
         requestPayload.filePath = relativeFilePath;
         requestPayload.compileArgs = rc.compileArgs.length > 0 ? rc.compileArgs : undefined;
@@ -1128,6 +1259,8 @@
     runActive: runActive,
     runCodeOnServer: runCodeOnServer,
     runProjectTask: runProjectTask,
+    canRerunLastProjectTask: canRerunLastProjectTask,
+    rerunLastProjectTask: rerunLastProjectTask,
     startProjectTaskExecution: startProjectTaskExecution,
     stopActiveRun: stopActiveRun,
     prepareWorkspaceLeave: prepareWorkspaceLeave,

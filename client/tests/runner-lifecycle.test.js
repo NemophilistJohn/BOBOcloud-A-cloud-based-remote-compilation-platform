@@ -34,10 +34,14 @@ function loadRunner(overrides) {
     'run-target-btn': { disabled: false, style: {} },
     'run-config-btn': { disabled: false, style: {} },
     'stop-code': { disabled: false, style: {} },
-    'stdin-input-row': { style: {} }
+    'stdin-input-row': { style: {} },
+    'panel-output': { setAttribute() {}, focus() { focusedElement = 'panel-output'; } },
+    'output-tab': { focus() { focusedElement = 'output-tab'; } }
   };
+  let focusedElement = null;
   const document = {
-    getElementById(id) { return elements[id] || null; }
+    getElementById(id) { return elements[id] || null; },
+    querySelector(selector) { return selector === '#panel-tabs .panel-tab[data-panel="output"]' ? elements['output-tab'] : null; }
   };
   const state = Object.assign({
     workspaceRoot,
@@ -123,6 +127,7 @@ function loadRunner(overrides) {
     outputs,
     apiCalls,
     webSockets,
+    focusedElement: () => focusedElement,
     webSocketConstructions: () => webSocketConstructions
   };
 }
@@ -620,4 +625,224 @@ test('negotiated run and task gates stop requests before server transport', asyn
   assert.equal(outcome.code, 'feature-disabled');
   assert.equal(serverCalls.length, 0);
   assert.equal(fixture.webSocketConstructions(), 0);
+});
+
+test('cancelling an interactive task input settles preparation without syncing or starting a server run', async () => {
+  const serverCalls = [];
+  let resolveCalls = 0;
+  const fixture = loadRunner({
+    api: {
+      tasksResolve() {
+        resolveCalls += 1;
+        return Promise.resolve({
+          success: false,
+          inputRequired: true,
+          inputRequests: [{ id: 'name', type: 'promptString', description: 'Name', default: '', password: false, options: [] }]
+        });
+      }
+    },
+    BOBO: {
+      projectTasks: { resolveInputRequests: () => Promise.resolve(null) },
+      rclone: { sync: () => { throw new Error('sync must not start before task inputs are accepted'); } },
+      sendToServer(action, payload) {
+        serverCalls.push({ action, payload });
+        return Promise.resolve({ success: true });
+      }
+    }
+  });
+
+  assert.equal(await fixture.BOBO.runner.runProjectTask({ label: 'Interactive', context: {} }), false);
+  assert.equal(resolveCalls, 1);
+  assert.deepEqual(serverCalls, []);
+  assert.equal(fixture.webSocketConstructions(), 0);
+  assert.match(fixture.outputs.at(-1), /cancelled/i);
+});
+
+test('accepted task inputs are resolved before synchronization and the server receives only the final plan', async () => {
+  const events = [];
+  const execution = {
+    schemaVersion: 1,
+    label: 'Interactive',
+    kind: 'custom',
+    presentation: { reveal: 'never', echo: false, focus: false, clear: false },
+    runOptions: { reevaluateOnRerun: true, runOn: 'default' },
+    steps: [{ id: 'step', label: 'Interactive', kind: 'custom', type: 'process', argv: ['echo', 'accepted'], cwd: '', env: {}, dependsOn: [], echo: false, displayCommand: 'echo accepted' }]
+  };
+  let resolveCalls = 0;
+  const fixture = loadRunner({
+    api: {
+      tasksResolve(_label, _context, inputs) {
+        resolveCalls += 1;
+        events.push(resolveCalls === 1 ? 'resolve:inputs' : 'resolve:plan');
+        if (resolveCalls === 1) return Promise.resolve({ success: false, inputRequired: true, inputRequests: [{ id: 'name', type: 'promptString' }] });
+        assert.deepEqual(inputs, { name: 'accepted' });
+        return Promise.resolve({ success: true, execution });
+      }
+    },
+    BOBO: {
+      projectTasks: {
+        resolveInputRequests() { events.push('input'); return Promise.resolve({ name: 'accepted' }); }
+      },
+      sendToServer(action, payload) {
+        if (action === 'runTask') {
+          events.push('runTask');
+          assert.deepEqual(payload.task.steps[0].argv, ['echo', 'accepted']);
+          return Promise.resolve({ success: false, error: 'test stop' });
+        }
+        if (action === 'cancelRun') return Promise.resolve({ success: true });
+        throw new Error('Unexpected server action: ' + action);
+      }
+    }
+  });
+
+  await fixture.BOBO.runner.runProjectTask({ label: 'Interactive', context: {} });
+  assert.deepEqual(events, ['resolve:inputs', 'input', 'resolve:plan', 'runTask']);
+});
+
+test('task presentation is applied locally and UI metadata never crosses the server boundary', async () => {
+  const serverCalls = [];
+  const panels = [];
+  let clearCount = 0;
+  const fixture = loadRunner({
+    BOBO: {
+      clearRunOutput() { clearCount += 1; },
+      switchToPanel(panel) { panels.push(panel); },
+      sendToServer(action, payload) {
+        serverCalls.push({ action, payload });
+        if (action === 'runTask') return Promise.resolve({ success: false, error: 'test stop' });
+        if (action === 'cancelRun') return Promise.resolve({ success: true });
+        throw new Error('Unexpected server action: ' + action);
+      }
+    }
+  });
+  const execution = {
+    schemaVersion: 1,
+    label: 'Presented',
+    kind: 'build',
+    source: 'vscode',
+    presentation: { reveal: 'always', echo: true, focus: true, clear: true },
+    runOptions: { reevaluateOnRerun: false, runOn: 'default' },
+    problemMatcher: '$test',
+    steps: [{
+      id: 'build', label: 'Build', kind: 'build', type: 'process', argv: ['node', 'build.js'], cwd: '', env: {}, dependsOn: [],
+      echo: true, displayCommand: 'node build.js'
+    }]
+  };
+
+  assert.equal(await fixture.BOBO.runner.runProjectTask(execution), false);
+  assert.equal(clearCount, 1);
+  assert.deepEqual(panels, ['output']);
+  assert.equal(fixture.focusedElement(), 'panel-output');
+  assert.ok(fixture.outputs.includes('$ node build.js'));
+  const runCall = serverCalls.find((call) => call.action === 'runTask');
+  assert.ok(runCall);
+  assert.deepEqual(Object.keys(runCall.payload.task).sort(), ['kind', 'label', 'schemaVersion', 'source', 'steps']);
+  assert.deepEqual(Object.keys(runCall.payload.task.steps[0]).sort(), ['argv', 'cwd', 'dependsOn', 'env', 'id', 'kind', 'label', 'type']);
+  assert.equal(runCall.payload.task.source, 'vscode');
+  assert.equal(runCall.payload.task.presentation, undefined);
+  assert.equal(runCall.payload.task.runOptions, undefined);
+  assert.equal(runCall.payload.task.problemMatcher, undefined);
+  assert.equal(runCall.payload.task.steps[0].displayCommand, undefined);
+  assert.equal(runCall.payload.task.steps[0].echo, undefined);
+  assert.deepEqual(runCall.payload.task.steps[0].argv, ['node', 'build.js']);
+
+  const silentWithMatcher = Object.assign({}, execution, {
+    presentation: { reveal: 'silent', echo: false, focus: false, clear: false }
+  });
+  await fixture.BOBO.runner.runProjectTask(silentWithMatcher);
+  assert.deepEqual(panels, ['output'], 'silent tasks with a problem matcher keep the output panel hidden');
+  const silentWithoutMatcher = Object.assign({}, silentWithMatcher);
+  delete silentWithoutMatcher.problemMatcher;
+  await fixture.BOBO.runner.runProjectTask(silentWithoutMatcher);
+  assert.deepEqual(panels, ['output', 'output'], 'silent tasks without problem scanning reveal the output panel');
+  await fixture.BOBO.runner.runProjectTask(Object.assign({}, silentWithoutMatcher, {
+    presentation: { reveal: 'never', echo: false, focus: false, clear: false }
+  }));
+  assert.deepEqual(panels, ['output', 'output'], 'never keeps the output panel hidden even without a problem matcher');
+});
+
+test('reevaluateOnRerun false reuses the resolved plan inside the same workspace identity', async () => {
+  const runPayloads = [];
+  let resolveCalls = 0;
+  const execution = {
+    schemaVersion: 1,
+    label: 'Stable rerun',
+    kind: 'test',
+    presentation: { reveal: 'never', echo: false, focus: false, clear: false },
+    runOptions: { reevaluateOnRerun: false, runOn: 'default' },
+    steps: [{ id: 'test', label: 'Test', kind: 'test', type: 'process', argv: ['test', 'first-value'], cwd: '', env: {}, dependsOn: [], echo: false, displayCommand: 'test first-value' }]
+  };
+  const fixture = loadRunner({
+    api: {
+      tasksResolve() {
+        resolveCalls += 1;
+        return Promise.resolve({ success: true, execution });
+      }
+    },
+    BOBO: {
+      sendToServer(action, payload) {
+        if (action === 'runTask') {
+          runPayloads.push(payload.task);
+          return Promise.resolve({ success: false, error: 'test stop' });
+        }
+        if (action === 'cancelRun') return Promise.resolve({ success: true });
+        throw new Error('Unexpected server action: ' + action);
+      }
+    }
+  });
+
+  assert.equal(fixture.BOBO.runner.canRerunLastProjectTask(), false);
+  await fixture.BOBO.runner.runProjectTask({ label: 'Stable rerun', context: { activeFile: 'first.js' } });
+  assert.equal(fixture.BOBO.runner.canRerunLastProjectTask(), true);
+  await fixture.BOBO.runner.rerunLastProjectTask({ activeFile: 'second.js' });
+  assert.equal(resolveCalls, 1);
+  assert.equal(runPayloads.length, 2);
+  assert.deepEqual(runPayloads.map((task) => task.steps[0].argv), [
+    ['test', 'first-value'],
+    ['test', 'first-value']
+  ]);
+
+  fixture.state.workspaceIdentity = 8;
+  assert.equal(fixture.BOBO.runner.canRerunLastProjectTask(), false);
+  assert.equal(fixture.BOBO.runner.rerunLastProjectTask({ activeFile: 'third.js' }), false);
+  assert.match(fixture.outputs.at(-1), /no project task/i);
+});
+
+test('reevaluateOnRerun true resolves again with the current editor context', async () => {
+  const resolvedContexts = [];
+  const runArguments = [];
+  const fixture = loadRunner({
+    api: {
+      tasksResolve(_label, context) {
+        const activeFile = String(context.activeFile || '');
+        resolvedContexts.push(activeFile);
+        return Promise.resolve({
+          success: true,
+          execution: {
+            schemaVersion: 1,
+            label: 'Dynamic rerun',
+            kind: 'test',
+            presentation: { reveal: 'never', echo: false, focus: false, clear: false },
+            runOptions: { reevaluateOnRerun: true, runOn: 'default' },
+            steps: [{ id: 'test', label: 'Test', kind: 'test', type: 'process', argv: ['test', activeFile], cwd: '', env: {}, dependsOn: [], echo: false, displayCommand: 'test' }]
+          }
+        });
+      }
+    },
+    BOBO: {
+      sendToServer(action, payload) {
+        if (action === 'runTask') {
+          runArguments.push(payload.task.steps[0].argv.slice());
+          return Promise.resolve({ success: false, error: 'test stop' });
+        }
+        if (action === 'cancelRun') return Promise.resolve({ success: true });
+        throw new Error('Unexpected server action: ' + action);
+      }
+    }
+  });
+
+  await fixture.BOBO.runner.runProjectTask({ label: 'Dynamic rerun', context: { activeFile: 'first.js' } });
+  await fixture.BOBO.runner.rerunLastProjectTask({ activeFile: 'second.js' });
+  assert.deepEqual(resolvedContexts, ['first.js', 'second.js']);
+  assert.deepEqual(runArguments, [['test', 'first.js'], ['test', 'second.js']]);
 });

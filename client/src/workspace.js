@@ -670,7 +670,9 @@
       var childrenUl = document.createElement('ul');
       childrenUl.className = 'tree-children';
       childrenUl.style.paddingLeft = '14px';
-      childrenUl._boboChildren = node.children || [];
+      childrenUl._boboChildren = BOBO.workspaceSettings && BOBO.workspaceSettings.filterTreeChildren
+        ? BOBO.workspaceSettings.filterTreeChildren(node.children)
+        : (node.children || []);
       childrenUl.setAttribute('data-rendered-count', '0');
 
       if (!isExpanded) {

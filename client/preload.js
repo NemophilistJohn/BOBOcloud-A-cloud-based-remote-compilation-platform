@@ -28,7 +28,7 @@ contextBridge.exposeInMainWorld('api', {
   rejectWorkspaceSwitch: (details) => ipcRenderer.invoke('workspace-switch-reject', details),
   setArtifactRunContext: (context) => ipcRenderer.invoke('artifact-run-context', context),
   tasksList: () => ipcRenderer.invoke('tasks:list'),
-  tasksResolve: (label, context) => ipcRenderer.invoke('tasks:resolve', { label, context }),
+  tasksResolve: (label, context, inputs) => ipcRenderer.invoke('tasks:resolve', { label, context, inputs }),
   // Debug Adapter Protocol. Credentials and the WebSocket stay in main.
   dapConfigurations: () => ipcRenderer.invoke('dap:configurations'),
   dapResolve: (id, context) => ipcRenderer.invoke('dap:resolve', { id, context }),

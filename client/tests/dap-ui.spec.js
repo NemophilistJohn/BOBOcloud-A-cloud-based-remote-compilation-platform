@@ -68,7 +68,7 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
     });
     fixture = { app, sandbox };
     await app.evaluate(() => {
-      globalThis.__boboDapProbe = { starts: [], requests: [], breakpoints: [] };
+      globalThis.__boboDapProbe = { starts: [], requests: [], breakpoints: [], exceptionBreakpoints: [], advancedMoveApplied: false };
       globalThis.WebSocket = class TestDapSocket {
         constructor(url) {
           this.url = String(url);
@@ -100,15 +100,48 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
           }
           globalThis.__boboDapProbe.requests.push(message);
           if (message.command === 'initialize') {
-            this.response(message, { supportsConfigurationDoneRequest: true, supportsRestartRequest: true });
+            const capabilities = globalThis.__boboDapProbe.starts.length >= 3 ? {
+              supportsConfigurationDoneRequest: false
+            } : {
+              supportsConfigurationDoneRequest: true,
+              supportsRestartRequest: true,
+              supportsConditionalBreakpoints: true,
+              supportsHitConditionalBreakpoints: true,
+              supportsLogPoints: true,
+              supportsExceptionFilterOptions: true,
+              exceptionBreakpointFilters: [
+                {
+                  filter: 'caught', label: 'Caught Exceptions', default: false, supportsCondition: true,
+                  description: 'Break on caught exceptions', conditionDescription: 'Exception expression'
+                },
+                { filter: 'uncaught', label: 'Uncaught Exceptions', default: true, supportsCondition: false }
+              ]
+            };
+            this.response(message, capabilities);
           } else if (message.command === 'launch') {
             this.response(message, {});
             // Exercise the renderer race where initialized follows the response immediately.
             this.respond({ seq: 40, type: 'event', event: 'initialized', body: {} });
           } else if (message.command === 'setBreakpoints') {
             globalThis.__boboDapProbe.breakpoints.push(message.arguments);
+            const advanced = (message.arguments.breakpoints || []).some(item => item.condition || item.hitCondition || item.logMessage);
+            const moveSimple = globalThis.__boboDapProbe.breakpoints.length === 1;
+            const moveAdvanced = advanced && !globalThis.__boboDapProbe.advancedMoveApplied;
             this.response(message, {
-              breakpoints: (message.arguments.breakpoints || []).map((item, index) => ({ id: index + 1, verified: true, line: item.line + 1 }))
+              breakpoints: (message.arguments.breakpoints || []).map((item, index) => ({
+                id: index + 1,
+                verified: !moveAdvanced,
+                message: moveAdvanced ? 'Condition is being validated' : '',
+                line: item.line + (moveSimple || moveAdvanced ? 1 : 0),
+                column: item.column ? item.column + (moveAdvanced ? 1 : 0) : undefined
+              }))
+            });
+            if (moveAdvanced) globalThis.__boboDapProbe.advancedMoveApplied = true;
+          } else if (message.command === 'setExceptionBreakpoints') {
+            globalThis.__boboDapProbe.exceptionBreakpoints.push(message.arguments);
+            this.response(message, {
+              breakpoints: [...(message.arguments.filters || []), ...(message.arguments.filterOptions || [])]
+                .map((_, index) => ({ id: 100 + index, verified: true }))
             });
           } else if (message.command === 'configurationDone') {
             this.response(message, {});
@@ -211,9 +244,15 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
 
     const editorBox = await page.locator('#container .monaco-editor').boundingBox();
     const linePosition = await page.evaluate(() => window.BOBO.state.editor.getScrolledVisiblePosition({ lineNumber: 2, column: 1 }));
+    const unsupportedLinePosition = await page.evaluate(() => window.BOBO.state.editor.getScrolledVisiblePosition({ lineNumber: 3, column: 1 }));
+    await page.mouse.click(editorBox.x + 8, editorBox.y + unsupportedLinePosition.top + 10, { button: 'right' });
+    await expect(page.locator('.debug-breakpoint-menu-item')).toHaveText(['Add Breakpoint']);
+    await page.keyboard.press('Escape');
     await page.mouse.click(editorBox.x + 8, editorBox.y + linePosition.top + 10);
     await expect(page.locator('.dap-breakpoint')).toHaveCount(1);
-    expect(await page.evaluate(() => window.BOBO.dap.getBreakpoints())).toEqual([{ path: 'main.py', breakpoints: [{ line: 2, verified: null, message: '', id: 0 }] }]);
+    expect(await page.evaluate(() => window.BOBO.dap.getBreakpoints())).toEqual([{ path: 'main.py', breakpoints: [{
+      line: 2, enabled: true, verified: null, message: '', id: 0, condition: '', hitCondition: '', logMessage: ''
+    }] }]);
 
     await page.locator('#debug-start').click();
     expect(await page.evaluate(() => window.BOBO.dap.start())).toBe(true);
@@ -255,8 +294,110 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
     await expect(nestedVariables.locator('.debug-variable-truncated')).toHaveCount(1);
     await expect(nestedVariables.locator('.debug-load-more')).toHaveCount(0);
     await expect(page.locator('.dap-breakpoint')).toHaveCount(1);
-    expect(await page.evaluate(() => window.BOBO.dap.getBreakpoints())).toEqual([{ path: 'main.py', breakpoints: [{ line: 3, verified: true, message: '', id: 1, stale: false }] }]);
+    expect(await page.evaluate(() => window.BOBO.dap.getBreakpoints())).toEqual([{ path: 'main.py', breakpoints: [{
+      line: 2, enabled: true, verified: true, message: '', id: 1, stale: false, actualLine: 3,
+      condition: '', hitCondition: '', logMessage: ''
+    }] }]);
     await expect(page.locator('#run-code')).toBeDisabled();
+
+    const sourceBreakpointRow = page.locator('.debug-breakpoint-row[data-path="main.py"]');
+    await expect(sourceBreakpointRow).toHaveCount(1);
+    await expect(sourceBreakpointRow.locator('.debug-breakpoint-location')).toContainText('actual: main.py:3:1');
+    await expect(page.locator('.debug-exception-breakpoint-row')).toHaveCount(2);
+    await expect(page.locator('.debug-exception-breakpoint-row[data-filter="caught"] .debug-exception-enabled')).not.toBeChecked();
+    await expect(page.locator('.debug-exception-breakpoint-row[data-filter="uncaught"] .debug-exception-enabled')).toBeChecked();
+    expect(await app.evaluate(() => globalThis.__boboDapProbe.exceptionBreakpoints[0])).toEqual({
+      filters: [], filterOptions: [{ filterId: 'uncaught' }]
+    });
+
+    await sourceBreakpointRow.locator('.debug-breakpoint-edit').click();
+    await page.locator('.debug-breakpoint-column').fill('5');
+    await page.locator('.debug-breakpoint-condition').fill('value > 3');
+    await page.locator('.debug-breakpoint-hit-condition').fill('2');
+    await page.locator('.debug-breakpoint-log-message').fill('  value={value}  ');
+    await page.locator('.debug-breakpoint-editor button.primary').click();
+    await expect.poll(() => app.evaluate(() => globalThis.__boboDapProbe.breakpoints.length)).toBeGreaterThanOrEqual(2);
+    expect(await app.evaluate(() => globalThis.__boboDapProbe.breakpoints.at(-1).breakpoints[0])).toEqual({
+      line: 2, column: 5, condition: 'value > 3', hitCondition: '2', logMessage: '  value={value}  '
+    });
+    await expect(page.locator('.dap-breakpoint-rejected.dap-breakpoint-conditional')).toHaveCount(1);
+    expect(await page.evaluate(() => window.BOBO.dap.getBreakpoints()[0].breakpoints[0])).toMatchObject({
+      line: 2, column: 5, actualLine: 3, actualColumn: 6,
+      enabled: true, verified: false, message: 'Condition is being validated',
+      condition: 'value > 3', hitCondition: '2', logMessage: '  value={value}  '
+    });
+
+    await sourceBreakpointRow.locator('.debug-breakpoint-enabled').uncheck();
+    await expect.poll(() => app.evaluate(() => globalThis.__boboDapProbe.breakpoints.at(-1)?.breakpoints.length)).toBe(0);
+    await expect(page.locator('.dap-breakpoint-disabled')).toHaveCount(1);
+    expect(await page.evaluate(() => window.BOBO.dap.getBreakpoints()[0].breakpoints[0].enabled)).toBe(false);
+    await sourceBreakpointRow.locator('.debug-breakpoint-enabled').check();
+    await expect.poll(() => app.evaluate(() => globalThis.__boboDapProbe.breakpoints.at(-1)?.breakpoints[0]?.logMessage)).toBe('  value={value}  ');
+    expect(await app.evaluate(() => globalThis.__boboDapProbe.breakpoints.at(-1).breakpoints[0])).toMatchObject({ line: 2, column: 5 });
+    await expect(page.locator('.dap-logpoint.dap-breakpoint-conditional')).toHaveCount(1);
+
+    await app.evaluate(() => globalThis.__boboDapSocket.emit('message', { data: JSON.stringify({
+      seq: 46, type: 'event', event: 'breakpoint', body: {
+        reason: 'changed',
+        breakpoint: {
+          id: 1, verified: false, message: 'Adapter moved the breakpoint', line: 4, column: 2,
+          source: { name: 'main.py', path: 'bobocloud-dap:///main.py' }
+        }
+      }
+    }) }));
+    await expect.poll(() => page.evaluate(() => window.BOBO.dap.getBreakpoints()[0].breakpoints[0].actualLine)).toBe(4);
+    expect(await page.evaluate(() => window.BOBO.dap.getBreakpoints()[0].breakpoints[0])).toMatchObject({
+      line: 2, column: 5, actualLine: 4, actualColumn: 2,
+      verified: false, message: 'Adapter moved the breakpoint'
+    });
+    await app.evaluate(() => globalThis.__boboDapSocket.emit('message', { data: JSON.stringify({
+      seq: 47, type: 'event', event: 'breakpoint', body: {
+        reason: 'changed',
+        breakpoint: {
+          id: 1, verified: true, line: 2, column: 5,
+          source: { name: 'main.py', path: 'bobocloud-dap:///main.py' }
+        }
+      }
+    }) }));
+    await expect.poll(() => page.evaluate(() => window.BOBO.dap.getBreakpoints()[0].breakpoints[0].actualLine)).toBe(2);
+
+    const caughtExceptionRow = page.locator('.debug-exception-breakpoint-row[data-filter="caught"]');
+    await caughtExceptionRow.locator('.debug-breakpoint-edit').click();
+    await page.locator('.debug-exception-condition').fill('error.name === "Expected"');
+    await page.locator('.debug-breakpoint-editor button.primary').click();
+    await expect.poll(() => app.evaluate(() => globalThis.__boboDapProbe.exceptionBreakpoints.length)).toBeGreaterThanOrEqual(2);
+    expect(await app.evaluate(() => globalThis.__boboDapProbe.exceptionBreakpoints.at(-1))).toEqual({
+      filters: [],
+      filterOptions: [
+        { filterId: 'caught', condition: 'error.name === "Expected"' },
+        { filterId: 'uncaught' }
+      ]
+    });
+    await page.locator('.debug-exception-breakpoint-row[data-filter="uncaught"] .debug-exception-enabled').uncheck();
+    await expect.poll(() => app.evaluate(() => globalThis.__boboDapProbe.exceptionBreakpoints.at(-1)?.filters.length)).toBe(0);
+    expect(await app.evaluate(() => globalThis.__boboDapProbe.exceptionBreakpoints.at(-1))).toEqual({
+      filters: [],
+      filterOptions: [{ filterId: 'caught', condition: 'error.name === "Expected"' }]
+    });
+
+    await sourceBreakpointRow.locator('.debug-breakpoint-remove').click();
+    await expect(page.locator('.debug-breakpoint-row[data-path="main.py"]')).toHaveCount(0);
+    await expect.poll(() => app.evaluate(() => globalThis.__boboDapProbe.breakpoints.at(-1)?.breakpoints.length)).toBe(0);
+    const replacementEditorBox = await page.locator('#container .monaco-editor').boundingBox();
+    const replacementLinePosition = await page.evaluate(() => window.BOBO.state.editor.getScrolledVisiblePosition({ lineNumber: 2, column: 1 }));
+    await page.mouse.click(replacementEditorBox.x + 8, replacementEditorBox.y + replacementLinePosition.top + 10, { button: 'right' });
+    await expect(page.locator('.debug-breakpoint-menu')).toBeVisible();
+    await expect(page.locator('.debug-breakpoint-menu-item')).toHaveText([
+      'Add Breakpoint', 'Add Conditional Breakpoint', 'Add Logpoint'
+    ]);
+    await page.locator('.debug-breakpoint-menu-item', { hasText: 'Add Conditional Breakpoint' }).click();
+    await page.locator('.debug-breakpoint-condition').fill('marker');
+    await page.locator('.debug-breakpoint-editor button.primary').click();
+    await expect(page.locator('.debug-breakpoint-row[data-path="main.py"]')).toHaveCount(1);
+    await expect.poll(() => app.evaluate(() => globalThis.__boboDapProbe.breakpoints.at(-1)?.breakpoints[0]?.condition)).toBe('marker');
+    expect(await page.evaluate(() => window.BOBO.dap.getBreakpoints()[0].breakpoints[0])).toMatchObject({
+      line: 2, column: 1, enabled: true, condition: 'marker', verified: true
+    });
 
     await page.locator('#debug-add-watch').click();
     await page.locator('.debug-watch-input input').fill('value');
@@ -272,7 +413,9 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
     await expect(page.locator('.dap-breakpoint-unverified')).toHaveCount(1);
     await expect(page.locator('#debug-console-output')).toContainText('restart debugging');
     expect(await page.evaluate(() => window.BOBO.dap.getBreakpoints())).toEqual([{ path: 'main.py', breakpoints: [{
-      line: 4, verified: false, message: 'Source changed; restart debugging to apply updated breakpoints.', id: 1, stale: true
+      line: 3, column: 1, enabled: true, verified: false,
+      message: 'Source changed; restart debugging to apply updated breakpoints.', id: 1, stale: true,
+      condition: 'marker', hitCondition: '', logMessage: '', actualLine: 3, actualColumn: 1
     }] }]);
     await page.waitForTimeout(250);
     expect(await app.evaluate(() => globalThis.__boboDapProbe.breakpoints.length)).toBe(breakpointRequestsBeforeEdit);
@@ -339,8 +482,22 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
     expect(launchRequest.arguments).not.toHaveProperty('preLaunchTask');
     expect(launchRequest.arguments).not.toHaveProperty('postDebugTask');
     expect(probe.requests.map(item => item.command)).toEqual(expect.arrayContaining([
-      'initialize', 'launch', 'setBreakpoints', 'configurationDone', 'threads', 'stackTrace', 'scopes', 'variables', 'continue', 'pause', 'disconnect'
+      'initialize', 'launch', 'setBreakpoints', 'setExceptionBreakpoints', 'configurationDone', 'threads', 'stackTrace', 'scopes', 'variables', 'continue', 'pause', 'disconnect'
     ]));
+    const firstSetBreakpoints = probe.requests.findIndex(item => item.command === 'setBreakpoints');
+    const firstSetExceptions = probe.requests.findIndex(item => item.command === 'setExceptionBreakpoints');
+    const firstConfigurationDone = probe.requests.findIndex(item => item.command === 'configurationDone');
+    expect(firstSetBreakpoints).toBeGreaterThan(-1);
+    expect(firstSetExceptions).toBeGreaterThan(firstSetBreakpoints);
+    expect(firstConfigurationDone).toBeGreaterThan(firstSetExceptions);
+    const initializeIndexes = probe.requests.reduce((indexes, item, index) => {
+      if (item.command === 'initialize') indexes.push(index);
+      return indexes;
+    }, []);
+    const thirdSessionRequests = probe.requests.slice(initializeIndexes[2]);
+    const thirdSessionExceptions = thirdSessionRequests.find(item => item.command === 'setExceptionBreakpoints');
+    expect(thirdSessionExceptions.arguments).toEqual({ filters: [] });
+    expect(thirdSessionRequests.some(item => item.command === 'configurationDone')).toBe(false);
     expect(probe.breakpoints[0].source.path).toBe('bobocloud-dap:///main.py');
     const variablesRequest = probe.requests.find(item => item.command === 'variables');
     expect(variablesRequest.arguments).toMatchObject({ variablesReference: 20, start: 0, count: 200 });

@@ -64,7 +64,7 @@ const auth = createAuthController({ ipcMain, settings, disposeLsp: disposeRemote
 menu = createMenuController({ Menu, dialog, getWindow, languagePacks, getAuthState: auth.getState,
   pickAndOpenWorkspace: workspace.pickAndOpenWorkspace });
 const ai = createAiController({ ipcMain, getWindow, settings });
-const tasks = createTasksController({ ipcMain, getWorkspaceIdentity: workspace.getIdentity });
+const tasks = createTasksController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity });
 dap = createDapController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity, settings });
 terminal = createTerminalController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity, settings });
 const windowState = createWindowState({ screen, filePath: settings.paths.windowState, getWindow });

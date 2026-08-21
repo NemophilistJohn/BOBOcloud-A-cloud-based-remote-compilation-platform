@@ -9,6 +9,8 @@
   var selected = { type: 'file', label: '' };
   var disposers = [];
   var refreshGeneration = 0;
+  var taskInputDialog = null;
+  var activeTaskInput = null;
 
   function tr(source, replacements) {
     if (BOBO.i18n && BOBO.i18n.t) return BOBO.i18n.t(source, replacements);
@@ -72,7 +74,10 @@
       version: item.version || '',
       index: Number(item.taskIndex || 0) + 1,
       task: item.task || '',
-      type: item.taskType || '',
+      type: item.taskType || item.inputType || '',
+      input: item.inputId || '',
+      command: item.command || '',
+      setting: item.configKey || '',
       order: item.dependsOrder || '',
       field: item.field || ''
     };
@@ -80,15 +85,24 @@
       TASKS_JSON_PARSE_ERROR: 'Task file could not be parsed at {path}:{line}:{column} ({reason}).',
       TASKS_INVALID_ROOT: 'Task file must contain a JSON object: {path}',
       TASKS_VERSION_UNSUPPORTED: 'Task file {path} uses version {version}; only 2.0.0 can run.',
-      TASKS_INPUTS_UNSUPPORTED: 'Task inputs are preserved but interactive input variables cannot run: {path}',
       TASKS_ARRAY_MISSING: 'Task file must define a tasks array: {path}',
+      TASK_INPUT_DEFINITION_INVALID: 'Task input "{input}" is invalid in {path}.',
+      TASK_INPUT_TYPE_UNSUPPORTED: 'Task input "{input}" uses unsupported type "{type}" in {path}.',
+      TASK_INPUT_COMMAND_NOT_ALLOWED: 'Task input "{input}" uses command "{command}", which is not an allowed built-in command.',
+      TASK_INPUT_DUPLICATE: 'Task input "{input}" is defined more than once in {path}.',
+      TASK_INPUT_CONFLICT: 'Task input "{input}" from {sourcePath} overrides the input from {overriddenSourcePath}.',
+      TASK_INPUT_UNAVAILABLE: 'Task "{task}" references unavailable input "{input}".',
+      TASK_COMMAND_NOT_ALLOWED: 'Task "{task}" references command "{command}", which is not an allowed built-in command.',
+      TASK_CONFIG_NOT_ALLOWED: 'Task "{task}" references setting "{setting}", which is outside the imported settings whitelist.',
       TASK_LABEL_MISSING: 'Task #{index} has no label in {path}.',
       TASK_TYPE_UNSUPPORTED: 'Task "{task}" uses unsupported type "{type}". Only shell and process can run.',
       TASK_BACKGROUND_UNSUPPORTED: 'Task "{task}" is a background task, which is not supported yet.',
       TASK_DEPENDS_ORDER_UNSUPPORTED: 'Task "{task}" uses unsupported dependency order "{order}".',
-      TASK_VARIABLE_UNSUPPORTED: 'Task "{task}" uses an input, command, or configuration variable that is not available.',
       TASK_COMMAND_MISSING: 'Task "{task}" has neither a command nor a dependency.',
-      TASK_FIELD_PRESERVED: 'Task "{task}" keeps {field}, but the cloud output runner does not apply it.',
+      TASK_PRESENTATION_VALUE_INVALID: 'Task "{task}" has an invalid {field} value; the default output behavior is used.',
+      TASK_PRESENTATION_FIELD_UNSUPPORTED: 'Task "{task}" uses {field}, which the shared cloud output panel cannot represent.',
+      TASK_RUN_ON_MANUAL_ONLY: 'Task "{task}" requests folder-open execution, but BOBOCLOUD only runs workspace tasks explicitly.',
+      TASK_RUN_OPTION_UNSUPPORTED: 'Task "{task}" uses unsupported run option {field}.',
       TASK_PLATFORM_CLOUD_LINUX: 'Task "{task}" keeps Windows and macOS overrides, but cloud execution uses the Linux override.',
       TASK_LABEL_CONFLICT: 'Task "{task}" from {sourcePath} overrides the task from {overriddenSourcePath}.',
       TASKS_LOAD_FAILED: 'Task configuration could not be loaded.'
@@ -191,6 +205,35 @@
     tasks.forEach(function(task) { menu.appendChild(createMenuItem(task)); });
   }
 
+  function createRerunMenuItem() {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'run-target-item run-target-command';
+    button.setAttribute('role', 'menuitem');
+    var taskFeature = featureDecision('task');
+    var canRerun = Boolean(BOBO.runner &&
+      typeof BOBO.runner.canRerunLastProjectTask === 'function' &&
+      BOBO.runner.canRerunLastProjectTask());
+    button.disabled = !taskFeature.available || !canRerun;
+    if (!taskFeature.available) button.title = unavailableText('task');
+    else if (!canRerun) button.title = tr('No project task is available to rerun in this workspace.');
+
+    var icon = document.createElement('span');
+    icon.className = 'run-target-check run-target-command-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = '\u21BB';
+    var label = document.createElement('span');
+    label.className = 'run-target-label';
+    if (BOBO.i18n && BOBO.i18n.bindText) BOBO.i18n.bindText(label, 'Rerun Last Task');
+    else label.textContent = tr('Rerun Last Task');
+    button.append(icon, label);
+    button.addEventListener('click', function() {
+      closeMenu({ restoreFocus: true });
+      rerunLast();
+    });
+    return button;
+  }
+
   function renderMenu() {
     var menu = document.getElementById('run-target-menu');
     if (!menu) return;
@@ -224,6 +267,10 @@
       warning.title = configuration.warnings.map(warningText).join('\n');
       menu.appendChild(warning);
     }
+    var divider = document.createElement('div');
+    divider.className = 'run-target-divider';
+    divider.setAttribute('role', 'separator');
+    menu.append(divider, createRerunMenuItem());
   }
 
   function positionMenu() {
@@ -257,6 +304,145 @@
     }, 0);
   }
 
+  function finishTaskInput(cancelled) {
+    if (!taskInputDialog || !activeTaskInput) return;
+    var pending = activeTaskInput;
+    activeTaskInput = null;
+    taskInputDialog.overlay.classList.remove('open');
+    taskInputDialog.overlay.setAttribute('aria-hidden', 'true');
+    var value = cancelled ? null : String(taskInputDialog.control && taskInputDialog.control.value || '');
+    if (taskInputDialog.control) taskInputDialog.control.value = '';
+    taskInputDialog.fieldHost.replaceChildren();
+    taskInputDialog.control = null;
+    if (taskInputDialog.previousFocus && typeof taskInputDialog.previousFocus.focus === 'function') {
+      taskInputDialog.previousFocus.focus();
+    }
+    taskInputDialog.previousFocus = null;
+    pending.resolve({
+      cancelled: cancelled === true,
+      value: value,
+      rootPath: pending.rootPath,
+      workspaceIdentity: pending.workspaceIdentity
+    });
+  }
+
+  function ensureTaskInputDialog() {
+    if (taskInputDialog) return taskInputDialog;
+    var overlay = document.createElement('div');
+    overlay.id = 'task-input-dialog';
+    overlay.setAttribute('aria-hidden', 'true');
+    var card = document.createElement('form');
+    card.className = 'task-input-card';
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-modal', 'true');
+    card.setAttribute('aria-labelledby', 'task-input-title');
+    card.setAttribute('aria-describedby', 'task-input-description');
+    var body = document.createElement('div');
+    body.className = 'task-input-body';
+    var title = document.createElement('h2');
+    title.id = 'task-input-title';
+    title.className = 'task-input-title';
+    var description = document.createElement('label');
+    description.id = 'task-input-description';
+    description.className = 'task-input-description';
+    var fieldHost = document.createElement('div');
+    fieldHost.className = 'task-input-field';
+    var foot = document.createElement('div');
+    foot.className = 'task-input-foot';
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'ss-btn ss-btn-ghost';
+    var confirm = document.createElement('button');
+    confirm.type = 'submit';
+    confirm.className = 'ss-btn ss-btn-primary';
+    foot.append(cancel, confirm);
+    body.append(title, description, fieldHost);
+    card.append(body, foot);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    taskInputDialog = { overlay: overlay, card: card, title: title, description: description, fieldHost: fieldHost, cancel: cancel, confirm: confirm, control: null, previousFocus: null };
+    cancel.addEventListener('click', function() { finishTaskInput(true); });
+    card.addEventListener('submit', function(event) { event.preventDefault(); finishTaskInput(false); });
+    overlay.addEventListener('pointerdown', function(event) { if (event.target === overlay) finishTaskInput(true); });
+    overlay.addEventListener('keydown', function(event) {
+      if (event.key === 'Escape') { event.preventDefault(); finishTaskInput(true); return; }
+      if (event.key !== 'Tab') return;
+      var focusable = [taskInputDialog.control, cancel, confirm].filter(Boolean);
+      var index = focusable.indexOf(document.activeElement);
+      if (event.shiftKey && index <= 0) { event.preventDefault(); focusable[focusable.length - 1].focus(); }
+      if (!event.shiftKey && index === focusable.length - 1) { event.preventDefault(); focusable[0].focus(); }
+    });
+    return taskInputDialog;
+  }
+
+  function updateTaskInputDialogText() {
+    if (!taskInputDialog) return;
+    taskInputDialog.title.textContent = tr('Task input');
+    taskInputDialog.cancel.textContent = tr('Cancel');
+    taskInputDialog.confirm.textContent = tr('Continue');
+  }
+
+  function promptTaskInput(request) {
+    var dialog = ensureTaskInputDialog();
+    if (activeTaskInput) finishTaskInput(true);
+    updateTaskInputDialogText();
+    dialog.description.textContent = request.description || (request.type === 'pickString'
+      ? tr('Choose a value for {input}', { input: request.id })
+      : tr('Enter a value for {input}', { input: request.id }));
+    dialog.fieldHost.replaceChildren();
+    var control;
+    if (request.type === 'pickString') {
+      control = document.createElement('select');
+      (request.options || []).forEach(function(option) {
+        var item = document.createElement('option');
+        item.value = String(option.value);
+        item.textContent = String(option.label);
+        control.appendChild(item);
+      });
+      if (request.default !== undefined && (request.options || []).some(function(option) { return option.value === request.default; })) {
+        control.value = request.default;
+      }
+    } else {
+      control = document.createElement('input');
+      control.type = request.password ? 'password' : 'text';
+      control.value = request.default === undefined ? '' : String(request.default);
+      control.autocomplete = 'off';
+      control.spellcheck = false;
+    }
+    control.className = 'ss-input';
+    control.setAttribute('aria-labelledby', 'task-input-description');
+    dialog.fieldHost.appendChild(control);
+    dialog.control = control;
+    dialog.previousFocus = document.activeElement;
+    dialog.overlay.setAttribute('aria-hidden', 'false');
+    dialog.overlay.classList.add('open');
+    setTimeout(function() { control.focus(); if (control.select && request.type === 'promptString') control.select(); }, 0);
+    return new Promise(function(resolve) {
+      activeTaskInput = {
+        resolve: resolve,
+        rootPath: S.workspaceRoot,
+        workspaceIdentity: S.workspaceIdentity
+      };
+    });
+  }
+
+  async function resolveInputRequests(requests) {
+    var values = {};
+    for (var i = 0; i < (requests || []).length; i += 1) {
+      var request = requests[i];
+      var result = await promptTaskInput(request);
+      if (result.cancelled || result.rootPath !== S.workspaceRoot || result.workspaceIdentity !== S.workspaceIdentity) return null;
+      values[request.id] = result.value;
+    }
+    return values;
+  }
+
+  function cancelInput() {
+    if (!activeTaskInput) return false;
+    finishTaskInput(true);
+    return true;
+  }
+
   async function refresh() {
     var generation = ++refreshGeneration;
     var workspaceRoot = S.workspaceRoot || '';
@@ -283,8 +469,10 @@
   }
 
   function editorContext() {
-    var context = { activeFile: S.activeTabPath || '', selectedText: '', lineNumber: '', columnNumber: '' };
+    var context = { activeFile: S.activeTabPath || '', languageId: '', selectedText: '', lineNumber: '', columnNumber: '' };
     if (!S.editor) return context;
+    var activeModel = S.editor.getModel && S.editor.getModel();
+    if (activeModel && activeModel.getLanguageId) context.languageId = String(activeModel.getLanguageId() || '');
     var selection = S.editor.getSelection && S.editor.getSelection();
     if (!selection) return context;
     context.lineNumber = selection.startLineNumber;
@@ -313,6 +501,11 @@
       BOBO.updateRunOutput(tr('Task configuration could not be loaded: {message}', { message: error.message }));
       return false;
     }
+  }
+
+  function rerunLast() {
+    if (!BOBO.runner || typeof BOBO.runner.rerunLastProjectTask !== 'function') return false;
+    return BOBO.runner.rerunLastProjectTask(editorContext());
   }
 
   function init() {
@@ -346,6 +539,7 @@
       if (event.key === 'ArrowUp' && items.length) { event.preventDefault(); items[(index - 1 + items.length) % items.length].focus(); }
     });
     var onWorkspaceChanged = function(event) {
+      cancelInput();
       refreshGeneration += 1;
       configuration = { tasks: [], warnings: [] };
       selected = { type: 'file', label: '' };
@@ -370,6 +564,7 @@
     if (BOBO.i18n && BOBO.i18n.onChange) {
       disposers.push(BOBO.i18n.onChange(function() {
         updatePrimaryButton();
+        updateTaskInputDialogText();
         var activeMenu = document.getElementById('run-target-menu');
         if (activeMenu && !activeMenu.hidden) renderMenu();
       }));
@@ -381,9 +576,13 @@
     init: init,
     refresh: refresh,
     runSelected: runSelected,
+    rerunLast: rerunLast,
+    resolveInputRequests: resolveInputRequests,
+    cancelInput: cancelInput,
     getSelected: function() { return Object.assign({}, selected); },
     getConfiguration: function() { return configuration; },
     dispose: function() {
+      cancelInput();
       closeMenu();
       refreshGeneration += 1;
       disposers.splice(0).forEach(function(dispose) { if (typeof dispose === 'function') dispose(); });

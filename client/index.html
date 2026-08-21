@@ -330,6 +330,7 @@
             <button id="debug-inspector-tab-stack" class="debug-inspector-tab active" type="button" role="tab" aria-selected="true" aria-controls="debug-section-stack" data-debug-inspector-tab="stack">Call Stack</button>
             <button id="debug-inspector-tab-variables" class="debug-inspector-tab" type="button" role="tab" aria-selected="false" aria-controls="debug-section-variables" data-debug-inspector-tab="variables" tabindex="-1">Variables</button>
             <button id="debug-inspector-tab-watch" class="debug-inspector-tab" type="button" role="tab" aria-selected="false" aria-controls="debug-section-watch" data-debug-inspector-tab="watch" tabindex="-1">Watch</button>
+            <button id="debug-inspector-tab-breakpoints" class="debug-inspector-tab" type="button" role="tab" aria-selected="false" aria-controls="debug-section-breakpoints" data-debug-inspector-tab="breakpoints" tabindex="-1"></button>
             <button id="debug-inspector-tab-console" class="debug-inspector-tab" type="button" role="tab" aria-selected="false" aria-controls="debug-section-console" data-debug-inspector-tab="console" tabindex="-1">Debug Console</button>
           </div>
           <div class="debug-inspector-panels">
@@ -344,6 +345,10 @@
           <section id="debug-section-watch" class="debug-section" data-debug-section="watch" role="tabpanel" aria-labelledby="debug-inspector-tab-watch">
             <header><span>Watch</span><button id="debug-add-watch" type="button" title="Add Watch Expression" aria-label="Add Watch Expression">+</button></header>
             <div id="debug-watch-list" class="debug-tree"><div class="debug-empty">No watch expressions</div></div>
+          </section>
+          <section id="debug-section-breakpoints" class="debug-section" data-debug-section="breakpoints" role="tabpanel" aria-labelledby="debug-inspector-tab-breakpoints">
+            <header><span></span></header>
+            <div id="debug-breakpoints" class="debug-tree"></div>
           </section>
           <section id="debug-section-console" class="debug-section debug-console-section" data-debug-section="console" role="tabpanel" aria-labelledby="debug-inspector-tab-console">
             <header><span>Debug Console</span></header>
