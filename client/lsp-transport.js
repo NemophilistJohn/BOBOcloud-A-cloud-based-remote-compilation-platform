@@ -42,18 +42,31 @@ function cleanWorkspace(workspace) {
   return { kind: 'personal', folderName: String(value.folderName), folderKey: String(value.folderKey) };
 }
 
+function cleanSetupCommands(commands) {
+  if (commands === undefined || commands === null) return [];
+  if (!Array.isArray(commands) || commands.length > 64) throw new Error('Invalid dependency setup commands');
+  return commands.map((command) => {
+    const value = String(command || '').trim();
+    if (!value || byteLength(value) > 8192) throw new Error('Invalid dependency setup commands');
+    return value;
+  });
+}
+
 function normalizeConfig(config) {
   const value = config && typeof config === 'object' ? config : {};
   const mode = ['local', 'standard', 'full'].includes(value.mode) ? value.mode : 'local';
   if (mode === 'local') return { mode: 'local' };
   if (!value.languageId) throw new Error('Language is required for remote analysis');
-  return {
+  const normalized = {
     mode,
     serverHost: String(value.serverHost || '').trim(),
     languageId: String(value.languageId),
     runtimeId: String(value.runtimeId || ''),
     workspace: cleanWorkspace(value.workspace)
   };
+  const setupCommands = cleanSetupCommands(value.setupCommands);
+  if (setupCommands.length) normalized.setupCommands = setupCommands;
+  return normalized;
 }
 
 function normalizeDependency(dependency, config = {}) {
@@ -216,14 +229,16 @@ class LspTransport {
       try {
         const token = await this.getCredential(this.config.serverHost);
         if (generation !== this.generation || socket !== this.socket) return;
-        this._send({
+        const start = {
           type: 'lsp.start',
           token: String(token || ''),
           mode: this.config.mode,
           languageId: this.config.languageId,
           runtimeId: this.config.runtimeId,
           workspace: this.config.workspace
-        }, true);
+        };
+        if (this.config.setupCommands && this.config.setupCommands.length) start.setupCommands = this.config.setupCommands.slice();
+        this._send(start, true);
       } catch (error) {
         this._setState('error', { error: error.message });
         this._closeSocket(false, error.message);
@@ -644,6 +659,7 @@ module.exports = {
   normalizeLspUrl,
   normalizeConfig,
   cleanWorkspace,
+  cleanSetupCommands,
   normalizeDependency,
   resolveConfigurationSection
 };

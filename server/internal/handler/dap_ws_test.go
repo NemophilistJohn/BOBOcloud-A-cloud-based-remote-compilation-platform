@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"bobocloud-server/internal/config"
 	"bobocloud-server/internal/dap"
 	"bobocloud-server/internal/lifecycle"
+	"bobocloud-server/internal/lsp"
+	"bobocloud-server/internal/personalcache"
 
 	"github.com/gorilla/websocket"
 )
@@ -191,5 +194,181 @@ func TestDAPAuthenticateUsesConfiguredCredentials(t *testing.T) {
 	}
 	if _, err := handler.authenticate("wrong"); err == nil {
 		t.Fatal("invalid DAP credential was accepted")
+	}
+}
+
+func writeDAPInventoryPackage(t *testing.T, root, name, version string) {
+	t.Helper()
+	packageRoot := filepath.Join(root, name)
+	distInfo := filepath.Join(root, name+"-"+version+".dist-info")
+	if err := os.MkdirAll(packageRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(distInfo, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageRoot, "__init__.py"), []byte(""), 0600); err != nil {
+		t.Fatal(err)
+	}
+	metadata := "Metadata-Version: 2.1\nName: " + name + "\nVersion: " + version + "\n"
+	if err := os.WriteFile(filepath.Join(distInfo, "METADATA"), []byte(metadata), 0600); err != nil {
+		t.Fatal(err)
+	}
+	record := name + "/__init__.py,,\n" + name + "-" + version + ".dist-info/METADATA,,\n" + name + "-" + version + ".dist-info/RECORD,,\n"
+	if err := os.WriteFile(filepath.Join(distInfo, "RECORD"), []byte(record), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDAPAcquiresExactPythonDependencyCacheUntilRelease(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "requirements.txt"), []byte("numpy==2.1.0\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cache := personalcache.NewManager(dataDir, personalcache.Options{ReservationBytes: 8})
+	request := personalcache.Request{
+		UserID: "user-a", WorkspaceID: lsp.StableWorkspaceIdentity("user-a", "", "", "", "project"),
+		WorkspaceName: "Project", RuntimeID: "python:3.11", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.11", "python:3.11-slim"), Language: "python", WorkspaceRoot: workspace,
+	}
+	writer, err := cache.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeDAPInventoryPackage(t, filepath.Join(writer.HostRoot, "python"), "numpy", "2.1.0")
+	writer.Release()
+	entries := cache.Inspect(request.UserID, 0).Entries
+	if len(entries) != 1 {
+		t.Fatalf("cache entries = %+v", entries)
+	}
+	handler := &DAPHandler{PersonalCache: cache}
+	root, env, status, release := handler.acquireDAPDependencyCache(
+		request.UserID, request.WorkspaceName, "project", request.RuntimeID, "python:3.11-slim", request.Language, workspace, nil,
+	)
+	if root == "" || release == nil || status.State != "mounted" || !status.Required || !status.Exact {
+		t.Fatalf("dependency attachment = root %q status %+v release %v", root, status, release != nil)
+	}
+	if env["PYTHONPATH"] != "/project-deps/python" || env["PIP_TARGET"] != "" {
+		t.Fatalf("read-only Python environment = %#v", env)
+	}
+	if err := cache.Delete(request.UserID, entries[0].Path); err == nil {
+		t.Fatal("active DAP read lease did not protect cache CRUD")
+	}
+	if _, err := cache.Prepare(context.Background(), request); !errors.Is(err, personalcache.ErrCacheInUse) {
+		t.Fatalf("DAP dependency namespace accepted a concurrent writer: %v", err)
+	}
+	release()
+	writerAfterDebug, err := cache.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatalf("released DAP namespace still blocked a writer: %v", err)
+	}
+	writerAfterDebug.Release()
+	if err := cache.Delete(request.UserID, entries[0].Path); err != nil {
+		t.Fatalf("released DAP cache could not be deleted: %v", err)
+	}
+}
+
+func TestDAPDependencyCacheReportsMissingAndBusyBeforeStart(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "requirements.txt"), []byte("numpy==2.1.0\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cache := personalcache.NewManager(dataDir, personalcache.Options{ReservationBytes: 8})
+	handler := &DAPHandler{PersonalCache: cache}
+	_, _, missing, missingRelease := handler.acquireDAPDependencyCache("user-a", "Project", "project", "python:3.11", "python:3.11-slim", "python", workspace, nil)
+	if missing.State != "missing" || !missing.Required || missingRelease != nil {
+		t.Fatalf("missing dependency status = %+v release=%v", missing, missingRelease != nil)
+	}
+	request := personalcache.Request{
+		UserID: "user-a", WorkspaceID: lsp.StableWorkspaceIdentity("user-a", "", "", "", "project"),
+		WorkspaceName: "Project", RuntimeID: "python:3.11", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.11", "python:3.11-slim"), Language: "python", WorkspaceRoot: workspace,
+	}
+	writer, err := cache.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Release()
+	_, _, busy, busyRelease := handler.acquireDAPDependencyCache("user-a", "Project", "project", "python:3.11", "python:3.11-slim", "python", workspace, nil)
+	if busy.State != "busy" || !busy.Required || busyRelease != nil {
+		t.Fatalf("busy dependency status = %+v release=%v", busy, busyRelease != nil)
+	}
+}
+
+func TestDAPWebSocketRejectsRequiredCacheBeforeWorkspaceCopyOrAdapterStart(t *testing.T) {
+	serverRoot := t.TempDir()
+	projectRoot := filepath.Join(serverRoot, "project")
+	if err := os.MkdirAll(projectRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "requirements.txt"), []byte("numpy==2.1.0\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(t.TempDir(), "dap_adapters.json")
+	manifest := `{"version":"1.0","adapters":[{
+		"id":"python-debugpy","label":"Python debugpy","languageId":"python",
+		"runtimeId":"python:3.11","image":"bobocloud/dap-python:test",
+		"command":["adapter"],"supportsLaunch":true
+	}]}`
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := dap.LoadCatalog(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &dapHandlerTestStarter{process: newBridgeTestProcess(), launches: make(chan dap.LaunchSpec, 1)}
+	manager := dap.NewManager(catalog, starter, dap.ManagerOptions{MaxSessions: 1, MaxPerUser: 1, Inspector: dapHandlerTestInspector{}})
+	t.Cleanup(manager.Close)
+	cfg := config.Default()
+	cfg.DAPEnabled = true
+	cfg.ServerRoot = serverRoot
+	cfg.DataDir = t.TempDir()
+	handler := &DAPHandler{Config: cfg, Manager: manager, PersonalCache: personalcache.NewManager(cfg.DataDir, personalcache.Options{})}
+	testServer := httptest.NewServer(http.HandlerFunc(handler.HandleWebSocket))
+	t.Cleanup(testServer.Close)
+	dial := func() *websocket.Conn {
+		connection, _, dialErr := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(testServer.URL, "http"), nil)
+		if dialErr != nil {
+			t.Fatal(dialErr)
+		}
+		return connection
+	}
+	connection := dial()
+	if err := connection.WriteJSON(map[string]any{
+		"type": "dap.start", "runtimeId": "python:3.11", "languageId": "python",
+		"workspace": map[string]any{"kind": "personal", "folderKey": "project"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var dependencyError map[string]any
+	if err := connection.ReadJSON(&dependencyError); err != nil {
+		t.Fatal(err)
+	}
+	connection.Close()
+	if dependencyError["type"] != "dap.error" || dependencyError["code"] != "dependency_cache_unavailable" {
+		t.Fatalf("dependency cache error = %#v", dependencyError)
+	}
+	select {
+	case launch := <-starter.launches:
+		t.Fatalf("adapter started without required dependencies: %+v", launch)
+	default:
+	}
+
+	invalidConnection := dial()
+	if err := invalidConnection.WriteJSON(map[string]any{
+		"type": "dap.start", "runtimeId": "python:3.11", "languageId": "python",
+		"setupCommands": []string{strings.Repeat("x", 513)},
+		"workspace":     map[string]any{"kind": "personal", "folderKey": "project"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var invalidError map[string]any
+	if err := invalidConnection.ReadJSON(&invalidError); err != nil {
+		t.Fatal(err)
+	}
+	invalidConnection.Close()
+	if invalidError["type"] != "dap.error" || invalidError["code"] != "invalid_start" {
+		t.Fatalf("invalid setup command error = %#v", invalidError)
 	}
 }

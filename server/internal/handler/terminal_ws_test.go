@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,6 +84,28 @@ func TestTerminalWebSocketRejectsInvalidStartAndLocalRuntime(t *testing.T) {
 	connection.Close()
 	if message["type"] != "terminal.error" || message["code"] != "unsupported_protocol" {
 		t.Fatalf("unsupported protocol response = %#v", message)
+	}
+	connection.Close()
+
+	connection, _, err = websocket.DefaultDialer.Dial(terminalWebSocketURL(server.URL), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := make([]string, 65)
+	for index := range commands {
+		commands[index] = "pip install demo"
+	}
+	if err := connection.WriteJSON(map[string]any{
+		"type": "terminal.start", "protocol": terminalProtocolVersion,
+		"setupCommands": commands,
+	}); err != nil {
+		connection.Close()
+		t.Fatal(err)
+	}
+	message = readTerminalControl(t, connection)
+	connection.Close()
+	if message["type"] != "terminal.error" || message["code"] != "invalid_setup_commands" {
+		t.Fatalf("invalid setup commands response = %#v", message)
 	}
 }
 
@@ -342,6 +365,17 @@ func TestTerminalInputFallbackNormalizesCarriageReturns(t *testing.T) {
 	}
 }
 
+func TestTerminalShellCommandSizesTheSamePTYUsedByTheShell(t *testing.T) {
+	command := terminalShellCommand(context.Background(), "container-id", terminalWorkspaceDir, 176, 44, true)
+	joined := strings.Join(command.Args, " ")
+	if !strings.Contains(joined, `COLUMNS=176`) || !strings.Contains(joined, `LINES=44`) {
+		t.Fatalf("terminal dimensions missing from docker exec args: %q", joined)
+	}
+	if !strings.Contains(joined, `stty cols "$COLUMNS" rows "$LINES"`) {
+		t.Fatalf("terminal PTY is not sized before starting the shell: %q", joined)
+	}
+}
+
 func TestTerminalHeartbeatDoesNotRefreshIdleActivity(t *testing.T) {
 	clock := newTerminalActivityClock()
 	stale := time.Now().Add(-2 * time.Minute)
@@ -395,5 +429,110 @@ func TestTerminalReaderQueueUnblocksWhenSessionEnds(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("terminal reader remained blocked after terminal session ended")
+	}
+}
+
+func TestTerminalReaderCancelsPreparationBeforeReady(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		close bool
+		frame map[string]any
+	}{
+		{name: "explicit close", frame: map[string]any{"type": "terminal.close"}},
+		{name: "abnormal disconnect", close: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			cancelled := make(chan bool, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				connection, err := terminalUpgrader.Upgrade(w, r, nil)
+				if err != nil {
+					cancelled <- false
+					return
+				}
+				defer connection.Close()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				done := make(chan struct{})
+				messages := make(chan terminalClientMessage, 1)
+				readErrs := make(chan error, 1)
+				writer := &terminalWriter{conn: connection, writeWait: time.Second, budget: newTerminalByteWindow(1024)}
+				var ready atomic.Bool
+				go readTerminalClientMessages(connection, writer, &ready, cancel, done, messages, readErrs)
+				select {
+				case <-ctx.Done():
+					cancelled <- true
+				case <-time.After(time.Second):
+					cancelled <- false
+				}
+				close(done)
+				_ = connection.SetReadDeadline(time.Now())
+			}))
+			defer server.Close()
+
+			connection, _, err := websocket.DefaultDialer.Dial(terminalWebSocketURL(server.URL), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if testCase.close {
+				connection.Close()
+			} else {
+				defer connection.Close()
+				if err := connection.WriteJSON(testCase.frame); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !<-cancelled {
+				t.Fatal("terminal setup context survived a closed pre-ready client")
+			}
+		})
+	}
+}
+
+func TestTerminalResourceReleaseIsOrderedIdempotentAndPrecedesExit(t *testing.T) {
+	var order []string
+	release := combineTerminalResourceReleases(
+		func() { order = append(order, "dependency-cache") },
+		func() { order = append(order, "user-lifecycle") },
+	)
+
+	// The production handler invokes the combined release immediately before
+	// writing terminal.exit. A second deferred call must be a no-op.
+	release()
+	order = append(order, "terminal.exit")
+	release()
+
+	if got := strings.Join(order, ","); got != "dependency-cache,user-lifecycle,terminal.exit" {
+		t.Fatalf("terminal cleanup order = %q", got)
+	}
+}
+
+type terminalCleanupDiscardFake struct {
+	failures int
+	attempts int
+	order    *[]string
+}
+
+func (fake *terminalCleanupDiscardFake) DiscardForUserAndWait(_, _ string) error {
+	fake.attempts++
+	if fake.order != nil {
+		*fake.order = append(*fake.order, "discard")
+	}
+	if fake.attempts <= fake.failures {
+		return errors.New("container is still running")
+	}
+	return nil
+}
+
+func TestTerminalCleanupRetryReleasesResourcesOnlyAfterContainerIsWriteSafe(t *testing.T) {
+	order := []string{"initial-discard-failed"}
+	fake := &terminalCleanupDiscardFake{failures: 1, order: &order}
+	retryTerminalContainerCleanup(fake, "container-id", "alice", func() {
+		order = append(order, "release")
+	}, func(time.Duration) {
+		order = append(order, "wait")
+	})
+
+	if got := strings.Join(order, ","); got != "initial-discard-failed,wait,discard,wait,discard,release" {
+		t.Fatalf("deferred cleanup order = %q", got)
 	}
 }

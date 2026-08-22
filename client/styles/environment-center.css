@@ -196,6 +196,7 @@
 }
 
 .environment-facts > div { min-width: 0; }
+.environment-facts > .environment-fact-wide { grid-column: 1 / -1; }
 
 .environment-facts dt {
   margin: 0 0 2px;

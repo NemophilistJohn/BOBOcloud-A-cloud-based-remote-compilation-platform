@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { TerminalTransport, normalizeTerminalUrl } = require('../terminal-transport');
+const { TerminalTransport, normalizeTerminalUrl, cleanSetupCommands } = require('../terminal-transport');
 
 class MockSocket {
   constructor() {
@@ -52,9 +52,27 @@ class EmitterSocket extends EventEmitter {
   }
 }
 
+async function stopWithServerExit(transport, socket, reason = 'test') {
+  const pending = transport.stop(reason);
+  assert.equal(transport.snapshot().state, 'closing');
+  assert.equal(socket.closed, false, 'the client must keep the socket open for the cleanup acknowledgement');
+  assert.deepEqual(socket.sent.at(-1), { type: 'terminal.close', reason });
+  socket.fire('message', JSON.stringify({ type: 'terminal.exit', reason: 'closed', exitCode: 0 }));
+  const result = await pending;
+  assert.equal(result.confirmed, true);
+  return result;
+}
+
 test('normalizes the terminal endpoint without exposing the HTTP route', () => {
   assert.equal(normalizeTerminalUrl('cloud.example'), 'ws://cloud.example:3101/terminal');
   assert.equal(normalizeTerminalUrl('https://cloud.example:8443/base?q=1'), 'wss://cloud.example:8443/terminal');
+});
+
+test('bounds and normalizes setup commands used by the project cache digest', () => {
+  assert.deepEqual(cleanSetupCommands(['  pip install numpy==2.1.0  ']), ['pip install numpy==2.1.0']);
+  assert.throws(() => cleanSetupCommands(Array.from({ length: 65 }, () => 'pip install demo')), /invalid/);
+  assert.throws(() => cleanSetupCommands(['pip install demo\nwhoami']), /invalid/);
+  assert.throws(() => cleanSetupCommands(['x'.repeat(513)]), /invalid/);
 });
 
 test('starts an authenticated terminal session and streams binary output losslessly', async () => {
@@ -70,6 +88,7 @@ test('starts an authenticated terminal session and streams binary output lossles
     serverHost: 'https://cloud.example:3101',
     runtimeId: 'python:3.12',
     workspace: { kind: 'personal', folderName: 'demo', folderKey: 'demo-key' },
+    setupCommands: ['  pip install numpy==2.1.0  '],
     cols: 100,
     rows: 28,
     localContext: { workspaceIdentity: 3 }
@@ -78,7 +97,8 @@ test('starts an authenticated terminal session and streams binary output lossles
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(socket.sent[0], {
     type: 'terminal.start', protocol: 1, token: 'secret-token', runtimeId: 'python:3.12',
-    workspace: { kind: 'personal', folderName: 'demo', folderKey: 'demo-key' }, cols: 100, rows: 28
+    workspace: { kind: 'personal', folderName: 'demo', folderKey: 'demo-key' },
+    setupCommands: ['pip install numpy==2.1.0'], cols: 100, rows: 28
   });
   socket.fire('message', JSON.stringify({
     type: 'terminal.ready', sessionId: 'term-1', runtimeId: 'python:3.12', snapshot: true,
@@ -94,13 +114,23 @@ test('starts an authenticated terminal session and streams binary output lossles
   socket.fire('message', JSON.stringify({ type: 'terminal.output', stream: 'stdout', encoding: 'base64', data: bytes.subarray(2).toString('base64') }));
   assert.equal(events.filter((event) => event.channel === 'output').map((event) => event.payload.data).join(''), '你好 \x1b[31mred\x1b[0m');
 
+  const progress = ['Downloading 10%\r', 'Downloading 50%\r', 'Downloading 100%\r\n'];
+  progress.forEach((data) => socket.fire('message', JSON.stringify({
+    type: 'terminal.output', stream: 'stdout', encoding: 'base64', data: Buffer.from(data).toString('base64')
+  })));
+  assert.equal(
+    events.filter((event) => event.channel === 'output').slice(-3).map((event) => event.payload.data).join(''),
+    progress.join(''),
+    'carriage returns must reach xterm unchanged so progress updates replace the current row'
+  );
+
   transport.write('echo hi\r');
   transport.resize(120, 40);
   assert.deepEqual(socket.sent.slice(1), [
     { type: 'terminal.stdin', data: 'echo hi\r' },
     { type: 'terminal.resize', cols: 120, rows: 40 }
   ]);
-  await transport.stop('test');
+  await stopWithServerExit(transport, socket);
 });
 
 test('rejects Local runtime and stale input without opening a general command channel', async () => {
@@ -124,7 +154,7 @@ test('uses the server byte limit for multibyte terminal input', async () => {
   await starting;
   assert.throws(() => transport.write('你'.repeat(6000)), /too large/);
   assert.equal(socket.sent.length, 1, 'oversized text must not be forwarded to the server');
-  await transport.stop('test');
+  await stopWithServerExit(transport, socket);
 });
 
 test('cancelling a connecting session settles the original start promise', async () => {
@@ -139,6 +169,108 @@ test('cancelling a connecting session settles the original start promise', async
   await assert.rejects(pending, (error) => error && error.code === 'start_cancelled');
   assert.equal(socket.closed, true);
   assert.equal(transport.snapshot().state, 'idle');
+});
+
+test('explicit stop waits for server cleanup acknowledgement and has a bounded fallback', async () => {
+  let socket;
+  const transport = new TerminalTransport({
+    webSocketFactory: () => (socket = new MockSocket()),
+    getCredential: () => 'token',
+    pingIntervalMs: 0,
+    closeTimeoutMs: 10
+  });
+  const starting = transport.start({
+    serverHost: 'cloud.example', runtimeId: 'python:3.12',
+    workspace: { kind: 'personal', folderKey: 'demo' }
+  });
+  socket.open();
+  await new Promise((resolve) => setImmediate(resolve));
+  socket.fire('message', JSON.stringify({ type: 'terminal.ready', sessionId: 'term-close', capabilities: {} }));
+  await starting;
+
+  let settled = false;
+  const stopping = transport.stop('panel-close').then((result) => { settled = true; return result; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, 'stop resolved before terminal.exit');
+  assert.equal(socket.closed, false);
+  socket.fire('message', JSON.stringify({ type: 'terminal.exit', reason: 'closed', exitCode: 0 }));
+  assert.equal((await stopping).confirmed, true);
+
+  const restarting = transport.start({
+    serverHost: 'cloud.example', runtimeId: 'python:3.12',
+    workspace: { kind: 'personal', folderKey: 'demo' }
+  });
+  socket.open();
+  await new Promise((resolve) => setImmediate(resolve));
+  socket.fire('message', JSON.stringify({ type: 'terminal.ready', sessionId: 'term-timeout', capabilities: {} }));
+  await restarting;
+  const timedOut = await transport.stop('panel-close');
+  assert.equal(timedOut.confirmed, false);
+  assert.equal(timedOut.reason, 'close_timeout');
+  assert.equal(socket.closed, true);
+});
+
+test('concurrent replacement starts cannot orphan an earlier WebSocket', async () => {
+  const sockets = [];
+  const transport = new TerminalTransport({
+    webSocketFactory: () => {
+      const socket = new MockSocket();
+      sockets.push(socket);
+      return socket;
+    },
+    getCredential: () => 'token',
+    pingIntervalMs: 0
+  });
+  const config = (folderKey) => ({
+    serverHost: 'cloud.example', runtimeId: 'python:3.12',
+    workspace: { kind: 'personal', folderKey }
+  });
+
+  const initial = transport.start(config('initial'));
+  sockets[0].open();
+  await new Promise((resolve) => setImmediate(resolve));
+  sockets[0].fire('message', JSON.stringify({ type: 'terminal.ready', sessionId: 'term-initial', capabilities: {} }));
+  await initial;
+
+  const closing = transport.stop('replace');
+  const firstReplacement = transport.start(config('first'));
+  const secondReplacement = transport.start(config('second'));
+  sockets[0].fire('message', JSON.stringify({ type: 'terminal.exit', reason: 'closed', exitCode: 0 }));
+  await closing;
+  await assert.rejects(firstReplacement, (error) => error && error.code === 'start_cancelled');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(sockets.length, 3);
+  assert.equal(sockets[1].closed, true, 'superseded replacement socket remained open');
+  sockets[2].open();
+  await new Promise((resolve) => setImmediate(resolve));
+  sockets[2].fire('message', JSON.stringify({ type: 'terminal.ready', sessionId: 'term-second', capabilities: {} }));
+  assert.equal((await secondReplacement).sessionId, 'term-second');
+  await stopWithServerExit(transport, sockets[2]);
+});
+
+test('terminal.exit can report that server cleanup is still pending', async () => {
+  let socket;
+  const transport = new TerminalTransport({
+    webSocketFactory: () => (socket = new MockSocket()),
+    getCredential: () => 'token', pingIntervalMs: 0
+  });
+  const starting = transport.start({
+    serverHost: 'cloud.example', runtimeId: 'python:3.12',
+    workspace: { kind: 'personal', folderKey: 'demo' }
+  });
+  socket.open();
+  await new Promise((resolve) => setImmediate(resolve));
+  socket.fire('message', JSON.stringify({ type: 'terminal.ready', sessionId: 'term-pending', capabilities: {} }));
+  await starting;
+
+  const stopping = transport.stop('panel-close');
+  socket.fire('message', JSON.stringify({
+    type: 'terminal.exit', reason: 'cleanup_pending', exitCode: 1, cleanupConfirmed: false
+  }));
+  const result = await stopping;
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, 'cleanup_pending');
 });
 
 test('EventEmitter WebSockets verify a pinned peer before terminal credentials are sent', async () => {

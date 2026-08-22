@@ -4,17 +4,30 @@ package model
 // renderer. Host paths and analyzer-private configuration must never be added
 // to this public shape.
 type ProjectEnvironment struct {
-	Schema      string                        `json:"schema"`
-	Revision    string                        `json:"revision"`
-	CheckedAt   int64                         `json:"checkedAt"`
-	Workspace   ProjectEnvironmentWorkspace   `json:"workspace"`
-	Language    ProjectEnvironmentLanguage    `json:"language"`
-	Runtime     ProjectEnvironmentRuntime     `json:"runtime"`
-	Manifests   []ProjectEnvironmentManifest  `json:"manifests"`
-	Packages    ProjectEnvironmentPackages    `json:"packages"`
-	Consistency ProjectEnvironmentConsistency `json:"consistency"`
-	Activity    ProjectEnvironmentActivity    `json:"activity"`
-	Actions     ProjectEnvironmentActions     `json:"actions"`
+	Schema          string                            `json:"schema"`
+	Revision        string                            `json:"revision"`
+	CheckedAt       int64                             `json:"checkedAt"`
+	Workspace       ProjectEnvironmentWorkspace       `json:"workspace"`
+	Language        ProjectEnvironmentLanguage        `json:"language"`
+	Runtime         ProjectEnvironmentRuntime         `json:"runtime"`
+	Manifests       []ProjectEnvironmentManifest      `json:"manifests"`
+	Packages        ProjectEnvironmentPackages        `json:"packages"`
+	Consistency     ProjectEnvironmentConsistency     `json:"consistency"`
+	Activity        ProjectEnvironmentActivity        `json:"activity"`
+	Actions         ProjectEnvironmentActions         `json:"actions"`
+	DependencyCache ProjectEnvironmentDependencyCache `json:"dependencyCache"`
+}
+
+type ProjectEnvironmentDependencyCache struct {
+	Scope              string `json:"scope"`
+	Digest             string `json:"digest,omitempty"`
+	Source             string `json:"source,omitempty"`
+	Status             string `json:"status"`
+	SizeBytes          int64  `json:"sizeBytes,omitempty"`
+	LastUsedAt         int64  `json:"lastUsedAt,omitempty"`
+	InventoryStatus    string `json:"inventoryStatus,omitempty"`
+	InventoryDetail    string `json:"inventoryDetail,omitempty"`
+	InventoryCheckedAt int64  `json:"inventoryCheckedAt,omitempty"`
 }
 
 type ProjectEnvironmentWorkspace struct {

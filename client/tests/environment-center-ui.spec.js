@@ -20,6 +20,7 @@ test('environment view switches, persists, localizes, and fits at 180px', async 
   fs.mkdirSync(home, { recursive: true });
   fs.mkdirSync(workspace, { recursive: true });
   fs.writeFileSync(path.join(workspace, 'requirements-production-with-a-long-name.txt'), 'numpy==2.2.6\n', 'utf8');
+  fs.writeFileSync(path.join(workspace, 'main.py'), 'import numpy\nimport matplotlib.pyplot as plt\n', 'utf8');
   let app;
   try {
     app = await electron.launch({
@@ -112,6 +113,14 @@ test('environment view switches, persists, localizes, and fits at 180px', async 
             workspace: { kind: 'personal', id: 'fixture', name: 'compact-environment-workspace-with-a-long-name', key: data.folderKey },
             language: { id: 'python', source: 'editor' },
             runtime: { id: 'python:3.10', language: 'python', version: '3.10', image: 'python:3.10-slim', displayName: 'Python 3.10', status: 'ready' },
+            dependencyCache: {
+              scope: 'project-lock',
+              status: repaired ? 'hit' : 'miss',
+              digest: '0123456789abcdef0123456789abcdef',
+              source: 'lock',
+              sizeBytes: repaired ? 4096 : 0,
+              lastUsedAt: repaired ? Date.now() : 0
+            },
             manifests: [{ path: 'requirements-production-with-a-long-name.txt', kind: 'requirements', manager: 'pip', language: 'python', parsed: true, status: 'parsed' }],
             packages: {
               declared: [{ name: 'numpy', constraint: '==2.2.6', source: 'requirements-production-with-a-long-name.txt' }],
@@ -142,6 +151,10 @@ test('environment view switches, persists, localizes, and fits at 180px', async 
     const repair = page.locator('#environment-action-repair');
     await expect(repair).toBeEnabled();
     await expect(page.locator('#environment-missing-count')).toHaveText('1');
+    await expect(page.locator('#environment-context-dependency-scope')).toHaveText('Project and lock digest');
+    await expect(page.locator('#environment-context-cache-status')).toHaveText('Not materialized');
+    await expect(page.locator('#environment-context-dependency-digest')).toHaveText('lock / 0123456789abcdef');
+    await expect(page.locator('#environment-context-dependency-digest')).toHaveAttribute('title', '0123456789abcdef0123456789abcdef');
     await repair.click();
     await expect.poll(async () => page.evaluate(() => window.__environmentCalls.map((entry) => entry.action))).toEqual(expect.arrayContaining([
       'planProjectEnvironmentRepair',
@@ -151,7 +164,51 @@ test('environment view switches, persists, localizes, and fits at 180px', async 
     await expect(repair).toBeDisabled();
     await expect(page.locator('#environment-installed-count')).toHaveText('1');
     await expect(page.locator('#environment-missing-count')).toHaveText('0');
+    await expect(page.locator('#environment-context-cache-status')).toHaveText('Cached');
     await expect(page.locator('#environment-center-busy')).toBeHidden();
+    expect(await page.evaluate(() => window.__environmentCalls.filter((entry) => entry.action === 'getProjectEnvironment').every((entry) => Array.isArray(entry.data.setupCommands)))).toBe(true);
+
+    await page.evaluate(async (filePath) => {
+      await window.BOBO.workspace.openFile(filePath, 'main.py');
+      const model = window.BOBO.state.editor.getModel();
+      window.monaco.editor.setModelMarkers(model, 'environment-center-fixture', [
+        {
+          startLineNumber: 1, startColumn: 8, endLineNumber: 1, endColumn: 13,
+          severity: window.monaco.MarkerSeverity.Error,
+          message: 'Import "numpy" could not be resolved', source: 'Pyright', code: 'reportMissingImports'
+        },
+        {
+          startLineNumber: 2, startColumn: 8, endLineNumber: 2, endColumn: 25,
+          severity: window.monaco.MarkerSeverity.Error,
+          message: 'Import "matplotlib.pyplot" could not be resolved', source: 'Pyright', code: 'reportMissingImports'
+        }
+      ]);
+    }, path.join(workspace, 'main.py'));
+    await expect(page.locator('#environment-overall-status')).toHaveText('Issue detected');
+    await expect(page.locator('#environment-health-dependencies-state')).toHaveText('Issue detected');
+    await expect(page.locator('#environment-missing-count')).toHaveText('2');
+    await expect(page.locator('#environment-missing-list')).toContainText('numpy');
+    await expect(page.locator('#environment-missing-list')).toContainText('matplotlib');
+    await page.screenshot({ path: path.join(os.tmpdir(), 'bobo-environment-live-diagnostics.png'), fullPage: false });
+    await page.evaluate(() => {
+      window.monaco.editor.setModelMarkers(window.BOBO.state.editor.getModel(), 'environment-center-fixture', []);
+    });
+    await expect(page.locator('#environment-health-dependencies-state')).toHaveText('Healthy');
+    await expect(page.locator('#environment-overall-status')).not.toHaveText('Issue detected');
+    await expect(page.locator('#environment-missing-count')).toHaveText('0');
+
+    await page.evaluate(() => window.BOBO.workbench.setPanelPosition('bottom'));
+    await page.waitForTimeout(280);
+    const editorHeightWithPanel = await page.locator('#container').evaluate((element) => element.getBoundingClientRect().height);
+    await page.locator('#panel-close').click();
+    await expect(page.locator('#bottom-panel')).toBeHidden();
+    await expect.poll(async () => page.locator('#container').evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(editorHeightWithPanel + 100);
+    await expect.poll(async () => page.evaluate(() => {
+      const container = document.getElementById('container').getBoundingClientRect();
+      const viewport = document.querySelector('#container .monaco-editor .overflow-guard').getBoundingClientRect();
+      return Math.abs(Math.round(container.height - viewport.height));
+    })).toBeLessThanOrEqual(1);
+    await page.screenshot({ path: path.join(os.tmpdir(), 'bobo-panel-closed-layout.png'), fullPage: false });
 
     const resizer = page.locator('#sidebar-resizer');
     await resizer.focus();
@@ -177,6 +234,124 @@ test('environment view switches, persists, localizes, and fits at 180px', async 
     expect(fit.noOverlap).toBe(true);
     expect(fit.dockInside).toBe(true);
     expect(fit.controlsInside).toBe(true);
+
+    await page.evaluate(async () => {
+      await window.BOBO.i18n.setLocale('en');
+      window.__deletedCaches = [];
+      window.__cacheConfirms = [];
+      window.BOBO.confirm = async (options) => {
+        window.__cacheConfirms.push(options);
+        return true;
+      };
+      window.BOBO.sendToServer = async (action, data) => {
+        if (action === 'listProjects') {
+		  return { success: true, storageInfo: { total_used_bytes: 8704, quota_bytes: 1048576, persist_bytes: 8704, projects_total_bytes: 0, projects: [] } };
+        }
+        if (action === 'listCacheModules') {
+          const pythonModules = [
+            { name: 'Fixture project', path: 'project-dependencies/workspace/runtime/python/digest-a', size_bytes: 4096, files: 12, kind: 'project-dependency', project_name: 'Fixture project', runtime_id: 'python:3.10', digest: '0123456789abcdef', digest_source: 'lock', last_used: Date.now() },
+            { name: 'Active project', path: 'project-dependencies/workspace/runtime/python/digest-active', size_bytes: 1024, files: 4, kind: 'project-dependency', project_name: 'Active project', runtime_id: 'python:3.11', digest: 'fedcba9876543210', digest_source: 'manifest', last_used: Date.now(), active: true },
+            { name: 'Active project', path: 'project-dependencies/workspace/runtime/python/digest-writing', size_bytes: 512, files: 2, kind: 'project-dependency', project_name: 'Active project', runtime_id: 'python:3.13', digest: '1122334455667788', digest_source: 'manifest', last_used: Date.now(), active: true, writing: true },
+            { name: 'pip-cache', path: 'pip-cache', size_bytes: 1024, files: 2, kind: 'legacy-cache' }
+          ].filter((item) => !window.__deletedCaches.includes(item.path));
+          const nodeModules = [
+            { name: 'Fixture project', path: 'project-dependencies/workspace/runtime/node/digest-node', size_bytes: 2048, files: 9, kind: 'project-dependency', project_name: 'Fixture project', runtime_id: 'node:22', digest: 'aabbccddeeff0011', digest_source: 'manifest', last_used: Date.now() - 1000 }
+          ].filter((item) => !window.__deletedCaches.includes(item.path));
+          return { success: true, cacheGroups: [
+            { language: 'python', label: 'Python', size_bytes: pythonModules.reduce((sum, item) => sum + item.size_bytes, 0), modules: pythonModules },
+            { language: 'node', label: 'Node.js', size_bytes: nodeModules.reduce((sum, item) => sum + item.size_bytes, 0), modules: nodeModules }
+          ] };
+        }
+        if (action === 'deleteCacheModule') {
+          window.__deletedCaches.push(data.cachePath);
+          return { success: true };
+        }
+        throw new Error('unexpected storage action: ' + action);
+      };
+      window.BOBO.projects.open();
+    });
+    await expect(page.locator('#projects-modal')).toHaveClass(/open/);
+    await page.locator('.projects-tab[data-ptab="cache"]').click();
+    const fixtureGroup = page.locator('.cache-project-group').filter({ hasText: 'Fixture project' });
+    await expect(page.locator('#cache-tree')).toContainText('Project caches');
+    await expect(page.locator('#cache-tree')).toContainText('Dependency snapshots');
+    await expect(page.locator('#cache-tree')).toContainText('Shared and system caches');
+    await expect(fixtureGroup).toHaveCount(1);
+    await expect(fixtureGroup).toContainText('2 snapshots');
+    await fixtureGroup.locator('.cache-project-header').click();
+    const removableCache = page.locator('.cache-del[data-path="project-dependencies/workspace/runtime/python/digest-a"]');
+    const activeCache = page.locator('.cache-del[data-path="project-dependencies/workspace/runtime/python/digest-active"]');
+    const writingCache = page.locator('.cache-del[data-path="project-dependencies/workspace/runtime/python/digest-writing"]');
+    await expect(fixtureGroup).toContainText('python:3.10');
+    await expect(fixtureGroup).toContainText('node:22');
+    await expect(fixtureGroup).toContainText('0123456789ab');
+    await expect(page.locator('#cache-tree')).toContainText('Legacy shared download cache');
+    for (const locale of ['zh-CN', 'ja', 'en']) {
+      const expectedProjectCaches = await page.evaluate(async (nextLocale) => {
+        await window.BOBO.i18n.setLocale(nextLocale);
+        return window.BOBO.i18n.t('Project caches');
+      }, locale);
+      await expect(page.locator('.cache-section-title > span').first()).toHaveText(expectedProjectCaches);
+    }
+    await expect(page.locator('#cache-tree')).toContainText('Updating');
+    await expect(page.locator('#cache-tree')).toContainText('Service in use');
+    await expect(activeCache).toBeEnabled();
+    await expect(activeCache).toHaveAttribute('title', 'Delete cache and stop service');
+    await expect(writingCache).toBeDisabled();
+    await expect(writingCache).toHaveAttribute('title', 'Cache is being updated');
+    await page.evaluate(() => {
+      const toastContainer = document.getElementById('toast-container');
+      if (toastContainer) toastContainer.replaceChildren();
+    });
+    await page.screenshot({ path: path.join(os.tmpdir(), 'bobo-project-cache-by-project.png'), fullPage: false });
+    await page.setViewportSize({ width: 640, height: 720 });
+    await expect.poll(async () => page.evaluate(() => {
+      const cache = document.getElementById('cache-tree');
+      const rows = [...cache.querySelectorAll('.cache-snapshot-row')];
+      return cache.scrollWidth <= cache.clientWidth + 1 && rows.every((row) => row.scrollWidth <= row.clientWidth + 1);
+    })).toBe(true);
+    await page.evaluate(() => {
+      const toastContainer = document.getElementById('toast-container');
+      if (toastContainer) toastContainer.replaceChildren();
+    });
+    await page.screenshot({ path: path.join(os.tmpdir(), 'bobo-project-cache-narrow.png'), fullPage: false });
+    await page.setViewportSize({ width: 1024, height: 720 });
+    await activeCache.click();
+    await expect.poll(() => page.evaluate(() => window.__deletedCaches)).toContain('project-dependencies/workspace/runtime/python/digest-active');
+    await expect(activeCache).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => window.__cacheConfirms.at(-1).message)).toContain('Deleting this cache will stop the service that is using it.');
+    await expect(writingCache).toBeDisabled();
+    await removableCache.click();
+    await expect.poll(() => page.evaluate(() => window.__deletedCaches)).toContain('project-dependencies/workspace/runtime/python/digest-a');
+    await expect(removableCache).toHaveCount(0);
+    await expect(fixtureGroup).toContainText('node:22');
+    await page.screenshot({ path: path.join(os.tmpdir(), 'bobo-project-dependency-cache.png'), fullPage: false });
+    await page.locator('#projects-close').click();
+
+    await page.evaluate(() => {
+      window.BOBO.sendToServer = async (action) => {
+        if (action !== 'listRunHistory') throw new Error('unexpected history action: ' + action);
+        return {
+          success: true,
+          history: [{
+            run_id: 'truncated-fixture',
+            file_path: 'main.py',
+            runtime: 'python:3.10',
+            status: 'completed',
+            exit_code: 0,
+            duration_ms: 12,
+            output_summary: 'newest output',
+            output_truncated: true,
+            created_at: new Date().toISOString()
+          }]
+        };
+      };
+    });
+    await page.locator('#history-btn').click();
+    await expect(page.locator('#history-modal')).toBeVisible();
+    await page.locator('.history-row').click();
+    await expect(page.locator('#history-detail-output')).toHaveText('Earlier output was not retained.\n\nnewest output');
+    await page.locator('#history-close').click();
 
     for (const locale of ['en', 'zh-CN', 'ja']) {
       const copy = await page.evaluate(async (nextLocale) => {

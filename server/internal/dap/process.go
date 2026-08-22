@@ -16,14 +16,16 @@ import (
 )
 
 type LaunchSpec struct {
-	SessionID     string
-	UserID        string
-	Workspace     string
-	PersistDir    string
-	Adapter       AdapterSpec
-	MemoryLimit   string
-	CPULimit      string
-	NetworkEnable bool
+	SessionID      string
+	UserID         string
+	Workspace      string
+	PersistDir     string
+	DependencyRoot string
+	DependencyEnv  map[string]string
+	Adapter        AdapterSpec
+	MemoryLimit    string
+	CPULimit       string
+	NetworkEnable  bool
 }
 
 type Process interface {
@@ -170,20 +172,15 @@ func safeContainerLabel(value string) string {
 
 func dapEnvironment(spec LaunchSpec) map[string]string {
 	env := map[string]string{
-		"HOME":              "/tmp/bobocloud-home",
-		"TMPDIR":            "/tmp",
-		"PIP_CACHE_DIR":     "/persist/pip-cache",
-		"GOPATH":            "/persist/go",
-		"GOMODCACHE":        "/persist/go/pkg/mod",
-		"GOCACHE":           "/persist/go-cache",
-		"NPM_CONFIG_PREFIX": "/persist/npm-global",
-		"NPM_CONFIG_CACHE":  "/persist/npm-cache",
-		"NODE_PATH":         "/persist/npm-global/lib/node_modules",
+		"HOME":             "/tmp/bobocloud-home",
+		"TMPDIR":           "/tmp",
+		"PIP_CACHE_DIR":    "/persist/pip-cache",
+		"GOCACHE":          "/persist/go-cache",
+		"NPM_CONFIG_CACHE": "/persist/npm-cache",
 	}
-	if spec.Adapter.LanguageID == "python" {
-		version := strings.TrimPrefix(spec.Adapter.RuntimeID, "python:")
-		if version != spec.Adapter.RuntimeID && version != "" {
-			env["PYTHONPATH"] = "/persist/pip-packages/runtimes/python-" + version
+	for key, value := range spec.DependencyEnv {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			env[key] = value
 		}
 	}
 	return env
@@ -239,7 +236,40 @@ func dockerRunArgs(spec LaunchSpec, name string, detached bool) ([]string, error
 		if err := os.MkdirAll(persist, 0755); err != nil {
 			return nil, fmt.Errorf("prepare DAP persist directory: %w", err)
 		}
-		args = append(args, "-v", persist+":/persist:rw")
+		persistInfo, statErr := os.Lstat(persist)
+		if statErr != nil || !persistInfo.IsDir() || persistInfo.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("DAP persist directory must be a real directory")
+		}
+		for _, cacheDirectory := range []string{"pip-cache", "go-cache", "npm-cache"} {
+			hostCache := filepath.Join(persist, cacheDirectory)
+			if err := os.MkdirAll(hostCache, 0755); err != nil {
+				return nil, fmt.Errorf("prepare DAP %s directory: %w", cacheDirectory, err)
+			}
+			cacheInfo, cacheErr := os.Lstat(hostCache)
+			if cacheErr != nil || !cacheInfo.IsDir() || cacheInfo.Mode()&os.ModeSymlink != 0 {
+				return nil, fmt.Errorf("DAP %s directory must be a real directory", cacheDirectory)
+			}
+			args = append(args, "-v", hostCache+":/persist/"+cacheDirectory+":rw")
+		}
+	}
+	if strings.TrimSpace(spec.DependencyRoot) != "" {
+		dependencyRoot, absErr := filepath.Abs(spec.DependencyRoot)
+		if absErr != nil {
+			return nil, fmt.Errorf("resolve DAP dependency cache: %w", absErr)
+		}
+		dependencyInfo, statErr := os.Lstat(dependencyRoot)
+		if statErr != nil || !dependencyInfo.IsDir() || dependencyInfo.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("DAP dependency cache must be a real directory")
+		}
+		args = append(args, "-v", dependencyRoot+":/project-deps:ro")
+		if spec.Adapter.LanguageID == "node" {
+			nodeModules := filepath.Join(dependencyRoot, "node_modules")
+			nodeInfo, nodeErr := os.Lstat(nodeModules)
+			if nodeErr != nil || !nodeInfo.IsDir() || nodeInfo.Mode()&os.ModeSymlink != 0 {
+				return nil, fmt.Errorf("DAP Node dependency cache must contain a real node_modules directory")
+			}
+			args = append(args, "-v", nodeModules+":"+ContainerRoot+"/node_modules:ro")
+		}
 	}
 	for key, value := range dapEnvironment(spec) {
 		args = append(args, "-e", key+"="+value)

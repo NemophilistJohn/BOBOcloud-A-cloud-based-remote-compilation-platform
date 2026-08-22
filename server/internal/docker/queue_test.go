@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -190,6 +191,177 @@ func TestDiscardActiveLeaseQuarantinesContainerWithoutTouchingIdlePool(t *testin
 	}
 	if len(pool.idlePool["python"]) != 1 || pool.idlePool["python"][0] != "idle" || pool.containerUser["idle"] != "alice" {
 		t.Fatalf("idle container was changed by active discard: %#v", pool)
+	}
+}
+
+func TestConfirmedDiscardKeepsActiveOwnershipWhileContainerCanStillWrite(t *testing.T) {
+	containerID := "container-active-123456"
+	var commands [][]string
+	pool := &Pool{
+		containerUser:        map[string]string{containerID: "alice"},
+		containerContext:     map[string]string{containerID: "project-cache"},
+		imageByContainerID:   map[string]string{containerID: "python"},
+		userActiveContainers: map[string]int{"alice": 1},
+		activeCount:          1,
+		runDockerCommand: func(_ context.Context, args ...string) ([]byte, error) {
+			commands = append(commands, append([]string(nil), args...))
+			if len(args) > 0 && args[0] == "inspect" {
+				return []byte("true\n"), nil
+			}
+			return []byte("daemon refused removal"), errors.New("docker rm failed")
+		},
+	}
+
+	err := pool.DiscardForUserAndWait(containerID, "alice")
+	if err == nil {
+		t.Fatal("running container removal failure was reported as confirmed")
+	}
+	if pool.containerUser[containerID] != "alice" || pool.userActiveContainers["alice"] != 1 || pool.activeCount != 1 {
+		t.Fatalf("failed confirmed discard released ownership: %#v", pool)
+	}
+	if len(commands) != 2 || strings.Join(commands[0], " ") != "rm -f "+containerID || commands[1][0] != "inspect" {
+		t.Fatalf("destroy commands = %#v", commands)
+	}
+}
+
+func TestConfirmedDiscardKeepsOwnershipWhenStoppedContainerRemovalIsUnconfirmed(t *testing.T) {
+	containerID := "container-stopped-123456"
+	pool := &Pool{
+		containerUser:        map[string]string{containerID: "alice"},
+		containerContext:     map[string]string{containerID: "project-cache"},
+		imageByContainerID:   map[string]string{containerID: "python"},
+		userActiveContainers: map[string]int{"alice": 1},
+		activeCount:          1,
+		runDockerCommand: func(_ context.Context, args ...string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "inspect" {
+				return []byte("false\n"), nil
+			}
+			return []byte("remove conflict"), errors.New("docker rm failed")
+		},
+	}
+
+	if err := pool.DiscardForUserAndWait(containerID, "alice"); err == nil {
+		t.Fatal("stopped but still existing container was reported as removed")
+	}
+	if pool.containerUser[containerID] != "alice" || pool.userActiveContainers["alice"] != 1 || pool.activeCount != 1 {
+		t.Fatalf("unconfirmed stopped-container removal released ownership: %#v", pool)
+	}
+}
+
+func TestConfirmedDiscardReleasesOwnershipWhenInspectConfirmsContainerAbsent(t *testing.T) {
+	containerID := "container-absent-123456"
+	pool := &Pool{
+		containerUser:        map[string]string{containerID: "alice"},
+		containerContext:     map[string]string{containerID: "project-cache"},
+		imageByContainerID:   map[string]string{containerID: "python"},
+		userActiveContainers: map[string]int{"alice": 1},
+		activeCount:          1,
+		runDockerCommand: func(_ context.Context, args ...string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "inspect" {
+				return []byte("Error: No such container: " + containerID), errors.New("inspect failed")
+			}
+			return []byte("remove response was lost"), errors.New("docker rm failed")
+		},
+	}
+
+	if err := pool.DiscardForUserAndWait(containerID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := pool.containerUser[containerID]; exists || pool.userActiveContainers["alice"] != 0 || pool.activeCount != 0 {
+		t.Fatalf("confirmed absent container retained ownership: %#v", pool)
+	}
+}
+
+func TestDiscardForUserRetriesWithoutDroppingWritableContainerOwnership(t *testing.T) {
+	containerID := "container-retry-123456"
+	removeAttempts := 0
+	waits := 0
+	pool := &Pool{
+		containerUser:        map[string]string{containerID: "alice"},
+		containerContext:     map[string]string{containerID: "project-cache"},
+		imageByContainerID:   map[string]string{containerID: "python"},
+		userActiveContainers: map[string]int{"alice": 1},
+		activeCount:          1,
+		runDockerCommand: func(_ context.Context, args ...string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "rm" {
+				removeAttempts++
+				if removeAttempts > 1 {
+					return []byte(containerID), nil
+				}
+				return []byte("daemon refused removal"), errors.New("docker rm failed")
+			}
+			return []byte("true\n"), nil
+		},
+	}
+	pool.waitDockerRetry = func(time.Duration) {
+		waits++
+		if pool.containerUser[containerID] != "alice" || pool.activeCount != 1 {
+			t.Fatal("writable container ownership was dropped before retry")
+		}
+	}
+
+	pool.DiscardForUser(containerID, "alice")
+	if removeAttempts != 2 || waits != 1 {
+		t.Fatalf("discard attempts=%d waits=%d", removeAttempts, waits)
+	}
+	if _, exists := pool.containerUser[containerID]; exists || pool.activeCount != 0 {
+		t.Fatalf("confirmed discard retained ownership: %#v", pool)
+	}
+}
+
+func TestContainerRunningStateDoesNotTreatInspectFailureAsDead(t *testing.T) {
+	pool := &Pool{runDockerCommand: func(_ context.Context, _ ...string) ([]byte, error) {
+		return []byte("docker daemon unavailable"), errors.New("inspect failed")
+	}}
+	running, err := pool.containerRunningState("container-unknown-123456")
+	if err == nil || running {
+		t.Fatalf("unknown inspect state reported running=%v error=%v", running, err)
+	}
+}
+
+func TestHotPoolUnknownContainerIsSafelyDiscardedWhenQuarantineRefills(t *testing.T) {
+	const (
+		unknownID     = "container-unknown-123456"
+		replacementID = "container-replace-123456"
+	)
+	hot := make(chan string, 1)
+	hot <- unknownID
+	pool := &Pool{
+		hotPool: map[hotPoolKey]chan string{
+			{image: "python", userID: "alice"}: hot,
+		},
+		containerUser: map[string]string{
+			unknownID: "alice", replacementID: "alice",
+		},
+		imageByContainerID: map[string]string{
+			unknownID: "python", replacementID: "python",
+		},
+		activeCount: 2,
+	}
+	pool.runDockerCommand = func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "inspect" {
+			hot <- replacementID
+			return []byte("docker daemon unavailable"), errors.New("inspect failed")
+		}
+		return nil, nil
+	}
+
+	if got := pool.tryHotPool("python", "alice"); got != "" {
+		t.Fatalf("unknown hot-pool container was reused: %q", got)
+	}
+	if _, exists := pool.containerUser[unknownID]; exists {
+		t.Fatal("unreachable unknown container retained pool ownership after confirmed removal")
+	}
+	if pool.activeCount != 1 {
+		t.Fatalf("activeCount = %d, want 1 replacement container", pool.activeCount)
+	}
+	select {
+	case got := <-hot:
+		if got != replacementID {
+			t.Fatalf("hot pool contains %q, want replacement", got)
+		}
+	default:
+		t.Fatal("replacement container disappeared from hot pool")
 	}
 }
 

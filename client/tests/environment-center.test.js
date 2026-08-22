@@ -7,7 +7,9 @@ const {
   recognizeManifests,
   languageMatchesRuntime,
   normalizeHealth,
-  mergeServerSnapshot
+  mergeServerSnapshot,
+  unresolvedPythonImport,
+  mergeLiveDependencyDiagnostics
 } = require('../src/environment-center');
 
 test('recognizes project dependency files while skipping generated dependency trees', () => {
@@ -92,4 +94,63 @@ test('cloud environment data upgrades local discovery without discarding local m
   assert.equal(merged.packages.installed[0].version, '2.2.6');
   assert.equal(merged.manifests[0].localPath, 'C:\\work\\demo\\requirements.txt');
   assert.equal(merged.actions.repair.supported, true);
+});
+
+test('unresolved Python imports supplement unavailable server truth without mutating it', () => {
+  const snapshot = {
+    language: { id: 'python' },
+	dependencyCache: { inventoryStatus: 'missing' },
+	packages: { declared: [], installed: [], missing: [], unknown: [] },
+    consistency: {
+	  status: 'unknown',
+	  dependencyRuntime: { status: 'unknown', detail: 'Package inventory is missing' }
+    },
+    actions: { repair: { supported: false } }
+  };
+  const problems = [
+    { severity: 'error', code: 'reportMissingImports', message: 'Import "numpy" could not be resolved' },
+    { severity: 'error', code: 'reportMissingImports', message: 'Import "matplotlib.pyplot" could not be resolved' },
+    { severity: 'error', code: 'reportMissingImports', message: 'Import "matplotlib.animation" could not be resolved' },
+    { severity: 'warning', code: 'reportUnusedImport', message: 'Import "nmsl" is not accessed' }
+  ];
+
+  const merged = mergeLiveDependencyDiagnostics(snapshot, problems);
+  assert.equal(merged.consistency.status, 'mismatch');
+  assert.equal(merged.consistency.dependencyRuntime.status, 'mismatch');
+  assert.match(merged.consistency.dependencyRuntime.detail, /^2 unresolved dependency imports/);
+  assert.match(merged.consistency.lspDependencies.detail, /^2 unresolved dependency imports/);
+  assert.deepEqual(merged.packages.missing.map((item) => item.name), ['numpy', 'matplotlib']);
+  assert.equal(merged.actions.repair.supported, false, 'live diagnostics must not invent a repair action');
+  assert.deepEqual(snapshot.packages.missing, [], 'the server snapshot remains the action/revision truth');
+});
+
+test('unresolved Python imports never overwrite exact project inventory truth', () => {
+	const snapshot = {
+	  language: { id: 'python' },
+	  dependencyCache: { scope: 'project-lock', inventoryStatus: 'ready' },
+	  packages: {
+		declared: [{ name: 'numpy', source: 'requirements.txt' }],
+		installed: [{ name: 'numpy', version: '2.1.0', trust: 'exact' }],
+		missing: [], unknown: []
+	  },
+	  consistency: {
+		status: 'aligned',
+		dependencyRuntime: { status: 'aligned', detail: 'Exact inventory contains all declarations' },
+		lspDependencies: { status: 'ready', detail: 'Dependency view is ready' }
+	  }
+	};
+	const merged = mergeLiveDependencyDiagnostics(snapshot, [
+	  { severity: 'error', code: 'reportMissingImports', message: 'Import "numpy" could not be resolved' }
+	]);
+	assert.deepEqual(merged.packages.missing, []);
+	assert.equal(merged.consistency.dependencyRuntime.status, 'aligned');
+	assert.equal(merged.consistency.lspDependencies.status, 'mixed');
+	assert.equal(merged.consistency.status, 'unknown');
+});
+
+test('Python import diagnostics require a real unresolved-import signal', () => {
+  assert.equal(unresolvedPythonImport({ severity: 'error', message: 'Import "matplotlib.pyplot" could not be resolved' }), 'matplotlib');
+  assert.equal(unresolvedPythonImport({ severity: 'warning', code: 'reportUnusedImport', message: 'Import "numpy" is not accessed' }), '');
+  assert.equal(unresolvedPythonImport({ severity: 'info', code: 'reportMissingImports', message: 'Import "numpy" could not be resolved' }), '');
+  assert.equal(unresolvedPythonImport({ severity: 'error', code: 'reportMissingImports', message: 'Import ".local" could not be resolved' }), '');
 });

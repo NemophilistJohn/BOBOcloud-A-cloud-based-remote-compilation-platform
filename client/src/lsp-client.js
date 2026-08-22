@@ -1017,7 +1017,8 @@
       mode: mode,
       languageId: language,
       runtimeId: runtimeForLanguage(language, S.selectedRuntime),
-      workspace: workspace
+      workspace: workspace,
+      setupCommands: Array.isArray(S.setupCommands) ? S.setupCommands.slice() : []
     };
     var signature = JSON.stringify({
       server: S.serverSettings && S.serverSettings.ip || '',
@@ -2943,6 +2944,11 @@
 
   function dependenciesChanged() {
     if (settings.mode === 'local' || status.state !== 'ready' || !activeLspDecision().available || !global.api || !global.api.lspControl) return Promise.resolve(false);
+    // setupCommands participate in the project dependency digest. Re-run the
+    // configuration boundary so the main-process transport reconnects when
+    // that digest input changed; same-config calls remain a cheap no-op there.
+    lastConfigSignature = '';
+    scheduleConfigure();
     return getDependencyRefreshCoordinator().request(function() {
       return global.api.lspControl({ type: 'lsp.dependency.refresh' });
     });

@@ -2,12 +2,15 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"time"
 
+	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/security"
 	"bobocloud-server/internal/session"
 )
@@ -33,6 +36,7 @@ type DockerRunner struct {
 	cacheEnv        map[string]string
 	setupPassed     bool
 	workspaceCopier containerWorkspaceCopier
+	metrics         *metrics.Registry
 }
 
 type containerWorkspaceCopier interface {
@@ -65,6 +69,7 @@ type DockerPoolClient interface {
 	AcquireForUserWithContext(ctx context.Context, userID, image, cacheKey string, volumes, env map[string]string, output session.OutputWriter) (string, error)
 	Release(containerID string)
 	ReleaseForUser(containerID, userID string)
+	DiscardForUser(containerID, userID string)
 	Exec(ctx context.Context, containerID string, cmd []string, workDir string) (stdout, stderr string, exitCode int, err error)
 	ExecStreamingEnv(ctx context.Context, containerID string, cmd []string, workDir string, output session.OutputWriter, stage string, env map[string]string, stdin io.Reader) *model.RunResult
 }
@@ -79,6 +84,8 @@ func (r *DockerRunner) SetBuildCacheContext(key string, mounts, env map[string]s
 	r.cacheMounts = mounts
 	r.cacheEnv = env
 }
+
+func (r *DockerRunner) SetMetrics(registry *metrics.Registry) { r.metrics = registry }
 
 // NewDockerRunner 创建 Docker 运行器
 func NewDockerRunner(runtime model.RuntimeDef, pool DockerPoolClient, sec security.Policy) *DockerRunner {
@@ -125,46 +132,74 @@ func (r *DockerRunner) RunPlan(ctx context.Context, plan *Plan, hostWorkDir stri
 	output.WriteStatus("docker", fmt.Sprintf("Container acquired in %d ms", time.Since(acquireStarted).Milliseconds()))
 	defer func() {
 		cleanupStarted := time.Now()
+		copyBackStarted := time.Now()
 		if copyErr := r.copyFromContainer(ctx, containerID, hostWorkDir, containerWorkDir); copyErr != nil {
 			output.WriteStderr(fmt.Sprintf("Warning: failed to copy artifacts from container: %v", copyErr), "setup")
 		}
-		r.pool.ReleaseForUser(containerID, r.userID)
+		if r.metrics != nil {
+			r.metrics.Observe("workspace.copy.from_container", time.Since(copyBackStarted))
+		}
+		if errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
+			r.pool.DiscardForUser(containerID, r.userID)
+		} else {
+			r.pool.ReleaseForUser(containerID, r.userID)
+		}
 		output.WriteStatus("docker", fmt.Sprintf("Artifacts collected and container recycled in %d ms", time.Since(cleanupStarted).Milliseconds()))
 	}()
 
 	copyStarted := time.Now()
-	if err := r.copyToContainer(ctx, containerID, hostWorkDir, containerWorkDir); err != nil {
-		output.WriteError(fmt.Sprintf("Failed to copy files to container: %v", err))
+	copyErr := r.copyToContainer(ctx, containerID, hostWorkDir, containerWorkDir)
+	if r.metrics != nil {
+		r.metrics.Observe("workspace.copy.to_container", time.Since(copyStarted))
+	}
+	if copyErr != nil {
+		output.WriteError(fmt.Sprintf("Failed to copy files to container: %v", copyErr))
 		return &model.RunResult{Success: false, ReturnCode: 1}
+	}
+	if nodeModules := r.cacheEnv["BOBOCLOUD_NODE_MODULES"]; nodeModules != "" {
+		if _, stderr, code, linkErr := r.pool.Exec(ctx, containerID, []string{"ln", "-sfn", nodeModules, containerWorkDir + "/node_modules"}, "/"); linkErr != nil || code != 0 {
+			output.WriteError(fmt.Sprintf("Failed to attach project dependency directory: %s %v", stderr, linkErr))
+			return &model.RunResult{Success: false, ReturnCode: 1}
+		}
 	}
 	output.WriteStatus("docker", fmt.Sprintf("Workspace copied in %d ms", time.Since(copyStarted).Milliseconds()))
 
-	for _, cmd := range r.setupCmds {
-		if !r.sec.AllowCommand(cmd) {
-			output.WriteStderr(fmt.Sprintf("Command blocked by security policy: %s", cmd), "setup")
-			continue
+	dependencyStarted := time.Now()
+	setupResult := func() *model.RunResult {
+		for _, cmd := range r.setupCmds {
+			if !r.sec.AllowCommand(cmd) {
+				output.WriteStderr(fmt.Sprintf("Command blocked by security policy: %s", cmd), "setup")
+				continue
+			}
+			filteredCmd := r.sec.FilterCommand(cmd)
+			filteredCmd = autoPersistPip(filteredCmd)
+			output.WriteStatus("setup", fmt.Sprintf("$ %s", filteredCmd))
+			setupCtx, setupCancel := context.WithTimeout(ctx, time.Duration(300)*time.Second)
+			stdout, stderr, exitCode, execErr := r.pool.Exec(setupCtx, containerID,
+				[]string{"sh", "-c", filteredCmd}, containerWorkDir)
+			setupCancel()
+			if execErr != nil {
+				output.WriteError(fmt.Sprintf("Setup command failed: %v", execErr))
+				return &model.RunResult{Success: false, ReturnCode: 1}
+			}
+			if stdout != "" {
+				output.WriteStdout(stdout, "setup")
+			}
+			if stderr != "" {
+				output.WriteStderr(stderr, "setup")
+			}
+			if exitCode != 0 {
+				output.WriteError(fmt.Sprintf("Setup command exited with code %d", exitCode))
+				return &model.RunResult{Success: false, ReturnCode: exitCode}
+			}
 		}
-		filteredCmd := r.sec.FilterCommand(cmd)
-		filteredCmd = autoPersistPip(filteredCmd)
-		output.WriteStatus("setup", fmt.Sprintf("$ %s", filteredCmd))
-		setupCtx, setupCancel := context.WithTimeout(ctx, time.Duration(300)*time.Second)
-		stdout, stderr, exitCode, execErr := r.pool.Exec(setupCtx, containerID,
-			[]string{"sh", "-c", filteredCmd}, containerWorkDir)
-		setupCancel()
-		if execErr != nil {
-			output.WriteError(fmt.Sprintf("Setup command failed: %v", execErr))
-			return &model.RunResult{Success: false, ReturnCode: 1}
-		}
-		if stdout != "" {
-			output.WriteStdout(stdout, "setup")
-		}
-		if stderr != "" {
-			output.WriteStderr(stderr, "setup")
-		}
-		if exitCode != 0 {
-			output.WriteError(fmt.Sprintf("Setup command exited with code %d", exitCode))
-			return &model.RunResult{Success: false, ReturnCode: exitCode}
-		}
+		return nil
+	}()
+	if r.metrics != nil && len(r.setupCmds) > 0 {
+		r.metrics.Observe("dependency.resolve", time.Since(dependencyStarted))
+	}
+	if setupResult != nil {
+		return setupResult
 	}
 	r.setupPassed = true
 	if r.runtime.Language == "python" {
@@ -172,7 +207,7 @@ func (r *DockerRunner) RunPlan(ctx context.Context, plan *Plan, hostWorkDir stri
 	}
 
 	executor := NewDockerStepExecutor(r.pool, containerID, containerWorkDir)
-	return ExecutePlan(ctx, plan, executor, output, stdinReader)
+	return ExecutePlanWithMetrics(ctx, plan, executor, output, stdinReader, r.metrics)
 }
 
 // ---------- 文件拷贝 ----------

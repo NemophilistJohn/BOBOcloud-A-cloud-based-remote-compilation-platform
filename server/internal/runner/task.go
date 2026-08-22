@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/personalcache"
+	"bobocloud-server/internal/ringbuffer"
 	"bobocloud-server/internal/session"
 )
 
@@ -24,7 +27,13 @@ func (r *DockerRunner) RunTaskExecution(ctx context.Context, task *model.TaskExe
 	r.setupPassed = false
 	acquireStarted := time.Now()
 	output.WriteStatus("docker", "Acquiring execution container for project task")
-	containerID, err := r.pool.AcquireForUser(ctx, r.userID, r.runtime.DockerImage, output)
+	var containerID string
+	var err error
+	if r.cacheKey != "" {
+		containerID, err = r.pool.AcquireForUserWithContext(ctx, r.userID, r.runtime.DockerImage, r.cacheKey, r.cacheMounts, r.cacheEnv, output)
+	} else {
+		containerID, err = r.pool.AcquireForUser(ctx, r.userID, r.runtime.DockerImage, output)
+	}
 	if err != nil {
 		output.WriteError(fmt.Sprintf("Failed to acquire container: %v", err))
 		return &model.RunResult{Success: false, ReturnCode: 1}
@@ -41,22 +50,45 @@ func (r *DockerRunner) RunTaskExecution(ctx context.Context, task *model.TaskExe
 			output.WriteStderr(fmt.Sprintf("Warning: failed to prune task cache directories before artifact collection: %s %v", pruneStderr, pruneErr), "setup")
 		}
 		copyCtx, cancelCopy := context.WithTimeout(context.Background(), 45*time.Second)
+		copyBackStarted := time.Now()
 		if copyErr := r.copyFromContainer(copyCtx, containerID, hostWorkDir, containerWorkDir); copyErr != nil {
 			output.WriteStderr(fmt.Sprintf("Warning: failed to copy task artifacts: %v", copyErr), "setup")
 		}
+		if r.metrics != nil {
+			r.metrics.Observe("workspace.copy.from_container", time.Since(copyBackStarted))
+		}
 		cancelCopy()
-		r.pool.ReleaseForUser(containerID, r.userID)
+		if errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
+			r.pool.DiscardForUser(containerID, r.userID)
+		} else {
+			r.pool.ReleaseForUser(containerID, r.userID)
+		}
 		output.WriteStatus("docker", fmt.Sprintf("Task artifacts collected and container recycled in %d ms", time.Since(cleanupStarted).Milliseconds()))
 	}()
 
 	copyStarted := time.Now()
-	if err := r.copyToContainer(ctx, containerID, hostWorkDir, containerWorkDir); err != nil {
-		output.WriteError(fmt.Sprintf("Failed to copy task workspace: %v", err))
+	copyErr := r.copyToContainer(ctx, containerID, hostWorkDir, containerWorkDir)
+	if r.metrics != nil {
+		r.metrics.Observe("workspace.copy.to_container", time.Since(copyStarted))
+	}
+	if copyErr != nil {
+		output.WriteError(fmt.Sprintf("Failed to copy task workspace: %v", copyErr))
 		return &model.RunResult{Success: false, ReturnCode: 1}
 	}
+	if nodeModules := r.cacheEnv["BOBOCLOUD_NODE_MODULES"]; nodeModules != "" {
+		if _, stderr, code, linkErr := r.pool.Exec(ctx, containerID, []string{"ln", "-sfn", nodeModules, containerWorkDir + "/node_modules"}, "/"); linkErr != nil || code != 0 {
+			output.WriteError(fmt.Sprintf("Failed to attach project dependency directory: %s %v", stderr, linkErr))
+			return &model.RunResult{Success: false, ReturnCode: 1}
+		}
+	}
 	output.WriteStatus("docker", fmt.Sprintf("Task workspace copied in %d ms", time.Since(copyStarted).Milliseconds()))
-	if result := r.runSetupCommands(ctx, containerID, output); result != nil {
-		return result
+	dependencyStarted := time.Now()
+	setupResult := r.runSetupCommands(ctx, containerID, output)
+	if r.metrics != nil && len(r.setupCmds) > 0 {
+		r.metrics.Observe("dependency.resolve", time.Since(dependencyStarted))
+	}
+	if setupResult != nil {
+		return setupResult
 	}
 	r.setupPassed = true
 
@@ -124,7 +156,8 @@ func executeTaskGraph(ctx context.Context, task *model.TaskExecution, executor S
 	}
 
 	completed := 0
-	var stdout, stderr strings.Builder
+	stdout := ringbuffer.New(outputRetentionLimit())
+	stderr := ringbuffer.New(outputRetentionLimit())
 	for completed < len(task.Steps) {
 		ready := make([]string, 0)
 		for id, degree := range indegree {
@@ -166,7 +199,12 @@ func executeTaskGraph(ctx context.Context, task *model.TaskExecution, executor S
 					step.Stdin = stdinReader
 				}
 				output.WriteStatus(stage, fmt.Sprintf("[%s] %s", node.Label, strings.Join(node.Argv, " ")))
-				results <- taskGraphResult{id: node.ID, result: executor.ExecStep(ctx, step, output)}
+				stepStarted := time.Now()
+				stepResult := executor.ExecStep(ctx, step, output)
+				if dockerRunner.metrics != nil {
+					dockerRunner.metrics.Observe(metricStage(stage), time.Since(stepStarted))
+				}
+				results <- taskGraphResult{id: node.ID, result: stepResult}
 			}()
 		}
 		wait.Wait()
@@ -179,16 +217,10 @@ func executeTaskGraph(ctx context.Context, task *model.TaskExecution, executor S
 				result = &model.RunResult{Success: false, ReturnCode: 1, Stderr: "task step returned no result"}
 			}
 			if result.Stdout != "" {
-				if stdout.Len() > 0 {
-					stdout.WriteByte('\n')
-				}
-				stdout.WriteString(result.Stdout)
+				stdout.WriteLine(result.Stdout)
 			}
 			if result.Stderr != "" {
-				if stderr.Len() > 0 {
-					stderr.WriteByte('\n')
-				}
-				stderr.WriteString(result.Stderr)
+				stderr.WriteLine(result.Stderr)
 			}
 			if !result.Success && failed == nil {
 				failed = result
@@ -201,8 +233,10 @@ func executeTaskGraph(ctx context.Context, task *model.TaskExecution, executor S
 		if failed != nil {
 			failed.Stdout = stdout.String()
 			failed.Stderr = stderr.String()
+			failed.StdoutTruncated = failed.StdoutTruncated || stdout.Truncated()
+			failed.StderrTruncated = failed.StderrTruncated || stderr.Truncated()
 			return failed
 		}
 	}
-	return &model.RunResult{Success: true, ReturnCode: 0, Stdout: stdout.String(), Stderr: stderr.String()}
+	return &model.RunResult{Success: true, ReturnCode: 0, Stdout: stdout.String(), Stderr: stderr.String(), StdoutTruncated: stdout.Truncated(), StderrTruncated: stderr.Truncated()}
 }

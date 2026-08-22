@@ -309,5 +309,5 @@ test('terminal rendering stays behind the sender-bound main-process bridge', () 
   assert.doesNotMatch(source, /sendToServer\(['"]terminal['"]/);
   assert.doesNotMatch(source, /getElementById\(['"]terminal-input['"]\)/);
   assert.doesNotMatch(source, /getElementById\(['"]terminal-output['"]\)/);
-  assert.doesNotMatch(source, /setupCommands/);
+  assert.match(source, /setupCommands:\s*Array\.isArray\(S\.setupCommands\)/);
 });

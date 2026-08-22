@@ -58,6 +58,23 @@ type Config struct {
 	DockerPullTimeout           int      `json:"docker_pull_timeout_seconds"` // 拉取超时（秒）
 	DockerHardening             bool     `json:"docker_hardening"`            // 容器安全加固（cap-drop/no-new-privileges/pids-limit/init）
 	DockerReadOnlyRootfs        bool     `json:"docker_readonly_rootfs"`      // 只读根文件系统（实验性，可能影响部分运行时）
+	DockerQueueSize             int      `json:"docker_queue_size"`
+	DockerQueueTimeoutSeconds   int      `json:"docker_queue_timeout_seconds"`
+
+	// 编译观测与有界结果保留。实时 WebSocket 输出不受结果保留上限影响。
+	PerformanceMetricsEnabled bool `json:"performance_metrics_enabled"`
+	PerformanceMetricsWindow  int  `json:"performance_metrics_window"`
+	RunOutputRetainedBytes    int  `json:"run_output_retained_bytes"`
+
+	// 个人持久化依赖。project-lock 按项目/运行时/语言/清单摘要隔离；
+	// legacy-user 仅用于紧急兼容回退。
+	PersonalDependencyScope           string `json:"personal_dependency_scope"`
+	PersonalPersistReservationMB      int    `json:"personal_persist_reservation_mb"`
+	PersonalPersistMaxFiles           int64  `json:"personal_persist_max_files"`
+	PersonalPersistReservationFiles   int64  `json:"personal_persist_reservation_files"`
+	PersonalPersistScanIntervalMS     int    `json:"personal_persist_scan_interval_ms"`
+	PersonalPersistRetentionDays      int    `json:"personal_persist_retention_days"`
+	PersonalPersistCleanupIntervalMin int    `json:"personal_persist_cleanup_interval_minutes"`
 
 	// 超时配置
 	DefaultCompileTimeout  int `json:"compile_timeout_seconds"`
@@ -165,6 +182,18 @@ func Default() *Config {
 		DockerPullTimeout:                   600,
 		DockerHardening:                     true,
 		DockerReadOnlyRootfs:                false,
+		DockerQueueSize:                     50,
+		DockerQueueTimeoutSeconds:           60,
+		PerformanceMetricsEnabled:           true,
+		PerformanceMetricsWindow:            512,
+		RunOutputRetainedBytes:              256 << 10,
+		PersonalDependencyScope:             "project-lock",
+		PersonalPersistReservationMB:        256,
+		PersonalPersistMaxFiles:             250_000,
+		PersonalPersistReservationFiles:     10_000,
+		PersonalPersistScanIntervalMS:       250,
+		PersonalPersistRetentionDays:        30,
+		PersonalPersistCleanupIntervalMin:   10,
 		DefaultCompileTimeout:               30,
 		RustCompileTimeout:                  60,
 		DefaultRunTimeout:                   30,
@@ -288,6 +317,47 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.TeamCacheCleanupIntervalMin <= 0 {
 		cfg.TeamCacheCleanupIntervalMin = 10
+	}
+	if cfg.DockerQueueSize < 0 {
+		cfg.DockerQueueSize = 0
+	}
+	if cfg.DockerQueueTimeoutSeconds <= 0 {
+		cfg.DockerQueueTimeoutSeconds = 60
+	}
+	if cfg.PerformanceMetricsWindow <= 0 {
+		cfg.PerformanceMetricsWindow = 512
+	}
+	if cfg.RunOutputRetainedBytes <= 0 {
+		cfg.RunOutputRetainedBytes = 256 << 10
+	}
+	if cfg.PersonalDependencyScope == "" {
+		cfg.PersonalDependencyScope = "project-lock"
+	}
+	if cfg.PersonalDependencyScope != "project-lock" && cfg.PersonalDependencyScope != "legacy-user" {
+		return nil, fmt.Errorf("personal_dependency_scope must be project-lock or legacy-user")
+	}
+	if cfg.PersonalPersistReservationMB <= 0 {
+		cfg.PersonalPersistReservationMB = 256
+	}
+	if cfg.PersonalPersistMaxFiles <= 0 {
+		cfg.PersonalPersistMaxFiles = 250_000
+	}
+	if cfg.PersonalPersistReservationFiles <= 0 {
+		cfg.PersonalPersistReservationFiles = 10_000
+	}
+	if cfg.PersonalPersistReservationFiles > cfg.PersonalPersistMaxFiles {
+		return nil, fmt.Errorf("personal_persist_reservation_files must not exceed personal_persist_max_files")
+	}
+	if cfg.PersonalPersistScanIntervalMS <= 0 {
+		cfg.PersonalPersistScanIntervalMS = 250
+	}
+	// Zero disables age-based eviction while quota-based LRU remains active.
+	// Missing values retain Default()'s 30-day policy.
+	if cfg.PersonalPersistRetentionDays < 0 {
+		cfg.PersonalPersistRetentionDays = 30
+	}
+	if cfg.PersonalPersistCleanupIntervalMin <= 0 {
+		cfg.PersonalPersistCleanupIntervalMin = 10
 	}
 	if cfg.LSPMaxSessions <= 0 {
 		cfg.LSPMaxSessions = 8
@@ -447,6 +517,39 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("BOBOCLOUD_MAX_CONTAINERS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.DockerMaxContainers = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_DOCKER_QUEUE_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.DockerQueueSize = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_DOCKER_QUEUE_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.DockerQueueTimeoutSeconds = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_RUN_OUTPUT_RETAINED_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.RunOutputRetainedBytes = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_PERSONAL_DEPENDENCY_SCOPE"); v != "" {
+		cfg.PersonalDependencyScope = v
+	}
+	if v := os.Getenv("BOBOCLOUD_PERSONAL_PERSIST_RESERVATION_MB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.PersonalPersistReservationMB = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_PERSONAL_PERSIST_MAX_FILES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			cfg.PersonalPersistMaxFiles = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_PERSONAL_PERSIST_RESERVATION_FILES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			cfg.PersonalPersistReservationFiles = n
 		}
 	}
 	if v := os.Getenv("BOBOCLOUD_TEAM_CACHE_QUOTA_MB"); v != "" {
@@ -616,4 +719,12 @@ func (c *Config) TerminalTimeoutDuration() time.Duration {
 // PoolReplenishDuration 返回补池间隔的 time.Duration。
 func (c *Config) PoolReplenishDuration() time.Duration {
 	return time.Duration(c.DockerPoolReplenishInterval) * time.Second
+}
+
+func (c *Config) PersonalPersistScanInterval() time.Duration {
+	return time.Duration(c.PersonalPersistScanIntervalMS) * time.Millisecond
+}
+
+func (c *Config) PersonalPersistRetention() time.Duration {
+	return time.Duration(c.PersonalPersistRetentionDays) * 24 * time.Hour
 }

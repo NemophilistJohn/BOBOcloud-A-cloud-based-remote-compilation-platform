@@ -5,7 +5,15 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { DapTransport, normalizeDapUrl, normalizeDapChildUrl } = require('../dap-transport');
+const {
+  DapTransport,
+  normalizeDapUrl,
+  normalizeDapChildUrl,
+  cleanSetupCommands,
+  cleanDependencyCacheStatus,
+  MAX_SETUP_COMMANDS,
+  MAX_SETUP_COMMAND_BYTES
+} = require('../dap-transport');
 const {
   BUILTIN_CONFIGURATION_ID,
   readLaunchConfigurations,
@@ -110,6 +118,7 @@ test('uses one gateway handshake then exchanges raw DAP messages', async () => {
   });
   const started = transport.start({
     serverHost: 'cloud.test', languageId: 'python', runtimeId: 'python:3.11',
+    setupCommands: ['pip install -r requirements.txt'],
     workspace: { kind: 'personal', folderName: 'demo', folderKey: 'demo-a1' }
   });
   await Promise.resolve();
@@ -117,11 +126,13 @@ test('uses one gateway handshake then exchanges raw DAP messages', async () => {
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(socket.sent[0], {
     type: 'dap.start', token: 'token', languageId: 'python', runtimeId: 'python:3.11',
+    setupCommands: ['pip install -r requirements.txt'],
     workspace: { kind: 'personal', folderName: 'demo', folderKey: 'demo-a1' }
   });
-  ready(socket);
+  ready(socket, { dependencyCache: { state: 'mounted', required: true, digestSource: 'lock', exact: true } });
   const status = await started;
   assert.equal(status.state, 'ready');
+  assert.deepEqual(status.dependencyCache, { state: 'mounted', required: true, digestSource: 'lock', exact: true });
 
   const pending = transport.request('initialize', { clientID: 'test' });
   assert.deepEqual(socket.sent[1], { seq: 1, type: 'request', command: 'initialize', arguments: { clientID: 'test' } });
@@ -152,6 +163,16 @@ test('uses one gateway handshake then exchanges raw DAP messages', async () => {
   });
   socket.fire('message', { seq: 52, type: 'response', request_seq: 3, command: 'setExceptionBreakpoints', success: true, body: {} });
   await exceptionBreakpoints;
+});
+
+test('validates DAP setup command bounds and dependency cache status', () => {
+  assert.deepEqual(cleanSetupCommands(['  pip install demo  ']), ['pip install demo']);
+  assert.throws(() => cleanSetupCommands(Array(MAX_SETUP_COMMANDS + 1).fill('true')), (error) => error.code === 'invalid_start');
+  assert.throws(() => cleanSetupCommands(['x'.repeat(MAX_SETUP_COMMAND_BYTES + 1)]), (error) => error.code === 'invalid_start');
+  assert.throws(() => cleanSetupCommands(['pip install demo\nwhoami']), (error) => error.code === 'invalid_start');
+  assert.deepEqual(cleanDependencyCacheStatus({ state: 'unexpected', required: true, digestSource: 'x'.repeat(100), exact: 1 }), {
+    state: 'unavailable', required: true, digestSource: 'x'.repeat(32), exact: false
+  });
 });
 
 test('adapter request failures use a stable client error and retain raw details only as protocol data', async () => {

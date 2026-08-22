@@ -140,6 +140,7 @@ func (p *taskPoolFake) AcquireForUserWithContext(context.Context, string, string
 }
 func (p *taskPoolFake) Release(string)                { p.add("release") }
 func (p *taskPoolFake) ReleaseForUser(string, string) { p.add("release") }
+func (p *taskPoolFake) DiscardForUser(string, string) { p.add("discard") }
 func (p *taskPoolFake) Exec(ctx context.Context, _ string, cmd []string, _ string) (string, string, int, error) {
 	if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" && strings.Contains(cmd[2], "find . -type d") {
 		p.pruneCtxActive = ctx.Err() == nil

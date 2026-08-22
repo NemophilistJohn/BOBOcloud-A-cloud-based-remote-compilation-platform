@@ -94,7 +94,8 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
             this.respond({
               type: 'dap.ready', sessionId: 'dap-ui-1',
               adapter: { id: 'python-debugpy', label: 'Python Debugger', languageId: 'python', runtimeId: 'python:3.11' },
-              capabilities: { supportsLaunch: true }
+              capabilities: { supportsLaunch: true },
+              dependencyCache: { state: 'mounted', required: true, digestSource: 'setup', exact: true }
             });
             return;
           }
@@ -254,14 +255,16 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
       line: 2, enabled: true, verified: null, message: '', id: 0, condition: '', hitCondition: '', logMessage: ''
     }] }]);
 
+    await page.evaluate(() => { window.BOBO.state.setupCommands = ['pip install -r requirements.txt']; });
     await page.locator('#debug-start').click();
     expect(await page.evaluate(() => window.BOBO.dap.start())).toBe(true);
+    expect(await app.evaluate(() => globalThis.__boboDapProbe.starts[0].message.setupCommands)).toEqual(['pip install -r requirements.txt']);
     await expect(page.locator('#debug-toolbar')).toBeVisible();
     await expect(page.locator('#debug-toolbar-status')).toContainText('Paused');
     await expect(page.locator('#panel-debug')).toHaveClass(/active/);
-    const debugPanelHeight = await page.locator('#bottom-panel').evaluate((element) => element.getBoundingClientRect().height);
+    await expect.poll(() => page.locator('#bottom-panel').evaluate((element) => element.getBoundingClientRect().height))
+      .toBeGreaterThanOrEqual(280);
     const debugConsoleHeight = await page.locator('#debug-console-output').evaluate((element) => element.getBoundingClientRect().height);
-    expect(debugPanelHeight).toBeGreaterThanOrEqual(280);
     expect(debugConsoleHeight).toBeGreaterThanOrEqual(120);
     await page.setViewportSize({ width: 720, height: 480 });
     await expect(page.locator('.debug-inspector-tabs')).toBeVisible();

@@ -14,13 +14,16 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"bobocloud-server/internal/auth"
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/personalcache"
 )
 
 const (
@@ -74,6 +77,14 @@ var environmentManifestSpecs = map[string]environmentManifestSpec{
 type environmentResolved struct {
 	root, folderKey, branch string
 	workspace               model.ProjectEnvironmentWorkspace
+}
+
+type installedEnvironmentInspection struct {
+	Packages  []model.ProjectEnvironmentPackage
+	Exact     bool
+	CheckedAt int64
+	State     string
+	Detail    string
 }
 
 func (h *HTTPHandler) handleProjectEnvironment(w http.ResponseWriter, r *http.Request, req *model.Request) {
@@ -181,9 +192,16 @@ func (h *HTTPHandler) inspectProjectEnvironment(r *http.Request, req *model.Requ
 	if language == "" {
 		language = inferEnvironmentLanguage(manifests)
 	}
-	installed, installedTrusted, installedAt := h.inspectInstalledEnvironmentPackages(r, resolved, runtime, language)
-	packages := classifyEnvironmentPackages(declared, installed, installedTrusted)
-	dependencyStatus, indexedAt := h.resolveEnvironmentDependencyStatus(r, resolved, runtime, language)
+	installedInspection := h.inspectInstalledEnvironmentPackages(r, req, resolved, runtime, language)
+	installed, installedTrusted, installedAt := installedInspection.Packages, installedInspection.Exact, installedInspection.CheckedAt
+	dependencyCache := h.inspectProjectDependencyCache(r, req, resolved, runtime, language)
+	if dependencyCache.Scope == "project-lock" {
+		dependencyCache.InventoryStatus = installedInspection.State
+		dependencyCache.InventoryDetail = installedInspection.Detail
+		dependencyCache.InventoryCheckedAt = installedInspection.CheckedAt
+	}
+	packages := classifyEnvironmentPackages(declared, installed, language, installedTrusted)
+	dependencyStatus, indexedAt := h.resolveEnvironmentDependencyStatus(r, req, resolved, runtime, language)
 	languageRuntime := model.ProjectEnvironmentCheck{Status: "unknown", Detail: "Language or runtime is not selected"}
 	if language != "" && runtime.ID == "local" {
 		languageRuntime.Detail = "The local runtime toolchain cannot be verified without executing it"
@@ -192,7 +210,7 @@ func (h *HTTPHandler) inspectProjectEnvironment(r *http.Request, req *model.Requ
 	} else if language != "" && runtime.Language != "" {
 		languageRuntime = model.ProjectEnvironmentCheck{Status: "mismatch", Detail: fmt.Sprintf("Language %s does not match runtime %s (%s)", language, runtime.ID, runtime.Language)}
 	}
-	dependencyRuntime := projectEnvironmentDependencyRuntimeCheck(runtime, language, packages, installedTrusted, resolved.workspace.Kind)
+	dependencyRuntime := projectEnvironmentDependencyRuntimeCheck(runtime, language, packages, installedTrusted, resolved.workspace.Kind, installedInspection.State, installedInspection.Detail)
 	lspDependencies := model.ProjectEnvironmentCheck{Status: dependencyStatus.Status, Detail: dependencyStatus.Detail}
 	consistencyStatus, consistencyDetail := projectEnvironmentOverallConsistency(languageRuntime, dependencyRuntime, lspDependencies)
 	if dependencyStatus.Detail == "" {
@@ -212,18 +230,32 @@ func (h *HTTPHandler) inspectProjectEnvironment(r *http.Request, req *model.Requ
 		Schema: projectEnvironmentSchema, CheckedAt: time.Now().UTC().UnixMilli(), Workspace: resolved.workspace,
 		Language: model.ProjectEnvironmentLanguage{ID: language, Source: environmentLanguageSource(req.Language, runtime, manifests)}, Runtime: runtime,
 		Manifests: manifests, Packages: packages,
-		Consistency: model.ProjectEnvironmentConsistency{Status: consistencyStatus, LanguageRuntime: languageRuntime, DependencyRuntime: dependencyRuntime, LSPDependencies: lspDependencies, Detail: consistencyDetail},
-		Activity:    model.ProjectEnvironmentActivity{LastIndexedAt: indexedAt, LastInstalledAt: installedAt, LastCompiledAt: lastCompiled},
+		Consistency:     model.ProjectEnvironmentConsistency{Status: consistencyStatus, LanguageRuntime: languageRuntime, DependencyRuntime: dependencyRuntime, LSPDependencies: lspDependencies, Detail: consistencyDetail},
+		Activity:        model.ProjectEnvironmentActivity{LastIndexedAt: indexedAt, LastInstalledAt: installedAt, LastCompiledAt: lastCompiled},
+		DependencyCache: dependencyCache,
 	}
 	environment.Actions = h.projectEnvironmentCapabilities(environment, r)
 	environment.Revision = environmentRevision(environment, dependencyStatus.Revision)
 	return environment, resolved, nil
 }
 
-func projectEnvironmentDependencyRuntimeCheck(runtime model.ProjectEnvironmentRuntime, language string, packages model.ProjectEnvironmentPackages, trusted bool, workspaceKind string) model.ProjectEnvironmentCheck {
+func projectEnvironmentDependencyRuntimeCheck(runtime model.ProjectEnvironmentRuntime, language string, packages model.ProjectEnvironmentPackages, trusted bool, workspaceKind, inspectionState, inspectionDetail string) model.ProjectEnvironmentCheck {
+	if inspectionState != "" && inspectionState != "ready" && inspectionState != "legacy-ready" {
+		detail := strings.TrimSpace(inspectionDetail)
+		if detail == "" {
+			detail = fmt.Sprintf("Installed package inventory is %s", inspectionState)
+		}
+		return model.ProjectEnvironmentCheck{Status: "unknown", Detail: detail}
+	}
 	if trusted {
+		if len(packages.Declared) == 0 {
+			return model.ProjectEnvironmentCheck{Status: "unknown", Detail: fmt.Sprintf("The installed package inventory for runtime %s is exact, but the project has no parseable dependency declarations, so required packages cannot be proven", runtime.ID)}
+		}
 		if len(packages.Missing) > 0 {
 			return model.ProjectEnvironmentCheck{Status: "mismatch", Detail: fmt.Sprintf("The exact installed state for runtime %s is missing %d declared dependencies", runtime.ID, len(packages.Missing))}
+		}
+		if len(packages.Unknown) > 0 {
+			return model.ProjectEnvironmentCheck{Status: "unknown", Detail: fmt.Sprintf("The exact installed state for runtime %s cannot verify %d declared dependency constraints", runtime.ID, len(packages.Unknown))}
 		}
 		return model.ProjectEnvironmentCheck{Status: "aligned", Detail: fmt.Sprintf("The exact installed state for runtime %s contains all %d declared dependencies", runtime.ID, len(packages.Declared))}
 	}
@@ -388,7 +420,7 @@ func parseEnvironmentManifest(path, rel string, spec environmentManifestSpec) ([
 	case "maven":
 		return parseMavenManifest(data, rel), nil
 	case "pyproject":
-		return parsePyproject(data, rel), nil
+		return parsePyproject(data, rel)
 	default:
 		return nil, nil
 	}
@@ -419,7 +451,8 @@ func splitPythonRequirement(value string) (string, string) {
 	}
 	index := len(value)
 	for i, char := range value {
-		if strings.ContainsRune("<>=!~", char) {
+		isPackageNameChar := char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-' || char == '_' || char == '.'
+		if strings.ContainsRune("<>=!~", char) || !isPackageNameChar {
 			index = i
 			break
 		}
@@ -551,34 +584,39 @@ func parseMavenManifest(data []byte, source string) []model.ProjectEnvironmentPa
 	return items
 }
 
-func parsePyproject(data []byte, source string) []model.ProjectEnvironmentPackage {
+func parsePyproject(data []byte, source string) ([]model.ProjectEnvironmentPackage, error) {
 	items := make([]model.ProjectEnvironmentPackage, 0)
 	section := ""
 	inProjectArray := false
 	for _, raw := range strings.Split(string(data), "\n") {
 		line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			if inProjectArray {
+				return nil, fmt.Errorf("project dependencies array is not closed")
+			}
 			section = strings.ToLower(strings.Trim(line, "[] "))
-			inProjectArray = false
 			continue
 		}
 		if section == "project" && strings.HasPrefix(line, "dependencies") {
 			parts := strings.SplitN(line, "=", 2)
-			if len(parts) != 2 {
-				continue
+			if len(parts) != 2 || strings.TrimSpace(parts[0]) != "dependencies" || !containsUnquotedTOMLRune(parts[1], '[') {
+				return nil, fmt.Errorf("project dependencies must be a TOML string array")
 			}
-			inProjectArray = strings.Contains(line, "[") && !strings.Contains(line, "]")
+			inProjectArray = !containsUnquotedTOMLRune(parts[1], ']')
 			line = strings.TrimSpace(parts[1])
 		}
 		if section == "project" && (inProjectArray || strings.HasPrefix(line, "[")) {
-			for _, token := range strings.Split(strings.Trim(line, "[], "), ",") {
-				token = strings.Trim(strings.TrimSpace(token), "\"'")
+			tokens, err := quotedTOMLStrings(line)
+			if err != nil {
+				return nil, err
+			}
+			for _, token := range tokens {
 				name, constraint := splitPythonRequirement(token)
 				if name != "" {
 					items = append(items, model.ProjectEnvironmentPackage{Name: normalizePythonPackageName(name), Constraint: constraint, Scope: "runtime", Source: source})
 				}
 			}
-			if strings.Contains(line, "]") {
+			if containsUnquotedTOMLRune(line, ']') {
 				inProjectArray = false
 			}
 			continue
@@ -590,7 +628,78 @@ func parsePyproject(data []byte, source string) []model.ProjectEnvironmentPackag
 			}
 		}
 	}
-	return items
+	if inProjectArray {
+		return nil, fmt.Errorf("project dependencies array is not closed")
+	}
+	return items, nil
+}
+
+func quotedTOMLStrings(value string) ([]string, error) {
+	items := make([]string, 0)
+	var current strings.Builder
+	var quote rune
+	escaped := false
+	for _, char := range value {
+		if quote == 0 {
+			if char == '\'' || char == '"' {
+				quote = char
+				current.Reset()
+				continue
+			}
+			if char != '[' && char != ']' && char != ',' && char != ' ' && char != '\t' && char != '\r' {
+				return nil, fmt.Errorf("project dependencies contain an unquoted value")
+			}
+			continue
+		}
+		if quote == '"' && escaped {
+			current.WriteRune(char)
+			escaped = false
+			continue
+		}
+		if quote == '"' && char == '\\' {
+			escaped = true
+			continue
+		}
+		if char == quote {
+			items = append(items, current.String())
+			quote = 0
+			continue
+		}
+		current.WriteRune(char)
+	}
+	if quote != 0 || escaped {
+		return nil, fmt.Errorf("project dependencies contain an unterminated TOML string")
+	}
+	return items, nil
+}
+
+func containsUnquotedTOMLRune(value string, target rune) bool {
+	var quote rune
+	escaped := false
+	for _, char := range value {
+		if quote == 0 {
+			if char == '\'' || char == '"' {
+				quote = char
+				continue
+			}
+			if char == target {
+				return true
+			}
+			continue
+		}
+		if quote == '"' && escaped {
+			escaped = false
+			continue
+		}
+		if quote == '"' && char == '\\' {
+			escaped = true
+			continue
+		}
+		if char == quote {
+			quote = 0
+		}
+	}
+	return false
 }
 
 func normalizePackageName(value string) string {
@@ -639,43 +748,152 @@ func dedupeEnvironmentPackages(items []model.ProjectEnvironmentPackage) []model.
 	return out
 }
 
-func (h *HTTPHandler) inspectInstalledEnvironmentPackages(r *http.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string) ([]model.ProjectEnvironmentPackage, bool, int64) {
+func (h *HTTPHandler) inspectInstalledEnvironmentPackages(r *http.Request, req *model.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string) installedEnvironmentInspection {
 	userID := auth.UserIDFromContext(r.Context())
 	if resolved.workspace.Kind == "team" {
-		return nil, false, 0
+		return installedEnvironmentInspection{State: "unavailable", Detail: "The team dependency cache has no read-only package inventory lease"}
+	}
+	if h.PersonalCache != nil && runtime.ID != "" && runtime.ID != "local" {
+		cacheRequest := h.environmentCacheRequest(r, req, resolved, runtime, language)
+		if language == "python" {
+			inventory := h.PersonalCache.InspectPackageInventory(cacheRequest)
+			checkedAt := int64(0)
+			if !inventory.GeneratedAt.IsZero() {
+				checkedAt = inventory.GeneratedAt.UTC().UnixMilli()
+			}
+			items := make([]model.ProjectEnvironmentPackage, 0, len(inventory.Packages))
+			for _, item := range inventory.Packages {
+				trust := "observed"
+				if inventory.Exact {
+					trust = "exact"
+				}
+				items = append(items, model.ProjectEnvironmentPackage{
+					Name: normalizePythonPackageName(item.Name), Version: item.Version,
+					Scope: "project-lock", Source: "project-lock-python", Trust: trust,
+				})
+			}
+			return installedEnvironmentInspection{
+				Packages: items, Exact: inventory.Exact, CheckedAt: checkedAt,
+				State: inventory.State, Detail: inventory.Detail,
+			}
+		}
+		reader, entry, exists, err := h.PersonalCache.AcquireRead(cacheRequest)
+		if errors.Is(err, personalcache.ErrCacheInUse) {
+			return installedEnvironmentInspection{State: "busy", Detail: "The package cache is being written and cannot be inspected yet"}
+		}
+		if err != nil || !exists {
+			state, detail := "missing", "No cache exists for the current project dependency digest"
+			if err != nil {
+				state, detail = "error", "The project dependency digest could not be resolved"
+			}
+			return installedEnvironmentInspection{State: state, Detail: detail}
+		}
+		defer reader.Release()
+		var items []model.ProjectEnvironmentPackage
+		var at int64
+		var exact bool
+		switch language {
+		case "python":
+			items, at, exact = inspectPythonInstalled(filepath.Join(entry.HostPath, "python"))
+		case "node":
+			items, at, _ = inspectNodeInstalled(filepath.Join(entry.HostPath, "node_modules"))
+			// package.json proves a package identity, not that every entry point and
+			// payload file survived an interrupted install. Keep Node observational
+			// until it has a committed structural inventory like Python.
+			exact = false
+		case "go":
+			items, at = inspectGoInstalled(filepath.Join(entry.HostPath, "go", "pkg", "mod"))
+		case "rust":
+			items, at = inspectRustInstalled(filepath.Join(entry.HostPath, "cargo", "registry", "src"))
+		case "java":
+			items, at = inspectMavenInstalled(filepath.Join(entry.HostPath, "maven"))
+		}
+		stable := reader.Stable()
+		if !stable {
+			exact = false
+		}
+		for index := range items {
+			items[index].Scope = "project-lock"
+			items[index].Source = "project-lock-" + language
+			items[index].Trust = "observed"
+			if exact {
+				items[index].Trust = "exact"
+			}
+		}
+		if !stable {
+			return installedEnvironmentInspection{
+				Packages: items, CheckedAt: at, State: "incomplete",
+				Detail: "The package cache changed while it was being inspected",
+			}
+		}
+		state := "observed"
+		if exact {
+			state = "ready"
+		}
+		return installedEnvironmentInspection{Packages: items, Exact: exact, CheckedAt: at, State: state}
 	}
 	persist := filepath.Join(h.Config.DataDir, "users", userID, "persist")
 	switch language {
 	case "python":
 		if runtime.ID == "local" || runtime.ID == "" {
-			return nil, false, 0
+			return installedEnvironmentInspection{State: "unavailable", Detail: "Local Python package truth cannot be inspected without execution"}
 		}
 		root := filepath.Join(persist, "pip-packages", "runtimes", environmentRuntimePathPart(runtime.ID))
 		items, at, ok := inspectPythonInstalled(root)
-		return items, ok, at
+		state := "unavailable"
+		if ok {
+			state = "legacy-ready"
+		}
+		return installedEnvironmentInspection{Packages: items, Exact: ok, CheckedAt: at, State: state}
 	case "node":
 		if runtime.ID == "local" || runtime.ID == "" {
-			return nil, false, 0
+			return installedEnvironmentInspection{State: "unavailable"}
 		}
 		inspection, err := lsp.InspectPersonalDependencies(h.Config.DataDir, userID)
 		if err != nil || !inspection.Exists {
-			return nil, false, 0
+			return installedEnvironmentInspection{State: "unavailable"}
 		}
 		root := lsp.NodeDependencySnapshot(inspection.Root, resolved.workspace.ID, runtime.ID)
 		items, at, ok := inspectNodeInstalled(root)
-		return items, ok, at
+		state := "observed"
+		if ok {
+			state = "ready"
+		}
+		return installedEnvironmentInspection{Packages: items, Exact: ok, CheckedAt: at, State: state}
 	case "go":
 		items, at := inspectGoInstalled(filepath.Join(persist, "go", "pkg", "mod"))
-		return items, false, at
+		return installedEnvironmentInspection{Packages: items, CheckedAt: at, State: "observed"}
 	case "rust":
 		items, at := inspectRustInstalled(filepath.Join(persist, "cargo", "registry", "src"))
-		return items, false, at
+		return installedEnvironmentInspection{Packages: items, CheckedAt: at, State: "observed"}
 	case "java":
 		items, at := inspectMavenInstalled(filepath.Join(persist, "maven"))
-		return items, false, at
+		return installedEnvironmentInspection{Packages: items, CheckedAt: at, State: "observed"}
 	default:
-		return nil, false, 0
+		return installedEnvironmentInspection{State: "unavailable"}
 	}
+}
+
+func (h *HTTPHandler) inspectProjectDependencyCache(r *http.Request, req *model.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string) model.ProjectEnvironmentDependencyCache {
+	if resolved.workspace.Kind != "personal" || runtime.ID == "" || runtime.ID == "local" {
+		return model.ProjectEnvironmentDependencyCache{Scope: "none", Status: "unavailable"}
+	}
+	if h.PersonalCache == nil {
+		return model.ProjectEnvironmentDependencyCache{Scope: "legacy-user", Status: "legacy"}
+	}
+	entry, exists, err := h.PersonalCache.Lookup(h.environmentCacheRequest(r, req, resolved, runtime, language))
+	if err != nil {
+		return model.ProjectEnvironmentDependencyCache{Scope: "project-lock", Status: "error"}
+	}
+	result := model.ProjectEnvironmentDependencyCache{
+		Scope: "project-lock", Digest: entry.Digest, Source: entry.DigestSource, Status: "miss",
+	}
+	if exists {
+		result.Status = "hit"
+		result.SizeBytes = entry.SizeBytes
+		result.LastUsedAt = entry.LastUsed.UTC().UnixMilli()
+	}
+	return result
 }
 
 func environmentRuntimePathPart(runtimeID string) string {
@@ -691,8 +909,8 @@ func environmentRuntimePathPart(runtimeID string) string {
 }
 
 func inspectPythonInstalled(root string) ([]model.ProjectEnvironmentPackage, int64, bool) {
-	info, err := os.Stat(root)
-	if err != nil || !info.IsDir() {
+	info, err := os.Lstat(root)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, 0, false
 	}
 	entries, err := os.ReadDir(root)
@@ -702,19 +920,28 @@ func inspectPythonInstalled(root string) ([]model.ProjectEnvironmentPackage, int
 	items := make([]model.ProjectEnvironmentPackage, 0)
 	latest := info.ModTime().UTC().UnixMilli()
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".dist-info") {
+		if !strings.HasSuffix(strings.ToLower(entry.Name()), ".dist-info") {
 			continue
 		}
+		directory := filepath.Join(root, entry.Name())
+		directoryInfo, statErr := os.Lstat(directory)
+		if statErr != nil || !directoryInfo.IsDir() || directoryInfo.Mode()&os.ModeSymlink != 0 {
+			return items, latest, false
+		}
 		metadata := filepath.Join(root, entry.Name(), "METADATA")
+		metaInfo, statErr := os.Lstat(metadata)
+		if statErr != nil || !metaInfo.Mode().IsRegular() || metaInfo.Mode()&os.ModeSymlink != 0 || metaInfo.Size() > 1<<20 {
+			return items, latest, false
+		}
 		data, readErr := os.ReadFile(metadata)
-		if readErr != nil || len(data) > 1<<20 {
-			continue
+		if readErr != nil || int64(len(data)) != metaInfo.Size() {
+			return items, latest, false
 		}
 		name, version := metadataField(data, "Name"), metadataField(data, "Version")
 		if name == "" || version == "" {
-			continue
+			return items, latest, false
 		}
-		if metaInfo, statErr := os.Stat(metadata); statErr == nil && metaInfo.ModTime().UTC().UnixMilli() > latest {
+		if metaInfo.ModTime().UTC().UnixMilli() > latest {
 			latest = metaInfo.ModTime().UTC().UnixMilli()
 		}
 		items = append(items, model.ProjectEnvironmentPackage{Name: normalizePythonPackageName(name), Version: version, Scope: "runtime", Source: "runtime-scoped-pip", Trust: "exact"})
@@ -734,44 +961,74 @@ func metadataField(data []byte, field string) string {
 }
 
 func inspectNodeInstalled(root string) ([]model.ProjectEnvironmentPackage, int64, bool) {
-	info, err := os.Stat(root)
-	if err != nil || !info.IsDir() {
+	info, err := os.Lstat(root)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, 0, false
 	}
 	items := make([]model.ProjectEnvironmentPackage, 0)
 	latest := info.ModTime().UTC().UnixMilli()
-	entries, _ := os.ReadDir(root)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, 0, false
+	}
+	complete := true
 	readPackage := func(directory, publicName string) {
-		data, err := os.ReadFile(filepath.Join(directory, "package.json"))
-		if err != nil || len(data) > 1<<20 {
+		path := filepath.Join(directory, "package.json")
+		packageInfo, statErr := os.Lstat(path)
+		if statErr != nil || !packageInfo.Mode().IsRegular() || packageInfo.Mode()&os.ModeSymlink != 0 || packageInfo.Size() > 1<<20 {
+			complete = false
+			return
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil || int64(len(data)) != packageInfo.Size() {
+			complete = false
 			return
 		}
 		var value struct{ Name, Version string }
 		if json.Unmarshal(data, &value) != nil || value.Version == "" {
+			complete = false
 			return
 		}
 		if value.Name == "" {
 			value.Name = publicName
 		}
 		items = append(items, model.ProjectEnvironmentPackage{Name: normalizePackageName(value.Name), Version: value.Version, Scope: "runtime", Source: "workspace-snapshot", Trust: "exact"})
+		if packageInfo.ModTime().UTC().UnixMilli() > latest {
+			latest = packageInfo.ModTime().UTC().UnixMilli()
+		}
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		entryInfo, statErr := os.Lstat(filepath.Join(root, entry.Name()))
+		if statErr != nil || !entryInfo.IsDir() || entryInfo.Mode()&os.ModeSymlink != 0 {
+			complete = false
 			continue
 		}
 		if strings.HasPrefix(entry.Name(), "@") {
-			scoped, _ := os.ReadDir(filepath.Join(root, entry.Name()))
+			scoped, readErr := os.ReadDir(filepath.Join(root, entry.Name()))
+			if readErr != nil {
+				complete = false
+				continue
+			}
 			for _, child := range scoped {
-				if child.IsDir() {
-					readPackage(filepath.Join(root, entry.Name(), child.Name()), entry.Name()+"/"+child.Name())
+				if strings.HasPrefix(child.Name(), ".") {
+					continue
 				}
+				childInfo, childErr := os.Lstat(filepath.Join(root, entry.Name(), child.Name()))
+				if childErr != nil || !childInfo.IsDir() || childInfo.Mode()&os.ModeSymlink != 0 {
+					complete = false
+					continue
+				}
+				readPackage(filepath.Join(root, entry.Name(), child.Name()), entry.Name()+"/"+child.Name())
 			}
 			continue
 		}
 		readPackage(filepath.Join(root, entry.Name()), entry.Name())
 	}
 	items = dedupeEnvironmentPackages(items)
-	return items, latest, true
+	return items, latest, complete
 }
 
 func inspectGoInstalled(root string) ([]model.ProjectEnvironmentPackage, int64) {
@@ -874,23 +1131,396 @@ func splitNameVersion(value string) (string, string) {
 	return value, ""
 }
 
-func classifyEnvironmentPackages(declared, installed []model.ProjectEnvironmentPackage, trusted bool) model.ProjectEnvironmentPackages {
+var (
+	pythonPublicVersionPattern = regexp.MustCompile(`(?i)^v?(?:([0-9]+)!)?([0-9]+(?:\.[0-9]+)*)(?:[-_.]?(alpha|a|beta|b|preview|pre|c|rc)[-_.]?([0-9]+)?)?(?:(?:-([0-9]+))|(?:[-_.]?(post|rev|r)[-_.]?([0-9]+)?))?(?:[-_.]?(dev)[-_.]?([0-9]+)?)?$`)
+	pythonLocalVersionPattern  = regexp.MustCompile(`(?i)^[a-z0-9]+(?:[-_.][a-z0-9]+)*$`)
+)
+
+type pythonVersion struct {
+	epoch            uint64
+	release          []uint64
+	preKind          uint8
+	preNumber        uint64
+	postNumber       uint64
+	devNumber        uint64
+	hasPre, hasPost  bool
+	hasDev, hasLocal bool
+	local            []pythonLocalPart
+}
+
+type pythonLocalPart struct {
+	number    uint64
+	text      string
+	isNumeric bool
+}
+
+type pythonVersionSpecifier struct {
+	operator string
+	version  pythonVersion
+}
+
+type pythonVersionConstraint struct {
+	specifiers      []pythonVersionSpecifier
+	allowPrerelease bool
+}
+
+func parsePythonVersion(value string) (pythonVersion, error) {
+	var parsed pythonVersion
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return parsed, fmt.Errorf("version is empty")
+	}
+	public := value
+	if strings.Count(value, "+") > 1 {
+		return parsed, fmt.Errorf("version contains more than one local separator")
+	}
+	if index := strings.IndexByte(value, '+'); index >= 0 {
+		public = value[:index]
+		local := value[index+1:]
+		if !pythonLocalVersionPattern.MatchString(local) {
+			return parsed, fmt.Errorf("local version %q is malformed", local)
+		}
+		parsed.hasLocal = true
+		for _, part := range strings.FieldsFunc(local, func(char rune) bool { return char == '.' || char == '-' || char == '_' }) {
+			numeric := true
+			for _, char := range part {
+				if char < '0' || char > '9' {
+					numeric = false
+					break
+				}
+			}
+			if numeric {
+				number, err := strconv.ParseUint(part, 10, 64)
+				if err != nil {
+					return pythonVersion{}, fmt.Errorf("local numeric component is too large")
+				}
+				parsed.local = append(parsed.local, pythonLocalPart{number: number, isNumeric: true})
+				continue
+			}
+			parsed.local = append(parsed.local, pythonLocalPart{text: part})
+		}
+	}
+
+	matches := pythonPublicVersionPattern.FindStringSubmatch(public)
+	if matches == nil {
+		return pythonVersion{}, fmt.Errorf("version %q is outside the supported PEP 440 syntax", value)
+	}
+	parseNumber := func(raw, field string) (uint64, error) {
+		if raw == "" {
+			return 0, nil
+		}
+		number, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s is too large", field)
+		}
+		return number, nil
+	}
+	var err error
+	if parsed.epoch, err = parseNumber(matches[1], "epoch"); err != nil {
+		return pythonVersion{}, err
+	}
+	for _, raw := range strings.Split(matches[2], ".") {
+		number, numberErr := parseNumber(raw, "release component")
+		if numberErr != nil {
+			return pythonVersion{}, numberErr
+		}
+		parsed.release = append(parsed.release, number)
+	}
+	if matches[3] != "" {
+		parsed.hasPre = true
+		switch matches[3] {
+		case "a", "alpha":
+			parsed.preKind = 0
+		case "b", "beta":
+			parsed.preKind = 1
+		default:
+			parsed.preKind = 2
+		}
+		if parsed.preNumber, err = parseNumber(matches[4], "prerelease number"); err != nil {
+			return pythonVersion{}, err
+		}
+	}
+	postNumber := matches[5]
+	if postNumber == "" && matches[6] != "" {
+		postNumber = matches[7]
+	}
+	if matches[5] != "" || matches[6] != "" {
+		parsed.hasPost = true
+		if parsed.postNumber, err = parseNumber(postNumber, "post-release number"); err != nil {
+			return pythonVersion{}, err
+		}
+	}
+	if matches[8] != "" {
+		parsed.hasDev = true
+		if parsed.devNumber, err = parseNumber(matches[9], "development-release number"); err != nil {
+			return pythonVersion{}, err
+		}
+	}
+	return parsed, nil
+}
+
+func parsePythonVersionConstraint(value string) (pythonVersionConstraint, error) {
+	var parsed pythonVersionConstraint
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return parsed, nil
+	}
+	for _, raw := range strings.Split(value, ",") {
+		part := strings.TrimSpace(raw)
+		if part == "" {
+			return pythonVersionConstraint{}, fmt.Errorf("constraint contains an empty condition")
+		}
+		operator := ""
+		for _, candidate := range []string{"~=", "==", "!=", ">=", "<=", ">", "<"} {
+			if strings.HasPrefix(part, candidate) {
+				operator = candidate
+				break
+			}
+		}
+		if operator == "" {
+			return pythonVersionConstraint{}, fmt.Errorf("condition %q uses an unsupported operator", part)
+		}
+		version, err := parsePythonVersion(strings.TrimSpace(strings.TrimPrefix(part, operator)))
+		if err != nil {
+			return pythonVersionConstraint{}, err
+		}
+		if operator == "~=" && len(version.release) < 2 {
+			return pythonVersionConstraint{}, fmt.Errorf("compatible-release condition %q needs at least two release components", part)
+		}
+		if operator == "~=" && version.release[len(version.release)-2] == ^uint64(0) {
+			return pythonVersionConstraint{}, fmt.Errorf("compatible-release condition %q has no representable upper bound", part)
+		}
+		if version.hasLocal && operator != "==" && operator != "!=" {
+			return pythonVersionConstraint{}, fmt.Errorf("local versions are only supported with == and !=")
+		}
+		parsed.allowPrerelease = parsed.allowPrerelease || version.hasPre
+		parsed.specifiers = append(parsed.specifiers, pythonVersionSpecifier{operator: operator, version: version})
+	}
+	return parsed, nil
+}
+
+func comparePythonVersions(left, right pythonVersion, includeLocal bool) int {
+	compareNumber := func(a, b uint64) int {
+		if a < b {
+			return -1
+		}
+		if a > b {
+			return 1
+		}
+		return 0
+	}
+	if result := compareNumber(left.epoch, right.epoch); result != 0 {
+		return result
+	}
+	length := len(left.release)
+	if len(right.release) > length {
+		length = len(right.release)
+	}
+	for index := 0; index < length; index++ {
+		var leftPart, rightPart uint64
+		if index < len(left.release) {
+			leftPart = left.release[index]
+		}
+		if index < len(right.release) {
+			rightPart = right.release[index]
+		}
+		if result := compareNumber(leftPart, rightPart); result != 0 {
+			return result
+		}
+	}
+	preCategory := func(version pythonVersion) uint8 {
+		if !version.hasPre && version.hasDev && !version.hasPost {
+			return 0
+		}
+		if version.hasPre {
+			return 1
+		}
+		return 2
+	}
+	leftPre, rightPre := preCategory(left), preCategory(right)
+	if leftPre != rightPre {
+		if leftPre < rightPre {
+			return -1
+		}
+		return 1
+	}
+	if left.hasPre && right.hasPre {
+		if left.preKind != right.preKind {
+			if left.preKind < right.preKind {
+				return -1
+			}
+			return 1
+		}
+		if result := compareNumber(left.preNumber, right.preNumber); result != 0 {
+			return result
+		}
+	}
+	if left.hasPost != right.hasPost {
+		if !left.hasPost {
+			return -1
+		}
+		return 1
+	}
+	if left.hasPost {
+		if result := compareNumber(left.postNumber, right.postNumber); result != 0 {
+			return result
+		}
+	}
+	if left.hasDev != right.hasDev {
+		if left.hasDev {
+			return -1
+		}
+		return 1
+	}
+	if left.hasDev {
+		if result := compareNumber(left.devNumber, right.devNumber); result != 0 {
+			return result
+		}
+	}
+	if !includeLocal {
+		return 0
+	}
+	if left.hasLocal != right.hasLocal {
+		if !left.hasLocal {
+			return -1
+		}
+		return 1
+	}
+	for index := 0; index < len(left.local) && index < len(right.local); index++ {
+		leftPart, rightPart := left.local[index], right.local[index]
+		if leftPart.isNumeric != rightPart.isNumeric {
+			if !leftPart.isNumeric {
+				return -1
+			}
+			return 1
+		}
+		if leftPart.isNumeric {
+			if result := compareNumber(leftPart.number, rightPart.number); result != 0 {
+				return result
+			}
+		} else if leftPart.text != rightPart.text {
+			if leftPart.text < rightPart.text {
+				return -1
+			}
+			return 1
+		}
+	}
+	if len(left.local) < len(right.local) {
+		return -1
+	}
+	if len(left.local) > len(right.local) {
+		return 1
+	}
+	return 0
+}
+
+func pythonVersionSatisfies(installed pythonVersion, constraint pythonVersionConstraint) bool {
+	if installed.hasPre && !constraint.allowPrerelease {
+		return false
+	}
+	for _, specifier := range constraint.specifiers {
+		includeLocal := specifier.version.hasLocal && (specifier.operator == "==" || specifier.operator == "!=")
+		comparison := comparePythonVersions(installed, specifier.version, includeLocal)
+		matched := false
+		switch specifier.operator {
+		case "==":
+			matched = comparison == 0
+		case "!=":
+			matched = comparison != 0
+		case ">=":
+			matched = comparison >= 0
+		case "<=":
+			matched = comparison <= 0
+		case ">":
+			matched = comparison > 0
+		case "<":
+			matched = comparison < 0
+		case "~=":
+			upper := pythonVersion{epoch: specifier.version.epoch, release: append([]uint64(nil), specifier.version.release[:len(specifier.version.release)-1]...)}
+			last := len(upper.release) - 1
+			if upper.release[last] == ^uint64(0) {
+				return false
+			}
+			upper.release[last]++
+			matched = comparison >= 0 && comparePythonVersions(installed, upper, false) < 0
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+func classifyEnvironmentPackages(declared, installed []model.ProjectEnvironmentPackage, language string, trusted bool) model.ProjectEnvironmentPackages {
 	result := model.ProjectEnvironmentPackages{Declared: nonNilEnvironmentPackages(declared), Installed: nonNilEnvironmentPackages(installed), Missing: []model.ProjectEnvironmentPackage{}, Unknown: []model.ProjectEnvironmentPackage{}}
-	installedNames := map[string]bool{}
+	python := canonicalEnvironmentLanguage(language) == "python"
+	installedByName := map[string][]model.ProjectEnvironmentPackage{}
 	for _, item := range installed {
-		installedNames[normalizePackageName(item.Name)] = true
+		name := normalizePackageName(item.Name)
+		if python {
+			name = normalizePythonPackageName(item.Name)
+		}
+		installedByName[name] = append(installedByName[name], item)
 	}
 	for _, item := range declared {
-		if installedNames[normalizePackageName(item.Name)] {
+		name := normalizePackageName(item.Name)
+		if python {
+			name = normalizePythonPackageName(item.Name)
+		}
+		installedItems := installedByName[name]
+		if !trusted {
+			if len(installedItems) > 0 {
+				continue
+			}
+			item.Reason = "Installed state is not trustworthy for this runtime and package manager"
+			result.Unknown = append(result.Unknown, item)
 			continue
 		}
-		item.Reason = "Installed state is not trustworthy for this runtime and package manager"
-		if trusted {
+
+		var constraint pythonVersionConstraint
+		if python && strings.TrimSpace(item.Constraint) != "" {
+			parsed, err := parsePythonVersionConstraint(item.Constraint)
+			if err != nil {
+				item.Reason = fmt.Sprintf("Declared Python version constraint %q cannot be verified: %s", item.Constraint, err)
+				result.Unknown = append(result.Unknown, item)
+				continue
+			}
+			constraint = parsed
+		}
+		if len(installedItems) == 0 {
 			item.Reason = "Declared dependency was not found in the selected runtime scope"
 			result.Missing = append(result.Missing, item)
-		} else {
-			result.Unknown = append(result.Unknown, item)
+			continue
 		}
+		if !python || len(constraint.specifiers) == 0 {
+			continue
+		}
+
+		invalidVersions := make([]string, 0)
+		installedVersions := make([]string, 0, len(installedItems))
+		matched := false
+		for _, installedItem := range installedItems {
+			installedVersions = append(installedVersions, strings.TrimSpace(installedItem.Version))
+			version, err := parsePythonVersion(installedItem.Version)
+			if err != nil {
+				invalidVersions = append(invalidVersions, strings.TrimSpace(installedItem.Version))
+				continue
+			}
+			if pythonVersionSatisfies(version, constraint) {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+		if len(invalidVersions) > 0 {
+			item.Reason = fmt.Sprintf("Exact Python inventory has an unverifiable installed version %q for constraint %q", strings.Join(invalidVersions, ", "), item.Constraint)
+			result.Unknown = append(result.Unknown, item)
+			continue
+		}
+		item.Reason = fmt.Sprintf("Installed Python version %q does not satisfy declared constraint %q", strings.Join(installedVersions, ", "), item.Constraint)
+		result.Missing = append(result.Missing, item)
 	}
 	return result
 }
@@ -906,7 +1536,7 @@ type environmentDependencyStatus struct {
 	Status, Revision, Source, RuntimeID, Detail string
 }
 
-func (h *HTTPHandler) resolveEnvironmentDependencyStatus(r *http.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string) (environmentDependencyStatus, int64) {
+func (h *HTTPHandler) resolveEnvironmentDependencyStatus(r *http.Request, req *model.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string) (environmentDependencyStatus, int64) {
 	if h.DependencyViews == nil {
 		return environmentDependencyStatus{Status: "unavailable", RuntimeID: runtime.ID, Detail: "The LSP dependency registry is not configured"}, 0
 	}
@@ -934,10 +1564,33 @@ func (h *HTTPHandler) resolveEnvironmentDependencyStatus(r *http.Request, resolv
 			paths.AllowedRoots = appendExistingDependencyRoot(paths.AllowedRoots, inspection.Root)
 		}
 	}
+	dependencyGeneration := ""
+	var projectDependencyReader *personalcache.ReadLease
+	if resolved.workspace.Kind == "personal" && language == "python" && h.PersonalCache != nil {
+		reader, entry, inventory := h.PersonalCache.AcquirePackageInventoryRead(h.environmentCacheRequest(r, req, resolved, runtime, language))
+		if reader != nil && inventory.State == "ready" && inventory.Exact {
+			projectRoot := filepath.Join(entry.HostPath, "python")
+			info, statErr := os.Lstat(projectRoot)
+			if statErr == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+				projectDependencyReader = reader
+				paths.UserPersistRoot = ""
+				paths.Extra = map[string][]string{lsp.DependencyRolePythonPackages: {projectRoot}}
+				paths.AllowedRoots = appendExistingDependencyRoot(paths.AllowedRoots, projectRoot)
+				dependencyGeneration = "project-lock:" + entry.Digest + ":" + inventory.Revision
+			} else {
+				reader.Release()
+			}
+		} else if reader != nil {
+			reader.Release()
+		}
+	}
+	if projectDependencyReader != nil {
+		defer projectDependencyReader.Release()
+	}
 	paths.AllowedRoots = appendExistingDependencyRoot(paths.AllowedRoots, resolved.root)
 	view, err := h.DependencyViews.Resolve(lsp.AnalysisDependencyRequest{
 		OwnerKind: ownerKind, OwnerID: ownerID, UserID: userID, WorkspaceID: resolved.workspace.ID,
-		RuntimeID: runtime.ID, LanguageID: language, Paths: paths,
+		RuntimeID: runtime.ID, LanguageID: language, Generation: dependencyGeneration, Paths: paths,
 	})
 	if err != nil {
 		return environmentDependencyStatus{Status: "unavailable", RuntimeID: runtime.ID, Detail: fmt.Sprintf("The LSP dependency view for runtime %s could not be resolved", runtime.ID)}, 0
@@ -1119,6 +1772,15 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 	}
 	userID := auth.UserIDFromContext(r.Context())
 	workspaceKey := resolved.folderKey
+	// A debugger pins the exact project cache against writers. Stop it before
+	// repair/rebuild so the install cannot survive in a detached container or
+	// leave the namespace permanently reported as in use.
+	if resolved.workspace.Kind == "personal" && h.DAP != nil {
+		if err := h.DAP.StopUserWorkspace(userID, workspaceKey); err != nil {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
+			return
+		}
+	}
 	if action == "rebuild" && h.LSP != nil {
 		if err := h.LSP.StopUserOwner(userID, "user", userID, ""); err != nil {
 			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
@@ -1151,7 +1813,7 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 		defer activity.Release()
 	}
 	if action == "rebuild" {
-		if err := h.clearPythonRuntimeScope(userID, environment.Runtime.ID); err != nil {
+		if err := h.clearProjectEnvironmentDependencyScope(r, req, environment, resolved); err != nil {
 			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error(), Data: plan})
 			return
 		}
@@ -1164,7 +1826,32 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
+	var dependencyLease *personalcache.Lease
+	if h.PersonalCache != nil {
+		dependencyLease, err = h.PersonalCache.Prepare(ctx, h.environmentCacheRequest(r, req, resolved, environment.Runtime, environment.Language.ID))
+		if err != nil {
+			writeJSON(w, http.StatusInsufficientStorage, model.Response{Success: false, Error: err.Error(), Data: plan})
+			return
+		}
+		if dependencyLease != nil {
+			guard := dependencyLease.StartGuard(ctx)
+			if guard != nil {
+				ctx = guard.Context
+			}
+			ctx = personalcache.WithLease(ctx, dependencyLease)
+		}
+	}
+	dependencyStarted := time.Now()
 	stdout, stderr, exitCode, execErr := h.EnvironmentSetup(ctx, userID, environment.Runtime.ID, resolved.root, commands)
+	if h.Metrics != nil {
+		h.Metrics.Observe("dependency.resolve", time.Since(dependencyStarted))
+	}
+	if dependencyLease != nil {
+		if guard := dependencyLease.StartGuard(ctx); guard != nil && guard.Err() != nil {
+			execErr = guard.Err()
+		}
+		dependencyLease.Release()
+	}
 	if execErr != nil || exitCode != 0 {
 		message := "Environment setup failed"
 		if execErr != nil {
@@ -1199,11 +1886,29 @@ func projectEnvironmentInstalledTruthExact(environment *model.ProjectEnvironment
 		return false
 	}
 	for _, item := range environment.Packages.Installed {
-		if item.Trust != "exact" || item.Source != "runtime-scoped-pip" || item.Scope != "runtime" {
+		if item.Trust != "exact" || (item.Source != "runtime-scoped-pip" && item.Source != "project-lock-python") || (item.Scope != "runtime" && item.Scope != "project-lock") {
 			return false
 		}
 	}
 	return environment.Consistency.DependencyRuntime.Status == "aligned"
+}
+
+func (h *HTTPHandler) clearProjectEnvironmentDependencyScope(r *http.Request, req *model.Request, environment *model.ProjectEnvironment, resolved environmentResolved) error {
+	if h.PersonalCache == nil {
+		return h.clearPythonRuntimeScope(auth.UserIDFromContext(r.Context()), environment.Runtime.ID)
+	}
+	cacheRequest := h.environmentCacheRequest(r, req, resolved, environment.Runtime, environment.Language.ID)
+	entry, exists, err := h.PersonalCache.Lookup(cacheRequest)
+	if err != nil || !exists {
+		return err
+	}
+	if err := h.PersonalCache.Delete(cacheRequest.UserID, entry.Path); err != nil {
+		return err
+	}
+	if h.OnPersonalCacheCleared != nil {
+		h.OnPersonalCacheCleared()
+	}
+	return nil
 }
 
 func (h *HTTPHandler) clearPythonRuntimeScope(userID, runtimeID string) error {

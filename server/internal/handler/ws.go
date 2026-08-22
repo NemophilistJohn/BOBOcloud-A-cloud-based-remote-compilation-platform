@@ -21,7 +21,10 @@ import (
 	"bobocloud-server/internal/files"
 	"bobocloud-server/internal/lifecycle"
 	"bobocloud-server/internal/lsp"
+	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/personalcache"
+	"bobocloud-server/internal/ringbuffer"
 	"bobocloud-server/internal/runner"
 	"bobocloud-server/internal/security"
 	"bobocloud-server/internal/session"
@@ -61,6 +64,8 @@ type WSHandler struct {
 	LSP             *lsp.Manager
 	DependencyViews *lsp.DependencyRegistry
 	Lifecycle       *lifecycle.Manager
+	PersonalCache   *personalcache.Manager
+	Metrics         *metrics.Registry
 }
 
 // HandleWebSocket 处理 WebSocket 连接
@@ -196,40 +201,47 @@ func (h *WSHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// ── 保存运行历史（仅 BoltDB 模式）──
 	if h.RunHistory != nil && runResult != nil {
 		status := runHistoryStatus(runResult)
-
-		summary := runResult.Stdout
-		if runResult.Stderr != "" {
-			if summary != "" {
-				summary += "\n"
-			}
-			summary += runResult.Stderr
-		}
-		// 仅保留尾部 64KB
-		if len(summary) > 65536 {
-			summary = summary[len(summary)-65536:]
-		}
+		summary, outputTruncated := runHistorySummary(runResult)
 
 		displayTarget, targetType, taskLabel, taskKind := runHistoryTarget(sess)
 		record := &model.RunRecord{
-			RunID:         msg.RunID,
-			UserID:        sess.UserID,
-			FolderName:    sess.FolderName,
-			FilePath:      displayTarget,
-			TargetType:    targetType,
-			TaskLabel:     taskLabel,
-			TaskKind:      taskKind,
-			Runtime:       sess.Runtime,
-			BuildTarget:   sess.BuildTarget,
-			Status:        status,
-			ExitCode:      runResult.ReturnCode,
-			DurationMs:    time.Since(sess.CreatedAt).Milliseconds(),
-			CreatedAt:     sess.CreatedAt,
-			OutputSummary: summary,
+			RunID:           msg.RunID,
+			UserID:          sess.UserID,
+			FolderName:      sess.FolderName,
+			FilePath:        displayTarget,
+			TargetType:      targetType,
+			TaskLabel:       taskLabel,
+			TaskKind:        taskKind,
+			Runtime:         sess.Runtime,
+			BuildTarget:     sess.BuildTarget,
+			Status:          status,
+			ExitCode:        runResult.ReturnCode,
+			DurationMs:      time.Since(sess.CreatedAt).Milliseconds(),
+			CreatedAt:       sess.CreatedAt,
+			OutputSummary:   summary,
+			OutputTruncated: outputTruncated,
 		}
 		if err := h.RunHistory.Save(record); err != nil {
 			slog.Error("Failed to save run history", "run_id", msg.RunID, "error", err)
 		}
 	}
+}
+
+const runHistoryOutputLimit = 64 << 10
+
+func runHistorySummary(result *model.RunResult) (string, bool) {
+	if result == nil {
+		return "", false
+	}
+	output := ringbuffer.New(runHistoryOutputLimit)
+	_, _ = output.Write([]byte(result.Stdout))
+	if result.Stderr != "" {
+		if result.Stdout != "" {
+			_, _ = output.Write([]byte("\n"))
+		}
+		_, _ = output.Write([]byte(result.Stderr))
+	}
+	return output.String(), result.StdoutTruncated || result.StderrTruncated || output.Truncated()
 }
 
 func runHistoryTarget(sess *model.RunSession) (displayTarget, targetType, taskLabel, taskKind string) {
@@ -444,6 +456,35 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		}()
 		output.WriteStatus("cache", fmt.Sprintf("Team cache namespace ready: %s / %s / %s", sess.Branch, runtimeKey, plugin.Language()))
 	}
+	var personalLease *personalcache.Lease
+	executionCtx := ctx
+	if useDocker && preparedCache == nil {
+		personalLease, err = h.prepareRunPersonalCache(ctx, sess, *rt, plugin.Language(), projectPath)
+		if err != nil {
+			fail("Failed to prepare project dependency cache: " + err.Error())
+			return
+		}
+		if personalLease != nil {
+			defer personalLease.Release()
+			guard := personalLease.StartGuard(ctx)
+			if guard != nil {
+				executionCtx = guard.Context
+			}
+			output.WriteStatus("cache", fmt.Sprintf("Project dependency cache %s (%s:%s)", map[bool]string{true: "hit", false: "miss"}[personalLease.Hit], personalLease.Fingerprint.Source, personalLease.Fingerprint.Digest[:12]))
+		}
+	}
+	var persistOperation *personalcache.Operation
+	if useDocker && personalLease == nil && h.PersonalCache != nil {
+		persistOperation, err = h.PersonalCache.BeginOperation(ctx, sess.UserID, userQuotaBytes(h.UserStore, sess.UserID))
+		if err != nil {
+			fail("Failed to reserve personal persistent storage: " + err.Error())
+			return
+		}
+		if persistOperation != nil {
+			defer persistOperation.Release()
+			executionCtx = persistOperation.Context()
+		}
+	}
 
 	var tempDir string
 	if preparedCache != nil {
@@ -467,8 +508,12 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 
 	copyStarted := time.Now()
 	output.WriteStatus("setup", fmt.Sprintf("Preparing isolated workspace for %s", entryRel))
-	if err := files.CopyProjectToTemp(projectPath, tempDir); err != nil {
-		fail(fmt.Sprintf("Failed to copy project: %v", err))
+	copyErr := files.CopyProjectToTemp(projectPath, tempDir)
+	if h.Metrics != nil {
+		h.Metrics.Observe("workspace.copy.host", time.Since(copyStarted))
+	}
+	if copyErr != nil {
+		fail(fmt.Sprintf("Failed to copy project: %v", copyErr))
 		return
 	}
 	output.WriteStatus("setup", fmt.Sprintf("Isolated workspace ready in %d ms", time.Since(copyStarted).Milliseconds()))
@@ -527,10 +572,13 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		dr := runner.NewDockerRunner(*rt, h.DockerPool, h.Security)
 		dr.SetSetupCommands(sess.SetupCommands)
 		dr.SetUserID(sess.UserID) // Phase 2: 传入用户 ID
+		dr.SetMetrics(h.Metrics)
 		if preparedCache != nil {
 			dr.SetBuildCacheContext(preparedCache.ContainerKey, preparedCache.DockerMounts, preparedCache.DockerEnv)
+		} else if personalLease != nil {
+			dr.SetBuildCacheContext(personalLease.ContainerKey, personalLease.DockerMounts, personalLease.DockerEnv)
 		}
-		result = dr.RunPlan(ctx, plan, tempDir, output, stdinReader)
+		result = dr.RunPlan(executionCtx, plan, tempDir, output, stdinReader)
 		if dr.SetupPassed() {
 			for _, command := range sess.SetupCommands {
 				if h.Security != nil && !h.Security.AllowCommand(command) {
@@ -545,19 +593,31 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 			}
 		}
 	} else {
-		result = runner.ExecutePlan(ctx, plan, runner.NewLocalStepExecutor(tempDir), output, stdinReader)
+		result = runner.ExecutePlanWithMetrics(ctx, plan, runner.NewLocalStepExecutor(tempDir), output, stdinReader, h.Metrics)
 	}
 
 	if result == nil {
 		fail("Execution returned no result")
 		return
 	}
+	if personalLease != nil && personalLease.StartGuard(ctx).Err() != nil {
+		output.WriteError("Personal storage quota was exceeded while writing project dependencies")
+		result.Success = false
+		result.ReturnCode = 1
+		result.Stderr = "personal storage quota exceeded"
+	}
+	if persistOperation != nil && persistOperation.Err() != nil {
+		output.WriteError("Personal storage quota was exceeded while running the project")
+		result.Success = false
+		result.ReturnCode = 1
+		result.Stderr = "personal storage quota exceeded"
+	}
 
 	runtimeID := sess.Runtime
 	if runtimeID == "" {
 		runtimeID = "local"
 	}
-	if plugin.Language() == "node" && dependencySetupPassed && h.LSP != nil && h.DependencyViews != nil {
+	if plugin.Language() == "node" && dependencySetupPassed && h.LSP != nil && h.DependencyViews != nil && (preparedCache != nil || personalLease == nil) {
 		snapshotRoot, releaseSnapshotRoot, snapshotRootErr := h.dependencySnapshotRoot(sess.UserID, preparedCache)
 		if snapshotRootErr != nil {
 			output.WriteStderr("Analysis dependency snapshot skipped: "+snapshotRootErr.Error(), "analysis")
@@ -609,7 +669,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 			}
 		}
 	}
-	if plugin.Language() == "java" && gradleSetupPassed && h.LSP != nil && h.DependencyViews != nil {
+	if plugin.Language() == "java" && gradleSetupPassed && h.LSP != nil && h.DependencyViews != nil && (preparedCache != nil || personalLease == nil) {
 		snapshotRoot, releaseSnapshotRoot, snapshotRootErr := h.dependencySnapshotRoot(sess.UserID, preparedCache)
 		if snapshotRootErr != nil {
 			output.WriteStderr("Gradle analysis dependency snapshot skipped: "+snapshotRootErr.Error(), "analysis")

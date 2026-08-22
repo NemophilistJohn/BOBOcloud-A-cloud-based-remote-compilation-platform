@@ -129,10 +129,21 @@ type CacheGroup struct {
 
 // CacheModule 单个缓存模块
 type CacheModule struct {
-	Name      string `json:"name"`       // 模块名（目录名）
-	Path      string `json:"path"`       // 相对 persist 的路径
-	SizeBytes int64  `json:"size_bytes"` // 大小（字节）
-	Files     int    `json:"files"`      // 文件数
+	Name         string `json:"name"`       // 模块名（目录名）
+	Path         string `json:"path"`       // 相对 persist 的路径
+	SizeBytes    int64  `json:"size_bytes"` // 大小（字节）
+	Files        int    `json:"files"`      // 文件数
+	Kind         string `json:"kind,omitempty"`
+	Language     string `json:"language,omitempty"`
+	WorkspaceID  string `json:"workspace_id,omitempty"`
+	ProjectName  string `json:"project_name,omitempty"`
+	RuntimeID    string `json:"runtime_id,omitempty"`
+	Digest       string `json:"digest,omitempty"`
+	DigestSource string `json:"digest_source,omitempty"`
+	LastUsed     int64  `json:"last_used,omitempty"`
+	Active       bool   `json:"active,omitempty"`
+	Writing      bool   `json:"writing,omitempty"`
+	Orphaned     bool   `json:"orphaned,omitempty"`
 }
 
 // UserInfo 是用户信息的安全视图（不含密码哈希）
@@ -242,18 +253,19 @@ type TaskStep struct {
 }
 
 type RunRecord struct {
-	RunID         string    `json:"run_id"`
-	UserID        string    `json:"user_id"`
-	FolderName    string    `json:"folder_name"`
-	FilePath      string    `json:"file_path"`
-	TargetType    string    `json:"target_type,omitempty"`
-	TaskLabel     string    `json:"task_label,omitempty"`
-	TaskKind      string    `json:"task_kind,omitempty"`
-	Runtime       string    `json:"runtime"`
-	BuildTarget   string    `json:"build_target,omitempty"`
-	Status        string    `json:"status"` // "completed", "failed", "timed_out", "cancelled"
-	ExitCode      int       `json:"exit_code"`
-	DurationMs    int64     `json:"duration_ms"`
-	CreatedAt     time.Time `json:"created_at"`
-	OutputSummary string    `json:"output_summary,omitempty"` // 尾部最多64KB
+	RunID           string    `json:"run_id"`
+	UserID          string    `json:"user_id"`
+	FolderName      string    `json:"folder_name"`
+	FilePath        string    `json:"file_path"`
+	TargetType      string    `json:"target_type,omitempty"`
+	TaskLabel       string    `json:"task_label,omitempty"`
+	TaskKind        string    `json:"task_kind,omitempty"`
+	Runtime         string    `json:"runtime"`
+	BuildTarget     string    `json:"build_target,omitempty"`
+	Status          string    `json:"status"` // "completed", "failed", "timed_out", "cancelled"
+	ExitCode        int       `json:"exit_code"`
+	DurationMs      int64     `json:"duration_ms"`
+	CreatedAt       time.Time `json:"created_at"`
+	OutputSummary   string    `json:"output_summary,omitempty"` // 尾部最多64KB
+	OutputTruncated bool      `json:"output_truncated,omitempty"`
 }

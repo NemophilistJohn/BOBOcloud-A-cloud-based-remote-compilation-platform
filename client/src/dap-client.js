@@ -77,6 +77,7 @@
       case 'workspace_denied': return tr('You do not have access to debug this workspace.');
       case 'workspace_in_use': return tr('This workspace is busy. Wait for the current cloud operation to finish.');
       case 'workspace_copy_failed': return tr('The workspace could not be prepared for debugging.');
+      case 'dependency_cache_unavailable': return tr('Project dependencies are unavailable for this debug session. Run or repair the project environment first.');
       case 'start_failed': return tr('The cloud debugger could not be started.');
       case 'adapter_protocol_error': return tr('The debug adapter returned an invalid protocol message.');
       case 'bandwidth_limit': return tr('The debug session exceeded the server bandwidth limit.');
@@ -2163,6 +2164,7 @@
       var started = await global.api.dapStart({
         languageId: language,
         runtimeId: S.selectedRuntime,
+        setupCommands: Array.isArray(S.setupCommands) ? S.setupCommands.slice() : [],
         workspace: workspaceBinding(),
         context: initialContext
       });
@@ -2175,6 +2177,10 @@
       debugLifecycle.transportStarted = true;
       expectedTransportGeneration = Number(started && started.status && started.status.generation) || 0;
       S.dap.adapter = started.status && started.status.adapter;
+      var dependencyCache = started.status && started.status.dependencyCache;
+      if (dependencyCache && dependencyCache.required && dependencyCache.state !== 'mounted') {
+        appendConsole(tr('Project dependencies are unavailable for this debug session. Run or repair the project environment first.'), 'stderr');
+      }
       S.dap.capabilities = await global.api.dapRequest('initialize', {
         clientID: 'bobocloud-editor',
         clientName: 'BOBOCLOUD Editor',

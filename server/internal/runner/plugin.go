@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/session"
 )
@@ -154,6 +155,10 @@ const defaultStepTimeoutSec = 30
 // ExecutePlan 按序执行计划中的步骤；任一步骤失败（或上下文取消）即中止并返回该结果。
 // stdinReader 非空时，仅传入最后一步（run 步骤），编译步骤不受影响。
 func ExecutePlan(ctx context.Context, plan *Plan, executor StepExecutor, output session.OutputWriter, stdinReader io.Reader) *model.RunResult {
+	return ExecutePlanWithMetrics(ctx, plan, executor, output, stdinReader, nil)
+}
+
+func ExecutePlanWithMetrics(ctx context.Context, plan *Plan, executor StepExecutor, output session.OutputWriter, stdinReader io.Reader, registry *metrics.Registry) *model.RunResult {
 	if plan.Note != "" {
 		output.WriteStatus("plan", plan.Note)
 	}
@@ -170,7 +175,11 @@ func ExecutePlan(ctx context.Context, plan *Plan, executor StepExecutor, output 
 		if i == len(plan.Steps)-1 && stdinReader != nil {
 			step.Stdin = stdinReader
 		}
+		started := time.Now()
 		result = executor.ExecStep(ctx, step, output)
+		if registry != nil {
+			registry.Observe(metricStage(step.Stage), time.Since(started))
+		}
 		if result == nil {
 			return &model.RunResult{Success: false, ReturnCode: 1, Stderr: "internal: nil step result"}
 		}
@@ -186,6 +195,18 @@ func ExecutePlan(ctx context.Context, plan *Plan, executor StepExecutor, output 
 		return &model.RunResult{Success: true, ReturnCode: 0}
 	}
 	return result
+}
+
+func metricStage(stage string) string {
+	stage = strings.ToLower(stage)
+	switch {
+	case strings.HasPrefix(stage, "compile"), strings.Contains(stage, ":build"):
+		return "compile"
+	case strings.HasPrefix(stage, "run"), strings.Contains(stage, ":test"):
+		return "run"
+	default:
+		return "run"
+	}
 }
 
 // ---------- 宿主机执行器（Local 模式） ----------

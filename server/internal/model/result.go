@@ -6,12 +6,14 @@ package model
 
 // RunResult 是一次编译/运行操作的结果
 type RunResult struct {
-	Success    bool
-	ReturnCode int
-	Stdout     string
-	Stderr     string
-	TimedOut   bool
-	Cancelled  bool
+	Success         bool
+	ReturnCode      int
+	Stdout          string
+	Stderr          string
+	TimedOut        bool
+	Cancelled       bool
+	StdoutTruncated bool
+	StderrTruncated bool
 }
 
 // FileSig 是文件快照签名（大小 + 修改时间纳秒）

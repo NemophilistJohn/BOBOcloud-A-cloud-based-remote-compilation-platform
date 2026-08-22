@@ -60,8 +60,11 @@ function consumeClientFrames(state, onMessage) {
 async function createTerminalServer() {
   const messages = [];
   const sockets = new Set();
+  let activeSocket = null;
+  let sessionCounter = 0;
   const server = net.createServer((socket) => {
     sockets.add(socket);
+    activeSocket = socket;
     socket.setNoDelay(true);
     const state = { upgraded: false, buffer: Buffer.alloc(0) };
     socket.on('close', () => sockets.delete(socket));
@@ -86,10 +89,20 @@ async function createTerminalServer() {
         let message;
         try { message = JSON.parse(text); } catch (_) { return; }
         messages.push(message);
+        if (message.type === 'terminal.close') {
+          setTimeout(() => {
+            if (!socket.destroyed) {
+              socket.write(serverFrame(JSON.stringify({
+                type: 'terminal.exit', reason: 'closed', exitCode: 0
+              })));
+            }
+          }, 30);
+          return;
+        }
         if (message.type !== 'terminal.start') return;
         socket.write(serverFrame(JSON.stringify({
           type: 'terminal.ready',
-          sessionId: 'terminal-ui-test',
+          sessionId: 'terminal-ui-test-' + (++sessionCounter),
           runtimeId: message.runtimeId,
           snapshot: true,
           capabilities: { tty: true, resize: false, isolatedWorkspace: true }
@@ -111,6 +124,11 @@ async function createTerminalServer() {
   return {
     port: address.port,
     messages,
+    exitActive(reason = 'process_exited') {
+      if (activeSocket && !activeSocket.destroyed) {
+        activeSocket.write(serverFrame(JSON.stringify({ type: 'terminal.exit', reason, exitCode: 0 })));
+      }
+    },
     async close() {
       for (const socket of sockets) socket.destroy();
       await new Promise((resolve) => server.close(resolve));
@@ -166,6 +184,7 @@ test('cloud terminal streams through the main bridge and confirms only multi-lin
       window.BOBO.state.serverSettings = settings;
       window.BOBO.serverCapabilities.applyServerInfo({ success: true, data: {} }, 'test-legacy-server');
       window.BOBO.state.selectedRuntime = 'python:3.12';
+      window.BOBO.state.setupCommands = ['pip install numpy==2.1.0'];
       window.BOBO.workspace.saveAllTabs = async () => true;
       window.BOBO.runner.syncWithServer = async () => true;
     }, { workspacePath: workspace, wsPort: server.port });
@@ -180,10 +199,14 @@ test('cloud terminal streams through the main bridge and confirms only multi-lin
     expect(await page.evaluate(() => window.BOBO.terminal.getState().capabilities.resize)).toBe(false);
 
     const start = server.messages.find((message) => message.type === 'terminal.start');
+    const terminalState = await page.evaluate(() => window.BOBO.terminal.getState());
     expect(start.runtimeId).toBe('python:3.12');
+    expect(start.setupCommands).toEqual(['pip install numpy==2.1.0']);
     expect(start.workspace.kind).toBe('personal');
     expect(start.workspace.folderName).toBe('workspace');
     expect(start.workspace).not.toHaveProperty('workspaceRoot');
+    expect(start.cols).toBe(terminalState.cols);
+    expect(Math.abs(start.rows - terminalState.rows)).toBeLessThanOrEqual(1);
     expect(server.messages.some((message) => message.type === 'terminal.resize')).toBe(false);
 
     const input = page.locator('#terminal-host textarea.xterm-helper-textarea');
@@ -225,8 +248,48 @@ test('cloud terminal streams through the main bridge and confirms only multi-lin
     await page.waitForTimeout(250);
     expect(server.messages.filter((message) => message.type === 'terminal.stdin')).toHaveLength(stdinBeforeCancel);
 
+    const closesBeforeTabSwitch = server.messages.filter((message) => message.type === 'terminal.close').length;
+    await page.locator('#panel-tabs [data-panel="output"]').click();
+    await page.waitForTimeout(100);
+    expect(server.messages.filter((message) => message.type === 'terminal.close')).toHaveLength(closesBeforeTabSwitch);
+
+    await page.evaluate(() => {
+      window.__terminalLspRestartCount = 0;
+      window.__terminalLspRefreshFallbackCount = 0;
+      window.BOBO.lsp.restartAnalysis = async () => { window.__terminalLspRestartCount += 1; return true; };
+      window.BOBO.lsp.dependenciesChanged = async () => { window.__terminalLspRefreshFallbackCount += 1; return true; };
+    });
+    await page.locator('#panel-close').click();
+    await expect.poll(() => server.messages.some((message) => message.type === 'terminal.close' && message.reason === 'panel-close')).toBe(true);
+    await expect(page.locator('#bottom-panel')).toBeHidden();
+    await expect.poll(() => page.evaluate(() => window.BOBO.terminal.getState().phase)).toBe('idle');
+    expect(await page.evaluate(() => ({
+      restarts: window.__terminalLspRestartCount,
+      fallbacks: window.__terminalLspRefreshFallbackCount
+    }))).toEqual({ restarts: 1, fallbacks: 0 });
+
+    await page.evaluate(() => window.BOBO.workbench.setPanelVisible(true));
+    await page.locator('#panel-tabs [data-panel="terminal"]').click();
+    await expect.poll(() => server.messages.filter((message) => message.type === 'terminal.start').length).toBe(2);
+    await page.waitForFunction(() => window.BOBO.terminal.getState().connected === true, null, { timeout: 10000 });
+
+    server.exitActive();
+    await expect.poll(() => page.evaluate(() => window.BOBO.terminal.getState().phase)).toBe('idle');
+    await expect.poll(() => page.evaluate(() => window.__terminalLspRestartCount)).toBe(2);
+
+    await page.locator('#panel-tabs [data-panel="terminal"]').click();
+    await expect.poll(() => server.messages.filter((message) => message.type === 'terminal.start').length).toBe(3);
+    await page.waitForFunction(() => window.BOBO.terminal.getState().connected === true, null, { timeout: 10000 });
+
+    await page.evaluate(() => {
+      window.BOBO.lsp.restartAnalysis = async () => {
+        window.__terminalLspRestartCount += 1;
+        throw new Error('restart unavailable');
+      };
+    });
     await page.evaluate(() => window.BOBO.workspace.closeWorkspace({ approved: true, reason: 'test-close' }));
     await expect.poll(() => server.messages.some((message) => message.type === 'terminal.close' && message.reason === 'workspace-leave')).toBe(true);
+    await expect.poll(() => page.evaluate(() => window.__terminalLspRefreshFallbackCount)).toBe(1);
     expect(pageErrors).toEqual([]);
   } finally {
     await closeFixture(fixture);

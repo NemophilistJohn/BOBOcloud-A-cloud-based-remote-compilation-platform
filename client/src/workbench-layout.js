@@ -26,6 +26,7 @@
   var initialized = false;
   var resizeSession = null;
   var saveTimer = null;
+  var editorLayoutTimer = null;
   var contextObserver = null;
 
   function copyDefaults() {
@@ -95,14 +96,32 @@
     state.chatWidth = numberInRange(state.chatWidth, DEFAULTS.chatWidth, 260, Math.max(260, Math.min(640, rect.width * 0.55)));
   }
 
+  function layoutEditors() {
+    try { if (S.editor && typeof S.editor.layout === 'function') S.editor.layout(); } catch (error) {}
+    try { if (S.splitEditor && typeof S.splitEditor.layout === 'function') S.splitEditor.layout(); } catch (error) {}
+    try { if (S.diffEditor && typeof S.diffEditor.layout === 'function') S.diffEditor.layout(); } catch (error) {}
+  }
+
   function requestEditorLayout() {
     requestAnimationFrame(function() {
       requestAnimationFrame(function() {
-        try { if (S.editor && typeof S.editor.layout === 'function') S.editor.layout(); } catch (error) {}
-        try { if (S.splitEditor && typeof S.splitEditor.layout === 'function') S.splitEditor.layout(); } catch (error) {}
-        try { if (S.diffEditor && typeof S.diffEditor.layout === 'function') S.diffEditor.layout(); } catch (error) {}
+        layoutEditors();
       });
     });
+    if (editorLayoutTimer) clearTimeout(editorLayoutTimer);
+    editorLayoutTimer = setTimeout(function() {
+      editorLayoutTimer = null;
+      layoutEditors();
+    }, 240);
+  }
+
+  function handleLayoutTransitionEnd(event) {
+    if (!layout || !event || event.target !== layout || ['grid-template-rows', 'grid-template-columns'].indexOf(event.propertyName) < 0) return;
+    if (editorLayoutTimer) {
+      clearTimeout(editorLayoutTimer);
+      editorLayoutTimer = null;
+    }
+    layoutEditors();
   }
 
   function emitChange() {
@@ -122,7 +141,8 @@
     layout.setAttribute('data-panel-position', state.panelPosition);
     layout.setAttribute('data-density', state.density);
     layout.style.setProperty('--sidebar-width', state.sidebarWidth + 'px');
-    layout.style.setProperty('--workbench-panel-size', state.panelSize + 'px');
+    var bottomPanelVisible = state.panelVisible && !state.focusMode && state.panelPosition === 'bottom';
+    layout.style.setProperty('--workbench-panel-size', bottomPanelVisible ? state.panelSize + 'px' : '0px');
     layout.style.setProperty('--workbench-right-panel-size', state.rightPanelSize + 'px');
     layout.style.setProperty('--chat-width', state.chatWidth + 'px');
 
@@ -447,6 +467,16 @@
     if (button) button.setAttribute('aria-expanded', 'false');
   }
 
+  async function closeWorkbenchPanel() {
+    try {
+      if (BOBO.terminal && typeof BOBO.terminal.close === 'function') {
+        await BOBO.terminal.close('panel-close');
+      }
+    } finally {
+      setPanelVisible(false);
+    }
+  }
+
   function bindShell() {
     var commandCenter = document.getElementById('command-center');
     if (commandCenter) commandCenter.addEventListener('click', function() { if (BOBO.commands) BOBO.commands.show(); });
@@ -514,7 +544,7 @@
     var closePanel = document.getElementById('panel-close');
     if (positionToggle) positionToggle.addEventListener('click', togglePanelPosition);
     if (maximize) maximize.addEventListener('click', togglePanelMaximized);
-    if (closePanel) closePanel.addEventListener('click', function() { setPanelVisible(false); });
+    if (closePanel) closePanel.addEventListener('click', function() { void closeWorkbenchPanel(); });
 
     var sidebarSetting = document.getElementById('settings-layout-sidebar');
     var panelSetting = document.getElementById('settings-layout-panel');
@@ -560,6 +590,7 @@
     initialized = true;
     layout = document.getElementById('layout');
     if (!layout) return;
+    layout.addEventListener('transitionend', handleLayoutTransitionEnd);
     bindShell();
     observeContext();
     renderPrimaryView(state.activity);

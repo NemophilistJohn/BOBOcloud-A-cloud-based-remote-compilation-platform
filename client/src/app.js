@@ -230,7 +230,11 @@
         ' rc=' + rec.exit_code + ' ' + (rec.duration_ms || 0) + 'ms ' + time;
       row.append(status, document.createTextNode(' '), targetElement, document.createTextNode(' '), metadata);
       row.onclick = function() {
-        document.getElementById('history-detail-output').textContent = rec.output_summary || '(no output captured)';
+        var output = rec.output_summary || '(no output captured)';
+        if (rec.output_truncated) {
+          output = historyText('Earlier output was not retained.') + '\n\n' + output;
+        }
+        document.getElementById('history-detail-output').textContent = output;
         detail.style.display = 'block';
       };
       list.appendChild(row);

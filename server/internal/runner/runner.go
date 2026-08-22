@@ -9,10 +9,24 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/ringbuffer"
 	"bobocloud-server/internal/session"
 )
+
+var retainedOutputBytes atomic.Int64
+
+func init() { retainedOutputBytes.Store(256 << 10) }
+
+func SetOutputRetentionLimit(limit int) {
+	if limit > 0 {
+		retainedOutputBytes.Store(int64(limit))
+	}
+}
+
+func outputRetentionLimit() int { return int(retainedOutputBytes.Load()) }
 
 // ============================================================
 // runner.go - 流式进程执行（宿主机模式的基础执行器）
@@ -75,9 +89,9 @@ func StreamProcess(ctx context.Context, command []string, workDir string, output
 		return &model.RunResult{Success: false, ReturnCode: 1}
 	}
 
-	var stdoutLines, stderrLines []string
+	stdoutLines := ringbuffer.New(outputRetentionLimit())
+	stderrLines := ringbuffer.New(outputRetentionLimit())
 	var wg sync.WaitGroup
-	var mu sync.Mutex
 
 	// stdout：用 Read(buf) 读取，按换行分割后逐行发送。
 	// 不用 bufio.Scanner 是因为它只在遇到换行符时才产生一行，
@@ -94,9 +108,7 @@ func StreamProcess(ctx context.Context, command []string, workDir string, output
 						return
 					}
 					if line != "" {
-						mu.Lock()
-						stdoutLines = append(stdoutLines, line)
-						mu.Unlock()
+						stdoutLines.WriteLine(line)
 						output.WriteStdout(line, stage)
 					}
 				}
@@ -119,9 +131,7 @@ func StreamProcess(ctx context.Context, command []string, workDir string, output
 						return
 					}
 					if line != "" {
-						mu.Lock()
-						stderrLines = append(stderrLines, line)
-						mu.Unlock()
+						stderrLines.WriteLine(line)
 						output.WriteStderr(line, stage)
 					}
 				}
@@ -150,10 +160,12 @@ func StreamProcess(ctx context.Context, command []string, workDir string, output
 	}
 
 	return &model.RunResult{
-		Success:    returnCode == 0 && !timedOut,
-		ReturnCode: returnCode,
-		Stdout:     strings.Join(stdoutLines, "\n"),
-		Stderr:     strings.Join(stderrLines, "\n"),
-		TimedOut:   timedOut,
+		Success:         returnCode == 0 && !timedOut,
+		ReturnCode:      returnCode,
+		Stdout:          stdoutLines.String(),
+		Stderr:          stderrLines.String(),
+		TimedOut:        timedOut,
+		StdoutTruncated: stdoutLines.Truncated(),
+		StderrTruncated: stderrLines.Truncated(),
 	}
 }

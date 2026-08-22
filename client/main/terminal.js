@@ -1,6 +1,6 @@
 'use strict';
 
-const { TerminalTransport, MAX_STDIN_CHARS, MAX_STDIN_BYTES } = require('../terminal-transport');
+const { TerminalTransport, cleanSetupCommands, MAX_STDIN_CHARS, MAX_STDIN_BYTES } = require('../terminal-transport');
 const { endpoint: serverEndpoint } = require('./server-transport');
 const { createTerminalWebSocketFactory, createTerminalPeerVerifier } = require('./terminal-websocket');
 
@@ -128,6 +128,7 @@ function createTerminalController(options) {
     if (!serverSettings.ip) throw new Error('Server address is not configured');
     const context = buildContext(value, current);
     const workspace = cleanRendererWorkspace(value.workspace);
+    const setupCommands = cleanSetupCommands(value.setupCommands);
     sessionContext = context;
     try {
       const terminalEndpoint = serverEndpoint(serverSettings, 'ws');
@@ -135,6 +136,7 @@ function createTerminalController(options) {
         serverHost: terminalEndpoint,
         runtimeId,
         workspace,
+        setupCommands,
         cols: boundedInteger(value.cols, 120),
         rows: boundedInteger(value.rows, 32),
         localContext: context,
@@ -162,10 +164,14 @@ function createTerminalController(options) {
   async function stop(reason) {
     const active = transport;
     if (!active) return { state: 'idle' };
+    const closingContext = sessionContext;
     try {
       return await active.stop(String(reason || 'stop'));
     } finally {
-      sessionContext = null;
+      // A replacement start publishes its context before TerminalTransport
+      // waits for this close acknowledgement. Do not let the older stop erase
+      // ownership of that newer session.
+      if (transport === active && sessionContext === closingContext) sessionContext = null;
     }
   }
 

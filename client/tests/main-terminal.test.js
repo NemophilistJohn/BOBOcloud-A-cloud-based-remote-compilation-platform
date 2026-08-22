@@ -25,7 +25,7 @@ class FakeTransport {
   async dispose() { this.stop(); }
 }
 
-function createHarness() {
+function createHarness(TransportBase = FakeTransport) {
   const handlers = new Map();
   const sent = [];
   const webContents = { isDestroyed: () => false, send: (channel, payload) => sent.push({ channel, payload }) };
@@ -41,7 +41,7 @@ function createHarness() {
       readServerSettings: async () => ({ ip: 'cloud.example', wsPort: 3101, apiKey: 'fallback-key' }),
       readAuth: () => ({ servers: { 'cloud.example': { token: 'stored-token', expiresAt: Date.now() + 60000 } } })
     },
-    Transport: class extends FakeTransport { constructor(options) { super(options); created = this; } }
+    Transport: class extends TransportBase { constructor(options) { super(options); created = this; } }
   });
   controller.registerIpc();
   return {
@@ -56,6 +56,7 @@ test('terminal main controller keeps credentials in main and binds the session t
   const result = await start(harness.event, {
     runtimeId: 'python:3.12', cols: 110, rows: 30,
     workspace: { kind: 'personal', folderName: 'demo', folderKey: 'demo-key' },
+    setupCommands: ['pip install numpy==2.1.0'],
     context: { workspaceRoot: 'C:/work/demo', workspaceIdentity: 7, workspaceGeneration: 4, authEpoch: 2 }
   });
   assert.deepEqual(result, {
@@ -64,6 +65,7 @@ test('terminal main controller keeps credentials in main and binds the session t
   });
   assert.equal(harness.transport.config.serverHost, 'http://cloud.example:3101');
   assert.deepEqual(harness.transport.config.workspace, { kind: 'personal', folderName: 'demo', folderKey: 'demo-key' });
+  assert.deepEqual(harness.transport.config.setupCommands, ['pip install numpy==2.1.0']);
   assert.doesNotMatch(JSON.stringify(result), /stored-token|fallback-key/);
   assert.equal(harness.sent.at(-1).channel, 'terminal:status');
   assert.doesNotMatch(JSON.stringify(harness.sent.at(-1).payload), /stored-token|fallback-key/);
@@ -86,4 +88,31 @@ test('terminal main controller rejects stale start contexts, Local runtime, and 
   await assert.rejects(start(harness.event, Object.assign({}, valid, { runtimeId: 'Local' })), /Docker runtime/);
   await assert.rejects(start(harness.event, Object.assign({}, valid, { context: { workspaceRoot: 'C:/work/stale', workspaceIdentity: 7 } })), /workspace changed/);
   await assert.rejects(start({ sender: {} }, valid), /active workbench/);
+  await assert.rejects(start(harness.event, Object.assign({}, valid, { setupCommands: ['pip install demo\nwhoami'] })), /setup commands/i);
+});
+
+test('an older stop cannot clear the context of a concurrent replacement start', async () => {
+  let resolveStop;
+  class DelayedStopTransport extends FakeTransport {
+    stop() {
+      this.state = 'closing';
+      return new Promise((resolve) => { resolveStop = resolve; });
+    }
+  }
+  const harness = createHarness(DelayedStopTransport);
+  const start = harness.handlers.get('terminal:start');
+  const status = harness.handlers.get('terminal:status');
+  const payload = (generation) => ({
+    runtimeId: 'python:3.12', workspace: { kind: 'personal', folderKey: 'demo-key' },
+    context: { workspaceRoot: 'C:/work/demo', workspaceIdentity: 7, workspaceGeneration: generation }
+  });
+
+  await start(harness.event, payload(1));
+  const stopping = harness.controller.stop('replace');
+  await start(harness.event, payload(2));
+  resolveStop({ state: 'closed', confirmed: true });
+  await stopping;
+
+  const snapshot = await status(harness.event);
+  assert.equal(snapshot.context.workspaceGeneration, 2);
 });

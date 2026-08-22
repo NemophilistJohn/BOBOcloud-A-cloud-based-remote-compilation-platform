@@ -87,6 +87,17 @@ test('workspace identity never accepts a client absolute path', () => {
   }).workspace, { kind: 'personal', folderName: 'demo', folderKey: 'abc123' });
 });
 
+test('normalizes bounded setup commands into the LSP dependency scope', () => {
+  const config = normalizeConfig({
+    mode: 'standard', serverHost: 'x', languageId: 'python', runtimeId: 'python:3.10',
+    workspace: { kind: 'personal', folderName: 'demo', folderKey: 'abc123' },
+    setupCommands: ['  pip install numpy==2.1.0  ']
+  });
+  assert.deepEqual(config.setupCommands, ['pip install numpy==2.1.0']);
+  assert.throws(() => normalizeConfig(Object.assign({}, config, { setupCommands: [''] })), /setup commands/);
+  assert.throws(() => normalizeConfig(Object.assign({}, config, { setupCommands: new Array(65).fill('pip install x') })), /setup commands/);
+});
+
 test('resolves dependency configuration sections with literal dotted keys before nested values', () => {
   const configuration = {
     gopls: { buildFlags: ['-tags=integration'] },
@@ -169,6 +180,23 @@ test('sends credential only in the main-process start frame', async () => {
     workspace: { kind: 'team', teamId: 'team-1', projectId: 'project-1', branch: 'main' }
   });
   assert.equal(JSON.stringify(socket.sent[0]).includes('C:\\'), false);
+  transport.dispose();
+});
+
+test('sends setup commands only as dependency fingerprint input on LSP start', async () => {
+  let socket;
+  const transport = new LspTransport({
+    webSocketFactory: (url) => (socket = new MockSocket(url)),
+    getCredential: async () => 'secret-token'
+  });
+  await transport.configure({
+    mode: 'standard', serverHost: 'compiler.example.com', languageId: 'python', runtimeId: 'python:3.10',
+    workspace: { kind: 'personal', folderName: 'demo', folderKey: 'abc123' },
+    setupCommands: ['pip install numpy==2.1.0']
+  });
+  socket.fire('open');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(socket.sent[0].setupCommands, ['pip install numpy==2.1.0']);
   transport.dispose();
 });
 

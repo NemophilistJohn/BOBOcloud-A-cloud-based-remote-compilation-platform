@@ -78,9 +78,14 @@ async function createSelfSignedTerminalServer() {
   const wss = new WebSocketServer({ server });
   wss.on('connection', (socket) => {
     sockets.add(socket);
-    socket.once('message', (data) => {
-      received.push(JSON.parse(data.toString('utf8')));
-      socket.send(JSON.stringify({ type: 'terminal.ready', sessionId: 'wss-test', capabilities: { resize: false } }));
+    socket.on('message', (data) => {
+      const message = JSON.parse(data.toString('utf8'));
+      received.push(message);
+      if (message.type === 'terminal.start') {
+        socket.send(JSON.stringify({ type: 'terminal.ready', sessionId: 'wss-test', capabilities: { resize: false } }));
+      } else if (message.type === 'terminal.close') {
+        socket.send(JSON.stringify({ type: 'terminal.exit', reason: 'closed', exitCode: 0 }));
+      }
     });
     socket.once('close', () => sockets.delete(socket));
   });
@@ -129,7 +134,7 @@ test('real WSS terminal handshake checks a private certificate before the termin
     assert.equal(session.sessionId, 'wss-test');
     assert.deepEqual(fixture.received, [{
       type: 'terminal.start', protocol: 1, token: 'terminal-secret', runtimeId: 'python:3.12',
-      workspace: { kind: 'personal', folderName: '', folderKey: 'demo' }, cols: 120, rows: 32
+      workspace: { kind: 'personal', folderName: '', folderKey: 'demo' }, setupCommands: [], cols: 120, rows: 32
     }]);
     await good.transport.stop('test');
 

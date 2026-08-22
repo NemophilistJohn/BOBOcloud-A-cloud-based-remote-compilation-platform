@@ -3,12 +3,17 @@ package dap
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"bobocloud-server/internal/personalcache"
 )
 
 type managerTestProcess struct {
@@ -58,6 +63,12 @@ func (starter *managerTestStarter) process(index int) *managerTestProcess {
 	starter.mu.Lock()
 	defer starter.mu.Unlock()
 	return starter.processes[index]
+}
+
+func (starter *managerTestStarter) launch(index int) LaunchSpec {
+	starter.mu.Lock()
+	defer starter.mu.Unlock()
+	return starter.launches[index]
 }
 
 func managerTestCatalog() *Catalog {
@@ -154,5 +165,118 @@ func TestSessionRecordsUnexpectedAdapterFrameFailure(t *testing.T) {
 	}
 	if session.Err() == nil || !strings.Contains(session.Err().Error(), "DAP stream") {
 		t.Fatalf("terminal error = %v", session.Err())
+	}
+}
+
+func TestManagerForwardsDependencyMountAndStopsOnePersonalWorkspace(t *testing.T) {
+	starter := &managerTestStarter{}
+	manager := NewManager(managerTestCatalog(), starter, ManagerOptions{
+		MaxSessions: 2, MaxPerUser: 2, Inspector: catalogTestInspector{available: true},
+	})
+	t.Cleanup(manager.Close)
+	var firstRelease atomic.Int32
+	firstContext := managerTestContext(t.TempDir(), func() { firstRelease.Add(1) })
+	firstContext.DependencyRoot = t.TempDir()
+	firstContext.DependencyEnv = map[string]string{"PYTHONPATH": "/project-deps/python"}
+	first, err := manager.Start(firstContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondContext := managerTestContext(t.TempDir(), nil)
+	secondContext.FolderKey = "project-b"
+	if _, err := manager.Start(secondContext); err != nil {
+		t.Fatal(err)
+	}
+	launch := starter.launch(0)
+	if launch.DependencyRoot != firstContext.DependencyRoot || launch.DependencyEnv["PYTHONPATH"] != "/project-deps/python" {
+		t.Fatalf("dependency launch fields = %+v", launch)
+	}
+	if err := manager.StopUserWorkspace("user-a", "project-a"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-first.ResourcesDone():
+	default:
+		t.Fatal("workspace stop returned before dependency resources were released")
+	}
+	if firstRelease.Load() != 1 {
+		t.Fatalf("first workspace release count = %d", firstRelease.Load())
+	}
+	if remaining := manager.snapshot(nil); len(remaining) != 1 || remaining[0].Context.FolderKey != "project-b" {
+		t.Fatalf("remaining sessions = %+v", remaining)
+	}
+}
+
+func TestDAPSessionStopsWhenPersonalPersistQuotaIsExceeded(t *testing.T) {
+	dataDir := t.TempDir()
+	cache := personalcache.NewManager(dataDir, personalcache.Options{ReservationBytes: 8, ScanInterval: 5 * time.Millisecond})
+	operation, err := cache.BeginOperation(context.Background(), "user-a", 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &managerTestStarter{}
+	manager := NewManager(managerTestCatalog(), starter, ManagerOptions{Inspector: catalogTestInspector{available: true}})
+	t.Cleanup(manager.Close)
+	sessionContext := managerTestContext(t.TempDir(), operation.Release)
+	sessionContext.ProcessContext = operation.Context()
+	session, err := manager.Start(sessionContext)
+	if err != nil {
+		operation.Release()
+		t.Fatal(err)
+	}
+	payload := filepath.Join(dataDir, "users", "user-a", "persist", "pip-cache", "payload")
+	if err := os.MkdirAll(filepath.Dir(payload), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(payload, make([]byte, 512), 0600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-session.ResourcesDone():
+	case <-time.After(2 * time.Second):
+		t.Fatal("quota guard did not stop the DAP process")
+	}
+	if !errors.Is(operation.Err(), personalcache.ErrQuotaExceeded) {
+		t.Fatalf("operation error = %v", operation.Err())
+	}
+}
+
+func TestDAPOperationProtectsWritableSharedCachesFromLRU(t *testing.T) {
+	dataDir := t.TempDir()
+	cache := personalcache.NewManager(dataDir, personalcache.Options{ReservationBytes: 8})
+	operation, err := cache.BeginOperation(context.Background(), "user-a", 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &managerTestStarter{}
+	manager := NewManager(managerTestCatalog(), starter, ManagerOptions{Inspector: catalogTestInspector{available: true}})
+	t.Cleanup(manager.Close)
+	sessionContext := managerTestContext(t.TempDir(), operation.Release)
+	sessionContext.ProcessContext = operation.Context()
+	session, err := manager.Start(sessionContext)
+	if err != nil {
+		operation.Release()
+		t.Fatal(err)
+	}
+	payload := filepath.Join(dataDir, "users", "user-a", "persist", "pip-cache", "payload")
+	if err := os.MkdirAll(filepath.Dir(payload), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(payload, make([]byte, 512), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cache.Enforce("user-a", 32)
+	if _, err := os.Stat(payload); err != nil {
+		t.Fatalf("active DAP cache was evicted: %v", err)
+	}
+	session.Stop()
+	select {
+	case <-session.ResourcesDone():
+	case <-time.After(2 * time.Second):
+		t.Fatal("DAP resources did not release")
+	}
+	cache.Enforce("user-a", 32)
+	if _, err := os.Stat(payload); !os.IsNotExist(err) {
+		t.Fatalf("idle shared cache was not eligible for LRU cleanup: %v", err)
 	}
 }

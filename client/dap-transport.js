@@ -2,6 +2,8 @@
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 15000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
+const MAX_SETUP_COMMANDS = 64;
+const MAX_SETUP_COMMAND_BYTES = 512;
 
 function normalizeDapUrl(serverHost) {
   let input = String(serverHost || '').trim();
@@ -46,6 +48,38 @@ function cleanWorkspace(workspace) {
   const folderKey = String(value.folderKey || '').trim();
   if ((!folderName && !folderKey) || /[/\\]/.test(folderName)) throw new Error('Invalid personal workspace identity');
   return { kind: 'personal', folderName, folderKey };
+}
+
+function cleanSetupCommands(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value) || value.length > MAX_SETUP_COMMANDS) {
+    const error = new Error('The cloud debugger could not be started.');
+    error.code = 'invalid_start';
+    throw error;
+  }
+  return value.map((command) => {
+    if (typeof command !== 'string' || Buffer.byteLength(command, 'utf8') > MAX_SETUP_COMMAND_BYTES || /[\0\r\n]/.test(command)) {
+      const error = new Error('The cloud debugger could not be started.');
+      error.code = 'invalid_start';
+      throw error;
+    }
+    return command.trim();
+  });
+}
+
+function cleanDependencyCacheStatus(value) {
+  if (!value || typeof value !== 'object') return null;
+  const allowedStates = new Set([
+    'mounted', 'missing', 'busy', 'incomplete', 'stale', 'corrupt',
+    'unsupported', 'unavailable', 'error', 'not_applicable'
+  ]);
+  const state = String(value.state || 'unavailable').toLowerCase();
+  return {
+    state: allowedStates.has(state) ? state : 'unavailable',
+    required: value.required === true,
+    digestSource: String(value.digestSource || '').slice(0, 32),
+    exact: value.exact === true
+  };
 }
 
 function socketData(event) {
@@ -250,6 +284,7 @@ class DapTransport {
     this.sessionId = '';
     this.adapter = null;
     this.capabilities = null;
+    this.dependencyCache = null;
     this.lastError = '';
     this.config = null;
     this.intentionalStop = false;
@@ -268,6 +303,7 @@ class DapTransport {
       sessionId: this.sessionId,
       adapter: this.adapter,
       capabilities: this.capabilities,
+      dependencyCache: this.dependencyCache,
       error: this.lastError,
       generation: this.generation,
       contextToken: this.localContext
@@ -294,13 +330,15 @@ class DapTransport {
       childPort: Number(config.childPort) || 3102,
       languageId: String(config.languageId),
       runtimeId: String(config.runtimeId),
-      workspace: cleanWorkspace(config.workspace)
+      workspace: cleanWorkspace(config.workspace),
+      setupCommands: cleanSetupCommands(config.setupCommands)
     };
     this.intentionalStop = false;
     this.protocolEnded = false;
     this.sessionId = '';
     this.adapter = null;
     this.capabilities = null;
+    this.dependencyCache = null;
     this.lastError = '';
     const generation = ++this.generation;
     this._setState('connecting');
@@ -346,6 +384,7 @@ class DapTransport {
             token: String(token || ''),
             runtimeId: this.config.runtimeId,
             languageId: this.config.languageId,
+            setupCommands: this.config.setupCommands,
             workspace: this.config.workspace
           }, true);
         } catch (error) {
@@ -364,6 +403,7 @@ class DapTransport {
           this.sessionId = String(message.sessionId || '');
           this.adapter = message.adapter && typeof message.adapter === 'object' ? message.adapter : null;
           this.capabilities = message.capabilities && typeof message.capabilities === 'object' ? message.capabilities : null;
+          this.dependencyCache = cleanDependencyCacheStatus(message.dependencyCache);
           this._setState('ready');
           finish(null, this.snapshot());
           return;
@@ -574,6 +614,7 @@ class DapTransport {
     this.sessionId = '';
     this.adapter = null;
     this.capabilities = null;
+    this.dependencyCache = null;
     this.protocolEnded = false;
     if (this.state !== 'idle') this._setState('idle', { reason });
     this.localContext = null;
@@ -610,4 +651,13 @@ class DapTransport {
   }
 }
 
-module.exports = { DapTransport, normalizeDapUrl, normalizeDapChildUrl, cleanWorkspace };
+module.exports = {
+  DapTransport,
+  normalizeDapUrl,
+  normalizeDapChildUrl,
+  cleanWorkspace,
+  cleanSetupCommands,
+  cleanDependencyCacheStatus,
+  MAX_SETUP_COMMANDS,
+  MAX_SETUP_COMMAND_BYTES
+};

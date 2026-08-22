@@ -27,7 +27,9 @@ import (
 	"bobocloud-server/internal/lifecycle"
 	customlog "bobocloud-server/internal/log"
 	"bobocloud-server/internal/lsp"
+	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/runner"
 	"bobocloud-server/internal/security"
 	"bobocloud-server/internal/session"
@@ -37,7 +39,7 @@ import (
 )
 
 // ServerVersion 服务端版本号（serverInfo/whoami 返回，客户端用于兼容性判断）
-const ServerVersion = "2.4.0"
+const ServerVersion = "2.5.0"
 
 func main() {
 	// ──── 1. 加载配置 ────
@@ -169,10 +171,8 @@ func main() {
 	}
 
 	// ──── 8. Docker 容器池 ────
-	// queueSize: 最大排队长度，0=禁用排队
-	// queueTimeoutSec: 单个请求最大排队秒数
-	const queueSize = 50
-	const queueTimeoutSec = 60
+	performanceMetrics := metrics.New(cfg.PerformanceMetricsEnabled, cfg.PerformanceMetricsWindow)
+	runner.SetOutputRetentionLimit(cfg.RunOutputRetainedBytes)
 	dockerPool := docker.NewPool(
 		cfg.DockerHotPoolSize,
 		cfg.DockerMaxContainers,
@@ -181,13 +181,26 @@ func main() {
 		cfg.DockerCPULimit,
 		cfg.PoolReplenishDuration(),
 		sec,
-		queueSize,
-		queueTimeoutSec,
+		cfg.DockerQueueSize,
+		cfg.DockerQueueTimeoutSeconds,
 		cfg.DockerRegistryMirrors,
 		time.Duration(cfg.DockerPullTimeout)*time.Second,
 		filepath.Join(cfg.DataDir, "users"),
 	)
 	dockerPool.SetHardening(cfg.DockerHardening, cfg.DockerReadOnlyRootfs)
+	dockerPool.SetMetrics(performanceMetrics)
+	dockerPool.SetOutputRetentionLimit(cfg.RunOutputRetainedBytes)
+	dockerPool.SetPersonalDependencyScope(cfg.PersonalDependencyScope)
+	personalCache := personalcache.NewManager(cfg.DataDir, personalcache.Options{
+		ScopeMode:        cfg.PersonalDependencyScope,
+		ReservationBytes: int64(cfg.PersonalPersistReservationMB) * 1_000_000,
+		MaxFiles:         cfg.PersonalPersistMaxFiles,
+		ReservationFiles: cfg.PersonalPersistReservationFiles,
+		ScanInterval:     cfg.PersonalPersistScanInterval(),
+		Retention:        cfg.PersonalPersistRetention(),
+		Metrics:          performanceMetrics,
+		OnEvicted:        dockerPool.InvalidateIdleBuildCacheContainers,
+	})
 
 	// 清理上次进程异常退出后遗留的孤儿容器
 	dockerPool.CleanupOrphanedContainers()
@@ -196,8 +209,8 @@ func main() {
 		"hot_pool_size", cfg.DockerHotPoolSize,
 		"max_total", cfg.DockerMaxContainers,
 		"max_idle", cfg.DockerMaxIdle,
-		"queue_size", queueSize,
-		"queue_timeout_s", queueTimeoutSec,
+		"queue_size", cfg.DockerQueueSize,
+		"queue_timeout_s", cfg.DockerQueueTimeoutSeconds,
 		"hardening", cfg.DockerHardening,
 		"readonly_rootfs", cfg.DockerReadOnlyRootfs,
 	)
@@ -362,7 +375,11 @@ func main() {
 	} else {
 		preWarmUserIDs = append(preWarmUserIDs, "default")
 	}
-	dockerPool.PreWarmAllForUsers(popularImages, preWarmUserIDs)
+	if cfg.PersonalDependencyScope == "legacy-user" {
+		dockerPool.PreWarmAllForUsers(popularImages, preWarmUserIDs)
+	} else {
+		slog.Info("Generic user hot-pool prewarming disabled for project-lock dependency mounts; exact-context idle reuse remains enabled")
+	}
 
 	// Startup logs are retained by systemd/journald. Never put reusable
 	// credentials in them; administrators distribute API keys through the
@@ -417,9 +434,12 @@ func main() {
 	httpHandler.DAP = dapManager
 	httpHandler.DependencyViews = dependencyViews
 	httpHandler.Lifecycle = resourceLifecycle
+	httpHandler.PersonalCache = personalCache
+	httpHandler.Metrics = performanceMetrics
 	httpHandler.Readiness = serverReadinessProbe(db, dockerPool, cfg, lspManager, dapManager)
 	httpHandler.EnvironmentSetup = makeEnvironmentSetupExecutor(dockerPool, sec)
 	httpHandler.OnBuildCacheCleared = dockerPool.InvalidateIdleBuildCacheContainers
+	httpHandler.OnPersonalCacheCleared = dockerPool.InvalidateIdleBuildCacheContainers
 	httpHandler.SetUserLimit = func(userID string, limit int) {
 		dockerPool.SetUserLimit(userID, limit)
 	}
@@ -477,11 +497,14 @@ func main() {
 		LSP:             lspManager,
 		DependencyViews: dependencyViews,
 		Lifecycle:       resourceLifecycle,
+		PersonalCache:   personalCache,
+		Metrics:         performanceMetrics,
 	}
 	dapHandler := &handler.DAPHandler{
 		Config: cfg, Manager: dapManager, AuthEnabled: multiUser,
 		Authenticator: authenticator, UserStore: userStore, AuthSessions: authSessions,
 		Collaboration: collaborationManager, Lifecycle: resourceLifecycle, ChildTickets: dap.NewChildTicketBroker(),
+		PersonalCache: personalCache,
 	}
 
 	// ──── 12. 后台任务 ────
@@ -514,6 +537,20 @@ func main() {
 		}()
 	}
 	go teamCacheCleanupLoop(teamCache, collaborationStore, time.Duration(cfg.TeamCacheCleanupIntervalMin)*time.Minute)
+	go func() {
+		ticker := time.NewTicker(time.Duration(cfg.PersonalPersistCleanupIntervalMin) * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			users, err := userStore.List()
+			if err != nil {
+				slog.Warn("Personal cache cleanup could not list users", "error", err)
+				continue
+			}
+			for _, user := range users {
+				personalCache.Enforce(user.ID, int64(user.DiskQuotaMB)*1_000_000)
+			}
+		}
+	}()
 	// 审计日志清理（保留 90 天 / 最多 20000 条，每小时）
 	if auditStore != nil {
 		go func() {
@@ -777,15 +814,25 @@ func makeTerminalExecutor(pool *docker.Pool) handler.TerminalExecutor {
 			return "", "", 0, fmt.Errorf("unknown runtime: %s", runtimeID)
 		}
 
-		// 与 RunPlan 路径一致：自动给 pip install 追加 --target /persist/pip-packages，
-		// 使终端安装的包持久化到用户卷，而非随容器释放而丢失。
+		// 与 RunPlan 路径一致：由容器环境中的 PIP_TARGET 选择项目摘要目录。
 		command = runner.AutoPersistPip(command)
 
-		containerID, err := pool.AcquireForUser(ctx, userID, rt.DockerImage, nil)
+		var containerID string
+		if lease := personalcache.LeaseFromContext(ctx); lease != nil {
+			containerID, err = pool.AcquireForUserWithContext(ctx, userID, rt.DockerImage, lease.ContainerKey, lease.DockerMounts, lease.DockerEnv, nil)
+		} else {
+			containerID, err = pool.AcquireForUser(ctx, userID, rt.DockerImage, nil)
+		}
 		if err != nil {
 			return "", "", 0, fmt.Errorf("failed to acquire container: %w", err)
 		}
-		defer pool.ReleaseForUser(containerID, userID)
+		defer func() {
+			if errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
+				pool.DiscardForUser(containerID, userID)
+			} else {
+				pool.ReleaseForUser(containerID, userID)
+			}
+		}()
 
 		stdout, stderr, exitCode, err = pool.Exec(ctx, containerID,
 			[]string{"sh", "-c", command}, "/workspace")
@@ -816,11 +863,22 @@ func makeEnvironmentSetupExecutor(pool *docker.Pool, policy security.Policy) han
 		if copyErr := files.CopyProjectToTemp(workspaceRoot, isolatedRoot); copyErr != nil {
 			return "", "", 0, fmt.Errorf("copy isolated environment workspace: %w", copyErr)
 		}
-		containerID, err := pool.AcquireForUser(ctx, userID, rt.DockerImage, nil)
+		var containerID string
+		if lease := personalcache.LeaseFromContext(ctx); lease != nil {
+			containerID, err = pool.AcquireForUserWithContext(ctx, userID, rt.DockerImage, lease.ContainerKey, lease.DockerMounts, lease.DockerEnv, nil)
+		} else {
+			containerID, err = pool.AcquireForUser(ctx, userID, rt.DockerImage, nil)
+		}
 		if err != nil {
 			return "", "", 0, fmt.Errorf("failed to acquire container: %w", err)
 		}
-		defer pool.ReleaseForUser(containerID, userID)
+		defer func() {
+			if errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
+				pool.DiscardForUser(containerID, userID)
+			} else {
+				pool.ReleaseForUser(containerID, userID)
+			}
+		}()
 		if _, _, _, err := pool.Exec(ctx, containerID, []string{"mkdir", "-p", "/workspace"}, "/"); err != nil {
 			return "", "", 0, fmt.Errorf("prepare environment workspace: %w", err)
 		}

@@ -140,6 +140,7 @@ function createDapController(options) {
           childPort: serverSettings.dapChildWsPort || 3102,
           languageId: value.languageId,
           runtimeId: value.runtimeId,
+          setupCommands: value.setupCommands,
           workspace: value.workspace,
           localContext
         });

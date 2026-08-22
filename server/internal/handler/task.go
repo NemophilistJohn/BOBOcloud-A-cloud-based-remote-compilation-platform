@@ -10,6 +10,7 @@ import (
 
 	"bobocloud-server/internal/files"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/runner"
 	"bobocloud-server/internal/session"
 )
@@ -74,6 +75,32 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 		return
 	}
 	output.WriteStatus("setup", fmt.Sprintf("Using Docker runtime: %s (%s)", runtimeDef.DisplayName, runtimeDef.DockerImage))
+	personalLease, err := h.prepareRunPersonalCache(ctx, sess, *runtimeDef, runtimeDef.Language, projectPath)
+	if err != nil {
+		fail("Failed to prepare project dependency cache: " + err.Error())
+		return
+	}
+	executionCtx := ctx
+	if personalLease != nil {
+		defer personalLease.Release()
+		guard := personalLease.StartGuard(ctx)
+		if guard != nil {
+			executionCtx = guard.Context
+		}
+		output.WriteStatus("cache", fmt.Sprintf("Project dependency cache %s (%s:%s)", map[bool]string{true: "hit", false: "miss"}[personalLease.Hit], personalLease.Fingerprint.Source, personalLease.Fingerprint.Digest[:12]))
+	}
+	var persistOperation *personalcache.Operation
+	if personalLease == nil && h.PersonalCache != nil {
+		persistOperation, err = h.PersonalCache.BeginOperation(ctx, sess.UserID, userQuotaBytes(h.UserStore, sess.UserID))
+		if err != nil {
+			fail("Failed to reserve personal persistent storage: " + err.Error())
+			return
+		}
+		if persistOperation != nil {
+			defer persistOperation.Release()
+			executionCtx = persistOperation.Context()
+		}
+	}
 
 	tempDir, err := os.MkdirTemp("", fmt.Sprintf("task-%s-", runID[:min(8, len(runID))]))
 	if err != nil {
@@ -82,8 +109,12 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 	}
 	defer os.RemoveAll(tempDir)
 	copyStarted := time.Now()
-	if err := files.CopyProjectToTemp(projectPath, tempDir); err != nil {
-		fail(fmt.Sprintf("Failed to copy project for task: %v", err))
+	copyErr := files.CopyProjectToTemp(projectPath, tempDir)
+	if h.Metrics != nil {
+		h.Metrics.Observe("workspace.copy.host", time.Since(copyStarted))
+	}
+	if copyErr != nil {
+		fail(fmt.Sprintf("Failed to copy project for task: %v", copyErr))
 		return
 	}
 	output.WriteStatus("setup", fmt.Sprintf("Isolated task workspace ready in %d ms", time.Since(copyStarted).Milliseconds()))
@@ -92,10 +123,26 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 	dockerRunner := runner.NewDockerRunner(*runtimeDef, h.DockerPool, h.Security)
 	dockerRunner.SetUserID(sess.UserID)
 	dockerRunner.SetSetupCommands(sess.SetupCommands)
-	result := dockerRunner.RunTaskExecution(ctx, sess.Task, tempDir, output, stdinReader)
+	dockerRunner.SetMetrics(h.Metrics)
+	if personalLease != nil {
+		dockerRunner.SetBuildCacheContext(personalLease.ContainerKey, personalLease.DockerMounts, personalLease.DockerEnv)
+	}
+	result := dockerRunner.RunTaskExecution(executionCtx, sess.Task, tempDir, output, stdinReader)
 	if result == nil {
 		fail("Task execution returned no result")
 		return
+	}
+	if personalLease != nil && personalLease.StartGuard(ctx).Err() != nil {
+		output.WriteError("Personal storage quota was exceeded while writing project dependencies")
+		result.Success = false
+		result.ReturnCode = 1
+		result.Stderr = "personal storage quota exceeded"
+	}
+	if persistOperation != nil && persistOperation.Err() != nil {
+		output.WriteError("Personal storage quota was exceeded while running the task")
+		result.Success = false
+		result.ReturnCode = 1
+		result.Stderr = "personal storage quota exceeded"
 	}
 	if shouldPublishRunArtifacts(ctx, result) {
 		changedFiles := files.SyncGeneratedArtifacts(tempDir, projectPath, beforeSnapshot, "")

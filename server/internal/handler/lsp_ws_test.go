@@ -24,6 +24,7 @@ import (
 	"bobocloud-server/internal/config"
 	"bobocloud-server/internal/lifecycle"
 	"bobocloud-server/internal/lsp"
+	"bobocloud-server/internal/personalcache"
 
 	"github.com/gorilla/websocket"
 )
@@ -35,6 +36,204 @@ type bridgeTestProcess struct {
 	stdoutW *io.PipeWriter
 	done    chan struct{}
 	once    sync.Once
+}
+
+func TestPersonalProjectPythonDependenciesUseOnlyExactInventoryDigest(t *testing.T) {
+	dataRoot := t.TempDir()
+	workspace := t.TempDir()
+	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
+	cfg := config.Default()
+	cfg.DataDir = dataRoot
+	manager := personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+	workspaceID := lsp.StableWorkspaceIdentity("user-a", "", "", "", "project-key")
+	cacheRequest := personalcache.Request{
+		UserID: "user-a", WorkspaceID: workspaceID, WorkspaceName: "Project",
+		RuntimeID: "python:3.10", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.10", "python:3.10-slim"), Language: "python", WorkspaceRoot: workspace,
+	}
+	lease, err := manager.Prepare(context.Background(), cacheRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePythonDistInfo(t, filepath.Join(lease.HostRoot, "python"), "numpy", "2.1.0")
+	lease.Release()
+	handler := &WSHandler{Config: cfg, PersonalCache: manager, DependencyViews: lsp.NewDefaultDependencyRegistry()}
+	legacyRoot := filepath.Join(dataRoot, "users", "user-a", "persist", "pip-packages", "runtimes", "python-3.10")
+	writePythonDistInfo(t, legacyRoot, "legacy-package", "9.9.9")
+
+	project := handler.resolvePersonalProjectDependencies(
+		"user-a", workspaceID, "Project", "python:3.10", "python:3.10-slim", "python", workspace, nil,
+	)
+	projectRoot, generation, release := project.Root, project.Generation, project.Release
+	if release != nil {
+		defer release()
+	}
+	if projectRoot == "" || !strings.Contains(generation, lease.Fingerprint.Digest) {
+		t.Fatalf("exact project inventory was not resolved: root=%q generation=%q", projectRoot, generation)
+	}
+	request, view, resolved := handler.resolveAnalysisDependencies(
+		"user-a", "", "python:3.10", "python", workspace, workspaceID, "", "", generation, project,
+	)
+	if !resolved || request.Generation != generation {
+		t.Fatalf("dependency view not resolved: request=%+v view=%+v", request, view)
+	}
+	found := false
+	expectedPythonRoot := filepath.Join(projectRoot, "python")
+	for _, mount := range view.Mounts {
+		if mount.Role == lsp.DependencyRolePythonPackages && filepath.Clean(mount.HostPath) == filepath.Clean(expectedPythonRoot) && mount.ReadOnly {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("project dependency root was not mounted read-only: %+v", view.Mounts)
+	}
+	if len(view.Mounts) != 1 || view.Mounts[0].Legacy {
+		t.Fatalf("legacy user dependencies polluted the exact project view: %+v", view.Mounts)
+	}
+	setupProject := handler.resolvePersonalProjectDependencies(
+		"user-a", workspaceID, "Project", "python:3.10", "python:3.10-slim", "python", workspace, []string{"pip install extra-package"},
+	)
+	setupRoot, setupRelease := setupProject.Root, setupProject.Release
+	if setupRelease != nil {
+		setupRelease()
+	}
+	if setupRoot != "" {
+		t.Fatalf("a different setup-command digest reused the dependency cache: %q", setupRoot)
+	}
+
+	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.2.0\n")
+	changedProject := handler.resolvePersonalProjectDependencies(
+		"user-a", workspaceID, "Project", "python:3.10", "python:3.10-slim", "python", workspace, nil,
+	)
+	changedRoot, changedGeneration, changedRelease := changedProject.Root, changedProject.Generation, changedProject.Release
+	if changedRelease != nil {
+		changedRelease()
+	}
+	if changedRoot != "" || changedGeneration != "" {
+		t.Fatalf("stale lock digest polluted LSP dependencies: root=%q generation=%q", changedRoot, changedGeneration)
+	}
+	otherProject := handler.resolvePersonalProjectDependencies(
+		"user-a", lsp.StableWorkspaceIdentity("user-a", "", "", "", "other-project"), "Other", "python:3.10", "python:3.10-slim", "python", workspace, nil,
+	)
+	otherRoot, otherRelease := otherProject.Root, otherProject.Release
+	if otherRelease != nil {
+		otherRelease()
+	}
+	if otherRoot != "" {
+		t.Fatalf("another project reused the dependency cache: %q", otherRoot)
+	}
+	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
+	writeEnvironmentFile(t, filepath.Join(lease.HostRoot, ".package-inventory.json"), "{invalid-json")
+	corruptProject := handler.resolvePersonalProjectDependencies(
+		"user-a", workspaceID, "Project", "python:3.10", "python:3.10-slim", "python", workspace, nil,
+	)
+	corruptRoot, corruptRelease := corruptProject.Root, corruptProject.Release
+	if corruptRelease != nil {
+		corruptRelease()
+	}
+	if corruptRoot != "" {
+		t.Fatalf("corrupt inventory was mounted into LSP: %q", corruptRoot)
+	}
+	entry, exists, err := manager.Lookup(cacheRequest)
+	if err != nil || !exists {
+		t.Fatalf("retained cache entry disappeared: %+v %v", entry, err)
+	}
+	if err := manager.Delete("user-a", entry.Path); err == nil {
+		t.Fatal("LSP read lease did not retain its mounted cache")
+	}
+	if release != nil {
+		release()
+	}
+	if err := manager.Delete("user-a", entry.Path); err != nil {
+		t.Fatalf("released LSP cache remained active: %v", err)
+	}
+}
+
+func TestLSPSetupCommandFingerprintIsBounded(t *testing.T) {
+	if !validLSPSetupCommands([]string{"pip install numpy==2.1.0"}) {
+		t.Fatal("valid setup command fingerprint was rejected")
+	}
+	if !validLSPSetupCommands([]string{""}) || validLSPSetupCommands(make([]string, 65)) || validLSPSetupCommands([]string{strings.Repeat("x", 513)}) || validLSPSetupCommands([]string{"pip install numpy\nwhoami"}) {
+		t.Fatal("invalid setup command fingerprint was accepted")
+	}
+}
+
+func TestPersonalProjectDependenciesUseCurrentDigestForEveryManagedLanguage(t *testing.T) {
+	tests := []struct {
+		language, runtime, image, manifest, content string
+		populate                                    func(t *testing.T, root string)
+	}{
+		{"node", "node:20", "node:20-slim", "package.json", `{"dependencies":{"left-pad":"1.3.0"}}`, func(t *testing.T, root string) {
+			writeEnvironmentFile(t, filepath.Join(root, "node_modules", "left-pad", "package.json"), `{"name":"left-pad","version":"1.3.0"}`)
+		}},
+		{"go", "go:1.24", "golang:1.24", "go.mod", "module example.test/app\n", func(t *testing.T, root string) {
+			writeEnvironmentFile(t, filepath.Join(root, "go", "pkg", "mod", "example.test", "mod@v1.0.0", "go.mod"), "module example.test/mod\n")
+		}},
+		{"rust", "rust:1.82", "rust:1.82", "Cargo.toml", "[dependencies]\nserde = \"1\"\n", func(t *testing.T, root string) {
+			writeEnvironmentFile(t, filepath.Join(root, "cargo", "registry", "src", "index", "serde-1.0.0", "Cargo.toml"), "[package]\nname=\"serde\"\n")
+		}},
+		{"java", "java:21", "eclipse-temurin:21", "pom.xml", "<project/>\n", func(t *testing.T, root string) {
+			writeEnvironmentFile(t, filepath.Join(root, "maven", "org", "example", "demo", "1.0", "demo-1.0.pom"), "<project/>\n")
+			writeEnvironmentFile(t, filepath.Join(root, "gradle", "caches", "modules-2", "metadata.bin"), "metadata")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.language, func(t *testing.T) {
+			dataRoot := t.TempDir()
+			workspace := t.TempDir()
+			writeEnvironmentFile(t, filepath.Join(workspace, test.manifest), test.content)
+			manager := personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+			workspaceID := lsp.StableWorkspaceIdentity("user-a", "", "", "", "project")
+			request := personalcache.Request{
+				UserID: "user-a", WorkspaceID: workspaceID, WorkspaceName: "Project", RuntimeID: test.runtime,
+				RuntimeFingerprint: personalCacheRuntimeFingerprint(test.runtime, test.image), Language: test.language, WorkspaceRoot: workspace,
+			}
+			writer, err := manager.Prepare(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.populate(t, writer.HostRoot)
+			writer.Release()
+			legacy := filepath.Join(dataRoot, "users", "user-a", "persist", "legacy-marker")
+			writeEnvironmentFile(t, legacy, "must not mount")
+
+			handler := &WSHandler{Config: &config.Config{DataDir: dataRoot}, PersonalCache: manager, DependencyViews: lsp.NewDefaultDependencyRegistry()}
+			project := handler.resolvePersonalProjectDependencies("user-a", workspaceID, "Project", test.runtime, test.image, test.language, workspace, nil)
+			if project.Release != nil {
+				defer project.Release()
+			}
+			if project.Root == "" || len(project.Extra) == 0 {
+				t.Fatalf("project dependency view missing: %+v", project)
+			}
+			dependencyRequest, view, resolved := handler.resolveAnalysisDependencies(
+				"user-a", "", test.runtime, test.language, workspace, workspaceID, "", filepath.Join(dataRoot, "users", "user-a", "persist"), project.Generation, project,
+			)
+			if !resolved || dependencyRequest.Paths.UserPersistRoot != "" || dependencyRequest.Paths.SnapshotRoot != "" || len(view.Mounts) == 0 {
+				t.Fatalf("project-lock dependency truth was not isolated: request=%+v mounts=%+v", dependencyRequest, view.Mounts)
+			}
+			for _, mount := range view.Mounts {
+				if !strings.HasPrefix(filepath.Clean(mount.HostPath), filepath.Clean(project.Root)+string(filepath.Separator)) || !mount.ReadOnly {
+					t.Fatalf("non-project dependency mount leaked into %s view: %+v", test.language, mount)
+				}
+			}
+		})
+	}
+}
+
+func TestMissingProjectDigestDoesNotFallBackToLegacyUserDependencies(t *testing.T) {
+	dataRoot := t.TempDir()
+	workspace := t.TempDir()
+	writeEnvironmentFile(t, filepath.Join(workspace, "package.json"), `{"dependencies":{"left-pad":"1.3.0"}}`)
+	writeEnvironmentFile(t, filepath.Join(dataRoot, "users", "user-a", "persist", "npm-global", "lib", "node_modules", "left-pad", "package.json"), `{"name":"left-pad","version":"0.0.1"}`)
+	handler := &WSHandler{
+		Config: &config.Config{DataDir: dataRoot}, PersonalCache: personalcache.NewManager(dataRoot, personalcache.Options{}),
+		DependencyViews: lsp.NewDefaultDependencyRegistry(),
+	}
+	request, view, resolved := handler.resolveAnalysisDependencies(
+		"user-a", "", "node:20", "node", workspace, lsp.StableWorkspaceIdentity("user-a", "", "", "", "project"), "", filepath.Join(dataRoot, "users", "user-a", "persist"), "", personalProjectDependencyView{},
+	)
+	if !resolved || request.Paths.UserPersistRoot != "" || request.Paths.SnapshotRoot != "" || len(view.Mounts) != 0 {
+		t.Fatalf("missing project digest reused legacy dependencies: request=%+v mounts=%+v", request, view.Mounts)
+	}
 }
 
 func newBridgeTestProcess() *bridgeTestProcess {

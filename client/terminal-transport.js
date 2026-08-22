@@ -6,8 +6,11 @@
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 15000;
 const DEFAULT_PING_INTERVAL_MS = 25000;
+const DEFAULT_CLOSE_TIMEOUT_MS = 15000;
 const MAX_STDIN_CHARS = 64 * 1024;
 const MAX_STDIN_BYTES = 16 * 1024;
+const MAX_SETUP_COMMANDS = 64;
+const MAX_SETUP_COMMAND_BYTES = 512;
 
 function normalizeTerminalUrl(serverHost) {
   let input = String(serverHost || '').trim();
@@ -38,6 +41,19 @@ function cleanWorkspace(workspace) {
     throw new Error('Invalid personal workspace identity');
   }
   return { kind: 'personal', folderName, folderKey };
+}
+
+function cleanSetupCommands(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value) || value.length > MAX_SETUP_COMMANDS) {
+    throw new Error('Terminal setup commands are invalid');
+  }
+  return value.map((command) => {
+    if (typeof command !== 'string' || Buffer.byteLength(command, 'utf8') > MAX_SETUP_COMMAND_BYTES || /[\0\r\n]/.test(command)) {
+      throw new Error('Terminal setup commands are invalid');
+    }
+    return command.trim();
+  });
 }
 
 function boundedDimension(value, fallback) {
@@ -76,6 +92,7 @@ class TerminalTransport {
     this.emit = options.emit || (() => {});
     this.connectTimeoutMs = Number.isFinite(options.connectTimeoutMs) ? options.connectTimeoutMs : DEFAULT_CONNECT_TIMEOUT_MS;
     this.pingIntervalMs = Number.isFinite(options.pingIntervalMs) ? options.pingIntervalMs : DEFAULT_PING_INTERVAL_MS;
+    this.closeTimeoutMs = Number.isFinite(options.closeTimeoutMs) ? options.closeTimeoutMs : DEFAULT_CLOSE_TIMEOUT_MS;
     this.setTimer = options.setTimer || setTimeout;
     this.clearTimer = options.clearTimer || clearTimeout;
     this.setInterval = options.setInterval || setInterval;
@@ -90,6 +107,10 @@ class TerminalTransport {
     this.startReject = null;
     this.connectTimer = null;
     this.pingTimer = null;
+    this.closeTimer = null;
+    this.closePromise = null;
+    this.closeResolve = null;
+    this.closeSilent = false;
     this.decoder = new TextDecoder('utf-8');
     this.streamDecoders = { stdout: new TextDecoder('utf-8'), stderr: new TextDecoder('utf-8') };
   }
@@ -123,8 +144,10 @@ class TerminalTransport {
   _clearTimers() {
     if (this.connectTimer) this.clearTimer(this.connectTimer);
     if (this.pingTimer) this.clearInterval(this.pingTimer);
+    if (this.closeTimer) this.clearTimer(this.closeTimer);
     this.connectTimer = null;
     this.pingTimer = null;
+    this.closeTimer = null;
   }
 
   _startPing(generation) {
@@ -155,11 +178,18 @@ class TerminalTransport {
   }
 
   async start(config = {}) {
-    this.stop('restart', { silent: true });
+    // Multiple renderer requests can be released by the same close
+    // acknowledgement. Re-check after every await so only the last request is
+    // allowed to create a socket; otherwise the earlier socket loses its
+    // generation owner and can leave a server-side terminal running.
+    while (this.state === 'connecting' || this.state === 'ready' || this.state === 'closing') {
+      await this.stop('restart', { silent: true });
+    }
     const serverHost = String(config.serverHost || '').trim();
     const runtimeId = String(config.runtimeId || '').trim();
     if (!runtimeId || runtimeId.toLowerCase() === 'local') throw terminalError('runtime_required', 'A Docker runtime is required for the cloud terminal');
     const workspace = cleanWorkspace(config.workspace);
+    const setupCommands = cleanSetupCommands(config.setupCommands);
     const generation = ++this.generation;
     const contextToken = config.localContext && typeof config.localContext === 'object'
       ? Object.freeze(Object.assign({}, config.localContext))
@@ -190,7 +220,10 @@ class TerminalTransport {
       this.socket = socket;
       try { socket.binaryType = 'arraybuffer'; } catch (_) {}
       const closeWithError = (error) => {
-        if (generation !== this.generation || socket !== this.socket) return;
+        if (generation !== this.generation || socket !== this.socket) {
+          try { socket.close(); } catch (_) {}
+          return;
+        }
         this._clearTimers();
         this.socket = null;
         this.sessionId = '';
@@ -215,6 +248,7 @@ class TerminalTransport {
             token: String(token || ''),
             runtimeId,
             workspace,
+            setupCommands,
             cols,
             rows
           }));
@@ -273,10 +307,20 @@ class TerminalTransport {
           return;
         }
         if (message.type === 'terminal.exit') {
-          this._finishClosed({ reason: String(message.reason || 'exit'), exitCode: Number.isInteger(message.exitCode) ? message.exitCode : null });
+          this._finishClosed({
+            reason: String(message.reason || 'exit'),
+            exitCode: Number.isInteger(message.exitCode) ? message.exitCode : null,
+            confirmed: message.cleanupConfirmed !== false
+          });
         }
       };
-      const onError = (event) => closeWithError(terminalError('connection_error', event && event.message || 'Cloud terminal WebSocket error'));
+      const onError = (event) => {
+        if (this.state === 'closing') {
+          this._finishClosed({ reason: 'connection_error', confirmed: false });
+          return;
+        }
+        closeWithError(terminalError('connection_error', event && event.message || 'Cloud terminal WebSocket error'));
+      };
       const onClose = () => {
         if (generation !== this.generation || socket !== this.socket) return;
         const trailing = this.decoder.decode();
@@ -287,7 +331,7 @@ class TerminalTransport {
           closeWithError(terminalError('connection_closed', 'Connection to the cloud terminal was closed'));
           return;
         }
-        if (this.state !== 'closed' && this.state !== 'idle') this._finishClosed({ reason: 'connection_closed' });
+        if (this.state !== 'closed' && this.state !== 'idle') this._finishClosed({ reason: 'connection_closed', confirmed: false });
       };
       if (typeof socket.addEventListener === 'function') {
         socket.addEventListener('open', onOpen);
@@ -320,15 +364,23 @@ class TerminalTransport {
 
   _finishClosed(details) {
     const socket = this.socket;
+    const resolveClose = this.closeResolve;
+    const silent = this.closeSilent;
+    const result = Object.assign({ state: 'closed', confirmed: false }, details || {});
     this._clearTimers();
     this.socket = null;
+    this.closePromise = null;
+    this.closeResolve = null;
+    this.closeSilent = false;
     this._emitOutput(this.decoder.decode());
     this._emitOutput(this.streamDecoders.stdout.decode());
     this._emitOutput(this.streamDecoders.stderr.decode());
     this.state = 'closed';
     this.capabilities = null;
-    this._emitStatus(Object.assign({}, details || {}));
+    if (!silent) this._emitStatus(result);
+    this.sessionId = '';
     if (socket) { try { socket.close(); } catch (_) {} }
+    if (resolveClose) resolveClose(result);
   }
 
   write(data) {
@@ -351,23 +403,41 @@ class TerminalTransport {
     return { accepted: true };
   }
 
-  stop(reason, options = {}) {
+  async stop(reason, options = {}) {
+    if (this.state === 'closing' && this.closePromise) return this.closePromise;
     const socket = this.socket;
     const wasActive = this.state === 'connecting' || this.state === 'ready' || this.state === 'closing';
-    ++this.generation;
+    const closeReason = String(reason || 'close');
     this._clearTimers();
+    if (this.state === 'ready' && socket && socket.readyState === 1) {
+      this.state = 'closing';
+      this.closeSilent = options.silent === true;
+      if (!this.closeSilent) this._emitStatus({ reason: closeReason });
+      this.closePromise = new Promise((resolve) => { this.closeResolve = resolve; });
+      const closePromise = this.closePromise;
+      this.closeTimer = this.setTimer(() => {
+        if (this.state === 'closing' && socket === this.socket) {
+          this._finishClosed({ reason: 'close_timeout', confirmed: false });
+        }
+      }, this.closeTimeoutMs);
+      try {
+        socket.send(JSON.stringify({ type: 'terminal.close', reason: closeReason }));
+      } catch (_) {
+        this._finishClosed({ reason: 'close_send_failed', confirmed: false });
+      }
+      return closePromise;
+    }
+
+    ++this.generation;
     this.socket = null;
     const startError = this.startReject ? terminalError('start_cancelled', 'Cloud terminal start was cancelled') : null;
     if (startError) this._rejectStart(startError);
-    if (socket && socket.readyState === 1) {
-      try { socket.send(JSON.stringify({ type: 'terminal.close', reason: String(reason || 'close') })); } catch (_) {}
-    }
     if (socket) { try { socket.close(); } catch (_) {} }
     this.sessionId = '';
     this.capabilities = null;
     this.state = 'idle';
-    if (!options.silent && wasActive) this._emitStatus({ reason: String(reason || 'close') });
-    return { state: 'idle' };
+    if (!options.silent && wasActive) this._emitStatus({ reason: closeReason, confirmed: false });
+    return { state: 'idle', reason: closeReason, confirmed: !wasActive };
   }
 
   async dispose() {
@@ -381,6 +451,9 @@ module.exports = {
   normalizeTerminalUrl,
   cleanWorkspace,
   boundedDimension,
+  cleanSetupCommands,
   MAX_STDIN_CHARS,
-  MAX_STDIN_BYTES
+  MAX_STDIN_BYTES,
+  MAX_SETUP_COMMANDS,
+  MAX_SETUP_COMMAND_BYTES
 };

@@ -15,17 +15,20 @@ import (
 )
 
 type SessionContext struct {
-	UserID        string
-	WorkspaceKind string
-	TeamID        string
-	ProjectID     string
-	Branch        string
-	FolderKey     string
-	RuntimeID     string
-	LanguageID    string
-	RemoteRoot    string
-	PersistDir    string
-	Release       func()
+	UserID         string
+	WorkspaceKind  string
+	TeamID         string
+	ProjectID      string
+	Branch         string
+	FolderKey      string
+	RuntimeID      string
+	LanguageID     string
+	RemoteRoot     string
+	PersistDir     string
+	DependencyRoot string
+	DependencyEnv  map[string]string
+	ProcessContext context.Context
+	Release        func()
 }
 
 func (c SessionContext) Owner() (string, string) {
@@ -407,9 +410,27 @@ func (m *Manager) Start(sessionContext SessionContext) (*Session, error) {
 	}
 	defer m.finishReservation(sessionContext.UserID, key)
 
-	processCtx, cancel := context.WithTimeout(m.ctx, m.opts.MaxSession)
+	processParent := sessionContext.ProcessContext
+	if processParent == nil {
+		processParent = m.ctx
+	}
+	processCtx, timeoutCancel := context.WithTimeout(processParent, m.opts.MaxSession)
+	stopManagerCancellation := context.AfterFunc(m.ctx, timeoutCancel)
+	cancel := func() {
+		stopManagerCancellation()
+		timeoutCancel()
+	}
 	id := randomID()
-	process, err := m.starter.Start(processCtx, LaunchSpec{SessionID: id, UserID: sessionContext.UserID, Workspace: sessionContext.RemoteRoot, PersistDir: sessionContext.PersistDir, Adapter: spec, MemoryLimit: m.opts.MemoryLimit, CPULimit: m.opts.CPULimit, NetworkEnable: m.opts.NetworkEnable})
+	dependencyEnv := make(map[string]string, len(sessionContext.DependencyEnv))
+	for key, value := range sessionContext.DependencyEnv {
+		dependencyEnv[key] = value
+	}
+	process, err := m.starter.Start(processCtx, LaunchSpec{
+		SessionID: id, UserID: sessionContext.UserID, Workspace: sessionContext.RemoteRoot,
+		PersistDir: sessionContext.PersistDir, DependencyRoot: sessionContext.DependencyRoot,
+		DependencyEnv: dependencyEnv, Adapter: spec, MemoryLimit: m.opts.MemoryLimit,
+		CPULimit: m.opts.CPULimit, NetworkEnable: m.opts.NetworkEnable,
+	})
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("start managed debug adapter: %w", err)
@@ -428,6 +449,13 @@ func (m *Manager) Start(sessionContext SessionContext) (*Session, error) {
 	m.sessions[key] = session
 	m.mu.Unlock()
 	go session.readLoop()
+	go func() {
+		select {
+		case <-processCtx.Done():
+			session.Stop()
+		case <-session.Done():
+		}
+	}()
 	return session, nil
 }
 
@@ -472,6 +500,17 @@ func (m *Manager) StopUser(userID string) error {
 		return nil
 	}
 	return stopAndWait(m.snapshot(func(session *Session) bool { return session.Context.UserID == userID }), 7*time.Second)
+}
+
+func (m *Manager) StopUserWorkspace(userID, folderKey string) error {
+	if m == nil {
+		return nil
+	}
+	userID = strings.TrimSpace(userID)
+	folderKey = strings.TrimSpace(folderKey)
+	return stopAndWait(m.snapshot(func(session *Session) bool {
+		return session.Context.TeamID == "" && session.Context.UserID == userID && session.Context.FolderKey == folderKey
+	}), 7*time.Second)
 }
 
 func (m *Manager) StopUserOwner(userID, ownerKind, ownerID string) error {

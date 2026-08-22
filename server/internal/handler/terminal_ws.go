@@ -17,11 +17,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"bobocloud-server/internal/auth"
 	"bobocloud-server/internal/config"
+	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/personalcache"
 
 	"github.com/gorilla/websocket"
 )
@@ -76,13 +79,14 @@ type terminalWorkspaceRequest struct {
 }
 
 type terminalStartMessage struct {
-	Protocol  int                      `json:"protocol,omitempty"`
-	Type      string                   `json:"type"`
-	Token     string                   `json:"token,omitempty"`
-	RuntimeID string                   `json:"runtimeId,omitempty"`
-	Workspace terminalWorkspaceRequest `json:"workspace"`
-	Cols      int                      `json:"cols,omitempty"`
-	Rows      int                      `json:"rows,omitempty"`
+	Protocol      int                      `json:"protocol,omitempty"`
+	Type          string                   `json:"type"`
+	Token         string                   `json:"token,omitempty"`
+	RuntimeID     string                   `json:"runtimeId,omitempty"`
+	Workspace     terminalWorkspaceRequest `json:"workspace"`
+	SetupCommands []string                 `json:"setupCommands,omitempty"`
+	Cols          int                      `json:"cols,omitempty"`
+	Rows          int                      `json:"rows,omitempty"`
 }
 
 type terminalClientMessage struct {
@@ -278,6 +282,40 @@ func reportTerminalReadError(done <-chan struct{}, errors chan<- error, err erro
 	}
 }
 
+func readTerminalClientMessages(conn *websocket.Conn, writer *terminalWriter, sessionReady *atomic.Bool, cancelSetup context.CancelFunc, done <-chan struct{}, messages chan<- terminalClientMessage, readErrs chan<- error) {
+	defer close(messages)
+	for {
+		_, payload, readErr := conn.ReadMessage()
+		if readErr != nil {
+			if sessionReady == nil || !sessionReady.Load() {
+				cancelSetup()
+			}
+			reportTerminalReadError(done, readErrs, readErr)
+			return
+		}
+		if !writer.budget.allow(len(payload)) {
+			if sessionReady == nil || !sessionReady.Load() {
+				cancelSetup()
+			}
+			reportTerminalReadError(done, readErrs, errTerminalBandwidth)
+			return
+		}
+		var message terminalClientMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			continue
+		}
+		if (message.Type == "terminal.close" || message.Type == "terminal.cancel") && (sessionReady == nil || !sessionReady.Load()) {
+			// Before terminal.ready there is no session loop consuming controls.
+			// Cancel preparation immediately so a closed client cannot retain a
+			// cache writer while dependency preparation or container acquisition waits.
+			cancelSetup()
+		}
+		if !enqueueTerminalClientMessage(done, messages, message) {
+			return
+		}
+	}
+}
+
 type terminalWorkspaceResolution struct {
 	root         string
 	activityKey  string
@@ -387,8 +425,10 @@ func terminalShellCommand(ctx context.Context, containerID, workspaceDir string,
 	if usePTY {
 		// All values here are static server-owned strings. Runtime identity and
 		// workspace paths were resolved before this point and never enter shell
-		// text. script provides a pragmatic in-container PTY for common images.
-		command = "if command -v bash >/dev/null 2>&1; then exec script -qefc 'bash --noprofile --norc -i' /dev/null; else exec script -qefc 'sh -i' /dev/null; fi"
+		// text. script provides a pragmatic in-container PTY for common images;
+		// stty must run inside that same PTY so carriage-return progress output
+		// uses the xterm dimensions supplied during the handshake.
+		command = "if command -v bash >/dev/null 2>&1; then exec script -qefc 'stty cols \"$COLUMNS\" rows \"$LINES\" 2>/dev/null || true; exec bash --noprofile --norc -i' /dev/null; else exec script -qefc 'stty cols \"$COLUMNS\" rows \"$LINES\" 2>/dev/null || true; exec sh -i' /dev/null; fi"
 	} else {
 		command = "if command -v bash >/dev/null 2>&1; then exec bash --noprofile --norc -i; else exec sh -i; fi"
 	}
@@ -625,6 +665,65 @@ func stopTerminalShellBeforeStreaming(shell *exec.Cmd, stdin io.Closer, containe
 	}
 }
 
+func combineTerminalResourceReleases(releases ...func()) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			for _, release := range releases {
+				if release != nil {
+					release()
+				}
+			}
+		})
+	}
+}
+
+type terminalContainerDiscarder interface {
+	DiscardForUserAndWait(containerID, userID string) error
+}
+
+const (
+	terminalCleanupInitialRetry = 250 * time.Millisecond
+	terminalCleanupMaxRetry     = 30 * time.Second
+)
+
+// retryTerminalContainerCleanup retains ownership of the cache release until
+// Docker confirms that the container is absent or stopped. The capped backoff
+// gives a temporarily unavailable daemon a continuing owner without spinning or
+// turning the cache lease into ownerless, permanently active state.
+func retryTerminalContainerCleanup(discarder terminalContainerDiscarder, containerID, userID string, release func(), wait func(time.Duration)) {
+	if discarder == nil {
+		return
+	}
+	if wait == nil {
+		wait = time.Sleep
+	}
+	delay := terminalCleanupInitialRetry
+	for attempt := 1; ; attempt++ {
+		wait(delay)
+		if err := discarder.DiscardForUserAndWait(containerID, userID); err == nil {
+			if release != nil {
+				release()
+			}
+			slog.Info("Deferred terminal container cleanup completed", "container_id", containerID, "user_id", userID, "attempt", attempt)
+			return
+		} else if attempt == 1 || attempt%10 == 0 {
+			slog.Warn("Deferred terminal container cleanup is still pending", "container_id", containerID, "user_id", userID, "attempt", attempt, "error", err)
+		}
+		if delay < terminalCleanupMaxRetry {
+			delay *= 2
+			if delay > terminalCleanupMaxRetry {
+				delay = terminalCleanupMaxRetry
+			}
+		}
+	}
+}
+
+func handoffTerminalContainerCleanup(discarder terminalContainerDiscarder, containerID, userID string, release func(), cleanupErr error) {
+	slog.Warn("Terminal cleanup was not immediately confirmed; retaining resource leases for background cleanup", "container_id", containerID, "user_id", userID, "error", cleanupErr)
+	go retryTerminalContainerCleanup(discarder, containerID, userID, release, time.Sleep)
+}
+
 // HandleTerminalWebSocket is the canonical `/terminal` endpoint. Main keeps
 // `/term` as a routing alias only for internal backwards compatibility.
 func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -656,6 +755,10 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 		_ = writer.control(map[string]any{"type": "terminal.error", "code": "unsupported_protocol", "message": "unsupported terminal protocol version"})
 		return
 	}
+	if err := validateRunArgs(start.SetupCommands); err != nil {
+		_ = writer.control(map[string]any{"type": "terminal.error", "code": "invalid_setup_commands", "message": "invalid setupCommands: " + err.Error()})
+		return
+	}
 	// The start deadline applies only to the initial capability/auth frame. Idle
 	// enforcement below is activity-aware, so it must not inherit this short
 	// WebSocket read deadline once a valid terminal.start has arrived.
@@ -679,13 +782,29 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 		_ = writer.control(map[string]any{"type": "terminal.error", "code": "docker_unavailable", "message": "Docker terminal support is unavailable"})
 		return
 	}
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(r.Context(), limits.MaxSession)
+	defer cancel()
+	readMessages := make(chan terminalClientMessage, 1)
+	readErrs := make(chan error, 1)
+	readerDone := make(chan struct{})
+	var readerStop sync.Once
+	stopReader := func() {
+		readerStop.Do(func() {
+			close(readerDone)
+			_ = conn.SetReadDeadline(time.Now())
+		})
+	}
+	defer stopReader()
+	var sessionReady atomic.Bool
+	go readTerminalClientMessages(conn, writer, &sessionReady, cancel, readerDone, readMessages, readErrs)
 
-	workspace, err := h.resolveTerminalWorkspace(r.Context(), user.ID, start.Workspace)
+	workspace, err := h.resolveTerminalWorkspace(ctx, user.ID, start.Workspace)
 	if err != nil {
 		_ = writer.control(map[string]any{"type": "terminal.error", "code": "workspace_denied", "message": err.Error()})
 		return
 	}
-	var releaseActivity func()
+	pendingResourceRelease := combineTerminalResourceReleases()
 	if h.Lifecycle != nil {
 		// Team workspaces intentionally use an empty generic key. The
 		// collaboration lease below is the exact team/project authority; this
@@ -695,47 +814,88 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 			_ = writer.control(map[string]any{"type": "terminal.error", "code": "workspace_in_use", "message": leaseErr.Error()})
 			return
 		}
-		releaseActivity = activity.Release
+		pendingResourceRelease = combineTerminalResourceReleases(activity.Release)
 	}
-	if releaseActivity == nil {
-		releaseActivity = func() {}
-	}
-	defer releaseActivity()
+	defer func() { pendingResourceRelease() }()
 	if workspace.teamID != "" {
 		activity, leaseErr := h.Collaboration.AcquireProjectActivity(user.ID, workspace.teamID, workspace.projectID)
 		if leaseErr != nil {
 			_ = writer.control(map[string]any{"type": "terminal.error", "code": "workspace_in_use", "message": leaseErr.Error()})
 			return
 		}
-		defer activity.Release()
+		pendingResourceRelease = combineTerminalResourceReleases(activity.Release, pendingResourceRelease)
 	}
 
-	started := time.Now()
-	ctx, cancel := context.WithTimeout(r.Context(), limits.MaxSession)
-	defer cancel()
-	containerID, err := h.DockerPool.AcquireForUser(ctx, user.ID, runtime.DockerImage, nil)
+	var personalLease *personalcache.Lease
+	var persistOperation *personalcache.Operation
+	if workspace.teamID == "" && h.PersonalCache != nil {
+		workspaceID := lsp.StableWorkspaceIdentity(user.ID, "", "", "", workspace.activityKey)
+		personalLease, err = h.PersonalCache.Prepare(ctx, personalcache.Request{
+			UserID: user.ID, WorkspaceID: workspaceID, WorkspaceName: start.Workspace.FolderName,
+			RuntimeID: runtime.RuntimeID, RuntimeFingerprint: personalCacheRuntimeFingerprint(runtime.RuntimeID, runtime.DockerImage), Language: runtime.Language, WorkspaceRoot: workspace.root,
+			SetupCommands: start.SetupCommands,
+			QuotaBytes:    userQuotaBytes(h.UserStore, user.ID),
+		})
+		if err != nil {
+			_ = writer.control(map[string]any{"type": "terminal.error", "code": "storage_quota", "message": err.Error()})
+			return
+		}
+		if personalLease != nil {
+			pendingResourceRelease = combineTerminalResourceReleases(personalLease.Release, pendingResourceRelease)
+			if guard := personalLease.StartGuard(ctx); guard != nil {
+				ctx = guard.Context
+			}
+		}
+	}
+	if personalLease == nil && h.PersonalCache != nil {
+		persistOperation, err = h.PersonalCache.BeginOperation(ctx, user.ID, userQuotaBytes(h.UserStore, user.ID))
+		if err != nil {
+			_ = writer.control(map[string]any{"type": "terminal.error", "code": "storage_quota", "message": err.Error()})
+			return
+		}
+		if persistOperation != nil {
+			pendingResourceRelease = combineTerminalResourceReleases(persistOperation.Release, pendingResourceRelease)
+			ctx = persistOperation.Context()
+		}
+	}
+	var containerID string
+	if personalLease != nil {
+		containerID, err = h.DockerPool.AcquireForUserWithContext(ctx, user.ID, runtime.DockerImage, personalLease.ContainerKey, personalLease.DockerMounts, personalLease.DockerEnv, nil)
+	} else {
+		containerID, err = h.DockerPool.AcquireForUser(ctx, user.ID, runtime.DockerImage, nil)
+	}
 	if err != nil {
 		_ = writer.control(map[string]any{"type": "terminal.error", "code": "container_unavailable", "message": "unable to acquire a terminal container"})
 		slog.Warn("Terminal container acquisition failed", "user_id", user.ID, "runtime", runtimeID, "error", err)
 		return
 	}
 	containerReleased := false
-	quarantineContainer := false
 	defer func() {
 		if !containerReleased {
-			if quarantineContainer {
-				h.DockerPool.DiscardForUser(containerID, user.ID)
-			} else {
-				h.DockerPool.ReleaseForUser(containerID, user.ID)
+			if cleanupErr := h.DockerPool.DiscardForUserAndWait(containerID, user.ID); cleanupErr != nil {
+				resourceRelease := pendingResourceRelease
+				pendingResourceRelease = combineTerminalResourceReleases()
+				handoffTerminalContainerCleanup(h.DockerPool, containerID, user.ID, resourceRelease, cleanupErr)
 			}
 		}
 	}()
 
+	copyStarted := time.Now()
 	tempDir, err := copyTerminalWorkspace(ctx, workspace.root, containerID, limits)
+	if h.Metrics != nil {
+		h.Metrics.Observe("workspace.copy.terminal", time.Since(copyStarted))
+	}
 	if err != nil {
 		_ = writer.control(map[string]any{"type": "terminal.error", "code": "workspace_copy_failed", "message": "unable to prepare the terminal workspace"})
 		slog.Warn("Terminal workspace copy failed", "user_id", user.ID, "runtime", runtimeID, "error", err)
 		return
+	}
+	if personalLease != nil && personalLease.DockerEnv["BOBOCLOUD_NODE_MODULES"] != "" {
+		if _, stderr, code, linkErr := h.DockerPool.Exec(ctx, containerID, []string{"ln", "-sfn", personalLease.DockerEnv["BOBOCLOUD_NODE_MODULES"], terminalWorkspaceDir + "/node_modules"}, "/"); linkErr != nil || code != 0 {
+			_ = writer.control(map[string]any{"type": "terminal.error", "code": "dependency_mount_failed", "message": "unable to attach project dependencies"})
+			slog.Warn("Terminal dependency directory attach failed", "user_id", user.ID, "stderr", stderr, "error", linkErr)
+			return
+		}
 	}
 	defer os.RemoveAll(tempDir)
 
@@ -777,9 +937,9 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 		cancel()
 		inputQueue.Stop()
 		stopTerminalShellBeforeStreaming(shell, stdin, containerID)
-		quarantineContainer = true
 		return
 	}
+	sessionReady.Store(true)
 
 	type shellResult struct{ err error }
 	shellDone := make(chan shellResult, 1)
@@ -811,31 +971,6 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 		outputWG.Wait()
 		err := shell.Wait()
 		shellDone <- shellResult{err: err}
-	}()
-
-	readMessages := make(chan terminalClientMessage, 1)
-	readErrs := make(chan error, 1)
-	readerDone := make(chan struct{})
-	go func() {
-		defer close(readMessages)
-		for {
-			_, payload, readErr := conn.ReadMessage()
-			if readErr != nil {
-				reportTerminalReadError(readerDone, readErrs, readErr)
-				return
-			}
-			if !writer.budget.allow(len(payload)) {
-				reportTerminalReadError(readerDone, readErrs, errTerminalBandwidth)
-				return
-			}
-			var message terminalClientMessage
-			if err := json.Unmarshal(payload, &message); err != nil {
-				continue
-			}
-			if !enqueueTerminalClientMessage(readerDone, readMessages, message) {
-				return
-			}
-		}
 	}()
 
 	reason := "process_exited"
@@ -914,7 +1049,10 @@ sessionLoop:
 				break sessionLoop
 			}
 		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if (personalLease != nil && personalLease.StartGuard(ctx).Err() != nil) || (persistOperation != nil && persistOperation.Err() != nil) {
+				reason = "storage_quota"
+				_ = writer.control(map[string]any{"type": "terminal.error", "code": "storage_quota", "message": "personal storage quota was exceeded"})
+			} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				reason = "max_duration"
 				_ = writer.control(map[string]any{"type": "terminal.error", "code": "max_duration", "message": "terminal session reached its maximum duration"})
 			} else if reason == "process_exited" {
@@ -928,8 +1066,7 @@ sessionLoop:
 	// Wake the sole WebSocket reader before waiting for the process. The shell
 	// context controls the Docker CLI; container kill below also stops any exec
 	// process that outlives its disconnected CLI client.
-	close(readerDone)
-	_ = conn.SetReadDeadline(time.Now())
+	stopReader()
 	if forceContainerStop {
 		if !killTerminalContainer(containerID) {
 			slog.Warn("Terminal container force-stop was not confirmed; discarding it", "container_id", containerID, "user_id", user.ID)
@@ -945,23 +1082,31 @@ sessionLoop:
 		}
 	}
 
-	// Terminal sessions intentionally use a snapshot. The Electron workspace is
-	// local-source-of-truth and rclone sync owns all cloud mutations, so shell
-	// edits are discarded rather than silently overwriting a newer local file.
-	if forceContainerStop {
-		// Closing, cancelling, or timing out an attached docker exec has no
-		// server-side per-exec kill API. Always discard that container instead
-		// of pooling it, including when shell.Wait times out, so no live exec or
-		// partially cleaned workspace can leak into a later terminal session.
-		h.DockerPool.DiscardForUser(containerID, user.ID)
-	} else {
-		h.DockerPool.ReleaseForUser(containerID, user.ID)
+	// An interactive shell can leave descendants behind even after the shell
+	// itself exits (for example `pip install ... &; exit`). Its project cache is
+	// also a live bind mount. Never return a terminal-used container to the idle
+	// pool: destroy it before releasing the cache lease so no background writer
+	// or stale mount can survive as an apparently inactive cache entry.
+	cleanupConfirmed := true
+	if cleanupErr := h.DockerPool.DiscardForUserAndWait(containerID, user.ID); cleanupErr != nil {
+		cleanupConfirmed = false
+		resourceRelease := pendingResourceRelease
+		pendingResourceRelease = combineTerminalResourceReleases()
+		handoffTerminalContainerCleanup(h.DockerPool, containerID, user.ID, resourceRelease, cleanupErr)
 	}
 	containerReleased = true
+	// terminal.exit is the client's cleanup acknowledgement. Release every
+	// cache and lifecycle lease before sending it so a cache delete issued after
+	// terminalStop resolves cannot race a stale "currently in use" state.
+	if cleanupConfirmed {
+		pendingResourceRelease()
+	} else {
+		reason = "cleanup_pending"
+	}
 	exitCode := terminalExitCode(result.err)
 	_ = writer.control(map[string]any{
 		"type": "terminal.exit", "reason": reason, "exitCode": exitCode,
-		"durationMs": time.Since(started).Milliseconds(),
+		"durationMs": time.Since(started).Milliseconds(), "cleanupConfirmed": cleanupConfirmed,
 	})
 	slog.Info("Terminal session ended", "session_id", sessionID, "user_id", user.ID, "runtime", runtimeID, "reason", reason, "exit_code", exitCode)
 }

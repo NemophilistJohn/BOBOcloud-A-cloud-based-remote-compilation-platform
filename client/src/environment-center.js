@@ -16,6 +16,7 @@
   var localManifestCache = null;
   var localManifestWorkspace = '';
   var fileEventUnsubscribe = null;
+  var markerEventDisposable = null;
   var lastWorkbenchActivity = '';
 
   var MANIFEST_RULES = [
@@ -183,6 +184,7 @@
       },
       manifests: manifests,
       packages: { declared: [], installed: [], missing: [], unknown: [] },
+      dependencyCache: { scope: 'local', status: 'unavailable' },
       consistency: {
         status: overall,
         languageRuntime: { status: runtimeMatch === false ? 'mismatch' : (runtimeMatch === true ? 'ready' : 'unknown'), detail: runtimeMatch === false ? t('Selected runtime does not match the active language.') : (runtimeMatch === true ? t('Runtime matches the active language.') : t('Select a cloud runtime to verify compatibility.')) },
@@ -209,7 +211,8 @@
       language: language,
       teamId: current && current.teamId || '',
       projectId: current && current.projectId || '',
-      branch: current && current.branch || ''
+      branch: current && current.branch || '',
+      setupCommands: Array.isArray(S.setupCommands) ? S.setupCommands.slice() : []
     };
   }
 
@@ -233,6 +236,7 @@
     merged.language = Object.assign({}, local.language, remote.language || {});
     merged.runtime = Object.assign({}, local.runtime, remote.runtime || {});
     merged.packages = Object.assign({}, local.packages, remote.packages || {});
+    merged.dependencyCache = Object.assign({}, local.dependencyCache, remote.dependencyCache || {});
     merged.consistency = Object.assign({}, local.consistency, remote.consistency || {});
     // The renderer owns the live transport state. A healthy dependency view on
     // the server must not hide a disconnected or local-only language service.
@@ -254,6 +258,74 @@
     merged.activity = mergeActivity(remote.activity);
     merged.source = remote.schema === 'project-environment/v1' ? 'cloud' : local.source;
     return merged;
+  }
+
+  function unresolvedPythonImport(problem) {
+    if (!problem || ['error', 'warning'].indexOf(String(problem.severity || '').toLowerCase()) < 0) return '';
+    var message = String(problem.message || '');
+    var code = String(problem.code || '').toLowerCase();
+    var match = message.match(/\bImport\s+["']([^"']+)["']\s+could not be resolved\b/i);
+    if (!match && code !== 'reportmissingimports') return '';
+    var imported = match ? String(match[1] || '').trim() : '';
+    if (!imported || imported.charAt(0) === '.') return '';
+    return imported.split('.')[0].trim();
+  }
+
+  function mergeLiveDependencyDiagnostics(value, problems) {
+    if (!value || canonicalLanguage(value.language && value.language.id) !== 'python') return value;
+    var names = [];
+    var seen = Object.create(null);
+    (Array.isArray(problems) ? problems : []).forEach(function(problem) {
+      var name = unresolvedPythonImport(problem);
+      var key = name.toLowerCase();
+      if (!name || seen[key]) return;
+      seen[key] = true;
+      names.push(name);
+    });
+    if (!names.length) return value;
+
+    var packages = Object.assign({}, value.packages || {});
+    var missing = Array.isArray(packages.missing) ? packages.missing.slice() : [];
+    var dependencyCache = value.dependencyCache || {};
+    var dependencyRuntime = value.consistency && value.consistency.dependencyRuntime || {};
+    var declared = Array.isArray(packages.declared) ? packages.declared : [];
+    var installed = Array.isArray(packages.installed) ? packages.installed : [];
+    var exactInstalled = installed.length > 0 && installed.every(function(item) { return item && item.trust === 'exact'; });
+    var authoritative = declared.length > 0 && ['aligned', 'mismatch'].indexOf(String(dependencyRuntime.status || '').toLowerCase()) >= 0 &&
+      (dependencyCache.inventoryStatus === 'ready' || exactInstalled);
+    missing.forEach(function(item) {
+      var name = String(item && item.name || '').toLowerCase();
+      if (name) seen[name] = true;
+    });
+    if (!authoritative) {
+      names.forEach(function(name) {
+        if (missing.some(function(item) { return String(item && item.name || '').toLowerCase() === name.toLowerCase(); })) return;
+        missing.push({
+          name: name,
+          constraint: '',
+          source: 'language-service',
+          reason: t('Import could not be resolved')
+        });
+      });
+    }
+    packages.missing = missing;
+
+    var consistency = Object.assign({}, value.consistency || {});
+    var diagnosticDetail = t('{count} unresolved dependency imports were reported by the language service.', { count: names.length });
+    if (authoritative) {
+      if (normalizeHealth(consistency.status) === 'ready') consistency.status = 'unknown';
+    } else {
+      consistency.status = 'mismatch';
+      consistency.dependencyRuntime = {
+        status: 'mismatch',
+        detail: diagnosticDetail
+      };
+    }
+    consistency.lspDependencies = {
+      status: 'mixed',
+      detail: diagnosticDetail
+    };
+    return Object.assign({}, value, { packages: packages, consistency: consistency });
   }
 
   async function readLocalManifests() {
@@ -416,6 +488,10 @@
       setVisibleState('loading');
       return;
     }
+    var problems = BOBO.taskProblemMatcher && typeof BOBO.taskProblemMatcher.getAllProblems === 'function'
+      ? BOBO.taskProblemMatcher.getAllProblems()
+      : [];
+    value = mergeLiveDependencyDiagnostics(value, problems);
     setVisibleState('ready');
     manifestPaths = Object.create(null);
     (value.manifests || []).forEach(function(item) {
@@ -434,6 +510,28 @@
     if (byId('environment-context-project')) byId('environment-context-project').textContent = value.workspace && value.workspace.kind === 'team'
       ? [value.workspace.name || value.workspace.projectId, value.workspace.branch].filter(Boolean).join(' / ')
       : projectName;
+    var dependencyCache = value.dependencyCache || {};
+    var scopeLabels = {
+      'project-lock': t('Project and lock digest'),
+      'legacy-user': t('Legacy user cache'),
+      'local': t('Local runtime'),
+      'none': t('Not available')
+    };
+    var cacheStatusLabels = {
+      hit: t('Cached'),
+      miss: t('Not materialized'),
+      legacy: t('Legacy'),
+      error: t('Issue detected'),
+      unavailable: t('Not available')
+    };
+    if (byId('environment-context-dependency-scope')) byId('environment-context-dependency-scope').textContent = scopeLabels[dependencyCache.scope] || dependencyCache.scope || t('Not reported');
+    if (byId('environment-context-cache-status')) byId('environment-context-cache-status').textContent = cacheStatusLabels[dependencyCache.status] || dependencyCache.status || t('Not reported');
+    if (byId('environment-context-dependency-digest')) {
+      var digest = dependencyCache.digest ? String(dependencyCache.digest).slice(0, 16) : '--';
+      var source = dependencyCache.source ? t(String(dependencyCache.source)) : '';
+      byId('environment-context-dependency-digest').textContent = [source, digest].filter(Boolean).join(' / ');
+      byId('environment-context-dependency-digest').title = dependencyCache.digest || '';
+    }
     var overallElement = byId('environment-overall-status');
     if (overallElement) { overallElement.dataset.status = overall; overallElement.textContent = statusLabel(overall); }
 
@@ -646,6 +744,11 @@
     global.addEventListener('bobo:language-changed', function() {
       if (snapshot) render(snapshot);
     });
+    if (global.monaco && global.monaco.editor && typeof global.monaco.editor.onDidChangeMarkers === 'function') {
+      markerEventDisposable = global.monaco.editor.onDidChangeMarkers(function() {
+        if (snapshot) render(snapshot);
+      });
+    }
     if (BOBO.environmentActivity && BOBO.environmentActivity.subscribe) {
       BOBO.environmentActivity.subscribe(function(event) {
         if (event && event.kind === 'context') snapshot = null;
@@ -678,7 +781,10 @@
     scheduleRefresh: scheduleRefresh,
     runAction: runAction,
     getSnapshot: function() { return snapshot; },
-    dispose: function() { if (typeof fileEventUnsubscribe === 'function') fileEventUnsubscribe(); }
+    dispose: function() {
+      if (typeof fileEventUnsubscribe === 'function') fileEventUnsubscribe();
+      if (markerEventDisposable && typeof markerEventDisposable.dispose === 'function') markerEventDisposable.dispose();
+    }
   };
 
   if (typeof module !== 'undefined' && module.exports) {
@@ -687,7 +793,9 @@
       recognizeManifests: recognizeManifests,
       languageMatchesRuntime: languageMatchesRuntime,
       normalizeHealth: normalizeHealth,
-      mergeServerSnapshot: mergeServerSnapshot
+      mergeServerSnapshot: mergeServerSnapshot,
+      unresolvedPythonImport: unresolvedPythonImport,
+      mergeLiveDependencyDiagnostics: mergeLiveDependencyDiagnostics
     };
   }
 })(typeof window !== 'undefined' ? window : globalThis);

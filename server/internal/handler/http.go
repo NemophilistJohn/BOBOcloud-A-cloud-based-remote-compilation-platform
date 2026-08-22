@@ -24,7 +24,9 @@ import (
 	"bobocloud-server/internal/dap"
 	"bobocloud-server/internal/lifecycle"
 	"bobocloud-server/internal/lsp"
+	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/session"
 	"bobocloud-server/internal/storage"
 )
@@ -64,7 +66,9 @@ type HTTPHandler struct {
 	DAP              *dap.Manager            // 独立远程调试适配器会话
 	DependencyViews  *lsp.DependencyRegistry
 	Lifecycle        *lifecycle.Manager // 运行/终端与破坏性存储操作的用户级互斥
-	Readiness        ReadinessProbe     // 无认证 /readyz 的依赖检查；由 main 在组件装配后注入
+	PersonalCache    *personalcache.Manager
+	Metrics          *metrics.Registry
+	Readiness        ReadinessProbe // 无认证 /readyz 的依赖检查；由 main 在组件装配后注入
 
 	// SetUserLimit 把用户容器配额变更同步到 Docker 池（可为 nil，仅重启生效）
 	SetUserLimit func(userID string, limit int)
@@ -74,7 +78,8 @@ type HTTPHandler struct {
 	// failures are logged because the account deletion itself cannot be rolled back.
 	OnUserDeleted func(userID string) error
 	// OnBuildCacheCleared releases idle Docker bind mounts after manual cache deletion.
-	OnBuildCacheCleared func()
+	OnBuildCacheCleared    func()
+	OnPersonalCacheCleared func()
 
 	// 内部状态
 	authEnabled    bool // 多人模式开关（config.IsMultiUser()）
@@ -309,6 +314,8 @@ func (h *HTTPHandler) routeRequest(w http.ResponseWriter, r *http.Request, req *
 		h.handleDeleteProject(w, r, req)
 	case "getStorageInfo":
 		h.handleGetStorageInfo(w, r)
+	case "getPerformanceMetrics":
+		h.handlePerformanceMetrics(w, r)
 	case "listCacheModules":
 		h.handleListCacheModules(w, r)
 	case "deleteCacheModule":
@@ -521,6 +528,10 @@ func (h *HTTPHandler) handleRun(w http.ResponseWriter, r *http.Request, req *mod
 	}
 	if err := validateRunArgs(req.RunArgs); err != nil {
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid runArgs: " + err.Error()})
+		return
+	}
+	if err := validateRunArgs(req.SetupCommands); err != nil {
+		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid setupCommands: " + err.Error()})
 		return
 	}
 	if !taskMode && req.BuildTarget != "" {
@@ -789,8 +800,8 @@ func validateRunArgs(args []string) error {
 		return fmt.Errorf("too many args (%d > %d)", len(args), maxArgs)
 	}
 	for _, a := range args {
-		if len(a) > maxArgLen {
-			return fmt.Errorf("arg too long (%d > %d chars)", len(a), maxArgLen)
+		if len([]byte(a)) > maxArgLen {
+			return fmt.Errorf("arg too long (%d > %d bytes)", len([]byte(a)), maxArgLen)
 		}
 		if strings.ContainsAny(a, "\x00\r\n") {
 			return fmt.Errorf("arg contains invalid control characters")
@@ -967,8 +978,24 @@ func (h *HTTPHandler) handleTerminal(w http.ResponseWriter, r *http.Request, req
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(h.Config.DockerTerminalTimeout)*time.Second)
 	defer cancel()
+	var persistOperation *personalcache.Operation
+	var err error
+	if h.PersonalCache != nil {
+		persistOperation, err = h.PersonalCache.BeginOperation(ctx, userID, userQuotaBytes(h.UserStore, userID))
+		if err != nil {
+			writeJSON(w, http.StatusInsufficientStorage, model.Response{Success: false, Error: err.Error()})
+			return
+		}
+		if persistOperation != nil {
+			defer persistOperation.Release()
+			ctx = persistOperation.Context()
+		}
+	}
 
 	stdout, stderr, exitCode, err := h.Terminal(ctx, userID, runtimeID, req.Command)
+	if persistOperation != nil && persistOperation.Err() != nil {
+		err = persistOperation.Err()
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, model.Response{
 			Success: false,
@@ -1354,6 +1381,12 @@ func (h *HTTPHandler) handleDeleteProject(w http.ResponseWriter, r *http.Request
 	if folderKey == "" {
 		folderKey = req.FolderName
 	}
+	if userID != "" {
+		if err := h.stopUserWorkspaceServices(userID, folderKey); err != nil {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
+			return
+		}
+	}
 	if h.Lifecycle != nil && userID != "" {
 		mutation, leaseErr := h.Lifecycle.BeginWorkspaceMutation(userID, folderKey)
 		if leaseErr != nil {
@@ -1362,14 +1395,8 @@ func (h *HTTPHandler) handleDeleteProject(w http.ResponseWriter, r *http.Request
 		}
 		defer mutation.Release()
 	}
-	if h.LSP != nil && userID != "" {
-		if err := h.LSP.StopUserWorkspace(userID, folderKey); err != nil {
-			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
-			return
-		}
-	}
+	workspaceID := lsp.StableWorkspaceIdentity(userID, "", "", "", folderKey)
 	if h.authEnabled && userID != "" {
-		workspaceID := lsp.StableWorkspaceIdentity(userID, "", "", "", folderKey)
 		inspection, inspectErr := lsp.InspectPersonalDependencies(h.Config.DataDir, userID)
 		if inspectErr != nil {
 			writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: inspectErr.Error()})
@@ -1384,6 +1411,15 @@ func (h *HTTPHandler) handleDeleteProject(w http.ResponseWriter, r *http.Request
 				writeJSON(w, status, model.Response{Success: false, Error: err.Error()})
 				return
 			}
+		}
+	}
+	if h.PersonalCache != nil && userID != "" {
+		if err := h.PersonalCache.DeleteWorkspace(userID, workspaceID); err != nil {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
+			return
+		}
+		if h.OnPersonalCacheCleared != nil {
+			h.OnPersonalCacheCleared()
 		}
 	}
 
@@ -1434,113 +1470,12 @@ var langLabels = map[string]string{
 	"go":       "Go",
 	"rust":     "Rust",
 	"java":     "Java",
+	"node":     "Node.js",
 	"analysis": "Analysis dependencies",
 	"other":    "Other",
 }
 
 const analysisDependencyCachePath = "@analysis-dependencies"
-
-// shouldDrillDown 判断某个 persist 子目录是否应该深入一层扫描具体库
-func shouldDrillDown(name string) bool {
-	switch name {
-	case "pip-packages":
-		return true
-	}
-	return false
-}
-
-// scanPipPackages 扫描 pip-packages 目录，返回各个 Python 包
-func scanPipPackages(basePath, relPath string) []model.CacheModule {
-	var modules []model.CacheModule
-	entries, err := os.ReadDir(basePath)
-	if err != nil {
-		return nil
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		// 跳过元数据和缓存目录
-		if name == "__pycache__" {
-			continue
-		}
-		if strings.HasSuffix(name, ".dist-info") || strings.HasSuffix(name, ".egg-info") {
-			continue
-		}
-		if strings.HasSuffix(name, ".pyc") {
-			continue
-		}
-		fullPath := filepath.Join(basePath, name)
-		size, files := dirSizeAndCount(fullPath)
-		modules = append(modules, model.CacheModule{
-			Name:      name,
-			Path:      relPath + "/" + name,
-			SizeBytes: size,
-			Files:     files,
-		})
-	}
-	return modules
-}
-
-// scanGoModules 扫描 go/pkg/mod 目录，返回各个 Go 模块
-func scanGoModules(persistDir string) []model.CacheModule {
-	modDir := filepath.Join(persistDir, "go", "pkg", "mod")
-	var modules []model.CacheModule
-	entries, err := os.ReadDir(modDir)
-	if err != nil {
-		return nil
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		fullPath := filepath.Join(modDir, name)
-		size, files := dirSizeAndCount(fullPath)
-		modules = append(modules, model.CacheModule{
-			Name:      name,
-			Path:      "go/pkg/mod/" + name,
-			SizeBytes: size,
-			Files:     files,
-		})
-	}
-	return modules
-}
-
-// scanCargoRegistry 扫描 cargo/registry/src 目录，返回各个 Rust crate
-func scanCargoRegistry(persistDir string) []model.CacheModule {
-	srcDir := filepath.Join(persistDir, "cargo", "registry", "src")
-	var modules []model.CacheModule
-	entries, err := os.ReadDir(srcDir)
-	if err != nil {
-		return nil
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		// cargo registry src 下有索引目录（如 index.crates.io-xxx），
-		// 再深一层才是各个 crate
-		indexDir := filepath.Join(srcDir, entry.Name())
-		crates, _ := os.ReadDir(indexDir)
-		for _, crate := range crates {
-			if !crate.IsDir() {
-				continue
-			}
-			crateName := crate.Name()
-			if crateName == ".cache" {
-				continue
-			}
-			fullPath := filepath.Join(indexDir, crateName)
-			size, files := dirSizeAndCount(fullPath)
-			modules = append(modules, model.CacheModule{
-				Name:      crateName,
-				Path:      "cargo/registry/src/" + entry.Name() + "/" + crateName,
-				SizeBytes: size,
-				Files:     files,
-			})
-		}
-	}
-	return modules
-}
 
 func (h *HTTPHandler) handleListCacheModules(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
@@ -1577,6 +1512,9 @@ func (h *HTTPHandler) handleListCacheModules(w http.ResponseWriter, r *http.Requ
 		"go-cache":     "go",
 		"cargo":        "rust",
 		"maven":        "java",
+		"gradle":       "java",
+		"npm-cache":    "node",
+		"npm-global":   "node",
 	}
 
 	if entries, err := os.ReadDir(persistDir); err == nil {
@@ -1585,6 +1523,9 @@ func (h *HTTPHandler) handleListCacheModules(w http.ResponseWriter, r *http.Requ
 				continue
 			}
 			name := entry.Name()
+			if name == "project-dependencies" {
+				continue
+			}
 			fullPath := filepath.Join(persistDir, name)
 			lang := topLangMap[name]
 			if lang == "" {
@@ -1592,52 +1533,40 @@ func (h *HTTPHandler) handleListCacheModules(w http.ResponseWriter, r *http.Requ
 			}
 			g := ensureGroup(lang)
 
-			if shouldDrillDown(name) {
-				// pip-packages: 深入扫描各个 Python 包
-				subModules := scanPipPackages(fullPath, name)
-				if len(subModules) > 0 {
-					g.modules = append(g.modules, subModules...)
-					for _, sm := range subModules {
-						g.sizeBytes += sm.SizeBytes
-					}
-				}
-			} else {
-				// 非深入目录：作为单个模块
-				size, files := dirSizeAndCount(fullPath)
-				g.modules = append(g.modules, model.CacheModule{
-					Name:      name,
-					Path:      name,
-					SizeBytes: size,
-					Files:     files,
-				})
-				g.sizeBytes += size
+			// Legacy stores are managed as coherent namespaces. Deleting only a
+			// Python import directory leaves dist-info behind, while deleting only
+			// a Go/Rust source subtree leaves indexes and archives behind.
+			size, files := dirSizeAndCount(fullPath)
+			lastUsed := int64(0)
+			if info, infoErr := entry.Info(); infoErr == nil {
+				lastUsed = info.ModTime().UTC().UnixMilli()
 			}
+			g.modules = append(g.modules, model.CacheModule{
+				Name: name, Path: name, SizeBytes: size, Files: files,
+				Kind: "legacy-cache", Language: lang, LastUsed: lastUsed,
+			})
+			g.sizeBytes += size
 		}
-
-		// Go: 额外扫描 go/pkg/mod 下的各个模块
-		goModDir := filepath.Join(persistDir, "go", "pkg", "mod")
-		if _, err := os.Stat(goModDir); err == nil {
-			goMods := scanGoModules(persistDir)
-			if len(goMods) > 0 {
-				g := ensureGroup("go")
-				g.modules = append(g.modules, goMods...)
-				for _, gm := range goMods {
-					g.sizeBytes += gm.SizeBytes
-				}
+	}
+	if h.PersonalCache != nil {
+		quotaBytes := userQuotaBytes(h.UserStore, userID)
+		for _, entry := range h.PersonalCache.Inspect(userID, quotaBytes).Entries {
+			language := entry.Language
+			if language == "" {
+				language = "other"
 			}
-		}
-
-		// Rust: 额外扫描 cargo/registry/src 下的各个 crate
-		cargoSrcDir := filepath.Join(persistDir, "cargo", "registry", "src")
-		if _, err := os.Stat(cargoSrcDir); err == nil {
-			crates := scanCargoRegistry(persistDir)
-			if len(crates) > 0 {
-				g := ensureGroup("rust")
-				g.modules = append(g.modules, crates...)
-				for _, cr := range crates {
-					g.sizeBytes += cr.SizeBytes
-				}
+			name := entry.WorkspaceName
+			if name == "" {
+				name = "Unattributed project cache"
 			}
+			g := ensureGroup(language)
+			g.modules = append(g.modules, model.CacheModule{
+				Name: name, Path: entry.Path, SizeBytes: entry.SizeBytes, Files: entry.Files,
+				Kind: "project-dependency", Language: language, WorkspaceID: entry.WorkspaceID, ProjectName: entry.WorkspaceName,
+				RuntimeID: entry.RuntimeID, Digest: entry.Digest, DigestSource: entry.DigestSource,
+				LastUsed: entry.LastUsed.UTC().UnixMilli(), Active: entry.Active, Writing: entry.Writing, Orphaned: entry.Orphaned,
+			})
+			g.sizeBytes += entry.SizeBytes
 		}
 	}
 
@@ -1649,6 +1578,8 @@ func (h *HTTPHandler) handleListCacheModules(w http.ResponseWriter, r *http.Requ
 			Path:      analysisDependencyCachePath,
 			SizeBytes: inspection.Bytes,
 			Files:     inspection.Entries,
+			Kind:      "analysis-dependency",
+			Language:  "analysis",
 		})
 		g.sizeBytes += inspection.Bytes
 	}
@@ -1685,13 +1616,15 @@ func (h *HTTPHandler) handleDeleteCacheModule(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Not available in single-user mode"})
 		return
 	}
-	if h.Lifecycle != nil {
-		mutation, leaseErr := h.Lifecycle.BeginUserMutation(userID)
-		if leaseErr != nil {
-			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: leaseErr.Error()})
-			return
+	beginMutation := func() (func(), error) {
+		if h.Lifecycle == nil {
+			return func() {}, nil
 		}
-		defer mutation.Release()
+		mutation, err := h.Lifecycle.BeginUserMutation(userID)
+		if err != nil {
+			return nil, err
+		}
+		return mutation.Release, nil
 	}
 
 	if req.CachePath == analysisDependencyCachePath {
@@ -1701,6 +1634,12 @@ func (h *HTTPHandler) handleDeleteCacheModule(w http.ResponseWriter, r *http.Req
 				return
 			}
 		}
+		release, leaseErr := beginMutation()
+		if leaseErr != nil {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: leaseErr.Error()})
+			return
+		}
+		defer release()
 		if err := lsp.ClearPersonalDependencies(h.Config.DataDir, userID); err != nil {
 			status := http.StatusInternalServerError
 			if errors.Is(err, lsp.ErrPersonalDependencyStoreInUse) {
@@ -1714,6 +1653,57 @@ func (h *HTTPHandler) handleDeleteCacheModule(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusOK, model.Response{Success: true, Message: "Cache deleted"})
 		return
 	}
+	if h.PersonalCache != nil && strings.HasPrefix(filepath.ToSlash(req.CachePath), "project-dependencies/") {
+		var cacheEntry *personalcache.Entry
+		entries := h.PersonalCache.Inspect(userID, userQuotaBytes(h.UserStore, userID)).Entries
+		for index := range entries {
+			entry := entries[index]
+			if filepath.ToSlash(entry.Path) == filepath.ToSlash(req.CachePath) {
+				cacheEntry = &entry
+				break
+			}
+		}
+		if cacheEntry != nil && cacheEntry.Writing {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: personalcache.ErrCacheInUse.Error()})
+			return
+		}
+		if cacheEntry != nil && cacheEntry.Active {
+			folderKey := personalCacheWorkspaceFolderKey(cacheEntry.WorkspaceID, userID)
+			var err error
+			if folderKey != "" {
+				err = h.stopUserWorkspaceServices(userID, folderKey)
+			} else {
+				err = h.stopUserOwnerServices(userID, "user", userID, "")
+			}
+			if err != nil {
+				writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
+				return
+			}
+		}
+		release, leaseErr := beginMutation()
+		if leaseErr != nil {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: leaseErr.Error()})
+			return
+		}
+		defer release()
+		if cacheEntry != nil && cacheEntry.Language == "node" {
+			if err := h.deletePersonalNodeDependencySnapshots(userID, cacheEntry.WorkspaceID); err != nil {
+				writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
+				return
+			}
+		}
+		if err := h.PersonalCache.Delete(userID, req.CachePath); err != nil {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
+			return
+		}
+		if h.OnPersonalCacheCleared != nil {
+			h.OnPersonalCacheCleared()
+		}
+		h.diskCache.Set(userID, 0, 1)
+		h.auditEvent(r, "", "", "deleteCacheModule", req.CachePath, "project dependency namespace", true)
+		writeJSON(w, http.StatusOK, model.Response{Success: true, Message: "Cache deleted"})
+		return
+	}
 
 	persistDir := filepath.Join(h.Config.DataDir, "users", userID, "persist")
 
@@ -1723,17 +1713,25 @@ func (h *HTTPHandler) handleDeleteCacheModule(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if _, err := os.Stat(target); os.IsNotExist(err) {
-		writeJSON(w, http.StatusOK, model.Response{Success: false, Error: "Cache path not found"})
+	if _, err := os.Stat(target); err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusOK, model.Response{Success: false, Error: "Cache path not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: err.Error()})
 		return
 	}
 
-	if h.LSP != nil {
-		if err := h.LSP.StopUserOwner(userID, "user", userID, ""); err != nil {
-			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
-			return
-		}
+	if err := h.stopUserOwnerServices(userID, "user", userID, ""); err != nil {
+		writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
+		return
 	}
+	release, leaseErr := beginMutation()
+	if leaseErr != nil {
+		writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: leaseErr.Error()})
+		return
+	}
+	defer release()
 
 	if err := os.RemoveAll(target); err != nil {
 		slog.Error("Failed to delete cache", "path", target, "error", err)
@@ -1747,6 +1745,53 @@ func (h *HTTPHandler) handleDeleteCacheModule(w http.ResponseWriter, r *http.Req
 	h.auditEvent(r, "", "", "deleteCacheModule", target, "", true)
 	slog.Info("Cache deleted", "user_id", userID, "path", target)
 	writeJSON(w, http.StatusOK, model.Response{Success: true, Message: "Cache deleted"})
+}
+
+func personalCacheWorkspaceFolderKey(workspaceID, userID string) string {
+	parts := strings.Split(workspaceID, "\x00")
+	if len(parts) != 4 || parts[0] != "user" || parts[1] != userID || parts[2] != "folder" {
+		return ""
+	}
+	return strings.TrimSpace(parts[3])
+}
+
+func (h *HTTPHandler) stopUserWorkspaceServices(userID, folderKey string) error {
+	if h.LSP != nil {
+		if err := h.LSP.StopUserWorkspace(userID, folderKey); err != nil {
+			return err
+		}
+	}
+	if h.DAP != nil {
+		if err := h.DAP.StopUserWorkspace(userID, folderKey); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *HTTPHandler) stopUserOwnerServices(userID, ownerKind, ownerID, projectID string) error {
+	if h.LSP != nil {
+		if err := h.LSP.StopUserOwner(userID, ownerKind, ownerID, projectID); err != nil {
+			return err
+		}
+	}
+	if h.DAP != nil {
+		if err := h.DAP.StopUserOwner(userID, ownerKind, ownerID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *HTTPHandler) deletePersonalNodeDependencySnapshots(userID, workspaceID string) error {
+	inspection, err := lsp.InspectPersonalDependencies(h.Config.DataDir, userID)
+	if err != nil || !inspection.Exists {
+		return err
+	}
+	if err := lsp.DeleteNodeDependencyWorkspace(inspection.Root, workspaceID); err != nil {
+		return fmt.Errorf("delete derived Node dependency snapshots: %w", err)
+	}
+	return nil
 }
 
 func secureCacheTarget(root, relative string) (string, error) {

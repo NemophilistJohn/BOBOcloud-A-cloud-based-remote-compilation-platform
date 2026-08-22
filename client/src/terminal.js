@@ -26,6 +26,7 @@ import {
   var sessionPhase = 'idle';
   var sessionCapabilities = null;
   var sessionGeneration = 0;
+  var lastDependencyRefreshSession = '';
   var startPromise = null;
   var startPromiseKey = '';
   var earlyOutputs = new Map();
@@ -229,6 +230,7 @@ import {
     return {
       runtimeId: currentRuntime(),
       workspace: workspace,
+      setupCommands: Array.isArray(S.setupCommands) ? S.setupCommands.slice() : [],
       context: {
         workspaceRoot: rootPath,
         workspaceIdentity: S.workspaceIdentity == null ? null : S.workspaceIdentity,
@@ -243,6 +245,7 @@ import {
   function requestKey(request) {
     var context = request.context || {};
     return String(request.runtimeId || '') + ':' + JSON.stringify(request.workspace || {}) + ':' +
+      JSON.stringify(request.setupCommands || []) + ':' +
       String(context.workspaceIdentity == null ? '' : context.workspaceIdentity) + ':' +
       String(context.workspaceGeneration || 0) + ':' + String(context.authEpoch || 0);
   }
@@ -277,18 +280,53 @@ import {
     if (reason) setAnnouncement(reason);
   }
 
+  function refreshDependenciesAfterConfirmedClose(closedSessionId) {
+    if (!BOBO.lsp) return;
+    var refreshSession = String(closedSessionId || '');
+    if (refreshSession && refreshSession === lastDependencyRefreshSession) return;
+    if (refreshSession) lastDependencyRefreshSession = refreshSession;
+    var fallback = function() {
+      if (typeof BOBO.lsp.dependenciesChanged !== 'function') return;
+      try {
+        Promise.resolve(BOBO.lsp.dependenciesChanged()).catch(function() {});
+      } catch (_) {}
+    };
+    if (typeof BOBO.lsp.restartAnalysis !== 'function') {
+      fallback();
+      return;
+    }
+    try {
+      Promise.resolve(BOBO.lsp.restartAnalysis()).catch(fallback);
+    } catch (_) {
+      fallback();
+    }
+  }
+
   async function closeTerminal(reason) {
     var closingSession = sessionId;
     var wasReady = sessionPhase === 'ready';
     var wasStarting = !!startPromise;
     sessionGeneration += 1;
-    if (closingSession && wasReady && terminal) writeLocal(t('Cloud terminal session closed.'), 'warning');
-    resetSessionState('');
-    if ((!closingSession && !wasStarting) || !global.api || typeof global.api.terminalStop !== 'function') return true;
-    try {
-      await global.api.terminalStop(String(reason || 'close'));
+    if ((!closingSession && !wasStarting) || !global.api || typeof global.api.terminalStop !== 'function') {
+      resetSessionState('');
       return true;
+    }
+    sessionPhase = 'closing';
+    sessionCapabilities = null;
+    clearQueuedInput();
+    try {
+      var result = await global.api.terminalStop(String(reason || 'close'));
+      var confirmed = !result || result.confirmed !== false;
+      var closedMessage = confirmed
+        ? t('Cloud terminal session closed.')
+        : t('Cloud terminal closed locally, but server cleanup was not confirmed.');
+      if (closingSession && wasReady && terminal) writeLocal(closedMessage, 'warning');
+      resetSessionState(closedMessage);
+      if (confirmed) refreshDependenciesAfterConfirmedClose(closingSession);
+      else if (BOBO.toast && typeof BOBO.toast.error === 'function') BOBO.toast.error(closedMessage);
+      return confirmed;
     } catch (_) {
+      resetSessionState('');
       return false;
     }
   }
@@ -343,6 +381,10 @@ import {
       return false;
     }
 
+    // Fit synchronously before the handshake so a non-resizable server PTY is
+    // created with the same initial width as xterm. Carriage-return progress
+    // updates otherwise wrap at the PTY's default width and look like new rows.
+    fitTerminal();
     var request = currentRequest();
     var key = requestKey(request);
     if (sessionId && sessionKey === key && (sessionPhase === 'connecting' || sessionPhase === 'ready')) {
@@ -565,16 +607,26 @@ import {
     }
     if (state === 'closed' || state === 'idle') {
       var exitedSession = sessionId;
+      var wasClosing = sessionPhase === 'closing';
+      var cleanupPending = status.confirmed === false;
+      var closeAnnouncement = cleanupPending
+        ? t('Cloud terminal closed locally, but server cleanup was not confirmed.')
+        : t('Cloud terminal session closed.');
       sessionId = '';
       sessionKey = '';
       sessionPhase = 'idle';
       sessionCapabilities = null;
       clearQueuedInput();
-      setAnnouncement(t('Cloud terminal session closed.'));
+      setAnnouncement(closeAnnouncement);
       if (exitedSession) {
         earlyOutputs.delete(exitedSession);
         earlyStatuses.delete(exitedSession);
       }
+      if (cleanupPending && !wasClosing) {
+        writeLocal(closeAnnouncement, 'warning');
+        if (BOBO.toast && typeof BOBO.toast.error === 'function') BOBO.toast.error(closeAnnouncement);
+      }
+      if (exitedSession && status.confirmed === true) refreshDependenciesAfterConfirmedClose(exitedSession);
     }
   }
 
@@ -741,6 +793,8 @@ import {
         sessionId: sessionId,
         phase: sessionPhase,
         capabilities: sessionCapabilities && Object.assign({}, sessionCapabilities),
+        cols: terminal ? Number(terminal.cols || 0) : 0,
+        rows: terminal ? Number(terminal.rows || 0) : 0,
         generation: sessionGeneration,
         connected: isSessionReady()
       };

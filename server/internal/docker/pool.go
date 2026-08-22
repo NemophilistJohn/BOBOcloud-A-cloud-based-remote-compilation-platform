@@ -13,7 +13,9 @@ import (
 	"sync"
 	"time"
 
+	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/ringbuffer"
 	"bobocloud-server/internal/security"
 	"bobocloud-server/internal/session"
 )
@@ -65,9 +67,10 @@ type Pool struct {
 	queue *RequestQueue
 
 	// Phase 3: 容器复用（按用户隔离）
-	idlePool         map[string][]string // image → containerIDs (LRU, most recent first)
-	containerUser    map[string]string   // containerID → userID
-	containerContext map[string]string   // containerID → team build cache context; non-empty containers are not pooled
+	idlePool          map[string][]string // image → containerIDs (LRU, most recent first)
+	containerUser     map[string]string   // containerID → userID
+	containerContext  map[string]string   // containerID → team build cache context; non-empty containers are not pooled
+	taintedContainers map[string]bool     // cancelled docker exec may still have a live process and must not be reused
 
 	// Phase 3: 镜像加速
 	registryMirrors []string
@@ -75,8 +78,13 @@ type Pool struct {
 	userDataDir     string // {DataDir}/users/{userID} 根路径
 
 	// 安全加固（G1）
-	hardening      bool // 丢弃 capabilities / 禁提权 / 限制进程数 / init
-	readOnlyRootfs bool // 只读根文件系统（配合 tmpfs）
+	hardening               bool // 丢弃 capabilities / 禁提权 / 限制进程数 / init
+	readOnlyRootfs          bool // 只读根文件系统（配合 tmpfs）
+	metrics                 *metrics.Registry
+	outputRetainedBytes     int
+	personalDependencyScope string
+	runDockerCommand        func(context.Context, ...string) ([]byte, error)
+	waitDockerRetry         func(time.Duration)
 }
 
 // UserQuotaProvider 用于查询用户容器配额
@@ -120,15 +128,29 @@ func NewPool(
 		idlePool:              make(map[string][]string),
 		containerUser:         make(map[string]string),
 		containerContext:      make(map[string]string),
+		taintedContainers:     make(map[string]bool),
 		registryMirrors:       registryMirrors,
 		pullTimeout:           pullTimeout,
 		userDataDir:           userDataDir,
+		outputRetainedBytes:   256 << 10,
 	}
 
 	go dp.replenishLoop()
 	go dp.healthCheckLoop()
 
 	return dp
+}
+
+func (dp *Pool) SetMetrics(registry *metrics.Registry) { dp.metrics = registry }
+
+func (dp *Pool) SetOutputRetentionLimit(limit int) {
+	if limit > 0 {
+		dp.outputRetainedBytes = limit
+	}
+}
+
+func (dp *Pool) SetPersonalDependencyScope(scope string) {
+	dp.personalDependencyScope = scope
 }
 
 // SetHardening 配置容器安全加固开关。
@@ -252,6 +274,7 @@ func (dp *Pool) detachIdleBuildCacheContainers() []string {
 			removed = append(removed, id)
 			delete(dp.containerUser, id)
 			delete(dp.containerContext, id)
+			delete(dp.taintedContainers, id)
 			delete(dp.lruByImage, id)
 			delete(dp.imageByContainerID, id)
 		}
@@ -325,6 +348,7 @@ func (dp *Pool) detachUserContainers(userID string) []string {
 	for id := range ids {
 		delete(dp.containerUser, id)
 		delete(dp.containerContext, id)
+		delete(dp.taintedContainers, id)
 		delete(dp.lruByImage, id)
 		delete(dp.imageByContainerID, id)
 	}
@@ -438,6 +462,12 @@ func (dp *Pool) acquireForUser(ctx context.Context, userID, image, cacheKey stri
 
 // acquireViaQueue 通过请求队列等待容器
 func (dp *Pool) acquireViaQueue(ctx context.Context, userID, image, cacheKey string, volumes, env map[string]string, output session.OutputWriter) (string, error) {
+	queuedAt := time.Now()
+	defer func() {
+		if dp.metrics != nil {
+			dp.metrics.Observe("queue.wait", time.Since(queuedAt))
+		}
+	}()
 	if output != nil {
 		output.WriteStatus("docker", fmt.Sprintf("All containers busy (%d/%d), entering queue...",
 			dp.activeCount, dp.maxTotal))
@@ -502,6 +532,9 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 	// L1: 热池命中（预创建的新容器，按用户隔离，已挂载 /persist 卷）
 	if cacheKey == "" {
 		if id := dp.tryHotPool(image, userID); id != "" {
+			if dp.metrics != nil {
+				dp.metrics.Cache("container.hot_pool", true)
+			}
 			if output != nil {
 				output.WriteStatus("docker", fmt.Sprintf("Container ready (hot pool): %s", id[:12]))
 			}
@@ -511,10 +544,16 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 			dp.mu.Unlock()
 			return id, nil
 		}
+		if dp.metrics != nil {
+			dp.metrics.Cache("container.hot_pool", false)
+		}
 	}
 
 	// Phase 3 L2: 空闲复用池（仅复用同用户容器，防卷泄漏）
 	if id := dp.tryIdlePool(image, userID, cacheKey); id != "" {
+		if dp.metrics != nil {
+			dp.metrics.Cache("container.idle_pool", true)
+		}
 		if output != nil {
 			kind := "idle pool"
 			if cacheKey != "" {
@@ -531,6 +570,9 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 		dp.idleCount--
 		dp.mu.Unlock()
 		return id, nil
+	}
+	if dp.metrics != nil {
+		dp.metrics.Cache("container.idle_pool", false)
 	}
 
 	// L3/L4: 需要创建新容器
@@ -557,6 +599,7 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 		delete(dp.imageByContainerID, evictedID)
 		delete(dp.containerUser, evictedID)
 		delete(dp.containerContext, evictedID)
+		delete(dp.taintedContainers, evictedID)
 		// 淘汰容器释放一个槽位，立即为本容器占用（原子操作，避免被 replenish 抢占）。
 		// 净 activeCount 不变，但本容器已正常计入，后续失败路径的 decActive() 语义一致。
 		if evictedIdle {
@@ -599,7 +642,11 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 		extraEnv[key] = value
 	}
 
+	createStarted := time.Now()
 	containerID, err := dp.createContainer(ctx, image, extraVolumes, extraEnv)
+	if dp.metrics != nil {
+		dp.metrics.Observe("container.create", time.Since(createStarted))
+	}
 	if err != nil {
 		dp.decActive()
 		return "", fmt.Errorf("failed to create container: %w", err)
@@ -649,16 +696,50 @@ func (dp *Pool) ReleaseForUser(containerID, userID string) {
 // process cannot be verified as stopped; retaining such a container could let
 // a later request inherit a live process or a partially cleaned workspace.
 func (dp *Pool) DiscardForUser(containerID, userID string) {
-	if !dp.discardActiveLease(containerID, userID) {
+	if containerID == "" {
 		return
 	}
-	dp.destroyContainer(containerID)
-	dp.wakeNextQueued()
+	delay := 250 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		if err := dp.DiscardForUserAndWait(containerID, userID); err == nil {
+			return
+		} else if attempt == 1 || attempt%10 == 0 {
+			slog.Warn("Discarded container is still potentially writable; retaining ownership", "container_id", shortContainerID(containerID), "attempt", attempt, "error", err)
+		}
+		if dp.waitDockerRetry != nil {
+			dp.waitDockerRetry(delay)
+		} else {
+			time.Sleep(delay)
+		}
+		if delay < 30*time.Second {
+			delay *= 2
+			if delay > 30*time.Second {
+				delay = 30 * time.Second
+			}
+		}
+	}
 }
 
-// discardActiveLease drops pool accounting for a currently acquired container
-// before Docker I/O. It deliberately does not touch an idle or hot container:
-// DiscardForUser is an active-lease-only API.
+// DiscardForUserAndWait removes the Docker container before dropping its pool
+// ownership. A project dependency writer may release its cache lease only after
+// this method succeeds: on failure the still-addressable active lease prevents
+// a new request from treating a potentially live bind mount as inactive.
+func (dp *Pool) DiscardForUserAndWait(containerID, userID string) error {
+	if containerID == "" {
+		return nil
+	}
+	if err := dp.destroyContainer(containerID); err != nil {
+		return err
+	}
+	if dp.discardActiveLease(containerID, userID) {
+		dp.wakeNextQueued()
+	}
+	return nil
+}
+
+// discardActiveLease drops pool accounting only after Docker has confirmed the
+// container cannot keep writing through its mounts. The caller owns that
+// ordering; this helper performs no Docker I/O itself.
 func (dp *Pool) discardActiveLease(containerID, userID string) bool {
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
@@ -671,6 +752,7 @@ func (dp *Pool) discardActiveLease(containerID, userID string) bool {
 	}
 	delete(dp.containerUser, containerID)
 	delete(dp.containerContext, containerID)
+	delete(dp.taintedContainers, containerID)
 	delete(dp.imageByContainerID, containerID)
 	delete(dp.lruByImage, containerID)
 	if dp.activeCount > 0 {
@@ -686,13 +768,14 @@ func (dp *Pool) discardActiveLease(containerID, userID string) bool {
 
 // releaseInternal 释放容器核心逻辑。
 // Phase 3 复用策略：
-//  1. 清理容器工作区 (rm -rf /workspace/*)
+//  1. 重启容器以终止所有 exec 后台进程，再清理工作区
 //  2. 若空闲池未满 → 清理后回空闲池
 //  3. 若空闲池已满 → LRU 淘汰最旧的，当前容器入池
 //  4. 唤醒一个排队者，让其按自己的用户和镜像重新获取
 func (dp *Pool) releaseInternal(containerID, userID string) {
 	dp.mu.Lock()
 	owner, known := dp.containerUser[containerID]
+	tainted := dp.taintedContainers[containerID]
 	dp.mu.Unlock()
 	if !known {
 		// User deletion and health checks can destroy an active container before
@@ -703,24 +786,34 @@ func (dp *Pool) releaseInternal(containerID, userID string) {
 	if userID == "" || userID != owner {
 		userID = owner
 	}
+	if tainted {
+		slog.Info("Discarding container after interrupted exec", "container_id", containerID[:12])
+		dp.DiscardForUser(containerID, userID)
+		return
+	}
+	if err := dp.resetContainerForReuse(containerID); err != nil {
+		slog.Warn("Discarding container that could not be reset", "container_id", containerID[:12], "error", err)
+		dp.DiscardForUser(containerID, userID)
+		return
+	}
+	// Cache mounts stay attached and the reset container can be reused only when
+	// image, owner and mount generation all match.
+	running, statusErr := dp.containerRunningState(containerID)
+	if statusErr != nil {
+		slog.Warn("Container state is unknown after reset; discarding without releasing ownership", "container_id", shortContainerID(containerID), "error", statusErr)
+		dp.DiscardForUser(containerID, userID)
+		return
+	}
+	if !running {
+		slog.Info("Container dead after use, destroying", "container_id", shortContainerID(containerID))
+		dp.DiscardForUser(containerID, userID)
+		return
+	}
+
 	// 扣减用户配额（容器回池不算用户占用）
 	dp.decUser(userID)
 	// 保留 containerUser 映射——tryIdlePool 靠它匹配同用户复用
 	defer dp.wakeNextQueued()
-
-	// Only /workspace is ephemeral. Team cache mounts stay attached and the
-	// container can be reused when image, owner and mount generation all match.
-
-	// 步骤 2: 清理工作区
-	dp.cleanWorkspace(containerID)
-
-	// 步骤 3: 检查容器是否仍存活
-	if !dp.containerRunning(containerID) {
-		slog.Info("Container dead after use, destroying", "container_id", containerID[:12])
-		dp.destroyContainer(containerID)
-		dp.decActive()
-		return
-	}
 
 	// 步骤 4: 回空闲池（LRU 策略）
 	image := dp.getContainerImage(containerID)
@@ -785,7 +878,16 @@ func (dp *Pool) tryIdlePool(image, userID, cacheKey string) string {
 		}
 		dp.mu.Unlock()
 
-		if dp.containerRunning(id) {
+		running, statusErr := dp.containerRunningState(id)
+		if statusErr != nil {
+			// takeIdleMatchLocked removed the candidate from the list. Put an
+			// unknown container back without changing counters; it must be neither
+			// reused nor detached until Docker can answer authoritatively.
+			dp.addToIdlePool(image, id)
+			slog.Warn("Idle container state is unknown; keeping it quarantined in the pool", "container_id", shortContainerID(id), "error", statusErr)
+			return ""
+		}
+		if running {
 			return id
 		}
 
@@ -793,12 +895,16 @@ func (dp *Pool) tryIdlePool(image, userID, cacheKey string) string {
 		delete(dp.imageByContainerID, id)
 		delete(dp.containerUser, id)
 		delete(dp.containerContext, id)
+		delete(dp.taintedContainers, id)
 		if dp.idleCount > 0 {
 			dp.idleCount--
 		}
 		dp.mu.Unlock()
-		dp.destroyContainer(id)
-		slog.Warn("Dead idle container removed during acquire", "container_id", id[:12])
+		if err := dp.destroyContainer(id); err != nil {
+			slog.Warn("Dead idle container removal was not confirmed", "container_id", shortContainerID(id), "error", err)
+		} else {
+			slog.Warn("Dead idle container removed during acquire", "container_id", shortContainerID(id))
+		}
 	}
 }
 
@@ -845,17 +951,38 @@ func (dp *Pool) evictLRU(image string) string {
 	delete(dp.imageByContainerID, evicted)
 	delete(dp.containerUser, evicted)
 	delete(dp.containerContext, evicted)
+	delete(dp.taintedContainers, evicted)
 	dp.idleCount--
 	return evicted
 }
 
 // cleanWorkspace 异步清理容器内工作区
-func (dp *Pool) cleanWorkspace(containerID string) {
+func containerRestartArguments(containerID string) []string {
+	return []string{"restart", "-t", "0", containerID}
+}
+
+func (dp *Pool) resetContainerForReuse(containerID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if output, err := exec.CommandContext(ctx, "docker", containerRestartArguments(containerID)...).CombinedOutput(); err != nil {
+		return fmt.Errorf("restart container: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return dp.cleanWorkspace(containerID)
+}
+
+func (dp *Pool) cleanWorkspace(containerID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// 清理 /workspace 内所有文件，然后重建空目录
-	dp.Exec(ctx, containerID, []string{"sh", "-c", "rm -rf /workspace; mkdir -p /workspace"}, "/")
+	_, stderr, exitCode, err := dp.Exec(ctx, containerID, []string{"sh", "-c", "rm -rf /workspace; mkdir -p /workspace"}, "/")
+	if err != nil {
+		return err
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("workspace reset exited with code %d: %s", exitCode, strings.TrimSpace(stderr))
+	}
+	return nil
 }
 
 // getContainerImage 获取容器对应的镜像
@@ -917,16 +1044,23 @@ func (dp *Pool) PreWarmAllForUsers(images []string, userIDs []string) {
 	}()
 }
 
-// buildUserVolumes 构建用户持久化卷挂载。
-// 统一方案：宿主机 {userData}/{userID}/persist/ → 容器内 /persist/
-// 所有语言的包管理器通过环境变量重定向到 /persist/ 下各自子目录。
+var projectLockSharedCacheDirectories = []string{"pip-cache", "go-cache", "npm-cache"}
+
+// buildUserVolumes builds the persistent mounts shared by one user. In
+// project-lock mode the managed project-dependencies tree is deliberately not
+// reachable through /persist; only download/build caches are shared, while the
+// exact dependency namespace is mounted separately as /project-deps.
 func (dp *Pool) buildUserVolumes(userID, image string) map[string]string {
 	if userID == "" || dp.userDataDir == "" {
 		return nil
 	}
-	persistHost := dp.userDataDir + "/" + userID + "/persist"
-	volumes := map[string]string{
-		persistHost: "/persist",
+	persistHost := filepath.Join(dp.userDataDir, userID, "persist")
+	if dp.personalDependencyScope != "project-lock" {
+		return map[string]string{persistHost: "/persist"}
+	}
+	volumes := make(map[string]string, len(projectLockSharedCacheDirectories))
+	for _, directory := range projectLockSharedCacheDirectories {
+		volumes[filepath.Join(persistHost, directory)] = "/persist/" + directory
 	}
 	return volumes
 }
@@ -1018,6 +1152,13 @@ func (dp *Pool) buildPersistEnv(image string) map[string]string {
 // buildPersistEnvForUser constructs package-manager environment variables for
 // one container. Python installations go into a major/minor runtime namespace.
 func (dp *Pool) buildPersistEnvForUser(userID, image string) map[string]string {
+	if dp.personalDependencyScope == "project-lock" {
+		return map[string]string{
+			"PIP_CACHE_DIR":    "/persist/pip-cache",
+			"GOCACHE":          "/persist/go-cache",
+			"NPM_CONFIG_CACHE": "/persist/npm-cache",
+		}
+	}
 	env := map[string]string{
 		// Python: cache plus legacy defaults for non-Python images.
 		"PIP_CACHE_DIR": "/persist/pip-cache",
@@ -1103,7 +1244,26 @@ func (dp *Pool) tryHotPool(image, userID string) string {
 		dp.mu.Lock()
 		delete(dp.lruByImage, containerID)
 		dp.mu.Unlock()
-		if dp.containerRunning(containerID) {
+		running, statusErr := dp.containerRunningState(containerID)
+		if statusErr != nil {
+			requeued := false
+			select {
+			case ch <- containerID:
+				requeued = true
+			default:
+			}
+			if !requeued {
+				// A replenisher may fill the channel while inspect is in flight.
+				// This ID is no longer reachable through the hot pool, so retain
+				// its accounting until Docker confirms that it cannot write.
+				slog.Warn("Hot-pool quarantine is full; destroying unknown container before detaching it", "container_id", shortContainerID(containerID), "error", statusErr)
+				dp.DiscardForUser(containerID, userID)
+				return ""
+			}
+			slog.Warn("Hot-pool container state is unknown; keeping it quarantined", "container_id", shortContainerID(containerID), "error", statusErr)
+			return ""
+		}
+		if running {
 			return containerID
 		}
 		// 容器已死：完整清理映射并扣减 activeCount。
@@ -1113,6 +1273,7 @@ func (dp *Pool) tryHotPool(image, userID string) string {
 		delete(dp.imageByContainerID, containerID)
 		delete(dp.containerUser, containerID)
 		delete(dp.containerContext, containerID)
+		delete(dp.taintedContainers, containerID)
 		dp.mu.Unlock()
 		dp.destroyContainer(containerID)
 		dp.decActive()
@@ -1261,6 +1422,7 @@ func (dp *Pool) replenishHotPool(image, userID string) {
 				dp.mu.Unlock()
 				delete(dp.containerUser, containerID)
 				delete(dp.containerContext, containerID)
+				delete(dp.taintedContainers, containerID)
 				dp.destroyContainer(containerID)
 				dp.decActive()
 				return
@@ -1534,7 +1696,9 @@ func (dp *Pool) createContainer(ctx context.Context, image string, extraVolumes 
 
 	// 持久化卷挂载
 	for hostPath, containerPath := range extraVolumes {
-		os.MkdirAll(hostPath, 0755)
+		if err := ensureDockerBindDirectory(hostPath); err != nil {
+			return "", fmt.Errorf("prepare persistent mount %q: %w", hostPath, err)
+		}
 		args = append(args, "-v", fmt.Sprintf("%s:%s", hostPath, containerPath))
 	}
 
@@ -1570,6 +1734,23 @@ func (dp *Pool) createContainer(ctx context.Context, image string, extraVolumes 
 	return containerID, nil
 }
 
+func ensureDockerBindDirectory(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("host path is empty")
+	}
+	if err := os.MkdirAll(path, 0755); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("host path must be a real directory")
+	}
+	return nil
+}
+
 // containerWorkspaceBootstrapArguments intentionally chooses / rather than
 // inheriting the container WorkingDir. The workspace can be absent in a fresh
 // image, and the terminal reset path deliberately removes it before recreating
@@ -1578,24 +1759,71 @@ func containerWorkspaceBootstrapArguments(containerID string) []string {
 	return []string{"exec", "-w", "/", containerID, "mkdir", "-p", "/workspace"}
 }
 
-func (dp *Pool) containerRunning(containerID string) bool {
+func (dp *Pool) containerRunningState(containerID string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", containerID)
-	out, err := cmd.Output()
+	out, err := dp.executeDockerCommand(ctx, "inspect", "-f", "{{.State.Running}}", containerID)
 	if err != nil {
-		return false
+		if dockerReportsMissingContainer(out) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect container %s: %w: %s", shortContainerID(containerID), err, strings.TrimSpace(string(out)))
 	}
-	return strings.TrimSpace(string(out)) == "true"
+	switch strings.TrimSpace(string(out)) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("inspect container %s returned an invalid running state", shortContainerID(containerID))
+	}
 }
 
-func (dp *Pool) destroyContainer(containerID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+func shortContainerID(containerID string) string {
+	if len(containerID) <= 12 {
+		return containerID
+	}
+	return containerID[:12]
+}
 
-	exec.CommandContext(ctx, "docker", "stop", containerID).Run()
-	exec.CommandContext(ctx, "docker", "rm", "-f", containerID).Run()
-	slog.Info("Container destroyed", "container_id", containerID[:12])
+func (dp *Pool) executeDockerCommand(ctx context.Context, args ...string) ([]byte, error) {
+	if dp != nil && dp.runDockerCommand != nil {
+		return dp.runDockerCommand(ctx, args...)
+	}
+	return exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+}
+
+func dockerReportsMissingContainer(output []byte) bool {
+	message := strings.ToLower(string(output))
+	return strings.Contains(message, "no such container") || strings.Contains(message, "no such object")
+}
+
+func (dp *Pool) destroyContainer(containerID string) error {
+	if containerID == "" {
+		return nil
+	}
+	// `docker rm -f` already kills the container. Running `docker stop` first
+	// used to consume the entire shared timeout, leaving the subsequent rm with
+	// an already-cancelled context while callers still assumed cleanup succeeded.
+	removeCtx, cancelRemove := context.WithTimeout(context.Background(), 10*time.Second)
+	output, err := dp.executeDockerCommand(removeCtx, "rm", "-f", containerID)
+	cancelRemove()
+	if err == nil || dockerReportsMissingContainer(output) {
+		slog.Info("Container destroyed", "container_id", shortContainerID(containerID))
+		return nil
+	}
+
+	// Only confirmed absence is equivalent to a successful removal. A stopped
+	// container still retains its bind mounts and could be restarted after the
+	// cache path is deleted or recreated, so it must retain ownership and retry.
+	inspectCtx, cancelInspect := context.WithTimeout(context.Background(), 5*time.Second)
+	state, inspectErr := dp.executeDockerCommand(inspectCtx, "inspect", "-f", "{{.State.Running}}", containerID)
+	cancelInspect()
+	if inspectErr != nil && dockerReportsMissingContainer(state) {
+		slog.Warn("Container removal returned an error but absence was confirmed", "container_id", shortContainerID(containerID), "error", err)
+		return nil
+	}
+	return fmt.Errorf("force-remove container %s: %w: %s (inspect: %v: %s)", shortContainerID(containerID), err, strings.TrimSpace(string(output)), inspectErr, strings.TrimSpace(string(state)))
 }
 
 // Exec 在容器内执行命令并返回结果
@@ -1614,6 +1842,9 @@ func (dp *Pool) Exec(ctx context.Context, containerID string, cmd []string, work
 	execCmd.Stderr = stderrBuf
 
 	err = execCmd.Run()
+	if ctx.Err() != nil {
+		dp.markContainerTainted(containerID)
+	}
 	stdout = stdoutBuf.String()
 	stderr = stderrBuf.String()
 
@@ -1662,12 +1893,32 @@ func (b *cappedBuffer) String() string {
 
 // ExecStreaming 在容器内流式执行命令
 func (dp *Pool) ExecStreaming(ctx context.Context, containerID string, cmd []string, workDir string, output session.OutputWriter, stage string) *model.RunResult {
-	return dockerStreamProcess(ctx, containerID, cmd, workDir, output, stage, nil, nil)
+	result := dockerStreamProcess(ctx, containerID, cmd, workDir, output, stage, nil, nil, dp.outputRetainedBytes)
+	if ctx.Err() != nil {
+		dp.markContainerTainted(containerID)
+	}
+	return result
 }
 
 // ExecStreamingEnv 在容器内流式执行命令，并注入额外的环境变量（docker exec -e K=V）
 func (dp *Pool) ExecStreamingEnv(ctx context.Context, containerID string, cmd []string, workDir string, output session.OutputWriter, stage string, env map[string]string, stdin io.Reader) *model.RunResult {
-	return dockerStreamProcess(ctx, containerID, cmd, workDir, output, stage, env, stdin)
+	result := dockerStreamProcess(ctx, containerID, cmd, workDir, output, stage, env, stdin, dp.outputRetainedBytes)
+	if ctx.Err() != nil {
+		dp.markContainerTainted(containerID)
+	}
+	return result
+}
+
+func (dp *Pool) markContainerTainted(containerID string) {
+	if dp == nil || strings.TrimSpace(containerID) == "" {
+		return
+	}
+	dp.mu.Lock()
+	if dp.taintedContainers == nil {
+		dp.taintedContainers = make(map[string]bool)
+	}
+	dp.taintedContainers[containerID] = true
+	dp.mu.Unlock()
 }
 
 // ---------- 内部辅助 ----------
@@ -1729,7 +1980,12 @@ func (dp *Pool) healthCheckLoop() {
 		dp.mu.Unlock()
 
 		for _, c := range toCheck {
-			if dp.containerRunning(c.id) {
+			running, statusErr := dp.containerRunningState(c.id)
+			if statusErr != nil {
+				slog.Warn("Pooled container health is unknown; leaving it attached", "container_id", shortContainerID(c.id), "error", statusErr)
+				continue
+			}
+			if running {
 				continue
 			}
 			dp.mu.Lock()
@@ -1747,6 +2003,7 @@ func (dp *Pool) healthCheckLoop() {
 			delete(dp.imageByContainerID, c.id)
 			delete(dp.containerUser, c.id)
 			delete(dp.containerContext, c.id)
+			delete(dp.taintedContainers, c.id)
 			if poolKind == "idle" {
 				if dp.idleCount > 0 {
 					dp.idleCount--
@@ -1813,7 +2070,7 @@ func (dp *Pool) detachPooledContainerLocked(id string) string {
 
 // ---------- Docker 流式进程执行 ----------
 
-func dockerStreamProcess(ctx context.Context, containerID string, command []string, workDir string, output session.OutputWriter, stage string, env map[string]string, stdin io.Reader) *model.RunResult {
+func dockerStreamProcess(ctx context.Context, containerID string, command []string, workDir string, output session.OutputWriter, stage string, env map[string]string, stdin io.Reader, retainedBytes int) *model.RunResult {
 	cmdDisplay := strings.Join(command, " ")
 	output.WriteStatus(stage, fmt.Sprintf("[docker] %s", cmdDisplay))
 
@@ -1847,9 +2104,13 @@ func dockerStreamProcess(ctx context.Context, containerID string, command []stri
 		return &model.RunResult{Success: false, ReturnCode: 1}
 	}
 
-	var stdoutLines, stderrLines []string
+	limit := retainedBytes
+	if limit <= 0 {
+		limit = 256 << 10
+	}
+	stdoutLines := ringbuffer.New(limit)
+	stderrLines := ringbuffer.New(limit)
 	var wg sync.WaitGroup
-	var mu sync.Mutex
 
 	wg.Add(1)
 	go func() {
@@ -1863,9 +2124,7 @@ func dockerStreamProcess(ctx context.Context, containerID string, command []stri
 						return // cancel：停止向客户端转发剩余缓冲输出
 					}
 					if line != "" {
-						mu.Lock()
-						stdoutLines = append(stdoutLines, line)
-						mu.Unlock()
+						stdoutLines.WriteLine(line)
 						output.WriteStdout(line, stage)
 					}
 				}
@@ -1888,9 +2147,7 @@ func dockerStreamProcess(ctx context.Context, containerID string, command []stri
 						return // cancel：停止向客户端转发剩余缓冲输出
 					}
 					if line != "" {
-						mu.Lock()
-						stderrLines = append(stderrLines, line)
-						mu.Unlock()
+						stderrLines.WriteLine(line)
 						output.WriteStderr(line, stage)
 					}
 				}
@@ -1919,10 +2176,12 @@ func dockerStreamProcess(ctx context.Context, containerID string, command []stri
 	}
 
 	return &model.RunResult{
-		Success:    returnCode == 0 && !timedOut,
-		ReturnCode: returnCode,
-		Stdout:     strings.Join(stdoutLines, "\n"),
-		Stderr:     strings.Join(stderrLines, "\n"),
-		TimedOut:   timedOut,
+		Success:         returnCode == 0 && !timedOut,
+		ReturnCode:      returnCode,
+		Stdout:          stdoutLines.String(),
+		Stderr:          stderrLines.String(),
+		TimedOut:        timedOut,
+		StdoutTruncated: stdoutLines.Truncated(),
+		StderrTruncated: stderrLines.Truncated(),
 	}
 }

@@ -475,6 +475,22 @@ func (javaDependencyAdapter) Resolve(ctx DependencyAdapterContext) (DependencyAd
 	gradleCandidates = append(gradleCandidates, extraDependencyPaths(ctx, DependencyRoleJavaGradle)...)
 	maven := existingDirectory(mavenCandidates...)
 	gradleRoot, gradleModules := gradleDependencySnapshot(gradleCandidates...)
+	if gradleModules == "" {
+		// A project-lock namespace stores GRADLE_USER_HOME directly. It is held
+		// by the personal-cache read lease, so its modules can be exposed as a
+		// read-only source without requiring the independent snapshot marker.
+		for _, candidate := range extraDependencyPaths(ctx, DependencyRoleJavaGradle) {
+			modules := existingRealDirectory(filepath.Join(candidate, "caches", "modules-2"))
+			if modules == "" {
+				modules = existingRealDirectory(filepath.Join(candidate, "modules-2"))
+			}
+			if modules != "" {
+				gradleModules = modules
+				gradleRoot = filepath.Dir(modules)
+				break
+			}
+		}
+	}
 	result := DependencyAdapterResult{LocalEnvironment: map[string]string{}, DockerEnvironment: map[string]string{}, LocalLSPSettings: map[string]any{}, DockerLSPSettings: map[string]any{}}
 	localJava, dockerJava := map[string]any{}, map[string]any{}
 	localImport, dockerImport := map[string]any{}, map[string]any{}

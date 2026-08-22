@@ -18,6 +18,7 @@ import (
 	"bobocloud-server/internal/buildcache"
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/personalcache"
 
 	"github.com/gorilla/websocket"
 )
@@ -39,12 +40,13 @@ type lspWorkspaceStart struct {
 }
 
 type lspStartMessage struct {
-	Type       string            `json:"type"`
-	Token      string            `json:"token"`
-	Mode       string            `json:"mode"`
-	LanguageID string            `json:"languageId"`
-	RuntimeID  string            `json:"runtimeId"`
-	Workspace  lspWorkspaceStart `json:"workspace"`
+	Type          string            `json:"type"`
+	Token         string            `json:"token"`
+	Mode          string            `json:"mode"`
+	LanguageID    string            `json:"languageId"`
+	RuntimeID     string            `json:"runtimeId"`
+	Workspace     lspWorkspaceStart `json:"workspace"`
+	SetupCommands []string          `json:"setupCommands,omitempty"`
 }
 
 type lspControlMessage struct {
@@ -55,6 +57,10 @@ type lspControlMessage struct {
 	RequestID    string `json:"requestId,omitempty"`
 	Cursor       string `json:"cursor,omitempty"`
 	MaxBytes     int    `json:"maxBytes,omitempty"`
+}
+
+func validLSPSetupCommands(commands []string) bool {
+	return validateRunArgs(commands) == nil
 }
 
 type byteWindow struct {
@@ -220,10 +226,33 @@ func trustedDependencyChild(base, child string) (string, error) {
 	return candidate, nil
 }
 
-func (h *WSHandler) resolveAnalysisDependencies(userID, teamID, runtimeID, languageID, remoteRoot, workspaceID, sharedHost, snapshotRoot, generation string) (lsp.AnalysisDependencyRequest, lsp.AnalysisDependencyView, bool) {
+type personalProjectDependencyView struct {
+	Root       string
+	Generation string
+	Extra      map[string][]string
+	Release    func()
+}
+
+func projectLockDependencyLanguage(languageID string) bool {
+	switch canonicalRuntimeLanguage(languageID) {
+	case "python", "node", "go", "rust", "java":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *WSHandler) resolveAnalysisDependencies(userID, teamID, runtimeID, languageID, remoteRoot, workspaceID, sharedHost, snapshotRoot, generation string, project personalProjectDependencyView) (lsp.AnalysisDependencyRequest, lsp.AnalysisDependencyView, bool) {
 	ownerKind, ownerID := "user", userID
 	if teamID != "" {
 		ownerKind, ownerID = "team", teamID
+	}
+	projectScoped := teamID == "" && h.PersonalCache != nil && h.PersonalCache.ScopeMode() == "project-lock" && projectLockDependencyLanguage(languageID)
+	if projectScoped {
+		// Project-lock is the source of truth for personal dependencies. The old
+		// personal snapshot store remains CRUD-visible, but must never repopulate
+		// a deleted or changed project digest through an analyzer fallback.
+		snapshotRoot = ""
 	}
 	request := lsp.AnalysisDependencyRequest{
 		OwnerKind: ownerKind, OwnerID: ownerID, UserID: userID,
@@ -233,11 +262,17 @@ func (h *WSHandler) resolveAnalysisDependencies(userID, teamID, runtimeID, langu
 	if h.Config != nil {
 		userBase := filepath.Join(h.Config.DataDir, "users")
 		if userRoot, err := trustedDependencyChild(userBase, userID); err == nil {
-			request.Paths.UserPersistRoot = filepath.Join(userRoot, "persist")
+			if !projectScoped {
+				request.Paths.UserPersistRoot = filepath.Join(userRoot, "persist")
+			}
 			request.Paths.AllowedRoots = appendExistingDependencyRoot(request.Paths.AllowedRoots, userRoot)
 		}
 	}
 	request.Paths.SharedCacheRoot = sharedHost
+	if project.Root != "" {
+		request.Paths.Extra = project.Extra
+		request.Paths.AllowedRoots = appendExistingDependencyRoot(request.Paths.AllowedRoots, project.Root)
+	}
 	request.Paths.AllowedRoots = appendExistingDependencyRoot(request.Paths.AllowedRoots, sharedHost)
 	request.Paths.AllowedRoots = appendExistingDependencyRoot(request.Paths.AllowedRoots, snapshotRoot)
 	request.Paths.AllowedRoots = appendExistingDependencyRoot(request.Paths.AllowedRoots, remoteRoot)
@@ -250,6 +285,75 @@ func (h *WSHandler) resolveAnalysisDependencies(userID, teamID, runtimeID, langu
 		return request, lsp.AnalysisDependencyView{}, false
 	}
 	return request, view, true
+}
+
+func (h *WSHandler) resolvePersonalProjectDependencies(userID, workspaceID, workspaceName, runtimeID, runtimeImage, languageID, remoteRoot string, setupCommands []string) personalProjectDependencyView {
+	if h == nil || h.PersonalCache == nil || h.PersonalCache.ScopeMode() != "project-lock" || runtimeID == "" || runtimeID == "local" || !projectLockDependencyLanguage(languageID) {
+		return personalProjectDependencyView{}
+	}
+	language := canonicalRuntimeLanguage(languageID)
+	request := personalcache.Request{
+		UserID: userID, WorkspaceID: workspaceID, WorkspaceName: workspaceName,
+		RuntimeID: runtimeID, RuntimeFingerprint: personalCacheRuntimeFingerprint(runtimeID, runtimeImage), Language: language, WorkspaceRoot: remoteRoot,
+		SetupCommands: setupCommands, QuotaBytes: userQuotaBytes(h.UserStore, userID),
+	}
+	var reader *personalcache.ReadLease
+	var entry personalcache.Entry
+	if language == "python" {
+		var inventory personalcache.InventoryInspection
+		reader, entry, inventory = h.PersonalCache.AcquirePackageInventoryRead(request)
+		if reader == nil || inventory.State != "ready" || !inventory.Exact {
+			return personalProjectDependencyView{}
+		}
+		root := filepath.Join(entry.HostPath, "python")
+		if !realDependencyDirectory(root) {
+			reader.Release()
+			return personalProjectDependencyView{}
+		}
+		return personalProjectDependencyView{
+			Root: entry.HostPath, Generation: "project-lock:" + entry.Digest + ":" + inventory.Revision,
+			Extra: map[string][]string{lsp.DependencyRolePythonPackages: {root}}, Release: reader.Release,
+		}
+	}
+	var exists bool
+	var err error
+	reader, entry, exists, err = h.PersonalCache.AcquireRead(request)
+	if err != nil || !exists || reader == nil {
+		return personalProjectDependencyView{}
+	}
+	extra := personalProjectDependencyPaths(entry.HostPath, language)
+	if len(extra) == 0 {
+		reader.Release()
+		return personalProjectDependencyView{}
+	}
+	return personalProjectDependencyView{Root: entry.HostPath, Generation: "project-lock:" + entry.Digest, Extra: extra, Release: reader.Release}
+}
+
+func personalProjectDependencyPaths(root, language string) map[string][]string {
+	result := make(map[string][]string)
+	add := func(role string, parts ...string) {
+		candidate := filepath.Join(append([]string{root}, parts...)...)
+		if realDependencyDirectory(candidate) {
+			result[role] = append(result[role], candidate)
+		}
+	}
+	switch language {
+	case "node":
+		add(lsp.DependencyRoleNodeModules, "node_modules")
+	case "go":
+		add(lsp.DependencyRoleGoModules, "go", "pkg", "mod")
+	case "rust":
+		add(lsp.DependencyRoleRustCargoHome, "cargo")
+	case "java":
+		add(lsp.DependencyRoleJavaMaven, "maven")
+		add(lsp.DependencyRoleJavaGradle, "gradle")
+	}
+	return result
+}
+
+func realDependencyDirectory(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0
 }
 
 func sameDependencyRoot(left, right string) bool {
@@ -599,6 +703,10 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 		writeLSPError(conn, "invalid_start", "first message must be type lsp.start")
 		return
 	}
+	if !validLSPSetupCommands(start.SetupCommands) {
+		writeLSPError(conn, "invalid_start", "dependency setup command fingerprint is invalid")
+		return
+	}
 	mode, err := lsp.ParseMode(start.Mode)
 	if err != nil {
 		writeLSPError(conn, "invalid_mode", err.Error())
@@ -689,7 +797,22 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 		pendingResourceRelease = combineLSPResourceReleases(dependencyLease.Release, activityRelease)
 	}
 	workspaceID := lsp.StableWorkspaceIdentity(user.ID, teamID, projectID, branch, folderKey)
-	dependencyRequest, dependencyView, dependencyResolved := h.resolveAnalysisDependencies(user.ID, teamID, runtimeID, start.LanguageID, remoteRoot, workspaceID, sharedHost, snapshotRoot, dependencyGeneration)
+	projectDependencies := personalProjectDependencyView{}
+	if teamID == "" {
+		projectDependencies = h.resolvePersonalProjectDependencies(
+			user.ID, workspaceID, start.Workspace.FolderName, runtimeID, runtimeImage, start.LanguageID, remoteRoot, start.SetupCommands,
+		)
+		if projectDependencies.Generation != "" {
+			dependencyGeneration = projectDependencies.Generation
+		}
+		if projectDependencies.Release != nil {
+			pendingResourceRelease = combineLSPResourceReleases(projectDependencies.Release, pendingResourceRelease)
+		}
+	}
+	dependencyRequest, dependencyView, dependencyResolved := h.resolveAnalysisDependencies(user.ID, teamID, runtimeID, start.LanguageID, remoteRoot, workspaceID, sharedHost, snapshotRoot, dependencyGeneration, projectDependencies)
+	if projectDependencies.Release != nil && (!dependencyResolved || !dependencyView.UsesHostRoot(projectDependencies.Root)) {
+		projectDependencies.Release()
+	}
 	if err := h.revalidateLSPWorkspace(remoteRoot, teamID, projectID); err != nil {
 		if teamDependencies != nil {
 			teamDependencies.Release()
