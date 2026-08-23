@@ -1,6 +1,6 @@
 # BOBOCloud Plugin Development Guide
 
-This guide targets the BOBOCloud Plugin API `1.2.0` in BOBOCloud `2.6.0` and later.
+This guide targets the BOBOCloud Plugin API `1.3.0` in BOBOCloud `2.6.1` and later.
 
 Plugins are installed locally. They run in an isolated sandbox and communicate with the workbench through a narrow, permission-gated API. A plugin is never given Node.js, Electron IPC, `window.api`, account credentials, the workspace path, or arbitrary DOM access.
 
@@ -29,8 +29,8 @@ hello-plugin/
   "description": "Adds a safe example command.",
   "version": "1.0.0",
   "engines": {
-    "bobocloud": ">=2.6.0",
-    "pluginApi": "^1.2.0"
+    "bobocloud": ">=2.6.1",
+    "pluginApi": "^1.3.0"
   },
   "main": "dist/extension.js",
   "activationEvents": ["onStartupFinished"],
@@ -64,7 +64,7 @@ export async function deactivate() {
 }
 ```
 
-Calculate the SHA-256 for `dist/extension.js`, replace the manifest value, create a `.boboplugin` archive, then open the **Extensions** activity-bar view and choose **Install .boboplugin package**. The normal user-facing picker accepts only that archive format and remembers a plugin-private import location, never the current workspace folder. The application installs a plugin in a disabled state. Open its detail tab to enable it and grant the requested `commands.register` permission.
+Calculate the SHA-256 for `dist/extension.js`, replace the manifest value, create a `.boboplugin` archive, then open the **Extensions** activity-bar view and choose **Install .boboplugin package**. The normal user-facing picker accepts only that archive format and remembers a plugin-private import location, never the current workspace folder. The application installs a plugin in a disabled state with its declared permissions granted by default. Open its detail tab to inspect those grants and enable it.
 
 ## 2. Package Format
 
@@ -81,12 +81,13 @@ The host copies the package into its private application-data directory. That lo
 ### Package rules
 
 - The root `manifest.json` is required and must be valid JSON.
-- Package schema version is exactly `1`.
+- Package schema version is `1` for activation-only plugins or `2` for plugins that declare document viewers.
 - Plugin ids use lower-case reverse-domain notation, such as `publisher.feature`.
 - The plugin entry must be a relative POSIX `.js` or `.mjs` path. Backslashes, absolute paths, `..`, hidden segments, symlinks, executables, and special files are rejected.
-- API v1 accepts one bundled JavaScript entry. Relative JavaScript imports are not supported because the sandbox imports the verified entry from a Blob URL.
+- The activation entry is one self-contained JavaScript bundle. Relative JavaScript imports are not supported because the sandbox imports the verified entry from a Blob URL.
+- Schema 1 rejects every other JavaScript file. Schema 2 additionally allows only document-view entries and JavaScript text resources named by `contributes.documentViewers`.
 - Archives must be ordinary single-disk, non-encrypted ZIP files. ZIP64 archives are rejected.
-- A package is limited to 128 files, 64 MiB expanded content, 32 MiB archive content, 8 MiB per file, 128 KiB manifest, and 2 MiB entry source at load time.
+- A package is limited to 128 files, 64 MiB expanded content, 32 MiB archive content, 8 MiB per file, 128 KiB manifest, and 2 MiB activation-entry source at load time. Each document-view entry or resource is limited to 8 MiB and one loaded view is limited to 24 MiB combined.
 - Allowed non-manifest files are `.js`, `.mjs`, `.json`, `.md`, `.txt`, `.svg`, `.png`, `.jpg`, `.jpeg`, `.webp`, and `.css`.
 - Every non-manifest file must be listed once in the integrity map. Files not listed in the map and map entries without a file are rejected.
 
@@ -96,17 +97,17 @@ These checks are deliberately strict. They prevent path traversal, archive bombs
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `schemaVersion` | Yes | Must be `1`. |
+| `schemaVersion` | Yes | `1` for the original single-entry package format; `2` when declaring document viewers. |
 | `id` | Yes | Lower-case namespaced id, for example `acme.project-tools`. Commands and contribution ids must begin with this value plus `.`. |
 | `displayName` | No | Human-readable name, up to 120 characters. Defaults to `id`. |
 | `description` | No | Human-readable summary, up to 500 characters. |
 | `version` | Yes | Strict semantic version, for example `1.2.3`. |
-| `engines.bobocloud` | Yes | Semver range supported by the BOBOCloud application, for example `>=2.6.0 <3.0.0`. |
-| `engines.pluginApi` | Yes | Semver range supported by the plugin API, for example `^1.2.0`. |
+| `engines.bobocloud` | Yes | Semver range supported by the BOBOCloud application, for example `>=2.6.1 <3.0.0`. |
+| `engines.pluginApi` | Yes | Semver range supported by the plugin API, for example `^1.3.0` for document views. |
 | `main` | Yes | One bundled `.js` or `.mjs` entry relative to the package root. |
 | `activationEvents` | No | Optional array of up to 64 bounded activation labels. API v1 stores these labels as metadata; enabled, verified packages currently activate after the workbench is ready. |
-| `permissions` | Yes | Unique capability ids. API 1.2.0 accepts the command, contribution, read-only service, source-control, SCM decoration, and local-SCM permissions listed in the API reference. Declared permissions are the package's hard capability ceiling and are enabled automatically after a verified install. |
-| `contributes` | No | Bounded declarative JSON contribution metadata. |
+| `permissions` | Yes | Unique capability ids. API 1.3.0 accepts the permissions listed in the API reference. Declared permissions are the package's hard capability ceiling and are enabled automatically after a verified install. |
+| `contributes` | No | Bounded declarative JSON contribution metadata. Schema 2 may declare `documentViewers`; each executable view still requires runtime registration. |
 | `localization` | No | Map from `default`, `en`, `zh-CN`, or `ja` to a package-relative JSON file. |
 | `integrity` | Yes | SHA-256 file coverage map described below. |
 
@@ -155,7 +156,7 @@ Compress-Archive -Path manifest.json,dist -DestinationPath ..\hello-plugin.zip
 Rename-Item ..\hello-plugin.zip hello-plugin.boboplugin
 ```
 
-Do not include `node_modules`, a source map, a second JavaScript module, or a folder enclosing the package root unless each file is intended for the package and listed in `integrity.files`.
+Do not include `node_modules`, a source map, an undeclared JavaScript module, or a folder enclosing the package root. Every intended package file must be listed in `integrity.files`.
 
 ## 5. Activation and Lifecycle
 
@@ -193,7 +194,7 @@ Do not start background work during activation. API v1's optional activation eve
 
 ## 6. Runtime API
 
-The sandbox receives a frozen `context` object. All methods are asynchronous except adding a subscription. Arguments and results cross a JSON-like data boundary: plain objects, arrays, strings, booleans, finite numbers, and `null`. Functions, DOM nodes, class instances, accessors, circular data, and oversized payloads are rejected. TypeScript projects can reference [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts) for the exact API `1.2.0` declarations.
+The activation sandbox receives a frozen `context` object. All methods are asynchronous except adding a subscription. Arguments and results cross a JSON-like data boundary: plain objects, arrays, strings, booleans, finite numbers, and `null`. Functions, DOM nodes, class instances, accessors, circular data, and oversized payloads are rejected. TypeScript projects can reference [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts) for the exact API `1.3.0` declarations.
 
 ```ts
 interface Disposable { dispose(): void }
@@ -216,6 +217,9 @@ interface PluginContext {
   }>;
   readonly sourceControl: Readonly<{
     register(descriptor: SourceControlDescriptor): Promise<SourceControlStateProvider>;
+  }>;
+  readonly documentViews: Readonly<{
+    register(descriptor: { id: string; title: string }): Promise<Disposable>;
   }>;
   readonly services: Readonly<{
     get(id: string): Promise<unknown>;
@@ -262,6 +266,30 @@ The command registry is live in API v1. A command-palette integration is only ex
 
 The host intentionally rejects executable file-decoration providers and debug-configuration providers. The static SCM decoration publisher is a separately permissioned, data-only exception. API v1 implements package validation, isolation, lifecycle cleanup, the command registry, and the read-only task snapshot. The contribution points above are accepted as declarative, lifecycle-managed data but are reserved for future workbench consumers: they do not yet create a visible UI, execute a task, start an MCP server, invoke an AI tool, or load a language provider. Mark feature usage as optional and provide a command fallback until the corresponding consumer is released.
 
+### Document views
+
+Document views use a dedicated API rather than the generic contribution registry. Use package schema 2, declare the exact executable entry and resources, and request both permissions:
+
+```json
+{
+  "schemaVersion": 2,
+  "permissions": ["documentViews.register", "documents.read"],
+  "contributes": {
+    "documentViewers": [{
+      "id": "example.preview.markdown",
+      "extensions": [".md", ".markdown"],
+      "entry": "dist/document-view.js",
+      "resources": ["dist/document-view.css"],
+      "priority": 100
+    }]
+  }
+}
+```
+
+The activation entry calls `context.documentViews.register({ id, title })`. The id must match the manifest and use the plugin namespace; the host derives extensions, entry, resources, and priority from the verified manifest rather than trusting runtime data. Re-register localized titles after `context.i18n.onDidChange` and own every registration through `context.subscriptions`.
+
+The view entry separately exports `activate(context)`. It receives a DOM root only inside its own opaque-origin iframe, bounded metadata without a local path, plugin localization, host theme variables, verified resource Blob URLs, and `read`, `readAll`, and `readText` for the current document. It does not receive the activation context or any general workbench capability. See [Plugin API: Document Views](./plugin-api.md#document-views) and the SDK declarations for the exact shape.
+
 ### Read-only services
 
 `services.get` needs `services.read`. The current allowlist is:
@@ -278,17 +306,17 @@ Every referenced command must be registered by the same plugin and use its names
 
 ### Local SCM and file decorations
 
-API 1.2.0 includes a permission-gated, local-only SCM boundary:
+API 1.2.0 introduced a permission-gated, local-only SCM boundary:
 
 - `context.sourceControl.register()` creates a data-only, host-rendered sidebar state provider.
 - `context.fileDecorations.registerScm()` publishes fixed-status, workspace-relative entries into the file tree's existing `scm` rail.
 - `context.scm.git` exposes only the named, structured local SCM requests documented in [Plugin API: Local SCM API](./plugin-api.md#local-scm-api).
 
-The package never receives a workspace root, local file handle, shell, environment, raw network capability, credential, DOM node, styling primitive, or arbitrary process arguments. Request only the exact permission needed: `sourceControl.register`, `fileDecorations.scm`, `scm.git.read`, or `scm.git.write`.
+The activation entry never receives a workspace root, local file handle, shell, environment, raw network capability, credential, DOM node, styling primitive, or arbitrary process arguments. Request only the exact permission needed: `sourceControl.register`, `fileDecorations.scm`, `scm.git.read`, or `scm.git.write`.
 
 ### Read-only host metadata
 
-`context.host.request()` is a narrow read-only metadata API. It is not a manifest permission and does not provide a general broker. API `1.2.0` accepts only these methods:
+`context.host.request()` is a narrow read-only metadata API. It is not a manifest permission and does not provide a general broker. API `1.3.0` accepts only these methods:
 
 - `host.getInfo` returns the plugin API version and the calling plugin's id and version.
 - `permissions.get` returns the calling plugin's requested and currently granted permissions.
@@ -309,7 +337,10 @@ Every permission must appear in `manifest.permissions`. After a verified install
 | `fileDecorations.scm` | Publish bounded fixed-status entries to the SCM file-tree rail. |
 | `scm.git.read` | Call read-only structured local SCM operations. |
 | `scm.git.write` | Call structured local SCM mutation operations. |
-These eight permissions are valid in an API 1.2.0 manifest. Automatic enablement does not bypass the sandbox, the main-process broker, argument validation, ownership rules, or workspace scoping. Workspace access, general networking, process execution, raw credentials, MCP, AI, task execution, and debugger capabilities are not requestable in API 1.2.0.
+| `documentViews.register` | Register a document viewer already authorized by schema-2 manifest metadata. |
+| `documents.read` | Read only the current user-opened document from that viewer through a scoped opaque handle. |
+
+These ten permissions are valid in an API 1.3.0 manifest. Automatic enablement does not bypass the sandbox, the main-process broker, argument validation, ownership rules, or workspace scoping. Workspace enumeration and general access, networking, process execution, raw credentials, MCP, AI, task execution, and debugger capabilities are not requestable in API 1.3.0.
 
 ## 8. Security Model
 
@@ -320,7 +351,9 @@ The security model is part of the compatibility contract:
 - The shell creates one host-generated Blob Worker. The worker receives the verified entry over a `MessageChannel` and is the only context that executes package code.
 - The sandbox CSP permits only that Blob Worker (`worker-src blob:`) and denies network connections, frames, object/media loads, and external imports. The worker additionally disables `fetch`, XHR, WebSocket, EventSource, `importScripts`, nested workers, and shared workers.
 - The worker receives a single bundled entry over a Blob URL. It cannot resolve arbitrary package or local paths and has no Node.js, Electron, `window.api`, `window.BOBO`, DOM, or workbench object access.
-- Main process policy validates installations, permissions, IPC sender identity, bounded RPC arguments, allowed service ids, and the structured local-SCM allowlist.
+- A document view uses a second opaque-origin iframe with `sandbox=allow-scripts`, a network-denying CSP, blocked browser connection APIs, no parent/workbench access, and no absolute path. It receives only verified source/resources and the selected file through a scoped MessageChannel broker.
+- Document sessions are bound to the IPC sender, plugin id, viewer id, workspace identity, file size, and modification time. The main process reauthorizes every chunk and closes sessions on tab/plugin/workspace/sender lifecycle events.
+- Main process policy validates installations, permissions, IPC sender identity, bounded RPC arguments, allowed service ids, document handles, and the structured local-SCM allowlist.
 - The renderer validates owned ids, message protocol version, data-only payloads, request timeouts, and reverse-order disposal.
 - The management UI sees only sanitized package metadata. It does not receive plugin source, internal installation paths, or secrets.
 
@@ -348,7 +381,7 @@ Use `context.i18n.t(key, values?)` for package-owned text and subscribe with `co
 
 Before publishing a package:
 
-1. Build one ESM entry file with no relative JavaScript imports.
+1. Build the activation entry and every declared view entry as self-contained ESM files with no relative JavaScript imports.
 2. Validate the `id`, semantic versions, engine ranges, permissions, and package paths.
 3. Regenerate the integrity map after every byte change.
 4. Open the Extensions activity-bar view, use its local install action to select the `.boboplugin` archive, then open the extension's workbench detail tab.
@@ -358,11 +391,12 @@ Before publishing a package:
 8. Exercise an activation error, a thrown command, and a slow command. The workbench must remain usable.
 9. Test English, Simplified Chinese, and Japanese strings for any visible plugin contribution.
 10. Run the host repository's `npm test` when contributing changes to the Plugin API itself.
+11. For document views, verify the iframe lacks `allow-same-origin`, cannot read `window.parent`, `window.api`, or the network, and loses document access after permission revocation, disable, tab close, or workspace switch.
 
 ## 11. Compatibility and Publishing
 
 - Treat `engines.pluginApi` major versions as hard compatibility boundaries.
-- Prefer a conservative range such as `^1.2.0`; do not claim future API support before testing it.
+- Prefer a conservative range such as `^1.3.0` when using document views; do not claim future API support before testing it.
 - Additive behavior may arrive in a plugin API minor version. Removed or changed behavior requires a new major API version.
 - Keep command ids, setting ids, contribution ids, and persisted data names stable after release.
 - The `.boboplugin` extension only identifies an installable package. It is not a signature or a trust endorsement.
@@ -377,5 +411,6 @@ Before publishing a package:
 | Plugin stays disabled | It was explicitly disabled, found incompatible, or failed package integrity validation. | Review the detail page, reinstall a verified compatible package, then enable it. |
 | API call is denied | The permission was not declared or the user revoked it. | Add the minimal manifest permission and reinstall/update, or restore the revoked permission in the detail tab. |
 | Activation fails | The entry is not a single ESM bundle or does not export `activate(context)`. | Build a self-contained `.js` or `.mjs` entry and export `activate`. |
+| A document opens as text | Its viewer was not declared and registered, lacks a permission, or the extension is disabled. | Check schema 2, the exact namespaced id, both document-view permissions, integrity, and enabled state. |
 | Command is not shown in the palette | The active command palette may not support disposable third-party registrations yet. | Keep the command registration, but expose a supported menu/contribution when that consumer is released. |
-| A privileged operation is unavailable | API v1 does not expose filesystem, network, process, credential, MCP, AI, task, or debugger capabilities. | Do not rely on undocumented bridges; wait for a named, permissioned API. |
+| A privileged operation is unavailable | API v1 does not expose general filesystem, network, process, credential, MCP, AI, task, or debugger capabilities. | Do not rely on undocumented bridges; use only a named, permissioned broker. |

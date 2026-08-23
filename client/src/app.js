@@ -93,6 +93,7 @@
 
   // ── Phase 6: Views (theme, image-preview, diff close) ──
   try { BOBO.views.init(); } catch (e) { console.error('views init:', e); }
+  try { if (BOBO.documentViews) BOBO.documentViews.init(); } catch (e) { console.error('document views init:', e); }
 
   // ── Phase 7: Resizers ──
   if (!BOBO.workbench) {

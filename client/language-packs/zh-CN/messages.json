@@ -61,6 +61,7 @@
   "Comparing:": "正在比较：",
   "Close diff (Escape)": "关闭差异视图 (Escape)",
   "Preview": "预览",
+  "Document preview failed": "文档预览失败",
   "Resize primary sidebar": "调整主侧边栏大小",
   "Resize panel": "调整面板大小",
   "Workbench panel": "工作台面板",

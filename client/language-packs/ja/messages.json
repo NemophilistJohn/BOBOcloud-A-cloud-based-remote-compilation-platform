@@ -61,6 +61,7 @@
   "Comparing:": "比較中：",
   "Close diff (Escape)": "差分を閉じる (Escape)",
   "Preview": "プレビュー",
+  "Document preview failed": "ドキュメントのプレビューに失敗しました",
   "Resize primary sidebar": "プライマリサイドバーのサイズを変更",
   "Resize panel": "パネルのサイズを変更",
   "Workbench panel": "ワークベンチパネル",

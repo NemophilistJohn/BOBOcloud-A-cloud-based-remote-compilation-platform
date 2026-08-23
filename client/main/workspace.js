@@ -121,6 +121,13 @@ function createWorkspaceController(options) {
     return target;
   }
 
+  function resolveWorkspaceFile(candidate) {
+    const filePath = resolveWorkspacePath(candidate);
+    const stat = fs.lstatSync(filePath);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Path is not an ordinary workspace file');
+    return { filePath, workspaceIdentity };
+  }
+
   function validateEntryName(name) {
     if (typeof name !== 'string' || !name.trim() || name !== name.trim()) throw new Error('Enter a valid name');
     if (name === '.' || name === '..' || name.includes('/') || name.includes('\\') || name.includes('\0')) {
@@ -658,6 +665,7 @@ function createWorkspaceController(options) {
     handleRendererGone: () => settleLeaveRequests(true),
     handleWindowClosed,
     clearWatchers,
+    resolveWorkspaceFile,
     getIdentity: () => ({ rootPath: workspaceRoot, workspaceIdentity })
   };
 }

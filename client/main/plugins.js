@@ -10,9 +10,10 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const zlib = require('node:zlib');
 const { SCM_GIT_METHODS, createScmGitBroker } = require('./scm-git');
+const { createPluginDocumentBroker } = require('./plugin-documents');
 
-const PLUGIN_API_VERSION = '1.2.0';
-const PACKAGE_SCHEMA_VERSION = 1;
+const PLUGIN_API_VERSION = '1.3.0';
+const PACKAGE_SCHEMA_VERSIONS = new Set([1, 2]);
 const STATE_SCHEMA_VERSION = 1;
 const PERMISSIONS_SCHEMA_VERSION = 2;
 const INSTALL_RECEIPT = '.bobocloud-install.json';
@@ -28,6 +29,9 @@ const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_FILE_COUNT = 128;
 const MAX_MANIFEST_BYTES = 128 * 1024;
 const MAX_ENTRY_BYTES = 2 * 1024 * 1024;
+const MAX_DOCUMENT_VIEW_ENTRY_BYTES = 8 * 1024 * 1024;
+const MAX_DOCUMENT_VIEW_RESOURCE_BYTES = 8 * 1024 * 1024;
+const MAX_DOCUMENT_VIEW_TOTAL_BYTES = 24 * 1024 * 1024;
 const MAX_LOCALIZATION_BYTES = 128 * 1024;
 const MAX_LOCALIZATION_ENTRIES = 1024;
 const MAX_LOCALIZATION_KEY_LENGTH = 160;
@@ -42,7 +46,9 @@ const PluginPermission = Object.freeze({
   SOURCE_CONTROL_REGISTER: 'sourceControl.register',
   SCM_GIT_READ: 'scm.git.read',
   SCM_GIT_WRITE: 'scm.git.write',
-  FILE_DECORATIONS_SCM: 'fileDecorations.scm'
+  FILE_DECORATIONS_SCM: 'fileDecorations.scm',
+  DOCUMENT_VIEWS_REGISTER: 'documentViews.register',
+  DOCUMENTS_READ: 'documents.read'
 });
 
 const KNOWN_PERMISSIONS = new Set(Object.values(PluginPermission));
@@ -54,6 +60,7 @@ const KNOWN_CONTRIBUTION_POINTS = new Set([
   'tasks',
   'debug.configurationProviders',
   'sourceControl',
+  'documentViews',
   'settings',
   'languages',
   'ai.tools',
@@ -64,6 +71,7 @@ const ALLOWED_FILE_EXTENSIONS = new Set([
   '.js', '.mjs', '.json', '.md', '.txt', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.css'
 ]);
 const SCRIPT_EXTENSIONS = new Set(['.js', '.mjs']);
+const DOCUMENT_VIEW_RESOURCE_EXTENSIONS = new Set(['.js', '.mjs', '.css', '.json', '.svg', '.txt']);
 const RESERVED_PACKAGE_FILES = new Set([INSTALL_RECEIPT, REGISTRY_FILE, PERMISSIONS_FILE]);
 const ALLOWED_MANIFEST_FIELDS = new Set([
   'schemaVersion', 'id', 'displayName', 'description', 'version', 'engines', 'main',
@@ -286,8 +294,8 @@ function assertNoUnknownFields(value, allowed, label) {
 function validateManifest(manifest, files, hostVersion) {
   if (!isPlainObject(manifest)) throw pluginError('plugins.manifest.invalid', 'Plugin manifest must be a JSON object.');
   assertNoUnknownFields(manifest, ALLOWED_MANIFEST_FIELDS, 'Plugin manifest');
-  if (manifest.schemaVersion !== PACKAGE_SCHEMA_VERSION) {
-    throw pluginError('plugins.manifest.schema', 'Plugin manifest schemaVersion must be ' + PACKAGE_SCHEMA_VERSION + '.');
+  if (!PACKAGE_SCHEMA_VERSIONS.has(manifest.schemaVersion)) {
+    throw pluginError('plugins.manifest.schema', 'Plugin manifest schemaVersion must be 1 or 2.');
   }
   const id = assertSafePluginId(manifest.id);
   if (!isValidSemver(manifest.version)) throw pluginError('plugins.manifest.version', 'Plugin version must be valid semver.');
@@ -318,10 +326,14 @@ function validateManifest(manifest, files, hostVersion) {
   if (manifest.contributes !== undefined && (!isPlainObject(manifest.contributes) || Buffer.byteLength(stableJson(manifest.contributes), 'utf8') > MAX_MANIFEST_BYTES)) {
     throw pluginError('plugins.manifest.contributes', 'Plugin contributions must be a bounded JSON object.');
   }
+  const documentViewers = validateDocumentViewers(manifest.contributes || {}, files, id, manifest.schemaVersion);
   if (manifest.localization !== undefined) validateLocalization(manifest.localization, files);
-  const integrity = validateIntegrity(manifest.integrity, files, main);
+  const integrity = validateIntegrity(manifest.integrity, files, main, {
+    schemaVersion: manifest.schemaVersion,
+    executableFiles: documentViewers.executableFiles
+  });
   const normalized = {
-    schemaVersion: PACKAGE_SCHEMA_VERSION,
+    schemaVersion: manifest.schemaVersion,
     id,
     displayName: isNonEmptyString(manifest.displayName, 120) ? manifest.displayName.trim() : id,
     description: isNonEmptyString(manifest.description, 500) ? manifest.description.trim() : '',
@@ -330,11 +342,65 @@ function validateManifest(manifest, files, hostVersion) {
     main,
     activationEvents: [...activationEvents],
     permissions: [...permissions],
-    contributes: manifest.contributes ? cloneJson(manifest.contributes) : {},
+    contributes: documentViewers.contributes,
     localization: manifest.localization ? cloneJson(manifest.localization) : {},
     integrity
   };
   return immutable(normalized);
+}
+
+function validateDocumentViewers(contributes, files, pluginId, schemaVersion) {
+  const normalized = cloneJson(contributes || {});
+  const executableFiles = new Set();
+  if (normalized.documentViewers === undefined) return { contributes: normalized, executableFiles };
+  if (schemaVersion !== 2) {
+    throw pluginError('plugins.manifest.documentViews', 'Document viewers require package schemaVersion 2.');
+  }
+  if (!Array.isArray(normalized.documentViewers) || normalized.documentViewers.length < 1 || normalized.documentViewers.length > 16) {
+    throw pluginError('plugins.manifest.documentViews', 'Document viewers must be a non-empty array with at most 16 entries.');
+  }
+  const seenIds = new Set();
+  normalized.documentViewers = normalized.documentViewers.map((viewer) => {
+    if (!isPlainObject(viewer)) throw pluginError('plugins.manifest.documentViews', 'Document viewer descriptor must be an object.');
+    const allowed = new Set(['id', 'extensions', 'entry', 'resources', 'priority']);
+    assertNoUnknownFields(viewer, allowed, 'Document viewer descriptor');
+    const viewerId = String(viewer.id || '');
+    if (!isNonEmptyString(viewerId, 180) || !viewerId.startsWith(pluginId + '.') || seenIds.has(viewerId)) {
+      throw pluginError('plugins.manifest.documentViews', 'Document viewer ids must be unique and use the plugin namespace.');
+    }
+    seenIds.add(viewerId);
+    if (!Array.isArray(viewer.extensions) || viewer.extensions.length < 1 || viewer.extensions.length > 32) {
+      throw pluginError('plugins.manifest.documentViews', 'Document viewer extensions must be a non-empty bounded array.');
+    }
+    const extensions = viewer.extensions.map((extension) => String(extension || '').toLowerCase());
+    if (new Set(extensions).size !== extensions.length || extensions.some((extension) => !/^\.[a-z0-9][a-z0-9+_-]{0,15}$/.test(extension))) {
+      throw pluginError('plugins.manifest.documentViews', 'Document viewer extensions must be unique lowercase file extensions.');
+    }
+    const entry = normalizeRelativePath(viewer.entry, 'Document viewer entry');
+    if (!SCRIPT_EXTENSIONS.has(path.posix.extname(entry).toLowerCase()) || !files.has(entry)) {
+      throw pluginError('plugins.manifest.documentViews', 'Document viewer entry must reference an included JavaScript file.');
+    }
+    executableFiles.add(entry);
+    const resources = viewer.resources === undefined ? [] : viewer.resources;
+    if (!Array.isArray(resources) || resources.length > 16) {
+      throw pluginError('plugins.manifest.documentViews', 'Document viewer resources must be a bounded array.');
+    }
+    const normalizedResources = resources.map((resource) => normalizeRelativePath(resource, 'Document viewer resource'));
+    if (new Set(normalizedResources).size !== normalizedResources.length || normalizedResources.some((resource) => (
+      !files.has(resource) || !DOCUMENT_VIEW_RESOURCE_EXTENSIONS.has(path.posix.extname(resource).toLowerCase())
+    ))) {
+      throw pluginError('plugins.manifest.documentViews', 'Document viewer resources must reference unique included text resources.');
+    }
+    normalizedResources.forEach((resource) => {
+      if (SCRIPT_EXTENSIONS.has(path.posix.extname(resource).toLowerCase())) executableFiles.add(resource);
+    });
+    const priority = viewer.priority === undefined ? 0 : viewer.priority;
+    if (!Number.isInteger(priority) || priority < -1000 || priority > 1000) {
+      throw pluginError('plugins.manifest.documentViews', 'Document viewer priority must be an integer from -1000 to 1000.');
+    }
+    return { id: viewerId, extensions, entry, resources: normalizedResources, priority };
+  });
+  return { contributes: normalized, executableFiles };
 }
 
 function validateLocalization(localization, files) {
@@ -385,7 +451,7 @@ function parseLocalizationMessages(source) {
   return immutable(messages);
 }
 
-function validateIntegrity(value, files, main) {
+function validateIntegrity(value, files, main, options = {}) {
   if (!isPlainObject(value) || value.algorithm !== 'sha256' || !isPlainObject(value.files)) {
     throw pluginError('plugins.manifest.integrity', 'Plugin manifest must contain a SHA-256 integrity.files map.');
   }
@@ -408,8 +474,14 @@ function validateIntegrity(value, files, main) {
   }
   if (!Object.hasOwn(hashes, main)) throw pluginError('plugins.manifest.integrity', 'Plugin main entry must have an integrity hash.');
   const scripts = actual.filter((file) => SCRIPT_EXTENSIONS.has(path.posix.extname(file).toLowerCase()));
-  if (scripts.length !== 1 || scripts[0] !== main) {
+  if (options.schemaVersion === 1 && (scripts.length !== 1 || scripts[0] !== main)) {
     throw pluginError('plugins.manifest.main', 'Plugin v1 packages must contain one bundled JavaScript entry and no relative code modules.');
+  }
+  if (options.schemaVersion === 2) {
+    const allowedScripts = new Set([main, ...Array.from(options.executableFiles || [])]);
+    if (scripts.length !== allowedScripts.size || scripts.some((script) => !allowedScripts.has(script))) {
+      throw pluginError('plugins.manifest.main', 'Plugin v2 scripts must be declared as the main entry or a document-view resource.');
+    }
   }
   return immutable({ algorithm: 'sha256', files: hashes });
 }
@@ -796,6 +868,33 @@ function createPluginController(options) {
   let initializePromise = null;
   let mutationQueue = Promise.resolve();
 
+  function documentViewerForRecord(record, viewerId, requireReadPermission = true) {
+    if (!record || record.status !== 'enabled' || !record.integrity.valid || !record.manifest) {
+      throw pluginError('plugins.documentView.denied', 'Document viewer is only available from an enabled, verified plugin.');
+    }
+    if (!record.grantedPermissions.includes(PluginPermission.DOCUMENT_VIEWS_REGISTER) ||
+        (requireReadPermission && !record.grantedPermissions.includes(PluginPermission.DOCUMENTS_READ))) {
+      throw pluginError('plugins.documentView.permission', 'Document viewer permissions have not been granted.');
+    }
+    const viewers = record.manifest.contributes && record.manifest.contributes.documentViewers;
+    const viewer = Array.isArray(viewers) ? viewers.find((candidate) => candidate.id === viewerId) : null;
+    if (!viewer) throw pluginError('plugins.documentView.notFound', 'Document viewer is not declared by this plugin.');
+    return viewer;
+  }
+
+  function authorizeDocumentViewer(pluginId, viewerId, requireReadPermission = true) {
+    const record = records.get(assertSafePluginId(pluginId));
+    return documentViewerForRecord(record, viewerId, requireReadPermission);
+  }
+
+  const documentBroker = typeof options.resolveWorkspaceFile === 'function' && typeof options.getWorkspaceIdentity === 'function'
+    ? createPluginDocumentBroker({
+      resolveWorkspaceFile: options.resolveWorkspaceFile,
+      getWorkspaceIdentity: options.getWorkspaceIdentity,
+      authorize: (pluginId, viewerId) => authorizeDocumentViewer(pluginId, viewerId, true)
+    })
+    : null;
+
   function packagePath(id) {
     assertSafePluginId(id);
     const target = path.join(pluginRoot, id);
@@ -949,7 +1048,16 @@ function createPluginController(options) {
 
   async function refreshInternal(reason = 'manual') {
     await initialize();
+    const previousIds = documentBroker ? new Set(records.keys()) : null;
     await scanInstalled();
+    if (documentBroker) {
+      for (const id of previousIds) {
+        if (!records.has(id)) documentBroker.closePlugin(id);
+      }
+      for (const record of records.values()) {
+        if (record.status !== 'enabled' || !record.integrity.valid) documentBroker.closePlugin(record.id);
+      }
+    }
     emitChanged(reason);
     return currentList();
   }
@@ -1082,6 +1190,7 @@ function createPluginController(options) {
       await persistPermissions();
     }
     registry.plugins[id] = Object.assign({}, registry.plugins[id], { enabled: enabled === true, version: record.version });
+    if (enabled !== true && documentBroker) documentBroker.closePlugin(id);
     await persistRegistry();
     await refreshInternal(enabled === true ? 'enabled' : 'disabled');
     return get(id);
@@ -1098,6 +1207,10 @@ function createPluginController(options) {
     const next = new Set(permissions.grants[pluginId] || []);
     if (granted === true) next.add(permission); else next.delete(permission);
     permissions.grants[pluginId] = Array.from(next).sort();
+    if (granted !== true && documentBroker &&
+        (permission === PluginPermission.DOCUMENT_VIEWS_REGISTER || permission === PluginPermission.DOCUMENTS_READ)) {
+      documentBroker.closePlugin(pluginId);
+    }
     permissions.initialized[pluginId] = true;
     await persistPermissions();
     await refreshInternal(granted === true ? 'permission-granted' : 'permission-revoked');
@@ -1108,6 +1221,7 @@ function createPluginController(options) {
     await initialize();
     const pluginId = assertSafePluginId(id);
     if (!records.has(pluginId)) throw pluginError('plugins.notFound', 'Plugin is not installed.');
+    if (documentBroker) documentBroker.closePlugin(pluginId);
     const destination = packagePath(pluginId);
     const backup = path.join(trashRoot, pluginId + '.' + crypto.randomUUID());
     await fsp.rename(destination, backup);
@@ -1234,6 +1348,57 @@ function createPluginController(options) {
     return immutable({ locale: selectedLocale, messages: parseLocalizationMessages(source) });
   }
 
+  function documentViewMimeType(relativePath) {
+    const extension = path.posix.extname(relativePath).toLowerCase();
+    if (extension === '.css') return 'text/css';
+    if (extension === '.json') return 'application/json';
+    if (extension === '.svg') return 'image/svg+xml';
+    if (extension === '.js' || extension === '.mjs') return 'text/javascript';
+    return 'text/plain';
+  }
+
+  async function loadVerifiedDocumentViewFile(record, relativePath, maximumBytes) {
+    const absolutePath = path.join(packagePath(record.id), ...relativePath.split('/'));
+    if (!directoryInside(packagePath(record.id), absolutePath)) {
+      throw pluginError('plugins.documentView.path', 'Document viewer resource resolves outside its package.');
+    }
+    const stat = await fsp.lstat(absolutePath).catch(() => null);
+    if (!stat || !stat.isFile() || stat.isSymbolicLink() || stat.size > maximumBytes) {
+      throw pluginError('plugins.documentView.size', 'Document viewer resource is unavailable or exceeds the host limit.');
+    }
+    const source = await fsp.readFile(absolutePath, 'utf8');
+    const expected = record.fileHashes && record.fileHashes[relativePath];
+    if (!expected || sha256(source) !== expected) {
+      await refresh('integrity-failed');
+      throw pluginError('plugins.integrity.mismatch', 'Document viewer resource integrity check failed.');
+    }
+    return { path: relativePath, source, hash: expected, mimeType: documentViewMimeType(relativePath) };
+  }
+
+  async function loadDocumentView(id, viewerId) {
+    await initialize();
+    const pluginId = assertSafePluginId(id);
+    const record = records.get(pluginId);
+    const viewer = documentViewerForRecord(record, viewerId, true);
+    const entry = await loadVerifiedDocumentViewFile(record, viewer.entry, MAX_DOCUMENT_VIEW_ENTRY_BYTES);
+    const resources = [];
+    let totalBytes = Buffer.byteLength(entry.source, 'utf8');
+    for (const resourcePath of viewer.resources) {
+      const resource = await loadVerifiedDocumentViewFile(record, resourcePath, MAX_DOCUMENT_VIEW_RESOURCE_BYTES);
+      totalBytes += Buffer.byteLength(resource.source, 'utf8');
+      if (totalBytes > MAX_DOCUMENT_VIEW_TOTAL_BYTES) {
+        throw pluginError('plugins.documentView.size', 'Document viewer source exceeds the combined host limit.');
+      }
+      resources.push(resource);
+    }
+    return immutable({
+      pluginId,
+      viewer: cloneJson(viewer),
+      entry,
+      resources
+    });
+  }
+
   function validateRpcArguments(args) {
     try {
       const encoded = JSON.stringify(args === undefined ? null : args);
@@ -1261,7 +1426,8 @@ function createPluginController(options) {
       'contributions.register': PluginPermission.CONTRIBUTIONS_REGISTER,
       'services.get': PluginPermission.SERVICES_READ,
       'sourceControl.register': PluginPermission.SOURCE_CONTROL_REGISTER,
-      'fileDecorations.scm.register': PluginPermission.FILE_DECORATIONS_SCM
+      'fileDecorations.scm.register': PluginPermission.FILE_DECORATIONS_SCM,
+      'documentViews.register': PluginPermission.DOCUMENT_VIEWS_REGISTER
     }, SCM_GIT_METHODS);
     if (method === 'host.getInfo') {
       return immutable({ apiVersion: PLUGIN_API_VERSION, plugin: { id: pluginId, version: record.version } });
@@ -1294,7 +1460,7 @@ function createPluginController(options) {
     }
     if (method === 'contributions.register') {
       if (!KNOWN_CONTRIBUTION_POINTS.has(payload.point) ||
-          payload.point === 'sourceControl' || payload.point === 'fileDecorations.scm' ||
+          payload.point === 'sourceControl' || payload.point === 'fileDecorations.scm' || payload.point === 'documentViews' ||
           !isNonEmptyString(payload.id, 180) || !payload.id.startsWith(pluginId + '.')) {
         throw pluginError('plugins.rpc.contribution', 'Plugin contribution is not a supported owned contribution.');
       }
@@ -1323,6 +1489,21 @@ function createPluginController(options) {
           (payload.priority !== undefined && (!Number.isInteger(payload.priority) || payload.priority < -1000 || payload.priority > 1000))) {
         throw pluginError('plugins.rpc.scmDecoration', 'SCM decoration provider is not a supported owned descriptor.');
       }
+    }
+    if (method === 'documentViews.register') {
+      const allowed = new Set(['id', 'title']);
+      if (Object.keys(payload).some((key) => !allowed.has(key)) ||
+          !isNonEmptyString(payload.id, 180) || !payload.id.startsWith(pluginId + '.') ||
+          !isNonEmptyString(payload.title, 120)) {
+        throw pluginError('plugins.rpc.documentView', 'Document viewer registration is invalid.');
+      }
+      const viewer = authorizeDocumentViewer(pluginId, payload.id, false);
+      return immutable({
+        authorized: true,
+        method,
+        permission,
+        viewer: Object.assign(cloneJson(viewer), { title: payload.title.trim() })
+      });
     }
     // Renderer extension host owns the actual registry operation. The main
     // process is the authority for the capability decision only.
@@ -1360,6 +1541,24 @@ function createPluginController(options) {
       trustedSender(event);
       return loadLocalization(payload && payload.id, payload && payload.locale);
     });
+    ipcMain.handle('plugins:load-document-view', async (event, payload) => {
+      trustedSender(event);
+      return loadDocumentView(payload && payload.pluginId, payload && payload.viewerId);
+    });
+    ipcMain.handle('plugins:document-open', async (event, payload) => {
+      trustedSender(event);
+      if (!documentBroker) throw pluginError('plugins.documentView.unavailable', 'Document viewer broker is unavailable.');
+      return documentBroker.open(event, payload);
+    });
+    ipcMain.handle('plugins:document-read', async (event, payload) => {
+      trustedSender(event);
+      if (!documentBroker) throw pluginError('plugins.documentView.unavailable', 'Document viewer broker is unavailable.');
+      return documentBroker.read(event, payload);
+    });
+    ipcMain.handle('plugins:document-close', async (event, payload) => {
+      trustedSender(event);
+      return documentBroker ? documentBroker.close(event, payload) : { closed: false };
+    });
     ipcMain.handle('plugins:rpc', async (event, payload) => {
       trustedSender(event);
       return rpc(payload && payload.pluginId, payload && payload.method, payload && payload.args);
@@ -1383,6 +1582,7 @@ function createPluginController(options) {
     runtimeDescriptors,
     loadEntry,
     loadLocalization,
+    loadDocumentView,
     rpc,
     openFolder,
     get root() { return pluginRoot; }

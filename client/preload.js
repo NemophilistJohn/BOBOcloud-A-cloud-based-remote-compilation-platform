@@ -182,6 +182,12 @@ contextBridge.exposeInMainWorld('api', {
     runtimeDescriptors: () => ipcRenderer.invoke('plugins:runtime-descriptors'),
     loadEntry: (id) => ipcRenderer.invoke('plugins:load-entry', id),
     loadLocalization: (id, locale) => ipcRenderer.invoke('plugins:load-localization', { id, locale }),
+    loadDocumentView: (pluginId, viewerId) => ipcRenderer.invoke('plugins:load-document-view', { pluginId, viewerId }),
+    documents: Object.freeze({
+      open: (pluginId, viewerId, filePath) => ipcRenderer.invoke('plugins:document-open', { pluginId, viewerId, filePath }),
+      read: (documentId, offset, length) => ipcRenderer.invoke('plugins:document-read', { documentId, offset, length }),
+      close: (documentId) => ipcRenderer.invoke('plugins:document-close', { documentId })
+    }),
     marketplace: Object.freeze({
       list: () => ipcRenderer.invoke('plugins:marketplace-list'),
       refresh: () => ipcRenderer.invoke('plugins:marketplace-refresh'),

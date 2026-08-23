@@ -80,6 +80,8 @@ function extensionWorkerBootstrapSource() {
     FILE_DECORATIONS_SCM_SET: 'fileDecorations.scm.set',
     FILE_DECORATIONS_SCM_CLEAR: 'fileDecorations.scm.clear',
     FILE_DECORATIONS_SCM_DISPOSE: 'fileDecorations.scm.dispose',
+    DOCUMENT_VIEW_REGISTER: 'documentViews.register',
+    DOCUMENT_VIEW_DISPOSE: 'documentViews.dispose',
     SERVICE_GET: 'services.get',
     BROKER_REQUEST: 'host.request'
   };
@@ -323,6 +325,16 @@ function extensionWorkerBootstrapSource() {
           });
           addSubscription(provider);
           return provider;
+        }
+      }),
+      documentViews: Object.freeze({
+        async register(descriptor) {
+          const result = await request(HOST_METHOD.DOCUMENT_VIEW_REGISTER, descriptor);
+          const disposable = makeDisposable(() => {
+            request(HOST_METHOD.DOCUMENT_VIEW_DISPOSE, { handle: result.handle }).catch(() => {});
+          });
+          addSubscription(disposable);
+          return disposable;
         }
       }),
       scm: Object.freeze({

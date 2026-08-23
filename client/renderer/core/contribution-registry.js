@@ -1,6 +1,7 @@
 import { toDisposable } from './disposable.js';
 import { validateFileDecorationProvider } from './file-decoration.js';
 import { validateSourceControlDescriptor } from './source-control.js';
+import { validateDocumentViewDescriptor } from './document-view.js';
 
 export const ContributionPoint = Object.freeze({
   MENUS: 'menus',
@@ -17,7 +18,8 @@ export const ContributionPoint = Object.freeze({
   // This is a data-only descriptor for a future trusted SCM sidebar. It is
   // intentionally distinct from file-decoration SCM state and from generic
   // webview-style contributions.
-  SOURCE_CONTROL: 'sourceControl'
+  SOURCE_CONTROL: 'sourceControl',
+  DOCUMENT_VIEWS: 'documentViews'
 });
 
 function requireId(id, label) {
@@ -47,6 +49,8 @@ export class ContributionRegistry {
       validateFileDecorationProvider(normalizedContribution, contributionPoint);
     } else if (contributionPoint === ContributionPoint.SOURCE_CONTROL) {
       normalizedContribution = validateSourceControlDescriptor(normalizedContribution);
+    } else if (contributionPoint === ContributionPoint.DOCUMENT_VIEWS) {
+      normalizedContribution = validateDocumentViewDescriptor(normalizedContribution, owner);
     }
     const id = requireId(options.id || normalizedContribution.id, 'Contribution id');
     if (contributionPoint === ContributionPoint.SOURCE_CONTROL && normalizedContribution.id !== id) {

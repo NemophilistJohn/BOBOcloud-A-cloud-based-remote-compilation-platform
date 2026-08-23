@@ -404,6 +404,21 @@ html, body {
 }
 .close-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 
+/* ---- isolated plugin document views ---- */
+#document-view-host {
+  position: absolute; inset: 0; z-index: 90;
+  overflow: hidden; background: var(--bg-deep);
+}
+#document-view-host.hidden { display: none; }
+.document-view-frame { width: 100%; height: 100%; border: 0; display: block; background: var(--bg-deep); }
+.document-view-frame[hidden] { display: none; }
+.document-view-host-error {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  padding: var(--space-5); color: var(--red); background: var(--bg-deep);
+  font-size: var(--text-base); text-align: center;
+}
+.document-view-host-error[hidden] { display: none; }
+
 /* ---- file tree ---- */
 #file-tree.tree { user-select: none; padding: var(--space-1) 0; }
 #file-tree.tree ul { list-style: none; padding-left: 16px; margin: 0; }

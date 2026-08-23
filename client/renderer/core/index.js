@@ -2,6 +2,13 @@ export { toDisposable, DisposableStore } from './disposable.js';
 export { ServiceRegistry } from './service-registry.js';
 export { CommandRegistry } from './command-registry.js';
 export { ContributionPoint, ContributionRegistry } from './contribution-registry.js';
+export { selectDocumentView, validateDocumentViewDescriptor } from './document-view.js';
+export {
+  DOCUMENT_VIEW_PROTOCOL_VERSION,
+  DOCUMENT_VIEW_SANDBOX_CSP,
+  buildDocumentViewSandboxDocument,
+  createSandboxedDocumentView
+} from './document-view-sandbox.js';
 export {
   FileDecorationLane,
   contributionPointForDecorationLane,

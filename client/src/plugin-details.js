@@ -324,6 +324,7 @@
     if (split) split.classList.remove('active');
     if (diff) diff.classList.remove('active');
     if (image) image.classList.add('hidden');
+    if (BOBO.documentViews) BOBO.documentViews.hideAll({ restoreEditor: false });
   }
 
   function restoreUnderlyingView(fileTab) {
