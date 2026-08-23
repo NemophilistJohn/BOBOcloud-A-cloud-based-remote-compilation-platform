@@ -58,7 +58,7 @@ func (r *DockerRunner) RunTaskExecution(ctx context.Context, task *model.TaskExe
 			r.metrics.Observe("workspace.copy.from_container", time.Since(copyBackStarted))
 		}
 		cancelCopy()
-		if errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
+		if r.discardCached || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
 			r.pool.DiscardForUser(containerID, r.userID)
 		} else {
 			r.pool.ReleaseForUser(containerID, r.userID)

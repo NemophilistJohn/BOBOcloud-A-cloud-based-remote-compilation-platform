@@ -16,6 +16,7 @@ import (
 
 	"bobocloud-server/internal/auth"
 	"bobocloud-server/internal/config"
+	"bobocloud-server/internal/model"
 
 	"github.com/gorilla/websocket"
 )
@@ -177,13 +178,21 @@ func TestTerminalProtocolLimitsUseConfigValues(t *testing.T) {
 
 func TestTerminalReadyPayloadAdvertisesSnapshotAndCapabilities(t *testing.T) {
 	limits := terminalProtocolLimits(config.Default())
-	payload := terminalReadyPayload("session", "python:3.11", map[string]string{"kind": "personal"}, limits, true)
+	runtime := model.RuntimeDef{
+		RuntimeID: "python:3.11", DisplayName: "Python 3.11", Language: "python",
+		Version: "3.11", DockerImage: "python:3.11-slim",
+	}
+	payload := terminalReadyPayload("session", runtime, map[string]string{"kind": "personal"}, limits, true)
 	if payload["type"] != "terminal.ready" || payload["protocol"] != terminalProtocolVersion || payload["snapshot"] != true {
 		t.Fatalf("terminal ready payload = %#v", payload)
 	}
 	capabilities, ok := payload["capabilities"].(map[string]bool)
 	if !ok || !capabilities["isolatedWorkspace"] || !capabilities["tty"] || capabilities["resize"] {
 		t.Fatalf("terminal capabilities = %#v", payload["capabilities"])
+	}
+	environment, ok := payload["environment"].(map[string]string)
+	if !ok || environment["runtimeId"] != runtime.RuntimeID || environment["displayName"] != runtime.DisplayName || environment["dockerImage"] != runtime.DockerImage || environment["workspaceKind"] != "personal" {
+		t.Fatalf("terminal environment = %#v", payload["environment"])
 	}
 }
 

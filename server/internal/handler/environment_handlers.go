@@ -87,6 +87,22 @@ type installedEnvironmentInspection struct {
 	Detail    string
 }
 
+type environmentDependencySnapshot struct {
+	managed   bool
+	reader    *personalcache.ReadLease
+	entry     personalcache.Entry
+	inventory personalcache.InventoryInspection
+	exists    bool
+	err       error
+}
+
+func (snapshot *environmentDependencySnapshot) Release() {
+	if snapshot != nil && snapshot.reader != nil {
+		snapshot.reader.Release()
+		snapshot.reader = nil
+	}
+}
+
 func (h *HTTPHandler) handleProjectEnvironment(w http.ResponseWriter, r *http.Request, req *model.Request) {
 	switch req.Action {
 	case "getProjectEnvironment":
@@ -192,16 +208,27 @@ func (h *HTTPHandler) inspectProjectEnvironment(r *http.Request, req *model.Requ
 	if language == "" {
 		language = inferEnvironmentLanguage(manifests)
 	}
-	installedInspection := h.inspectInstalledEnvironmentPackages(r, req, resolved, runtime, language)
+	dependencySnapshot := h.acquireEnvironmentDependencySnapshot(r, req, resolved, runtime, language)
+	if dependencySnapshot != nil {
+		defer dependencySnapshot.Release()
+	}
+	installedInspection := h.inspectInstalledEnvironmentPackages(r, req, resolved, runtime, language, dependencySnapshot)
 	installed, installedTrusted, installedAt := installedInspection.Packages, installedInspection.Exact, installedInspection.CheckedAt
-	dependencyCache := h.inspectProjectDependencyCache(r, req, resolved, runtime, language)
+	if language == "python" {
+		var inventory []personalcache.InventoryPackage
+		if dependencySnapshot != nil {
+			inventory = dependencySnapshot.inventory.Packages
+		}
+		declared = resolvePythonSourceDistributions(declared, inventory)
+	}
+	dependencyCache := h.inspectProjectDependencyCache(r, req, resolved, runtime, language, dependencySnapshot)
 	if dependencyCache.Scope == "project-lock" {
 		dependencyCache.InventoryStatus = installedInspection.State
 		dependencyCache.InventoryDetail = installedInspection.Detail
 		dependencyCache.InventoryCheckedAt = installedInspection.CheckedAt
 	}
 	packages := classifyEnvironmentPackages(declared, installed, language, installedTrusted)
-	dependencyStatus, indexedAt := h.resolveEnvironmentDependencyStatus(r, req, resolved, runtime, language)
+	dependencyStatus, indexedAt := h.resolveEnvironmentDependencyStatus(r, req, resolved, runtime, language, dependencySnapshot)
 	languageRuntime := model.ProjectEnvironmentCheck{Status: "unknown", Detail: "Language or runtime is not selected"}
 	if language != "" && runtime.ID == "local" {
 		languageRuntime.Detail = "The local runtime toolchain cannot be verified without executing it"
@@ -393,6 +420,15 @@ func inspectEnvironmentManifests(root, preferredLanguage string) ([]model.Projec
 	})
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	if preferredLanguage == "" || preferredLanguage == "python" {
+		sourceManifests, sourcePackages, sourceTimes, sourceErr := inspectPythonSourceDependencies(root)
+		if sourceErr != nil {
+			return nil, nil, nil, sourceErr
+		}
+		manifests = append(manifests, sourceManifests...)
+		declared = append(declared, sourcePackages...)
+		modTimes = append(modTimes, sourceTimes...)
 	}
 	sort.Slice(manifests, func(i, j int) bool { return manifests[i].Path < manifests[j].Path })
 	declared = dedupeEnvironmentPackages(declared)
@@ -748,36 +784,99 @@ func dedupeEnvironmentPackages(items []model.ProjectEnvironmentPackage) []model.
 	return out
 }
 
-func (h *HTTPHandler) inspectInstalledEnvironmentPackages(r *http.Request, req *model.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string) installedEnvironmentInspection {
+func (h *HTTPHandler) acquireEnvironmentDependencySnapshot(r *http.Request, req *model.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string) *environmentDependencySnapshot {
+	managed := resolved.workspace.Kind == "personal" && h.PersonalCache != nil && h.PersonalCache.ScopeMode() == "project-lock" && runtime.ID != "" && runtime.ID != "local" && projectLockDependencyLanguage(language)
+	if !managed {
+		return nil
+	}
+	cacheRequest := h.environmentCacheRequest(r, req, resolved, runtime, language)
+	snapshot := &environmentDependencySnapshot{managed: true}
+	if language == "python" {
+		snapshot.reader, snapshot.entry, snapshot.inventory, snapshot.exists = h.PersonalCache.AcquirePackageInventorySnapshotRead(cacheRequest)
+		return snapshot
+	}
+	snapshot.reader, snapshot.entry, snapshot.exists, snapshot.err = h.PersonalCache.AcquireRead(cacheRequest)
+	return snapshot
+}
+
+func environmentDependencySnapshotArg(snapshots []*environmentDependencySnapshot) *environmentDependencySnapshot {
+	if len(snapshots) == 0 {
+		return nil
+	}
+	return snapshots[0]
+}
+
+func installedEnvironmentInspectionFromPythonInventory(inventory personalcache.InventoryInspection) installedEnvironmentInspection {
+	checkedAt := int64(0)
+	if !inventory.GeneratedAt.IsZero() {
+		checkedAt = inventory.GeneratedAt.UTC().UnixMilli()
+	}
+	items := make([]model.ProjectEnvironmentPackage, 0, len(inventory.Packages))
+	for _, item := range inventory.Packages {
+		trust := "observed"
+		if inventory.Exact {
+			trust = "exact"
+		}
+		items = append(items, model.ProjectEnvironmentPackage{
+			Name: normalizePythonPackageName(item.Name), Version: item.Version,
+			Scope: "project-lock", Source: "project-lock-python", Trust: trust,
+		})
+	}
+	return installedEnvironmentInspection{
+		Packages: items, Exact: inventory.Exact, CheckedAt: checkedAt,
+		State: inventory.State, Detail: inventory.Detail,
+	}
+}
+
+func inspectInstalledEnvironmentSnapshot(root, language string) installedEnvironmentInspection {
+	var items []model.ProjectEnvironmentPackage
+	var at int64
+	switch language {
+	case "node":
+		items, at, _ = inspectNodeInstalled(filepath.Join(root, "node_modules"))
+	case "go":
+		items, at = inspectGoInstalled(filepath.Join(root, "go", "pkg", "mod"))
+	case "rust":
+		items, at = inspectRustInstalled(filepath.Join(root, "cargo", "registry", "src"))
+	case "java":
+		items, at = inspectMavenInstalled(filepath.Join(root, "maven"))
+	}
+	for index := range items {
+		items[index].Scope = "project-lock"
+		items[index].Source = "project-lock-" + language
+		items[index].Trust = "observed"
+	}
+	return installedEnvironmentInspection{Packages: items, CheckedAt: at, State: "observed"}
+}
+
+func (h *HTTPHandler) inspectInstalledEnvironmentPackages(r *http.Request, req *model.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string, snapshots ...*environmentDependencySnapshot) installedEnvironmentInspection {
 	userID := auth.UserIDFromContext(r.Context())
 	if resolved.workspace.Kind == "team" {
 		return installedEnvironmentInspection{State: "unavailable", Detail: "The team dependency cache has no read-only package inventory lease"}
 	}
 	if h.PersonalCache != nil && runtime.ID != "" && runtime.ID != "local" {
 		cacheRequest := h.environmentCacheRequest(r, req, resolved, runtime, language)
-		if language == "python" {
-			inventory := h.PersonalCache.InspectPackageInventory(cacheRequest)
-			checkedAt := int64(0)
-			if !inventory.GeneratedAt.IsZero() {
-				checkedAt = inventory.GeneratedAt.UTC().UnixMilli()
+		snapshot := environmentDependencySnapshotArg(snapshots)
+		if snapshot != nil && snapshot.managed {
+			if language == "python" {
+				return installedEnvironmentInspectionFromPythonInventory(snapshot.inventory)
 			}
-			items := make([]model.ProjectEnvironmentPackage, 0, len(inventory.Packages))
-			for _, item := range inventory.Packages {
-				trust := "observed"
-				if inventory.Exact {
-					trust = "exact"
+			if errors.Is(snapshot.err, personalcache.ErrCacheInUse) {
+				return installedEnvironmentInspection{State: "busy", Detail: "The package cache is being written and cannot be inspected yet"}
+			}
+			if snapshot.err != nil || !snapshot.exists || snapshot.reader == nil {
+				state, detail := "missing", "No cache exists for the current project dependency digest"
+				if snapshot.err != nil {
+					state, detail = "error", "The project dependency digest could not be resolved"
 				}
-				items = append(items, model.ProjectEnvironmentPackage{
-					Name: normalizePythonPackageName(item.Name), Version: item.Version,
-					Scope: "project-lock", Source: "project-lock-python", Trust: trust,
-				})
+				return installedEnvironmentInspection{State: state, Detail: detail}
 			}
-			return installedEnvironmentInspection{
-				Packages: items, Exact: inventory.Exact, CheckedAt: checkedAt,
-				State: inventory.State, Detail: inventory.Detail,
-			}
+			return inspectInstalledEnvironmentSnapshot(snapshot.reader.HostRoot, language)
 		}
-		reader, entry, exists, err := h.PersonalCache.AcquireRead(cacheRequest)
+		if language == "python" {
+			return installedEnvironmentInspectionFromPythonInventory(h.PersonalCache.InspectPackageInventory(cacheRequest))
+		}
+		reader, _, exists, err := h.PersonalCache.AcquireRead(cacheRequest)
 		if errors.Is(err, personalcache.ErrCacheInUse) {
 			return installedEnvironmentInspection{State: "busy", Detail: "The package cache is being written and cannot be inspected yet"}
 		}
@@ -794,19 +893,19 @@ func (h *HTTPHandler) inspectInstalledEnvironmentPackages(r *http.Request, req *
 		var exact bool
 		switch language {
 		case "python":
-			items, at, exact = inspectPythonInstalled(filepath.Join(entry.HostPath, "python"))
+			items, at, exact = inspectPythonInstalled(filepath.Join(reader.HostRoot, "python"))
 		case "node":
-			items, at, _ = inspectNodeInstalled(filepath.Join(entry.HostPath, "node_modules"))
+			items, at, _ = inspectNodeInstalled(filepath.Join(reader.HostRoot, "node_modules"))
 			// package.json proves a package identity, not that every entry point and
 			// payload file survived an interrupted install. Keep Node observational
 			// until it has a committed structural inventory like Python.
 			exact = false
 		case "go":
-			items, at = inspectGoInstalled(filepath.Join(entry.HostPath, "go", "pkg", "mod"))
+			items, at = inspectGoInstalled(filepath.Join(reader.HostRoot, "go", "pkg", "mod"))
 		case "rust":
-			items, at = inspectRustInstalled(filepath.Join(entry.HostPath, "cargo", "registry", "src"))
+			items, at = inspectRustInstalled(filepath.Join(reader.HostRoot, "cargo", "registry", "src"))
 		case "java":
-			items, at = inspectMavenInstalled(filepath.Join(entry.HostPath, "maven"))
+			items, at = inspectMavenInstalled(filepath.Join(reader.HostRoot, "maven"))
 		}
 		stable := reader.Stable()
 		if !stable {
@@ -874,14 +973,22 @@ func (h *HTTPHandler) inspectInstalledEnvironmentPackages(r *http.Request, req *
 	}
 }
 
-func (h *HTTPHandler) inspectProjectDependencyCache(r *http.Request, req *model.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string) model.ProjectEnvironmentDependencyCache {
+func (h *HTTPHandler) inspectProjectDependencyCache(r *http.Request, req *model.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string, snapshots ...*environmentDependencySnapshot) model.ProjectEnvironmentDependencyCache {
 	if resolved.workspace.Kind != "personal" || runtime.ID == "" || runtime.ID == "local" {
 		return model.ProjectEnvironmentDependencyCache{Scope: "none", Status: "unavailable"}
 	}
 	if h.PersonalCache == nil {
 		return model.ProjectEnvironmentDependencyCache{Scope: "legacy-user", Status: "legacy"}
 	}
-	entry, exists, err := h.PersonalCache.Lookup(h.environmentCacheRequest(r, req, resolved, runtime, language))
+	var entry personalcache.Entry
+	var exists bool
+	var err error
+	snapshot := environmentDependencySnapshotArg(snapshots)
+	if snapshot != nil && snapshot.managed {
+		entry, exists, err = snapshot.entry, snapshot.exists, snapshot.err
+	} else {
+		entry, exists, err = h.PersonalCache.Lookup(h.environmentCacheRequest(r, req, resolved, runtime, language))
+	}
 	if err != nil {
 		return model.ProjectEnvironmentDependencyCache{Scope: "project-lock", Status: "error"}
 	}
@@ -1468,6 +1575,10 @@ func classifyEnvironmentPackages(declared, installed []model.ProjectEnvironmentP
 			name = normalizePythonPackageName(item.Name)
 		}
 		installedItems := installedByName[name]
+		if item.Trust == "source-ambiguous" {
+			result.Unknown = append(result.Unknown, item)
+			continue
+		}
 		if !trusted {
 			if len(installedItems) > 0 {
 				continue
@@ -1536,7 +1647,32 @@ type environmentDependencyStatus struct {
 	Status, Revision, Source, RuntimeID, Detail string
 }
 
-func (h *HTTPHandler) resolveEnvironmentDependencyStatus(r *http.Request, req *model.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string) (environmentDependencyStatus, int64) {
+func personalProjectDependencyViewFromEnvironmentSnapshot(snapshot *environmentDependencySnapshot, language string) personalProjectDependencyView {
+	if snapshot == nil || !snapshot.managed || snapshot.reader == nil || !snapshot.exists {
+		return personalProjectDependencyView{}
+	}
+	generation := "project-lock:" + snapshot.entry.Digest
+	if snapshot.reader.Generation != "" {
+		generation += ":" + snapshot.reader.Generation
+	}
+	if language == "python" {
+		root := filepath.Join(snapshot.reader.HostRoot, "python")
+		if !realDependencyDirectory(root) {
+			return personalProjectDependencyView{}
+		}
+		return personalProjectDependencyView{
+			Root: snapshot.reader.HostRoot, Generation: generation,
+			Extra: map[string][]string{lsp.DependencyRolePythonPackages: {root}},
+		}
+	}
+	extra := personalProjectDependencyPaths(snapshot.reader.HostRoot, language)
+	if len(extra) == 0 {
+		return personalProjectDependencyView{}
+	}
+	return personalProjectDependencyView{Root: snapshot.reader.HostRoot, Generation: generation, Extra: extra}
+}
+
+func (h *HTTPHandler) resolveEnvironmentDependencyStatus(r *http.Request, req *model.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string, snapshots ...*environmentDependencySnapshot) (environmentDependencyStatus, int64) {
 	if h.DependencyViews == nil {
 		return environmentDependencyStatus{Status: "unavailable", RuntimeID: runtime.ID, Detail: "The LSP dependency registry is not configured"}, 0
 	}
@@ -1549,12 +1685,13 @@ func (h *HTTPHandler) resolveEnvironmentDependencyStatus(r *http.Request, req *m
 	userID := auth.UserIDFromContext(r.Context())
 	ownerKind, ownerID := "user", userID
 	paths := lsp.AnalysisDependencyPaths{WorkspaceRoot: resolved.root}
+	projectScoped := resolved.workspace.Kind == "personal" && h.PersonalCache != nil && h.PersonalCache.ScopeMode() == "project-lock" && projectLockDependencyLanguage(language)
 	if resolved.workspace.Kind == "team" {
 		// The existing team cache lease prepares directories. A status read must
 		// not create cache state, so report unknown until buildcache exposes a
 		// read-only resolver.
 		return environmentDependencyStatus{Status: "unavailable", RuntimeID: runtime.ID, Detail: "The team LSP dependency view is unavailable until a build publishes a read-only dependency snapshot"}, 0
-	} else {
+	} else if !projectScoped {
 		userRoot := filepath.Join(h.Config.DataDir, "users", userID)
 		paths.UserPersistRoot = filepath.Join(userRoot, "persist")
 		paths.AllowedRoots = appendExistingDependencyRoot(paths.AllowedRoots, userRoot)
@@ -1565,27 +1702,22 @@ func (h *HTTPHandler) resolveEnvironmentDependencyStatus(r *http.Request, req *m
 		}
 	}
 	dependencyGeneration := ""
-	var projectDependencyReader *personalcache.ReadLease
-	if resolved.workspace.Kind == "personal" && language == "python" && h.PersonalCache != nil {
-		reader, entry, inventory := h.PersonalCache.AcquirePackageInventoryRead(h.environmentCacheRequest(r, req, resolved, runtime, language))
-		if reader != nil && inventory.State == "ready" && inventory.Exact {
-			projectRoot := filepath.Join(entry.HostPath, "python")
-			info, statErr := os.Lstat(projectRoot)
-			if statErr == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-				projectDependencyReader = reader
-				paths.UserPersistRoot = ""
-				paths.Extra = map[string][]string{lsp.DependencyRolePythonPackages: {projectRoot}}
-				paths.AllowedRoots = appendExistingDependencyRoot(paths.AllowedRoots, projectRoot)
-				dependencyGeneration = "project-lock:" + entry.Digest + ":" + inventory.Revision
-			} else {
-				reader.Release()
+	if projectScoped {
+		var project personalProjectDependencyView
+		snapshot := environmentDependencySnapshotArg(snapshots)
+		if snapshot != nil && snapshot.managed {
+			project = personalProjectDependencyViewFromEnvironmentSnapshot(snapshot, language)
+		} else {
+			project = acquirePersonalProjectDependencyView(h.PersonalCache, h.environmentCacheRequest(r, req, resolved, runtime, language))
+			if project.Release != nil {
+				defer project.Release()
 			}
-		} else if reader != nil {
-			reader.Release()
 		}
-	}
-	if projectDependencyReader != nil {
-		defer projectDependencyReader.Release()
+		if project.Root != "" {
+			paths.Extra = project.Extra
+			paths.AllowedRoots = appendExistingDependencyRoot(paths.AllowedRoots, project.Root)
+			dependencyGeneration = project.Generation
+		}
 	}
 	paths.AllowedRoots = appendExistingDependencyRoot(paths.AllowedRoots, resolved.root)
 	view, err := h.DependencyViews.Resolve(lsp.AnalysisDependencyRequest{
@@ -1826,6 +1958,7 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
+	ctx, finalizeContainerCleanup := WithDeferredContainerCleanup(ctx)
 	var dependencyLease *personalcache.Lease
 	if h.PersonalCache != nil {
 		dependencyLease, err = h.PersonalCache.Prepare(ctx, h.environmentCacheRequest(r, req, resolved, environment.Runtime, environment.Language.ID))
@@ -1850,7 +1983,14 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 		if guard := dependencyLease.StartGuard(ctx); guard != nil && guard.Err() != nil {
 			execErr = guard.Err()
 		}
-		dependencyLease.Release()
+		if execErr != nil || exitCode != 0 {
+			dependencyLease.Abort()
+		}
+		finalizeContainerCleanup(func() {
+			h.releasePersonalCacheLease(dependencyLease, personalDependencyRefreshScope(userID, resolved.folderKey, environment.Runtime.ID, environment.Language.ID))
+		})
+	} else {
+		finalizeContainerCleanup(nil)
 	}
 	if execErr != nil || exitCode != 0 {
 		message := "Environment setup failed"
@@ -1861,7 +2001,7 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: message, Data: result})
 		return
 	}
-	if h.LSP != nil && h.DependencyViews != nil {
+	if dependencyLease == nil && h.LSP != nil && h.DependencyViews != nil {
 		h.LSP.RefreshDependencyViews(h.DependencyViews, lsp.DependencyRefreshScope{UserID: userID, OwnerKind: "user", OwnerID: userID, FolderKey: resolved.folderKey, RuntimeID: environment.Runtime.ID, LanguageID: environment.Language.ID})
 	}
 	updated, _, inspectErr := h.inspectProjectEnvironment(r, req)

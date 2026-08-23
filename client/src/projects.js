@@ -46,6 +46,13 @@
     return String(a.name || '').localeCompare(String(b.name || ''));
   }
 
+  function resolveProjectDisplayName(project, names) {
+    project = project || {};
+    names = names || {};
+    var serverName = project.name && project.name !== project.key ? project.name : '';
+    return serverName || names[project.key] || project.key || '';
+  }
+
   function organizeCacheGroups(cacheGroups) {
     var projectsByKey = Object.create(null);
     var projectOrder = [];
@@ -128,6 +135,20 @@
   }
 
   // ──── Modal ────
+  var projectNamesLoadVersion = 0;
+  var projectsLoadVersion = 0;
+  var cacheLoadVersion = 0;
+  var cacheMutationPaths = Object.create(null);
+
+  function projectViewIdentity() {
+    var user = S.auth && S.auth.user ? S.auth.user : {};
+    return [S.serverSettings.ip || '', S.auth.token || '', user.id || user.uid || ''].join('\n');
+  }
+
+  function projectsModalOpen() {
+    return Boolean($('projects-modal') && $('projects-modal').classList.contains('open'));
+  }
+
   function open() {
     // 清除可能残留的旧提示条幅
     var oldBanner = document.getElementById('quota-warn-banner');
@@ -136,6 +157,9 @@
     loadAll();
   }
   function close() {
+    projectNamesLoadVersion += 1;
+    projectsLoadVersion += 1;
+    cacheLoadVersion += 1;
     $('projects-modal').classList.remove('open');
   }
 
@@ -152,14 +176,20 @@
   var localProjectNames = {}; // folderKey -> projectName 本地映射
 
   async function loadAll() {
+    var requestVersion = ++projectNamesLoadVersion;
+    var requestIdentity = projectViewIdentity();
     // 读取本地项目名映射
-    try { localProjectNames = await window.api.readProjectNames() || {}; } catch (e) { localProjectNames = {}; }
-    await loadProjects();
-    await loadCache();
+    var names;
+    try { names = await window.api.readProjectNames() || {}; } catch (e) { names = {}; }
+    if (requestVersion !== projectNamesLoadVersion || requestIdentity !== projectViewIdentity() || !projectsModalOpen()) return;
+    localProjectNames = names;
+    await Promise.all([loadProjects(), loadCache()]);
   }
 
   // ──── Projects tab ────
   async function loadProjects() {
+    var requestVersion = ++projectsLoadVersion;
+    var requestIdentity = projectViewIdentity();
     var summaryEl = $('projects-summary');
     var pieEl = $('quota-pie');
     var pieCenter = $('quota-pie-center');
@@ -173,6 +203,7 @@
     listEl.innerHTML = '<div class="projects-loading">Loading…</div>';
 
     var res = await BOBO.sendToServer('listProjects', {}, { quiet: true });
+    if (requestVersion !== projectsLoadVersion || requestIdentity !== projectViewIdentity() || !projectsModalOpen()) return;
     if (!res || !res.success || !res.storageInfo) {
       var err = (res && res.error) || 'Failed to load';
       summaryEl.textContent = err;
@@ -268,8 +299,9 @@
       '</tr></thead><tbody>';
     for (var i = 0; i < projects.length; i++) {
       var p = projects[i];
-      // 优先用服务端返回的 name（.boboproject），其次用本地映射，最后回退到 key
-      var displayName = p.name || localProjectNames[p.key] || p.key;
+      // A server fallback equal to the opaque key is not a display name. This
+      // also lets older deployments recover from the client's durable mapping.
+      var displayName = resolveProjectDisplayName(p, localProjectNames);
       var modTime = p.mod_time ? new Date(p.mod_time * 1000).toLocaleDateString() : '-';
       var pctStr = projectsTotal > 0 ? ((p.size_bytes || 0) / projectsTotal * 100).toFixed(1) + '%' : '';
       html += '<tr>' +
@@ -281,7 +313,7 @@
         '<td>' + fmt(p.size_bytes || 0) + '</td>' +
         '<td class="dim">' + (p.files || 0) + '</td>' +
         '<td class="dim">' + modTime + '</td>' +
-        '<td><button class="admin-mini-btn danger proj-del" data-key="' + esc(p.key) + '">Delete</button></td>' +
+        '<td><button class="admin-mini-btn danger proj-del" data-key="' + esc(p.key) + '" data-name="' + esc(displayName) + '">Delete</button></td>' +
       '</tr>';
     }
     html += '</tbody></table>';
@@ -291,23 +323,59 @@
     listEl.querySelectorAll('.proj-del').forEach(function(btn) {
       btn.addEventListener('click', async function() {
         var key = btn.dataset.key;
+        var displayName = btn.dataset.name || key;
         var ok = await BOBO.confirm({
           title: 'Delete project',
-          message: '"' + key + '"\nThis cannot be undone.',
+          message: '"' + displayName + '"\nThis cannot be undone.',
           confirmLabel: 'Delete',
           danger: true
         });
         if (!ok) return;
+        projectsLoadVersion += 1;
         btn.disabled = true; btn.textContent = '...';
-        var r = await BOBO.sendToServer('deleteProject', { folderKey: key }, { quiet: true });
-        if (r && r.success) loadAll();
-        else { global.alert((r && r.error) || 'Delete failed'); btn.disabled = false; btn.textContent = 'Delete'; }
+        try {
+          var r = await BOBO.sendToServer('deleteProject', { folderKey: key }, { quiet: true });
+          if (r && r.success) await loadAll();
+          else { global.alert((r && r.error) || 'Delete failed'); btn.disabled = false; btn.textContent = 'Delete'; }
+        } catch (err) {
+          global.alert((err && err.message) || 'Delete failed');
+          btn.disabled = false;
+          btn.textContent = 'Delete';
+        }
       });
     });
   }
 
   // ──── Cache tab ────
   var cacheExpansion = Object.create(null);
+
+  function cacheMutationCount() {
+    return Object.keys(cacheMutationPaths).length;
+  }
+
+  function syncCacheMutationControls(path) {
+    var pending = cacheMutationCount() > 0;
+    var refresh = $('projects-refresh');
+    if (refresh) refresh.disabled = pending;
+    if (!path || !$('cache-tree')) return;
+    $('cache-tree').querySelectorAll('.cache-del,.cache-package-del').forEach(function(control) {
+      if (control.dataset.path === path && cacheMutationPaths[path]) control.disabled = true;
+    });
+  }
+
+  function beginCacheMutation(path) {
+    if (!path || cacheMutationPaths[path]) return false;
+    cacheMutationPaths[path] = true;
+    cacheLoadVersion += 1;
+    syncCacheMutationControls(path);
+    return true;
+  }
+
+  function finishCacheMutation(path) {
+    delete cacheMutationPaths[path];
+    syncCacheMutationControls(path);
+    return cacheMutationCount() === 0;
+  }
 
   function cacheIcon(name, fallback) {
     return BOBO.icons && BOBO.icons[name] ? BOBO.icons[name] : (fallback || '');
@@ -348,6 +416,48 @@
       (writing ? ' disabled' : '') + '>' + cacheIcon('trash', esc(t('Delete'))) + '</button>';
   }
 
+  function cachePackageDeleteButton(entry, packageInfo) {
+    var disabled = Boolean(entry.writing) || !entry.inventory_exact || !entry.generation || !entry.inventory_revision;
+    var title = entry.writing ? t('Cache is being updated')
+      : disabled ? t('Inventory is not exact, so packages cannot be deleted safely.')
+        : t('Delete package {name}', { name: packageInfo.name });
+    return '<button type="button" class="cache-package-del" data-path="' + esc(entry.path) +
+      '" data-package-name="' + esc(packageInfo.name) + '" data-package-version="' + esc(packageInfo.version) +
+      '" data-generation="' + esc(entry.generation || '') + '" data-inventory-revision="' + esc(entry.inventory_revision || '') +
+      '" data-active="' + (entry.active && !entry.writing ? 'true' : 'false') + '" title="' + esc(title) +
+      '" aria-label="' + esc(title) + '"' + (disabled ? ' disabled' : '') + '>' + cacheIcon('trash', esc(t('Delete'))) + '</button>';
+  }
+
+  function renderCachePackages(entry) {
+    if (entry.kind !== 'project-dependency') return '';
+    var packages = Array.isArray(entry.packages) ? entry.packages.slice() : [];
+    packages.sort(function(a, b) { return String(a.name || '').localeCompare(String(b.name || '')); });
+    var ready = entry.inventory_status === 'ready' && entry.inventory_exact;
+    var heading = '<div class="cache-package-heading"><span>' + cacheIcon('package') + esc(t('Installed packages')) +
+      '</span><strong>' + packages.length + '</strong></div>';
+    if (!ready && packages.length === 0) {
+      return '<div class="cache-package-section unavailable">' + heading +
+        '<div class="cache-package-notice"><strong>' + esc(t('Package inventory unavailable')) + '</strong>' +
+        (entry.inventory_detail ? '<small>' + esc(entry.inventory_detail) + '</small>' : '') + '</div></div>';
+    }
+    if (packages.length === 0) {
+      return '<div class="cache-package-section">' + heading + '<div class="cache-package-notice">' + esc(t('No installed packages')) + '</div></div>';
+    }
+    var rows = packages.map(function(packageInfo) {
+      var imports = Array.isArray(packageInfo.imports) ? packageInfo.imports.filter(Boolean) : [];
+      return '<div class="cache-package-row" data-package="' + esc(packageInfo.name) + '">' +
+        '<span class="cache-package-identity"><strong>' + esc(packageInfo.name) + '</strong>' +
+          (imports.length ? '<small>' + esc(t('Imports: {names}', { names: imports.join(', ') })) + '</small>' : '') + '</span>' +
+        '<code class="cache-package-version">' + esc(packageInfo.version || t('Unknown')) + '</code>' +
+        '<span class="cache-package-storage"><strong>' + fmt(packageInfo.size_bytes || 0) + '</strong><small>' +
+          esc(t('{count} files', { count: packageInfo.files || 0 })) + '</small></span>' +
+        cachePackageDeleteButton(entry, packageInfo) + '</div>';
+    }).join('');
+    var readOnlyNotice = ready ? '' : '<div class="cache-package-notice"><strong>' + esc(t('Package inventory is read-only')) + '</strong>' +
+      (entry.inventory_detail ? '<small>' + esc(entry.inventory_detail) + '</small>' : '') + '</div>';
+    return '<div class="cache-package-section' + (ready ? '' : ' unavailable') + '">' + heading + readOnlyNotice + rows + '</div>';
+  }
+
   function renderCacheEntry(entry, projectName) {
     var isProjectDependency = entry.kind === 'project-dependency';
     var digest = String(entry.digest || '');
@@ -371,12 +481,14 @@
 
     var stateClass = entry.writing ? ' writing' : entry.active ? ' analysis' : '';
     var stateLabel = entry.writing ? t('Updating') : entry.active ? t('Service in use') : t('Available');
-    return '<div class="cache-snapshot-row" data-cache-path="' + esc(entry.path) + '">' +
-      '<span class="cache-snapshot-identity">' + identity + '</span>' +
-      '<span class="cache-snapshot-state' + stateClass + '"><span></span>' + esc(stateLabel) + '</span>' +
-      '<span class="cache-snapshot-used">' + esc(formatCacheDate(entry.last_used)) + '</span>' +
-      '<span class="cache-snapshot-storage"><strong>' + fmt(entry.size_bytes || 0) + '</strong><small>' + (entry.files || 0) + ' ' + esc(t('Files')) + '</small></span>' +
-      cacheDeleteButton(entry, deleteLabel) +
+    return '<div class="cache-snapshot-block" data-cache-path="' + esc(entry.path) + '">' +
+      '<div class="cache-snapshot-row">' +
+        '<span class="cache-snapshot-identity">' + identity + '</span>' +
+        '<span class="cache-snapshot-state' + stateClass + '"><span></span>' + esc(stateLabel) + '</span>' +
+        '<span class="cache-snapshot-used">' + esc(formatCacheDate(entry.last_used)) + '</span>' +
+        '<span class="cache-snapshot-storage"><strong>' + fmt(entry.size_bytes || 0) + '</strong><small>' + (entry.files || 0) + ' ' + esc(t('Files')) + '</small></span>' +
+        cacheDeleteButton(entry, deleteLabel) +
+      '</div>' + renderCachePackages(entry) +
     '</div>';
   }
 
@@ -416,10 +528,14 @@
   }
 
   async function loadCache() {
+    if (cacheMutationCount() > 0) return;
+    var requestVersion = ++cacheLoadVersion;
+    var requestIdentity = projectViewIdentity();
     var treeEl = $('cache-tree');
     treeEl.innerHTML = '<div class="cache-empty">' + esc(t('Loading...')) + '</div>';
 
     var res = await BOBO.sendToServer('listCacheModules', {}, { quiet: true });
+    if (requestVersion !== cacheLoadVersion || requestIdentity !== projectViewIdentity() || !projectsModalOpen() || cacheMutationCount() > 0) return;
     if (!res || !res.success) {
       treeEl.innerHTML = '<div class="cache-empty">' + esc((res && res.error) || t('Failed to load')) + '</div>';
       return;
@@ -478,14 +594,54 @@
           danger: true
         });
         if (!ok) return;
-        btn.disabled = true;
+        if (!beginCacheMutation(path)) return;
         btn.classList.add('busy');
-        var r = await BOBO.sendToServer('deleteCacheModule', { cachePath: path }, { quiet: true });
-        if (r && r.success) loadAll();
-        else {
-          global.alert((r && r.error) || t('Delete failed'));
-          btn.disabled = false;
+        try {
+          var r = await BOBO.sendToServer('deleteCacheModule', { cachePath: path }, { quiet: true });
+          if (!r || !r.success) global.alert((r && r.error) || t('Delete failed'));
+        } catch (err) {
+          global.alert((err && err.message) || t('Delete failed'));
+        } finally {
           btn.classList.remove('busy');
+          if (finishCacheMutation(path)) await loadAll();
+        }
+      });
+    });
+
+    treeEl.querySelectorAll('.cache-package-del').forEach(function(btn) {
+      btn.addEventListener('click', async function(e) {
+        e.stopPropagation();
+        var name = btn.dataset.packageName;
+        var version = btn.dataset.packageVersion;
+        var message = '"' + name + ' ' + version + '"\n' + t('This removes only this package from the selected project dependency snapshot.');
+        if (btn.dataset.active === 'true') message += '\n' + t('Deleting this cache will stop the service that is using it.');
+        var ok = await BOBO.confirm({
+          title: t('Delete package {name}', { name: name }),
+          message: message,
+          confirmLabel: t('Delete'),
+          danger: true
+        });
+        if (!ok) return;
+        var selectorPath = btn.dataset.path;
+        if (!beginCacheMutation(selectorPath)) return;
+        btn.classList.add('busy');
+        try {
+          var response = await BOBO.sendToServer('deleteCachePackage', {
+            cachePath: selectorPath,
+            cachePackageName: name,
+            cachePackageVersion: version,
+            cacheGeneration: btn.dataset.generation,
+            cacheInventoryRevision: btn.dataset.inventoryRevision
+          }, { quiet: true });
+          if (response && response.success) {
+            return;
+          }
+          global.alert((response && response.error) || t('Package deletion changed the dependency snapshot. Refresh and try again.'));
+        } catch (err) {
+          global.alert((err && err.message) || t('Package deletion changed the dependency snapshot. Refresh and try again.'));
+        } finally {
+          btn.classList.remove('busy');
+          if (finishCacheMutation(selectorPath)) await loadAll();
         }
       });
     });
@@ -542,7 +698,8 @@
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       organizeCacheGroups: organizeCacheGroups,
-      compareCacheEntries: compareCacheEntries
+      compareCacheEntries: compareCacheEntries,
+      resolveProjectDisplayName: resolveProjectDisplayName
     };
   }
 })(typeof window !== 'undefined' ? window : globalThis);

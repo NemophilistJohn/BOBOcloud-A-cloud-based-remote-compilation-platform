@@ -50,6 +50,40 @@ type managerTestStarter struct {
 	processes []*managerTestProcess
 }
 
+type drainingManagerTestProcess struct {
+	*managerTestProcess
+	waitRelease chan struct{}
+	killCalls   atomic.Int32
+}
+
+func newDrainingManagerTestProcess() *drainingManagerTestProcess {
+	return &drainingManagerTestProcess{
+		managerTestProcess: newManagerTestProcess(),
+		waitRelease:        make(chan struct{}),
+	}
+}
+
+func (process *drainingManagerTestProcess) Wait() error {
+	<-process.waitRelease
+	return nil
+}
+
+func (process *drainingManagerTestProcess) Kill() error {
+	process.killCalls.Add(1)
+	_ = process.stdinR.Close()
+	_ = process.stdinW.Close()
+	_ = process.stdoutW.Close()
+	return errors.New("kill failed")
+}
+
+type drainingManagerTestStarter struct {
+	process *drainingManagerTestProcess
+}
+
+func (starter drainingManagerTestStarter) Start(_ context.Context, _ LaunchSpec) (Process, error) {
+	return starter.process, nil
+}
+
 func (starter *managerTestStarter) Start(_ context.Context, spec LaunchSpec) (Process, error) {
 	process := newManagerTestProcess()
 	starter.mu.Lock()
@@ -146,6 +180,72 @@ func TestManagerRoutesFramesEnforcesLimitsAndReleases(t *testing.T) {
 	}
 }
 
+func TestDAPSessionKeepsResourcesAndRegistrationUntilProcessWaits(t *testing.T) {
+	process := newDrainingManagerTestProcess()
+	manager := NewManager(managerTestCatalog(), drainingManagerTestStarter{process: process}, ManagerOptions{
+		Inspector:          catalogTestInspector{available: true},
+		processWaitTimeout: 10 * time.Millisecond,
+		killWaitTimeout:    10 * time.Millisecond,
+	})
+	var releases atomic.Int32
+	session, err := manager.Start(managerTestContext(t.TempDir(), func() { releases.Add(1) }))
+	if err != nil {
+		manager.Close()
+		t.Fatal(err)
+	}
+	session.Stop()
+	select {
+	case <-session.Done():
+	case <-time.After(2 * time.Second):
+		close(process.waitRelease)
+		manager.Close()
+		t.Fatal("DAP session did not finish its client-facing shutdown")
+	}
+	select {
+	case <-session.ResourcesDone():
+		close(process.waitRelease)
+		manager.Close()
+		t.Fatal("DAP resources were released before the process Wait completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if releases.Load() != 0 {
+		close(process.waitRelease)
+		manager.Close()
+		t.Fatalf("upper release count before Wait = %d", releases.Load())
+	}
+	if process.killCalls.Load() < 2 {
+		close(process.waitRelease)
+		manager.Close()
+		t.Fatalf("kill calls = %d, want initial stop plus timed retry", process.killCalls.Load())
+	}
+	if active := manager.snapshot(nil); len(active) != 1 || active[0] != session {
+		close(process.waitRelease)
+		manager.Close()
+		t.Fatalf("draining DAP session was removed early: %+v", active)
+	}
+
+	close(process.waitRelease)
+	select {
+	case <-session.ResourcesDone():
+	case <-time.After(2 * time.Second):
+		manager.Close()
+		t.Fatal("DAP resources were not released after process Wait completed")
+	}
+	if releases.Load() != 1 {
+		manager.Close()
+		t.Fatalf("upper release count after Wait = %d", releases.Load())
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(manager.snapshot(nil)) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if active := manager.snapshot(nil); len(active) != 0 {
+		manager.Close()
+		t.Fatalf("completed DAP session remained registered: %+v", active)
+	}
+	manager.Close()
+}
+
 func TestSessionRecordsUnexpectedAdapterFrameFailure(t *testing.T) {
 	starter := &managerTestStarter{}
 	manager := NewManager(managerTestCatalog(), starter, ManagerOptions{Inspector: catalogTestInspector{available: true}})
@@ -177,6 +277,7 @@ func TestManagerForwardsDependencyMountAndStopsOnePersonalWorkspace(t *testing.T
 	var firstRelease atomic.Int32
 	firstContext := managerTestContext(t.TempDir(), func() { firstRelease.Add(1) })
 	firstContext.DependencyRoot = t.TempDir()
+	firstContext.DependencyMountRoot = filepath.Join(t.TempDir(), "dap-cache", "mounts")
 	firstContext.DependencyEnv = map[string]string{"PYTHONPATH": "/project-deps/python"}
 	first, err := manager.Start(firstContext)
 	if err != nil {
@@ -188,7 +289,7 @@ func TestManagerForwardsDependencyMountAndStopsOnePersonalWorkspace(t *testing.T
 		t.Fatal(err)
 	}
 	launch := starter.launch(0)
-	if launch.DependencyRoot != firstContext.DependencyRoot || launch.DependencyEnv["PYTHONPATH"] != "/project-deps/python" {
+	if launch.DependencyRoot != firstContext.DependencyRoot || launch.DependencyMountRoot != firstContext.DependencyMountRoot || launch.DependencyEnv["PYTHONPATH"] != "/project-deps/python" {
 		t.Fatalf("dependency launch fields = %+v", launch)
 	}
 	if err := manager.StopUserWorkspace("user-a", "project-a"); err != nil {

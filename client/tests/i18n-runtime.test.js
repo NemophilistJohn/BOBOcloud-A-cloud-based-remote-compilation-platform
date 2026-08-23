@@ -257,6 +257,18 @@ test('language packs have identical keys and placeholder contracts', () => {
   assert.equal(packs['zh-CN']['Load {count} more items'], '再加载 {count} 项');
   assert.ok(keys.includes('No matching files'));
   assert.ok(keys.includes('Search files by name...'));
+  assert.ok(keys.includes('Search files...'));
+  for (const key of [
+    'Recently opened', 'Suggested files', 'Search results', 'Search results: {count}',
+    '{count} files available', 'Open a folder to search files.',
+    'Start typing to search your workspace.', 'Clear search history',
+    'Choose a file to start editing', 'Your workspace is ready in the Explorer',
+    'Sync Workspace to Cloud', 'Run Code', 'Stop Running', 'Local Settings',
+    'Project Environment', 'Change Theme', 'Toggle Split View', 'Close Tab',
+    'Toggle AI Panel', 'Clear Output', 'Toggle Primary Sidebar',
+    'Toggle Workbench Panel', 'Move Panel to Bottom or Right',
+    'Toggle Focus Mode', 'Reset Workbench Layout'
+  ]) assert.ok(keys.includes(key), `missing Quick Open translation key: ${key}`);
   for (const key of [
     'Source control: Added',
     'Source control: Modified',
@@ -277,7 +289,7 @@ test('dynamic UI translation entry points reference defined English keys', () =>
     'ai-agent-button.js', 'ai-chat-panel.js', 'ai-markdown.js', 'ai-settings-center.js',
     'ai-capabilities.js', 'ai-prompts.js', 'collaboration.js', 'account-profile.js',
     'project-tasks.js', 'workspace-sync-status.js', 'task-problem-matcher.js', 'runner.js', 'run-config.js', 'runtime.js', 'dap-client.js', 'terminal.js', 'auth.js', 'plugin-manager-ui.js', 'plugin-details.js',
-    'source-control-view.js'
+    'source-control-view.js', 'command-palette.js', 'file-search.js', 'workspace.js', 'projects.js'
   ];
 
   function assertLiteralCalls(source, fileName, pattern, keyGroup) {
@@ -297,6 +309,14 @@ test('dynamic UI translation entry points reference defined English keys', () =>
     if (fileName !== 'collaboration.js') continue;
     assertLiteralCalls(source, fileName, /\b(?:notify|openAction)\(\s*((?:'(?:\\.|[^'\\])*')|(?:"(?:\\.|[^"\\])*"))/g, 1);
     assertLiteralCalls(source, fileName, /\b(?:inputField|textareaField|selectField)\(\s*[^,]+,\s*((?:'(?:\\.|[^'\\])*')|(?:"(?:\\.|[^"\\])*"))/g, 1);
+  }
+
+  for (const fileName of ['app.js', 'workbench-layout.js']) {
+    const source = fs.readFileSync(path.join(ROOT, 'src', fileName), 'utf8');
+    for (const match of source.matchAll(/commands\.register\(\s*'[^']+'\s*,\s*'([^']+)'\s*,\s*'[^']*'\s*,\s*'([^']+)'/g)) {
+      assert.ok(Object.hasOwn(messages, match[1]), `${fileName} command label is not localized: ${match[1]}`);
+      assert.ok(Object.hasOwn(messages, match[2]), `${fileName} command category is not localized: ${match[2]}`);
+    }
   }
 
   const dapSource = fs.readFileSync(path.join(ROOT, 'src', 'dap-client.js'), 'utf8');

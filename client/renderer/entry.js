@@ -22,6 +22,7 @@ import '../editor-rules/plugins/rust.js';
 // Workbench modules.
 import '../src/state.js';
 import '../src/i18n.js';
+import '../src/workspace-launch.js';
 import '../src/icons.js';
 import '../src/confirm-dialog.js';
 import '../src/toast.js';

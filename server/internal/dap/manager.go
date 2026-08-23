@@ -15,20 +15,21 @@ import (
 )
 
 type SessionContext struct {
-	UserID         string
-	WorkspaceKind  string
-	TeamID         string
-	ProjectID      string
-	Branch         string
-	FolderKey      string
-	RuntimeID      string
-	LanguageID     string
-	RemoteRoot     string
-	PersistDir     string
-	DependencyRoot string
-	DependencyEnv  map[string]string
-	ProcessContext context.Context
-	Release        func()
+	UserID              string
+	WorkspaceKind       string
+	TeamID              string
+	ProjectID           string
+	Branch              string
+	FolderKey           string
+	RuntimeID           string
+	LanguageID          string
+	RemoteRoot          string
+	PersistDir          string
+	DependencyRoot      string
+	DependencyMountRoot string
+	DependencyEnv       map[string]string
+	ProcessContext      context.Context
+	Release             func()
 }
 
 func (c SessionContext) Owner() (string, string) {
@@ -46,16 +47,18 @@ func (c SessionContext) WorkspaceKey() string {
 }
 
 type ManagerOptions struct {
-	MaxSessions     int
-	MaxPerUser      int
-	IdleTTL         time.Duration
-	MaxSession      time.Duration
-	CleanupInterval time.Duration
-	MaxMessageBytes int
-	MemoryLimit     string
-	CPULimit        string
-	NetworkEnable   bool
-	Inspector       ImageInspector
+	MaxSessions        int
+	MaxPerUser         int
+	IdleTTL            time.Duration
+	MaxSession         time.Duration
+	CleanupInterval    time.Duration
+	MaxMessageBytes    int
+	MemoryLimit        string
+	CPULimit           string
+	NetworkEnable      bool
+	Inspector          ImageInspector
+	processWaitTimeout time.Duration
+	killWaitTimeout    time.Duration
 }
 
 type Session struct {
@@ -64,21 +67,23 @@ type Session struct {
 	Context SessionContext
 	Adapter AdapterSpec
 
-	messages      chan []byte
-	done          chan struct{}
-	resourcesDone chan struct{}
-	stopping      chan struct{}
-	process       Process
-	writer        *LockedFrameWriter
-	cancel        context.CancelFunc
-	maxBytes      int
-	created       time.Time
-	lastUsed      atomic.Int64
-	stopOnce      sync.Once
-	releaseOnce   sync.Once
-	errMu         sync.RWMutex
-	terminalErr   error
-	onClose       func(*Session)
+	messages           chan []byte
+	done               chan struct{}
+	resourcesDone      chan struct{}
+	stopping           chan struct{}
+	process            Process
+	writer             *LockedFrameWriter
+	cancel             context.CancelFunc
+	maxBytes           int
+	created            time.Time
+	lastUsed           atomic.Int64
+	stopOnce           sync.Once
+	releaseOnce        sync.Once
+	errMu              sync.RWMutex
+	terminalErr        error
+	onClose            func(*Session)
+	processWaitTimeout time.Duration
+	killWaitTimeout    time.Duration
 }
 
 // ChildSession owns one additional DAP connection for an adapter-managed
@@ -225,20 +230,41 @@ func (s *Session) readLoop() {
 			_ = s.process.Wait()
 			close(waitDone)
 		}()
+		waited := false
 		select {
 		case <-waitDone:
-		case <-time.After(5 * time.Second):
+			waited = true
+		case <-time.After(s.processWaitTimeout):
 			_ = s.process.Kill()
 			select {
 			case <-waitDone:
-			case <-time.After(2 * time.Second):
+				waited = true
+			case <-time.After(s.killWaitTimeout):
 			}
 		}
-		s.releaseResources()
+		if waited {
+			s.releaseResources()
+		} else {
+			// A timed-out adapter can still hold its Docker and dependency bind
+			// mounts. Keep every upper lease fail-closed until Wait confirms exit.
+			go func() {
+				<-waitDone
+				s.releaseResources()
+			}()
+		}
 		close(s.messages)
 		close(s.done)
 		if s.onClose != nil {
-			s.onClose(s)
+			if waited {
+				s.onClose(s)
+			} else {
+				// Destructive lifecycle operations must continue to discover this
+				// draining session until all dependency resources are released.
+				go func() {
+					<-s.ResourcesDone()
+					s.onClose(s)
+				}()
+			}
 		}
 	}()
 	reader := bufio.NewReader(s.process.Stdout())
@@ -297,6 +323,12 @@ func NewManager(catalog *Catalog, starter ProcessStarter, opts ManagerOptions) *
 	}
 	if opts.MaxMessageBytes <= 0 {
 		opts.MaxMessageBytes = 1 << 20
+	}
+	if opts.processWaitTimeout <= 0 {
+		opts.processWaitTimeout = 5 * time.Second
+	}
+	if opts.killWaitTimeout <= 0 {
+		opts.killWaitTimeout = 2 * time.Second
 	}
 	inspector := opts.Inspector
 	if inspector == nil {
@@ -428,14 +460,15 @@ func (m *Manager) Start(sessionContext SessionContext) (*Session, error) {
 	process, err := m.starter.Start(processCtx, LaunchSpec{
 		SessionID: id, UserID: sessionContext.UserID, Workspace: sessionContext.RemoteRoot,
 		PersistDir: sessionContext.PersistDir, DependencyRoot: sessionContext.DependencyRoot,
-		DependencyEnv: dependencyEnv, Adapter: spec, MemoryLimit: m.opts.MemoryLimit,
+		DependencyMountRoot: sessionContext.DependencyMountRoot,
+		DependencyEnv:       dependencyEnv, Adapter: spec, MemoryLimit: m.opts.MemoryLimit,
 		CPULimit: m.opts.CPULimit, NetworkEnable: m.opts.NetworkEnable,
 	})
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("start managed debug adapter: %w", err)
 	}
-	session := &Session{ID: id, Key: key, Context: sessionContext, Adapter: spec, messages: make(chan []byte, 32), done: make(chan struct{}), resourcesDone: make(chan struct{}), stopping: make(chan struct{}), process: process, writer: NewLockedFrameWriter(process.Stdin()), cancel: cancel, maxBytes: m.opts.MaxMessageBytes, created: time.Now()}
+	session := &Session{ID: id, Key: key, Context: sessionContext, Adapter: spec, messages: make(chan []byte, 32), done: make(chan struct{}), resourcesDone: make(chan struct{}), stopping: make(chan struct{}), process: process, writer: NewLockedFrameWriter(process.Stdin()), cancel: cancel, maxBytes: m.opts.MaxMessageBytes, created: time.Now(), processWaitTimeout: m.opts.processWaitTimeout, killWaitTimeout: m.opts.killWaitTimeout}
 	session.Touch()
 	session.onClose = m.remove
 	m.mu.Lock()

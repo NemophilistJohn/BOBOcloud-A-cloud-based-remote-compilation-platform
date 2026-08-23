@@ -28,6 +28,7 @@ const EXPECTED_MODULES = [
   '../editor-rules/plugins/rust.js',
   '../src/state.js',
   '../src/i18n.js',
+  '../src/workspace-launch.js',
   '../src/icons.js',
   '../src/confirm-dialog.js',
   '../src/toast.js',

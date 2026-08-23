@@ -97,9 +97,62 @@ test('large workspaces stay searchable while the tree renders in pages', async (
 
     stage = 'search';
     await page.evaluate(() => window.BOBO.fileSearch.show());
-    await page.locator('.cmd-input').fill('file-249.txt');
-    await expect(page.locator('.cmd-item .cmd-label')).toHaveText('file-249.txt');
+    const searchView = page.locator('[data-sidebar-view="search"]');
+    const searchInput = page.locator('#quick-file-search-input');
+    await expect(searchView).toHaveClass(/active/);
+    await expect(searchInput).toBeFocused();
+    await expect(page.locator('.cmd-palette-overlay.open')).toHaveCount(0);
+    await searchInput.fill('file-249.txt');
+    const matchingFile = searchView.locator('.file-search-result-name', { hasText: 'file-249.txt' });
+    await expect(matchingFile).toHaveCount(1);
+    await matchingFile.click();
+    await expect.poll(() => page.evaluate(() => window.BOBO.state.activeTabPath && window.BOBO.state.activeTabPath.endsWith('file-249.txt'))).toBe(true);
+
+    stage = 'search state and history';
+    await page.locator('[data-workbench-view="explorer"]').click();
+    await page.keyboard.press('Control+P');
+    await expect(searchView).toHaveClass(/active/);
+    await expect(searchInput).toHaveValue('file-249.txt');
+    await expect(page.locator('.cmd-palette-overlay.open')).toHaveCount(0);
+    await searchInput.fill('');
+    const recentSection = searchView.locator('[data-search-section="recent"]');
+    await expect(recentSection.locator('.file-search-result-name')).toHaveText('file-249.txt');
+    await expect(searchView.locator('[data-search-section="suggested"]')).toBeVisible();
+
+    stage = 'search localization';
+    await page.evaluate(() => window.BOBO.i18n.setLocale('zh-CN'));
+    await expect(searchInput).toHaveAttribute('placeholder', '搜索文件...');
+    await expect(recentSection.locator('.file-search-section-heading strong')).toHaveText('最近打开');
+    await page.keyboard.press('Control+Shift+P');
+    await expect(page.locator('.cmd-input')).toHaveAttribute('placeholder', '输入命令...');
+    await expect(page.locator('.cmd-item .cmd-label', { hasText: '打开文件夹' })).toHaveCount(1);
+    await page.evaluate(() => window.BOBO.i18n.setLocale('ja'));
+    await expect(page.locator('.cmd-input')).toHaveAttribute('placeholder', 'コマンドを入力...');
+    await expect(page.locator('.cmd-item .cmd-label', { hasText: 'フォルダーを開く' })).toHaveCount(1);
     await page.keyboard.press('Escape');
+    await expect(searchInput).toHaveAttribute('placeholder', 'ファイルを検索...');
+    await page.locator('#sidebar-resizer').press('Home');
+    await expect(page.locator('#sidebar-resizer')).toHaveAttribute('aria-valuenow', '180');
+    await expect.poll(() => page.evaluate(() => Math.round(document.getElementById('sidebar').getBoundingClientRect().width))).toBe(180);
+    const sidebarBounds = await page.evaluate(() => {
+      const sidebar = document.getElementById('sidebar').getBoundingClientRect();
+      const input = document.getElementById('quick-file-search-input').getBoundingClientRect();
+      const rows = Array.from(document.querySelectorAll('[data-sidebar-view="search"] .file-search-result'));
+      return {
+        width: Math.round(sidebar.width),
+        inputContained: input.left >= sidebar.left && input.right <= sidebar.right,
+        rowsContained: rows.every(row => {
+          const bounds = row.getBoundingClientRect();
+          return bounds.left >= sidebar.left && bounds.right <= sidebar.right;
+        })
+      };
+    });
+    expect(sidebarBounds).toEqual({ width: 180, inputContained: true, rowsContained: true });
+    await page.screenshot({ path: path.join(os.tmpdir(), 'bobocloud-quick-open-sidebar.png'), fullPage: false });
+    await page.evaluate(() => window.BOBO.i18n.setLocale('en'));
+    await searchView.locator('.file-search-clear-history').click();
+    await expect(searchView.locator('[data-search-section="recent"]')).toHaveCount(0);
+    await page.locator('[data-workbench-view="explorer"]').click();
 
     stage = 'load more';
     await page.locator('.tree-load-more').click();

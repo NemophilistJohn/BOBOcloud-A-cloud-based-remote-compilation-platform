@@ -4,7 +4,7 @@
   global.BOBO = BOBO;
   var S = BOBO.state;
   var STORAGE_KEY = 'bobocloud.workbench.v1';
-  var STATIC_PRIMARY_VIEWS = ['explorer', 'cloud', 'environment', 'team', 'extensions'];
+  var STATIC_PRIMARY_VIEWS = ['explorer', 'search', 'cloud', 'environment', 'team', 'extensions'];
   var dynamicPrimaryViews = new Set();
 
   var DEFAULTS = {

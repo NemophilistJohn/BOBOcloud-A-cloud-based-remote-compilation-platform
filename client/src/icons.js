@@ -46,6 +46,15 @@
     search: icon(
       '<circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'
     ),
+    moreVertical: icon(
+      '<circle cx="8" cy="3" r="1" fill="currentColor"/><circle cx="8" cy="8" r="1" fill="currentColor"/><circle cx="8" cy="13" r="1" fill="currentColor"/>'
+    ),
+    eye: icon(
+      '<path d="M1.5 8s2.3-4 6.5-4 6.5 4 6.5 4-2.3 4-6.5 4-6.5-4-6.5-4z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.3"/>'
+    ),
+    eyeOff: icon(
+      '<path d="M2 2l12 12M6.2 4.3A7.7 7.7 0 0 1 8 4c4.2 0 6.5 4 6.5 4a9.8 9.8 0 0 1-2 2.5M9.8 11.7A7.5 7.5 0 0 1 8 12c-4.2 0-6.5-4-6.5-4a10 10 0 0 1 2-2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M6.6 6.6a2 2 0 0 0 2.8 2.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'
+    ),
 
     // ── Navigation / Status ──
     chevronDown: icon(
@@ -76,6 +85,9 @@
     ),
     fileText: icon(
       '<path d="M3 2a1 1 0 0 1 1-1h5.5L13 4.5V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M9 1v3.5h4" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M5 7h6M5 9.5h6M5 12h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>'
+    ),
+    package: icon(
+      '<path d="M8 1.5l5.5 3v7L8 14.5l-5.5-3v-7L8 1.5zM2.8 4.7L8 7.6l5.2-2.9M8 7.6v6.6M5.2 3L10.7 6" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>'
     ),
 
     // ── Auth ──

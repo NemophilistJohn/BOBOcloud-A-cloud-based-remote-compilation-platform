@@ -34,6 +34,7 @@ type DockerRunner struct {
 	cacheKey        string
 	cacheMounts     map[string]string
 	cacheEnv        map[string]string
+	discardCached   bool
 	setupPassed     bool
 	workspaceCopier containerWorkspaceCopier
 	metrics         *metrics.Registry
@@ -83,6 +84,17 @@ func (r *DockerRunner) SetBuildCacheContext(key string, mounts, env map[string]s
 	r.cacheKey = key
 	r.cacheMounts = mounts
 	r.cacheEnv = env
+	r.discardCached = false
+}
+
+// SetPersonalCacheContext keeps read-only published generations reusable, but
+// destroys containers attached to a writable staging generation before that
+// generation is atomically published.
+func (r *DockerRunner) SetPersonalCacheContext(key string, mounts, env map[string]string, writable bool) {
+	r.cacheKey = key
+	r.cacheMounts = mounts
+	r.cacheEnv = env
+	r.discardCached = writable
 }
 
 func (r *DockerRunner) SetMetrics(registry *metrics.Registry) { r.metrics = registry }
@@ -139,7 +151,7 @@ func (r *DockerRunner) RunPlan(ctx context.Context, plan *Plan, hostWorkDir stri
 		if r.metrics != nil {
 			r.metrics.Observe("workspace.copy.from_container", time.Since(copyBackStarted))
 		}
-		if errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
+		if r.discardCached || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
 			r.pool.DiscardForUser(containerID, r.userID)
 		} else {
 			r.pool.ReleaseForUser(containerID, r.userID)
@@ -202,8 +214,11 @@ func (r *DockerRunner) RunPlan(ctx context.Context, plan *Plan, hostWorkDir stri
 		return setupResult
 	}
 	r.setupPassed = true
-	if r.runtime.Language == "python" {
+	switch r.runtime.Language {
+	case "python":
 		plan = withDockerPythonRuntimeBootstrap(plan)
+	case "rust":
+		plan = withDockerRustRuntimeBootstrap(plan)
 	}
 
 	executor := NewDockerStepExecutor(r.pool, containerID, containerWorkDir)

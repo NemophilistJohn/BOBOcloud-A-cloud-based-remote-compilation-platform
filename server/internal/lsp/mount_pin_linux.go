@@ -3,6 +3,7 @@
 package lsp
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -42,7 +43,11 @@ func pinDockerDependencyMounts(mountRoot, sessionID string, mounts []AnalysisDep
 	anchors := make([]string, 0, len(pinned))
 	var once sync.Once
 	release := func() {
-		once.Do(func() { releaseDependencyMountAnchors(sessionRoot, anchors) })
+		once.Do(func() {
+			if err := releaseDependencyMountAnchors(sessionRoot, anchors); err != nil {
+				slog.Warn("Failed to release LSP dependency mount session", "path", sessionRoot, "error", err)
+			}
+		})
 	}
 	for index := range pinned {
 		source := filepath.Clean(pinned[index].HostPath)
@@ -104,46 +109,50 @@ func prepareDependencyMountRoot(value string) (string, error) {
 	return root, nil
 }
 
-func releaseDependencyMountAnchors(sessionRoot string, anchors []string) {
-	clean := true
+func releaseDependencyMountAnchors(sessionRoot string, anchors []string) error {
+	var result error
 	for index := len(anchors) - 1; index >= 0; index-- {
 		anchor := anchors[index]
 		if err := unix.Unmount(anchor, unix.MNT_DETACH); err != nil && err != unix.EINVAL && err != unix.ENOENT {
-			slog.Warn("Failed to release LSP dependency mount anchor", "path", anchor, "error", err)
-			clean = false
+			result = errors.Join(result, fmt.Errorf("unmount LSP dependency anchor %q: %w", anchor, err))
 			continue
 		}
 		if err := os.Remove(anchor); err != nil && !os.IsNotExist(err) {
-			slog.Warn("Failed to remove LSP dependency mount anchor", "path", anchor, "error", err)
-			clean = false
+			result = errors.Join(result, fmt.Errorf("remove LSP dependency anchor %q: %w", anchor, err))
 		}
 	}
-	if clean {
+	if result == nil {
 		if err := os.Remove(sessionRoot); err != nil && !os.IsNotExist(err) {
-			slog.Warn("Failed to remove LSP dependency mount session", "path", sessionRoot, "error", err)
+			result = fmt.Errorf("remove LSP dependency mount session %q: %w", sessionRoot, err)
 		}
 	}
+	return result
 }
 
 // CleanupDependencyMountOrphans releases anchors left after an unclean server
 // exit. It never recursively removes a mounted directory.
-func CleanupDependencyMountOrphans(mountRoot string) {
+func CleanupDependencyMountOrphans(mountRoot string) error {
 	root, err := prepareDependencyMountRoot(mountRoot)
 	if err != nil {
-		slog.Warn("Failed to prepare LSP dependency mount cleanup", "error", err)
-		return
+		return fmt.Errorf("prepare LSP dependency mount cleanup: %w", err)
 	}
 	sessions, err := os.ReadDir(root)
 	if err != nil {
-		return
+		return fmt.Errorf("read LSP dependency mount root: %w", err)
 	}
+	var result error
 	for _, session := range sessions {
-		if !session.IsDir() || session.Type()&os.ModeSymlink != 0 || !strings.HasPrefix(session.Name(), "session-") {
+		if !strings.HasPrefix(session.Name(), "session-") {
 			continue
 		}
 		sessionRoot := filepath.Join(root, session.Name())
+		if !session.IsDir() || session.Type()&os.ModeSymlink != 0 {
+			result = errors.Join(result, fmt.Errorf("LSP dependency mount session %q is not a real directory", sessionRoot))
+			continue
+		}
 		entries, readErr := os.ReadDir(sessionRoot)
 		if readErr != nil {
+			result = errors.Join(result, fmt.Errorf("read LSP dependency mount session %q: %w", sessionRoot, readErr))
 			continue
 		}
 		anchors := make([]string, 0, len(entries))
@@ -152,6 +161,7 @@ func CleanupDependencyMountOrphans(mountRoot string) {
 				anchors = append(anchors, filepath.Join(sessionRoot, entry.Name()))
 			}
 		}
-		releaseDependencyMountAnchors(sessionRoot, anchors)
+		result = errors.Join(result, releaseDependencyMountAnchors(sessionRoot, anchors))
 	}
+	return result
 }

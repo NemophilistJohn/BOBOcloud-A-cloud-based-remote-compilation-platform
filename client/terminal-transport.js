@@ -11,6 +11,7 @@ const MAX_STDIN_CHARS = 64 * 1024;
 const MAX_STDIN_BYTES = 16 * 1024;
 const MAX_SETUP_COMMANDS = 64;
 const MAX_SETUP_COMMAND_BYTES = 512;
+const MAX_ENVIRONMENT_FIELD_CHARS = 256;
 
 function normalizeTerminalUrl(serverHost) {
   let input = String(serverHost || '').trim();
@@ -62,6 +63,23 @@ function boundedDimension(value, fallback) {
   return number;
 }
 
+function cleanEnvironmentField(value) {
+  return String(value || '').trim().slice(0, MAX_ENVIRONMENT_FIELD_CHARS);
+}
+
+function cleanTerminalEnvironment(value, fallbackRuntimeId) {
+  const source = value && typeof value === 'object' ? value : {};
+  const runtimeId = cleanEnvironmentField(source.runtimeId || fallbackRuntimeId);
+  return {
+    runtimeId,
+    displayName: cleanEnvironmentField(source.displayName || runtimeId),
+    language: cleanEnvironmentField(source.language),
+    version: cleanEnvironmentField(source.version),
+    dockerImage: cleanEnvironmentField(source.dockerImage),
+    workspaceKind: source.workspaceKind === 'team' ? 'team' : source.workspaceKind === 'personal' ? 'personal' : ''
+  };
+}
+
 function socketText(event) {
   const raw = event && event.data !== undefined ? event.data : event;
   if (typeof raw === 'string') return raw;
@@ -101,6 +119,7 @@ class TerminalTransport {
     this.generation = 0;
     this.sessionId = '';
     this.capabilities = null;
+    this.environment = null;
     this.state = 'idle';
     this.contextToken = null;
     this.startPromise = null;
@@ -120,6 +139,7 @@ class TerminalTransport {
       state: this.state,
       sessionId: this.sessionId,
       capabilities: this.capabilities && Object.assign({}, this.capabilities),
+      environment: this.environment && Object.assign({}, this.environment),
       contextToken: this.contextToken && Object.assign({}, this.contextToken)
     };
   }
@@ -283,9 +303,10 @@ class TerminalTransport {
           this.capabilities = message.capabilities && typeof message.capabilities === 'object'
             ? Object.assign({}, message.capabilities)
             : {};
-          this._emitStatus({ runtimeId: String(message.runtimeId || runtimeId), snapshot: message.snapshot === true, limits: message.limits || null, capabilities: Object.assign({}, this.capabilities) });
+          this.environment = cleanTerminalEnvironment(message.environment, message.runtimeId || runtimeId);
+          this._emitStatus({ runtimeId: this.environment.runtimeId, snapshot: message.snapshot === true, limits: message.limits || null, capabilities: Object.assign({}, this.capabilities), environment: Object.assign({}, this.environment) });
           this._startPing(generation);
-          this._resolveStart({ sessionId: this.sessionId, runtimeId: String(message.runtimeId || runtimeId), snapshot: message.snapshot === true, limits: message.limits || null, capabilities: Object.assign({}, this.capabilities) });
+          this._resolveStart({ sessionId: this.sessionId, runtimeId: this.environment.runtimeId, snapshot: message.snapshot === true, limits: message.limits || null, capabilities: Object.assign({}, this.capabilities), environment: Object.assign({}, this.environment) });
           return;
         }
         if (message.type === 'terminal.output') {
@@ -379,6 +400,7 @@ class TerminalTransport {
     this.capabilities = null;
     if (!silent) this._emitStatus(result);
     this.sessionId = '';
+    this.environment = null;
     if (socket) { try { socket.close(); } catch (_) {} }
     if (resolveClose) resolveClose(result);
   }
@@ -435,6 +457,7 @@ class TerminalTransport {
     if (socket) { try { socket.close(); } catch (_) {} }
     this.sessionId = '';
     this.capabilities = null;
+    this.environment = null;
     this.state = 'idle';
     if (!options.silent && wasActive) this._emitStatus({ reason: closeReason, confirmed: false });
     return { state: 'idle', reason: closeReason, confirmed: !wasActive };

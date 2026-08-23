@@ -26,16 +26,40 @@ func (h *WSHandler) prepareRunPersonalCache(ctx context.Context, sess *model.Run
 	if h == nil || h.PersonalCache == nil || sess == nil || sess.TeamID != "" {
 		return nil, nil
 	}
+	if !projectLockDependencyLanguage(language) {
+		return nil, nil
+	}
 	folderKey := strings.TrimSpace(sess.FolderKey)
 	if folderKey == "" {
 		folderKey = strings.TrimSpace(sess.FolderName)
 	}
 	workspaceID := lsp.StableWorkspaceIdentity(sess.UserID, "", "", "", folderKey)
-	return h.PersonalCache.Prepare(ctx, personalcache.Request{
+	request := personalcache.Request{
 		UserID: sess.UserID, WorkspaceID: workspaceID, WorkspaceName: sess.FolderName,
 		RuntimeID: runtime.RuntimeID, RuntimeFingerprint: personalCacheRuntimeFingerprint(runtime.RuntimeID, runtime.DockerImage), Language: language, WorkspaceRoot: workspaceRoot,
 		SetupCommands: sess.SetupCommands, QuotaBytes: userQuotaBytes(h.UserStore, sess.UserID),
-	})
+	}
+	if !projectDependencyWriteRequired(language, sess.SetupCommands) {
+		return h.PersonalCache.PrepareReadOnly(ctx, request)
+	}
+	return h.PersonalCache.Prepare(ctx, request)
+}
+
+// Python and Node execution only read an already-installed dependency tree.
+// Go, Rust, and Java compilers can populate their module/build caches during
+// ordinary compilation, so those runtimes retain a writable generation.
+func projectDependencyWriteRequired(language string, setupCommands []string) bool {
+	for _, command := range setupCommands {
+		if strings.TrimSpace(command) != "" {
+			return true
+		}
+	}
+	switch canonicalRuntimeLanguage(language) {
+	case "python", "node":
+		return false
+	default:
+		return true
+	}
 }
 
 func (h *HTTPHandler) environmentCacheRequest(r *http.Request, req *model.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string) personalcache.Request {
@@ -49,4 +73,42 @@ func (h *HTTPHandler) environmentCacheRequest(r *http.Request, req *model.Reques
 
 func personalCacheRuntimeFingerprint(runtimeID, image string) string {
 	return strings.TrimSpace(runtimeID) + "\x00" + strings.TrimSpace(image)
+}
+
+func (h *WSHandler) releasePersonalCacheLease(lease *personalcache.Lease, scope lsp.DependencyRefreshScope) {
+	if lease == nil {
+		return
+	}
+	lease.Release()
+	if lease.Published() && h != nil && h.LSP != nil {
+		h.LSP.RestartDependencyViews(scope)
+	}
+}
+
+func (h *HTTPHandler) releasePersonalCacheLease(lease *personalcache.Lease, scope lsp.DependencyRefreshScope) {
+	if lease == nil {
+		return
+	}
+	lease.Release()
+	if lease.Published() && h != nil && h.LSP != nil {
+		h.LSP.RestartDependencyViews(scope)
+	}
+}
+
+func personalDependencyRefreshScope(userID, folderKey, runtimeID, languageID string) lsp.DependencyRefreshScope {
+	return lsp.DependencyRefreshScope{
+		UserID: userID, OwnerKind: "user", OwnerID: userID,
+		FolderKey: strings.TrimSpace(folderKey), RuntimeID: strings.TrimSpace(runtimeID), LanguageID: strings.TrimSpace(languageID),
+	}
+}
+
+func personalCacheLeaseError(lease *personalcache.Lease, parent context.Context) error {
+	if lease == nil {
+		return nil
+	}
+	guard := lease.StartGuard(parent)
+	if guard == nil {
+		return nil
+	}
+	return guard.Err()
 }

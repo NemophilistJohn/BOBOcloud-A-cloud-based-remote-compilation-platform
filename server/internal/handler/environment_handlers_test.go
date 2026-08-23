@@ -3,11 +3,13 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +26,36 @@ type projectEnvironmentEnvelope struct {
 	Success bool            `json:"success"`
 	Error   string          `json:"error"`
 	Data    json.RawMessage `json:"data"`
+}
+
+type recordingEnvironmentDependencyAdapter struct {
+	mu        sync.Mutex
+	contexts  map[string]lsp.DependencyAdapterContext
+	onResolve func(lsp.DependencyAdapterContext)
+}
+
+func (a *recordingEnvironmentDependencyAdapter) Name() string { return "environment-test" }
+func (a *recordingEnvironmentDependencyAdapter) Languages() []string {
+	return []string{"python", "node", "go", "rust", "java"}
+}
+func (a *recordingEnvironmentDependencyAdapter) Resolve(ctx lsp.DependencyAdapterContext) (lsp.DependencyAdapterResult, error) {
+	a.mu.Lock()
+	if a.contexts == nil {
+		a.contexts = make(map[string]lsp.DependencyAdapterContext)
+	}
+	a.contexts[ctx.LanguageID] = ctx
+	a.mu.Unlock()
+	if a.onResolve != nil {
+		a.onResolve(ctx)
+	}
+	return lsp.DependencyAdapterResult{}, nil
+}
+
+func (a *recordingEnvironmentDependencyAdapter) context(language string) (lsp.DependencyAdapterContext, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	ctx, ok := a.contexts[language]
+	return ctx, ok
 }
 
 func newProjectEnvironmentTestHandler(t *testing.T) (*HTTPHandler, string, string) {
@@ -189,7 +221,187 @@ func TestProjectEnvironmentUsesOnlyCurrentProjectLockDigest(t *testing.T) {
 	}
 }
 
-func TestProjectEnvironmentDoesNotCallManifestlessExactInventoryHealthy(t *testing.T) {
+func TestProjectEnvironmentKeepsOneDependencyGenerationDuringPublication(t *testing.T) {
+	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+	workspace := filepath.Join(serverRoot, "project-key")
+	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
+	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+	adapter := &recordingEnvironmentDependencyAdapter{}
+	registry, err := lsp.NewDependencyRegistry(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.DependencyViews = registry
+	resolved := environmentResolved{
+		root: workspace, folderKey: "project-key",
+		workspace: model.ProjectEnvironmentWorkspace{Kind: "personal", ID: lsp.StableWorkspaceIdentity("default", "", "", "", "project-key"), Name: "Project", Key: "project-key"},
+	}
+	runtime := model.ProjectEnvironmentRuntime{ID: "python:3.10", Image: "python:3.10-slim"}
+	httpRequest := httptest.NewRequest(http.MethodPost, "/api", nil)
+	request := &model.Request{}
+	cacheRequest := handler.environmentCacheRequest(httpRequest, request, resolved, runtime, "python")
+	initialWriter, err := handler.PersonalCache.Prepare(context.Background(), cacheRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePythonDistInfo(t, filepath.Join(initialWriter.HostRoot, "python"), "numpy", "2.1.0")
+	initialWriter.Release()
+	initialReader, entry, exists, err := handler.PersonalCache.AcquireRead(cacheRequest)
+	if err != nil || !exists || initialReader == nil {
+		t.Fatalf("acquire initial generation: exists=%v err=%v", exists, err)
+	}
+	initialGeneration := "project-lock:" + entry.Digest + ":" + initialReader.Generation
+	initialReader.Release()
+
+	var nextGeneration string
+	var deleteErr error
+	resolveCount := 0
+	firstViewHadMatplotlib := false
+	secondViewHadMatplotlib := false
+	adapter.onResolve = func(ctx lsp.DependencyAdapterContext) {
+		resolveCount++
+		roots := ctx.Paths.Extra[lsp.DependencyRolePythonPackages]
+		if len(roots) != 1 {
+			t.Errorf("adapter received dependency roots %+v", ctx.Paths.Extra)
+			return
+		}
+		_, matplotlibErr := os.Stat(filepath.Join(roots[0], "matplotlib-3.10.0.dist-info", "METADATA"))
+		if resolveCount == 1 {
+			firstViewHadMatplotlib = matplotlibErr == nil
+			nextWriter, prepareErr := handler.PersonalCache.Prepare(context.Background(), cacheRequest)
+			if prepareErr != nil {
+				t.Errorf("prepare next generation: %v", prepareErr)
+				return
+			}
+			writePythonDistInfo(t, filepath.Join(nextWriter.HostRoot, "python"), "matplotlib", "3.10.0")
+			nextWriter.Release()
+			nextReader, nextEntry, nextExists, readErr := handler.PersonalCache.AcquireRead(cacheRequest)
+			if readErr != nil || !nextExists || nextReader == nil {
+				t.Errorf("acquire next generation: exists=%v err=%v", nextExists, readErr)
+				return
+			}
+			nextGeneration = "project-lock:" + nextEntry.Digest + ":" + nextReader.Generation
+			nextReader.Release()
+			deleteErr = handler.PersonalCache.Delete("default", entry.Path)
+		} else if resolveCount == 2 {
+			secondViewHadMatplotlib = matplotlibErr == nil
+		}
+	}
+
+	_, envelope := callProjectEnvironment(t, handler, `{"action":"getProjectEnvironment","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python"}`)
+	var first model.ProjectEnvironment
+	if err := json.Unmarshal(envelope.Data, &first); err != nil {
+		t.Fatal(err)
+	}
+	if first.DependencyCache.Status != "hit" || first.DependencyCache.Digest != entry.Digest || len(first.Packages.Installed) != 1 || first.Packages.Installed[0].Name != "numpy" {
+		t.Fatalf("first response mixed dependency generations: %+v", first)
+	}
+	if nextGeneration == "" || nextGeneration == initialGeneration {
+		t.Fatalf("interleaved publication did not advance generation: old=%q new=%q", initialGeneration, nextGeneration)
+	}
+	if !errors.Is(deleteErr, personalcache.ErrCacheInUse) {
+		t.Fatalf("environment snapshot did not retain its generation through response assembly: %v", deleteErr)
+	}
+
+	_, envelope = callProjectEnvironment(t, handler, `{"action":"getProjectEnvironment","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python"}`)
+	var second model.ProjectEnvironment
+	if err := json.Unmarshal(envelope.Data, &second); err != nil {
+		t.Fatal(err)
+	}
+	if firstViewHadMatplotlib || !secondViewHadMatplotlib || len(second.Packages.Installed) != 2 {
+		t.Fatalf("next response did not move wholly to the published generation: firstViewHadMatplotlib=%v secondViewHadMatplotlib=%v environment=%+v", firstViewHadMatplotlib, secondViewHadMatplotlib, second)
+	}
+}
+
+func TestEnvironmentDependencyStatusUsesPinnedProjectViewForEveryManagedLanguage(t *testing.T) {
+	tests := []struct {
+		language, runtime, image, manifest, content string
+		populate                                    func(t *testing.T, root string)
+	}{
+		{"python", "python:3.10", "python:3.10-slim", "requirements.txt", "numpy==2.1.0\n", func(t *testing.T, root string) {
+			writePythonDistInfo(t, filepath.Join(root, "python"), "numpy", "2.1.0")
+		}},
+		{"node", "node:20", "node:20-slim", "package.json", `{"dependencies":{"left-pad":"1.3.0"}}`, func(t *testing.T, root string) {
+			writeEnvironmentFile(t, filepath.Join(root, "node_modules", "left-pad", "package.json"), `{"name":"left-pad","version":"1.3.0"}`)
+		}},
+		{"go", "go:1.24", "golang:1.24", "go.mod", "module example.test/app\n", func(t *testing.T, root string) {
+			writeEnvironmentFile(t, filepath.Join(root, "go", "pkg", "mod", "example.test", "mod@v1.0.0", "go.mod"), "module example.test/mod\n")
+		}},
+		{"rust", "rust:1.82", "rust:1.82", "Cargo.toml", "[dependencies]\nserde = \"1\"\n", func(t *testing.T, root string) {
+			writeEnvironmentFile(t, filepath.Join(root, "cargo", "registry", "src", "index", "serde-1.0.0", "Cargo.toml"), "[package]\nname=\"serde\"\n")
+		}},
+		{"java", "java:21", "eclipse-temurin:21", "pom.xml", "<project/>\n", func(t *testing.T, root string) {
+			writeEnvironmentFile(t, filepath.Join(root, "maven", "org", "example", "demo", "1.0", "demo-1.0.pom"), "<project/>\n")
+			writeEnvironmentFile(t, filepath.Join(root, "gradle", "caches", "modules-2", "metadata.bin"), "metadata")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.language, func(t *testing.T) {
+			handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+			workspace := filepath.Join(serverRoot, "project-key")
+			writeEnvironmentFile(t, filepath.Join(workspace, test.manifest), test.content)
+			handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+			adapter := &recordingEnvironmentDependencyAdapter{}
+			registry, err := lsp.NewDependencyRegistry(adapter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler.DependencyViews = registry
+			resolved := environmentResolved{
+				root: workspace, folderKey: "project-key",
+				workspace: model.ProjectEnvironmentWorkspace{Kind: "personal", ID: lsp.StableWorkspaceIdentity("default", "", "", "", "project-key"), Name: "Project", Key: "project-key"},
+			}
+			runtime := model.ProjectEnvironmentRuntime{ID: test.runtime, Image: test.image}
+			httpRequest := httptest.NewRequest(http.MethodPost, "/api", nil)
+			request := &model.Request{}
+			cacheRequest := handler.environmentCacheRequest(httpRequest, request, resolved, runtime, test.language)
+			writer, err := handler.PersonalCache.Prepare(context.Background(), cacheRequest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.populate(t, writer.HostRoot)
+			writer.Release()
+			entry, exists, err := handler.PersonalCache.Lookup(cacheRequest)
+			if err != nil || !exists {
+				t.Fatalf("lookup project cache: exists=%v err=%v", exists, err)
+			}
+			writeEnvironmentFile(t, filepath.Join(entry.HostPath, ".package-inventory.json"), "{invalid-json")
+			writeEnvironmentFile(t, filepath.Join(dataRoot, "users", "default", "persist", "legacy", test.language, "marker"), "legacy")
+
+			var deleteErr error
+			adapter.onResolve = func(lsp.DependencyAdapterContext) {
+				deleteErr = handler.PersonalCache.Delete("default", entry.Path)
+			}
+			_, _ = handler.resolveEnvironmentDependencyStatus(httpRequest, request, resolved, runtime, test.language)
+			ctx, ok := adapter.context(test.language)
+			if !ok {
+				t.Fatal("environment dependency adapter was not called")
+			}
+			if ctx.Paths.UserPersistRoot != "" || ctx.Paths.SnapshotRoot != "" {
+				t.Fatalf("legacy dependency paths leaked into project-lock status: %+v", ctx.Paths)
+			}
+			if len(ctx.Paths.Extra) == 0 {
+				t.Fatalf("project dependency paths were gated by package inventory: %+v", ctx.Paths)
+			}
+			if !errors.Is(deleteErr, personalcache.ErrCacheInUse) {
+				t.Fatalf("environment status did not retain an AcquireRead lease during resolution: %v", deleteErr)
+			}
+			for _, paths := range ctx.Paths.Extra {
+				for _, path := range paths {
+					info, statErr := os.Lstat(path)
+					if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+						t.Fatalf("dependency path %q is not a pinned real directory: info=%v err=%v", path, info, statErr)
+					}
+					if relative, relErr := filepath.Rel(filepath.Join(dataRoot, "users", "default", "persist", "legacy"), path); relErr == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+						t.Fatalf("dependency path %q leaked the legacy user persist tree", path)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestProjectEnvironmentDerivesManifestlessPythonImportsFromExactInventory(t *testing.T) {
 	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
 	workspace := filepath.Join(serverRoot, "project-key")
 	writeEnvironmentFile(t, filepath.Join(workspace, "main.py"), "import numpy\n")
@@ -216,8 +428,46 @@ func TestProjectEnvironmentDoesNotCallManifestlessExactInventoryHealthy(t *testi
 	if environment.DependencyCache.InventoryStatus != "ready" || len(environment.Packages.Installed) != 1 {
 		t.Fatalf("exact inventory was not exposed: %+v", environment)
 	}
-	if environment.Consistency.DependencyRuntime.Status != "unknown" || environment.Consistency.Status == "aligned" || !strings.Contains(environment.Consistency.DependencyRuntime.Detail, "no parseable dependency declarations") {
-		t.Fatalf("manifestless project was reported healthy: %+v", environment.Consistency)
+	if len(environment.Manifests) != 1 || environment.Manifests[0].Kind != "source-imports" || environment.Manifests[0].Path != "main.py" || !environment.Manifests[0].Parsed {
+		t.Fatalf("source dependency evidence = %+v", environment.Manifests)
+	}
+	if len(environment.Packages.Declared) != 1 || environment.Packages.Declared[0].Name != "numpy" || environment.Packages.Declared[0].Trust != "source-static" || len(environment.Packages.Missing) != 0 || len(environment.Packages.Unknown) != 0 {
+		t.Fatalf("source-derived packages = %+v", environment.Packages)
+	}
+	if environment.Consistency.DependencyRuntime.Status != "aligned" || !strings.Contains(environment.Consistency.DependencyRuntime.Detail, "all 1 declared dependencies") {
+		t.Fatalf("source-derived dependency truth = %+v", environment.Consistency)
+	}
+}
+
+func TestProjectEnvironmentReportsMissingManifestlessPythonImport(t *testing.T) {
+	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+	workspace := filepath.Join(serverRoot, "project-key")
+	writeEnvironmentFile(t, filepath.Join(workspace, "main.py"), "import numpy as np\nfrom matplotlib.animation import FuncAnimation\n")
+	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+	request := personalcache.Request{
+		UserID: "default", WorkspaceID: lsp.StableWorkspaceIdentity("default", "", "", "", "project-key"), WorkspaceName: "Project",
+		RuntimeID: "python:3.10", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.10", "python:3.10-slim"), Language: "python", WorkspaceRoot: workspace,
+	}
+	lease, err := handler.PersonalCache.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePythonDistInfo(t, filepath.Join(lease.HostRoot, "python"), "matplotlib", "3.9.0")
+	lease.Release()
+
+	recorder, envelope := callProjectEnvironment(t, handler, `{"action":"getProjectEnvironment","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python"}`)
+	if recorder.Code != http.StatusOK || !envelope.Success {
+		t.Fatalf("response=%s", recorder.Body.String())
+	}
+	var environment model.ProjectEnvironment
+	if err := json.Unmarshal(envelope.Data, &environment); err != nil {
+		t.Fatal(err)
+	}
+	if len(environment.Packages.Declared) != 2 || len(environment.Packages.Missing) != 1 || environment.Packages.Missing[0].Name != "numpy" || len(environment.Packages.Unknown) != 0 {
+		t.Fatalf("source-derived missing packages = %+v", environment.Packages)
+	}
+	if environment.Consistency.DependencyRuntime.Status != "mismatch" {
+		t.Fatalf("dependency status = %+v", environment.Consistency.DependencyRuntime)
 	}
 }
 
@@ -533,6 +783,106 @@ func TestProjectEnvironmentPlanAndApplyIgnoreClientCommand(t *testing.T) {
 	if !result.Applied || result.Environment == nil || len(result.Environment.Packages.Missing) != 0 {
 		t.Fatalf("apply did not close verification loop: %+v", result)
 	}
+}
+
+func TestFailedProjectEnvironmentSetupDoesNotPublishStagedDependencies(t *testing.T) {
+	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+	workspace := filepath.Join(serverRoot, "project-key")
+	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
+	cacheRequest := personalcache.Request{
+		UserID: "default", WorkspaceID: lsp.StableWorkspaceIdentity("default", "", "", "", "project-key"), WorkspaceName: "Project",
+		RuntimeID: "python:3.10", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.10", "python:3.10-slim"),
+		Language: "python", WorkspaceRoot: workspace, QuotaBytes: 1 << 30,
+	}
+	initial, err := handler.PersonalCache.Prepare(context.Background(), cacheRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.Release()
+	reader, err := handler.PersonalCache.PrepareReadOnly(context.Background(), cacheRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialGeneration := reader.Generation
+	reader.Release()
+
+	handler.EnvironmentSetup = func(ctx context.Context, _, _, _ string, _ []string) (string, string, int, error) {
+		lease := personalcache.LeaseFromContext(ctx)
+		if lease == nil || !lease.Writable() {
+			t.Fatal("environment setup did not receive a writable dependency lease")
+		}
+		writePythonDistInfo(t, filepath.Join(lease.HostRoot, "python"), "numpy", "2.1.0")
+		return "", "installer failed", 1, nil
+	}
+	recorder, envelope := callProjectEnvironment(t, handler, `{"action":"applyProjectEnvironmentAction","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python","environmentAction":"repair"}`)
+	if recorder.Code != http.StatusConflict || envelope.Success {
+		t.Fatalf("failed setup response: %s", recorder.Body.String())
+	}
+	after, err := handler.PersonalCache.PrepareReadOnly(context.Background(), cacheRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer after.Release()
+	if after.Generation != initialGeneration {
+		t.Fatalf("failed setup was published: before=%q after=%q", initialGeneration, after.Generation)
+	}
+	if inspection := handler.PersonalCache.InspectPackageInventory(cacheRequest); inspection.State != "ready" || len(inspection.Packages) != 0 {
+		t.Fatalf("failed setup polluted package inventory: %+v", inspection)
+	}
+}
+
+func TestProjectEnvironmentRetainsCacheAndQuotaUntilContainerRemoval(t *testing.T) {
+	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8, ReservationFiles: 1})
+	workspace := filepath.Join(serverRoot, "project-key")
+	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
+	cleanup := make(chan struct{})
+	cleanupStarted := make(chan struct{})
+	var dependencyRoot string
+	handler.EnvironmentSetup = func(ctx context.Context, _, _, _ string, _ []string) (string, string, int, error) {
+		lease := personalcache.LeaseFromContext(ctx)
+		if lease == nil || !lease.Writable() {
+			t.Fatal("environment setup did not receive a writable dependency lease")
+		}
+		dependencyRoot = lease.HostRoot
+		writePythonDistInfo(t, filepath.Join(dependencyRoot, "python"), "numpy", "2.1.0")
+		if !RetainResourcesUntilContainerRemoved(ctx, func() {
+			close(cleanupStarted)
+			<-cleanup
+		}) {
+			t.Fatal("failed container cleanup did not retain storage ownership")
+		}
+		return "", "container removal pending", 1, errors.New("destroy environment setup container")
+	}
+
+	recorder, envelope := callProjectEnvironment(t, handler, `{"action":"applyProjectEnvironmentAction","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python","environmentAction":"repair"}`)
+	if recorder.Code != http.StatusConflict || envelope.Success {
+		t.Fatalf("failed cleanup response: %s", recorder.Body.String())
+	}
+	select {
+	case <-cleanupStarted:
+	case <-time.After(time.Second):
+		t.Fatal("deferred container cleanup did not start")
+	}
+	if _, err := os.Stat(dependencyRoot); err != nil {
+		t.Fatalf("active dependency tree was removed before its container: %v", err)
+	}
+	if info := handler.PersonalCache.Inspect("default", 0); info.ReservedBytes == 0 || info.ReservedFiles == 0 {
+		t.Fatalf("active cleanup released quota ownership: %+v", info)
+	}
+
+	close(cleanup)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		info := handler.PersonalCache.Inspect("default", 0)
+		_, statErr := os.Stat(dependencyRoot)
+		if info.ReservedBytes == 0 && info.ReservedFiles == 0 && os.IsNotExist(statErr) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("cache/quota ownership was not released after cleanup: info=%+v stat=%v", handler.PersonalCache.Inspect("default", 0), func() error { _, err := os.Stat(dependencyRoot); return err }())
 }
 
 func TestProjectEnvironmentApplyRejectsStaleRevisionBeforeExecution(t *testing.T) {

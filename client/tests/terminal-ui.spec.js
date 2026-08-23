@@ -105,6 +105,14 @@ async function createTerminalServer() {
           sessionId: 'terminal-ui-test-' + (++sessionCounter),
           runtimeId: message.runtimeId,
           snapshot: true,
+          environment: {
+            runtimeId: message.runtimeId,
+            displayName: 'Python 3.12',
+            language: 'python',
+            version: '3.12',
+            dockerImage: 'python:3.12-slim',
+            workspaceKind: message.workspace && message.workspace.kind || 'personal'
+          },
           capabilities: { tty: true, resize: false, isolatedWorkspace: true }
         })));
         socket.write(serverFrame(JSON.stringify({
@@ -193,10 +201,14 @@ test('cloud terminal streams through the main bridge and confirms only multi-lin
     await expect.poll(() => server.messages.filter((message) => message.type === 'terminal.start').length).toBe(1);
     await page.waitForFunction(() => window.BOBO.terminal.getState().connected === true, null, { timeout: 10000 });
     await expect(page.locator('#terminal-host .xterm')).toBeVisible();
+    await expect(page.locator('#terminal-context')).toHaveAttribute('data-state', 'ready');
+    await expect(page.locator('#terminal-context-state')).toHaveText('Cloud terminal connected');
+    await expect(page.locator('#terminal-context-details')).toContainText('python:3.12-slim');
     await expect(page.locator('#terminal-input')).toHaveCount(0);
     await expect(page.locator('.terminal-input-row')).toHaveCount(0);
     await expect(page.locator('#terminal-output')).toHaveCount(0);
     expect(await page.evaluate(() => window.BOBO.terminal.getState().capabilities.resize)).toBe(false);
+    expect(await page.evaluate(() => window.BOBO.terminal.getState().environment.dockerImage)).toBe('python:3.12-slim');
 
     const start = server.messages.find((message) => message.type === 'terminal.start');
     const terminalState = await page.evaluate(() => window.BOBO.terminal.getState());

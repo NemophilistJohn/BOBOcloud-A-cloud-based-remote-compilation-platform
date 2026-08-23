@@ -9,4 +9,4 @@ func pinDockerDependencyMounts(_ string, _ string, mounts []AnalysisDependencyMo
 	return append([]AnalysisDependencyMount(nil), mounts...), func() {}, nil
 }
 
-func CleanupDependencyMountOrphans(_ string) {}
+func CleanupDependencyMountOrphans(_ string) error { return nil }

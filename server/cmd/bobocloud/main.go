@@ -41,6 +41,52 @@ import (
 // ServerVersion 服务端版本号（serverInfo/whoami 返回，客户端用于兼容性判断）
 const ServerVersion = "2.5.0"
 
+type dependencyRecoverySteps struct {
+	cleanupManagedContainers func() error
+	cleanupLSPContainers     func() error
+	cleanupLSPMounts         func(string) error
+	cleanupDAPContainers     func() error
+	cleanupDAPMounts         func(string) error
+	recoverTransactions      func()
+}
+
+type userContainerDestroyer interface {
+	DestroyUserContainers(string) error
+}
+
+func removeUserDataAfterContainerCleanup(destroyer userContainerDestroyer, userID, userDir string) error {
+	if err := destroyer.DestroyUserContainers(userID); err != nil {
+		return fmt.Errorf("destroy user containers before deleting data: %w", err)
+	}
+	if err := os.RemoveAll(userDir); err != nil {
+		return fmt.Errorf("delete user data directory: %w", err)
+	}
+	return nil
+}
+
+// recoverDependencyRuntimeState is intentionally independent of feature
+// enablement. A previous binary may have left analyzer/debugger containers or
+// mount anchors behind even when the current configuration disables them.
+func recoverDependencyRuntimeState(dataDir string, steps dependencyRecoverySteps) error {
+	if err := steps.cleanupManagedContainers(); err != nil {
+		return fmt.Errorf("cleanup managed Docker containers: %w", err)
+	}
+	if err := steps.cleanupLSPContainers(); err != nil {
+		return fmt.Errorf("cleanup Docker LSP containers: %w", err)
+	}
+	if err := steps.cleanupDAPContainers(); err != nil {
+		return fmt.Errorf("cleanup Docker DAP containers: %w", err)
+	}
+	if err := steps.cleanupLSPMounts(filepath.Join(dataDir, "lsp-cache", "mounts")); err != nil {
+		return fmt.Errorf("cleanup LSP dependency projections: %w", err)
+	}
+	if err := steps.cleanupDAPMounts(filepath.Join(dataDir, "dap-cache", "mounts")); err != nil {
+		return fmt.Errorf("cleanup DAP dependency projections: %w", err)
+	}
+	steps.recoverTransactions()
+	return nil
+}
+
 func main() {
 	// ──── 1. 加载配置 ────
 	execDir, err := os.Getwd()
@@ -188,22 +234,35 @@ func main() {
 		filepath.Join(cfg.DataDir, "users"),
 	)
 	dockerPool.SetHardening(cfg.DockerHardening, cfg.DockerReadOnlyRootfs)
+	dockerPool.SetResetStrategy(cfg.DockerContainerResetStrategy)
 	dockerPool.SetMetrics(performanceMetrics)
 	dockerPool.SetOutputRetentionLimit(cfg.RunOutputRetainedBytes)
 	dockerPool.SetPersonalDependencyScope(cfg.PersonalDependencyScope)
 	personalCache := personalcache.NewManager(cfg.DataDir, personalcache.Options{
-		ScopeMode:        cfg.PersonalDependencyScope,
-		ReservationBytes: int64(cfg.PersonalPersistReservationMB) * 1_000_000,
-		MaxFiles:         cfg.PersonalPersistMaxFiles,
-		ReservationFiles: cfg.PersonalPersistReservationFiles,
-		ScanInterval:     cfg.PersonalPersistScanInterval(),
-		Retention:        cfg.PersonalPersistRetention(),
-		Metrics:          performanceMetrics,
-		OnEvicted:        dockerPool.InvalidateIdleBuildCacheContainers,
+		ScopeMode:           cfg.PersonalDependencyScope,
+		ReservationBytes:    int64(cfg.PersonalPersistReservationMB) * 1_000_000,
+		MaxFiles:            cfg.PersonalPersistMaxFiles,
+		ReservationFiles:    cfg.PersonalPersistReservationFiles,
+		ScanInterval:        cfg.PersonalPersistScanInterval(),
+		Retention:           cfg.PersonalPersistRetention(),
+		Metrics:             performanceMetrics,
+		OnEvicted:           dockerPool.InvalidateIdleBuildCacheContainers,
+		OnGenerationChanged: dockerPool.InvalidateIdlePersonalDependencyContainers,
 	})
-
-	// 清理上次进程异常退出后遗留的孤儿容器
-	dockerPool.CleanupOrphanedContainers()
+	// Recovery can rename or delete transaction directories. It is safe only
+	// after every old writer/reader container is confirmed absent and every
+	// analyzer/debugger projection is confirmed unmounted.
+	if err := recoverDependencyRuntimeState(cfg.DataDir, dependencyRecoverySteps{
+		cleanupManagedContainers: dockerPool.CleanupOrphanedContainers,
+		cleanupLSPContainers:     lsp.CleanupDockerOrphans,
+		cleanupLSPMounts:         lsp.CleanupDependencyMountOrphans,
+		cleanupDAPContainers:     dap.CleanupDockerOrphans,
+		cleanupDAPMounts:         dap.CleanupDependencyMountOrphans,
+		recoverTransactions:      personalCache.RecoverOrphanedTransactions,
+	}); err != nil {
+		slog.Error("Cannot safely recover personal dependency transactions", "error", err)
+		os.Exit(1)
+	}
 
 	slog.Info("Docker pool initialized",
 		"hot_pool_size", cfg.DockerHotPoolSize,
@@ -213,6 +272,7 @@ func main() {
 		"queue_timeout_s", cfg.DockerQueueTimeoutSeconds,
 		"hardening", cfg.DockerHardening,
 		"readonly_rootfs", cfg.DockerReadOnlyRootfs,
+		"reset_strategy", cfg.DockerContainerResetStrategy,
 	)
 
 	// ──── 优雅关闭 ────
@@ -293,8 +353,6 @@ func main() {
 	resourceLifecycle := lifecycle.NewManager()
 	dependencyViews := lsp.NewDefaultDependencyRegistry()
 	if cfg.LSPEnabled {
-		lsp.CleanupDockerOrphans()
-		lsp.CleanupDependencyMountOrphans(filepath.Join(cfg.DataDir, "lsp-cache", "mounts"))
 		manifestPath := lsp.ResolveManifestPath(execDir, cfg.LSPManifestPath)
 		catalog, catalogErr := lsp.LoadCatalog(manifestPath)
 		if catalogErr != nil {
@@ -312,7 +370,6 @@ func main() {
 		slog.Info("Remote LSP initialized", "manifest", manifestPath, "languages", catalog.Languages(), "max_sessions", cfg.LSPMaxSessions, "max_per_user", cfg.LSPMaxSessionsPerUser, "cache_quota_mb", cfg.LSPCacheQuotaMB)
 	}
 	if cfg.DAPEnabled {
-		dap.CleanupDockerOrphans()
 		manifestPath := dap.ResolveManifestPath(execDir, cfg.DAPManifestPath)
 		catalog, catalogErr := dap.LoadCatalog(manifestPath)
 		if catalogErr != nil {
@@ -463,14 +520,14 @@ func main() {
 				return err
 			}
 		}
-		// 销毁该用户的所有活跃容器
-		dockerPool.DestroyUserContainers(userID)
-		// 删除用户数据目录（workspaces + persist + temp）
+		// Docker must confirm every user-owned container is absent before the
+		// bind-mounted directory can be removed. A cleanup error remains in the
+		// durable deletion queue and is retried without losing ownership state.
 		userDir := filepath.Join(cfg.DataDir, "users", userID)
-		if err := os.RemoveAll(userDir); err != nil {
+		if err := removeUserDataAfterContainerCleanup(dockerPool, userID, userDir); err != nil {
 			slog.Error("Failed to delete user data directory",
 				"user_id", userID, "path", userDir, "error", err)
-			return fmt.Errorf("delete user data directory: %w", err)
+			return err
 		} else {
 			slog.Info("User data directory deleted", "user_id", userID, "path", userDir)
 		}
@@ -826,9 +883,17 @@ func makeTerminalExecutor(pool *docker.Pool) handler.TerminalExecutor {
 		if err != nil {
 			return "", "", 0, fmt.Errorf("failed to acquire container: %w", err)
 		}
+		writableDependencyLease := false
+		if lease := personalcache.LeaseFromContext(ctx); lease != nil {
+			writableDependencyLease = lease.Writable()
+		}
 		defer func() {
-			if errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
-				pool.DiscardForUser(containerID, userID)
+			if writableDependencyLease || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
+				if cleanupErr := pool.DiscardForUserAndWait(containerID, userID); cleanupErr != nil {
+					retainContainerResourcesUntilRemoved(ctx, pool, containerID, userID)
+					err = errors.Join(err, fmt.Errorf("destroy terminal container: %w", cleanupErr))
+					exitCode = 1
+				}
 			} else {
 				pool.ReleaseForUser(containerID, userID)
 			}
@@ -872,9 +937,17 @@ func makeEnvironmentSetupExecutor(pool *docker.Pool, policy security.Policy) han
 		if err != nil {
 			return "", "", 0, fmt.Errorf("failed to acquire container: %w", err)
 		}
+		writableDependencyLease := false
+		if lease := personalcache.LeaseFromContext(ctx); lease != nil {
+			writableDependencyLease = lease.Writable()
+		}
 		defer func() {
-			if errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
-				pool.DiscardForUser(containerID, userID)
+			if writableDependencyLease || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
+				if cleanupErr := pool.DiscardForUserAndWait(containerID, userID); cleanupErr != nil {
+					retainContainerResourcesUntilRemoved(ctx, pool, containerID, userID)
+					err = errors.Join(err, fmt.Errorf("destroy environment setup container: %w", cleanupErr))
+					exitCode = 1
+				}
 			} else {
 				pool.ReleaseForUser(containerID, userID)
 			}
@@ -900,5 +973,15 @@ func makeEnvironmentSetupExecutor(pool *docker.Pool, policy security.Policy) han
 			}
 		}
 		return stdoutBuilder.String(), stderrBuilder.String(), 0, nil
+	}
+}
+
+func retainContainerResourcesUntilRemoved(ctx context.Context, pool *docker.Pool, containerID, userID string) {
+	cleanup := func() { pool.DiscardForUser(containerID, userID) }
+	if !handler.RetainResourcesUntilContainerRemoved(ctx, cleanup) {
+		// Callers without an HTTP ownership handoff must wait here. Returning
+		// would let an outer defer release quota/cache ownership while Docker
+		// may still hold a writable bind mount.
+		cleanup()
 	}
 }

@@ -465,7 +465,11 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 			return
 		}
 		if personalLease != nil {
-			defer personalLease.Release()
+			folderKey := sess.FolderKey
+			if folderKey == "" {
+				folderKey = sess.FolderName
+			}
+			defer h.releasePersonalCacheLease(personalLease, personalDependencyRefreshScope(sess.UserID, folderKey, rt.RuntimeID, plugin.Language()))
 			guard := personalLease.StartGuard(ctx)
 			if guard != nil {
 				executionCtx = guard.Context
@@ -576,9 +580,12 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		if preparedCache != nil {
 			dr.SetBuildCacheContext(preparedCache.ContainerKey, preparedCache.DockerMounts, preparedCache.DockerEnv)
 		} else if personalLease != nil {
-			dr.SetBuildCacheContext(personalLease.ContainerKey, personalLease.DockerMounts, personalLease.DockerEnv)
+			dr.SetPersonalCacheContext(personalLease.ContainerKey, personalLease.DockerMounts, personalLease.DockerEnv, personalLease.Writable())
 		}
 		result = dr.RunPlan(executionCtx, plan, tempDir, output, stdinReader)
+		if personalLease != nil && personalLease.Writable() && !dr.SetupPassed() {
+			personalLease.Abort()
+		}
 		if dr.SetupPassed() {
 			for _, command := range sess.SetupCommands {
 				if h.Security != nil && !h.Security.AllowCommand(command) {
@@ -600,7 +607,8 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		fail("Execution returned no result")
 		return
 	}
-	if personalLease != nil && personalLease.StartGuard(ctx).Err() != nil {
+	if personalCacheLeaseError(personalLease, ctx) != nil {
+		personalLease.Abort()
 		output.WriteError("Personal storage quota was exceeded while writing project dependencies")
 		result.Success = false
 		result.ReturnCode = 1
@@ -721,7 +729,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 
 	output.WriteResult(result.Success, result.ReturnCode)
 	slog.Info("Run completed", "run_id", runID, "duration_ms", time.Since(taskStarted).Milliseconds(), "success", result.Success)
-	if dependencySetupPassed && h.LSP != nil && h.DependencyViews != nil {
+	if dependencySetupPassed && h.LSP != nil && h.DependencyViews != nil && sess.TeamID != "" {
 		scope := lsp.DependencyRefreshScope{
 			ProjectID: sess.ProjectID, Branch: sess.Branch,
 			RuntimeID: runtimeID, LanguageID: plugin.Language(),

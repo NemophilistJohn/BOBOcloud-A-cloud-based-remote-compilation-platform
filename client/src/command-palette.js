@@ -9,6 +9,11 @@
   var selectedIndex = 0;
   var filtered = [];
 
+  function t(source) {
+    if (BOBO.i18n && BOBO.i18n.t) return BOBO.i18n.t(source);
+    return source;
+  }
+
   function ensureDOM() {
     if (overlay) return;
 
@@ -22,7 +27,7 @@
     inputWrap.className = 'cmd-input-wrap';
     input = document.createElement('input');
     input.className = 'cmd-input';
-    input.placeholder = 'Type a command...';
+    input.placeholder = t('Type a command...');
     inputWrap.appendChild(input);
 
     list = document.createElement('div');
@@ -84,7 +89,10 @@
     var q = input.value.toLowerCase().trim();
     filtered = [];
     for (var i = 0; i < commands.length; i++) {
-      if (!q || commands[i].label.toLowerCase().indexOf(q) !== -1 || commands[i].id.indexOf(q) !== -1) {
+      var localizedLabel = t(commands[i].label).toLowerCase();
+      var localizedCategory = t(commands[i].category).toLowerCase();
+      if (!q || localizedLabel.indexOf(q) !== -1 || localizedCategory.indexOf(q) !== -1 ||
+          commands[i].label.toLowerCase().indexOf(q) !== -1 || commands[i].id.indexOf(q) !== -1) {
         filtered.push(commands[i]);
       }
     }
@@ -95,7 +103,10 @@
   function render() {
     list.innerHTML = '';
     if (filtered.length === 0) {
-      list.innerHTML = '<div class="cmd-empty">No matching commands</div>';
+      var empty = document.createElement('div');
+      empty.className = 'cmd-empty';
+      empty.textContent = t('No matching commands');
+      list.appendChild(empty);
       return;
     }
     for (var i = 0; i < filtered.length; i++) {
@@ -104,16 +115,16 @@
         el.className = 'cmd-item' + (idx === selectedIndex ? ' selected' : '');
         var category = document.createElement('span');
         category.className = 'cmd-category';
-        category.textContent = item.category;
+        category.textContent = t(item.category);
         var label = document.createElement('span');
         label.className = 'cmd-label';
-        label.textContent = item.label;
+        label.textContent = t(item.label);
         el.appendChild(category);
         el.appendChild(label);
         if (item.hint) {
           var hint = document.createElement('span');
           hint.className = 'cmd-hint';
-          hint.textContent = item.hint;
+          hint.textContent = t(item.hint);
           el.appendChild(hint);
         }
         el.addEventListener('click', function() { selectedIndex = idx; executeSelected(); });
@@ -139,6 +150,7 @@
 
   function show() {
     ensureDOM();
+    input.placeholder = t('Type a command...');
     input.value = '';
     filter();
     overlay.classList.add('open');
@@ -147,6 +159,14 @@
 
   function hide() {
     if (overlay) overlay.classList.remove('open');
+  }
+
+  if (global.addEventListener) {
+    global.addEventListener('bobo:language-changed', function() {
+      if (!input) return;
+      input.placeholder = t('Type a command...');
+      if (overlay && overlay.classList.contains('open')) filter();
+    });
   }
 
   BOBO.commands = {

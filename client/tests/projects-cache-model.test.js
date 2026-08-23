@@ -2,7 +2,13 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { organizeCacheGroups } = require('../src/projects');
+const { organizeCacheGroups, resolveProjectDisplayName } = require('../src/projects');
+
+test('opaque server project keys do not override a known natural folder name', () => {
+  assert.equal(resolveProjectDisplayName({ key: 'pqwvdum', name: 'pqwvdum' }, { pqwvdum: 'tryjava' }), 'tryjava');
+  assert.equal(resolveProjectDisplayName({ key: 'pqwvdum', name: 'Server project' }, { pqwvdum: 'tryjava' }), 'Server project');
+  assert.equal(resolveProjectDisplayName({ key: 'unknown', name: '' }, {}), 'unknown');
+});
 
 test('cache modules are grouped by project identity instead of language', () => {
   const cache = organizeCacheGroups([

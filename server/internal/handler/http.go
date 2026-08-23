@@ -320,6 +320,8 @@ func (h *HTTPHandler) routeRequest(w http.ResponseWriter, r *http.Request, req *
 		h.handleListCacheModules(w, r)
 	case "deleteCacheModule":
 		h.handleDeleteCacheModule(w, r, req)
+	case "deleteCachePackage":
+		h.handleDeleteCachePackage(w, r, req)
 
 	// ── 账户系统（登录态）──
 	case "whoami":
@@ -453,10 +455,16 @@ func (h *HTTPHandler) handleCheckFolder(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	// 记录项目真实名称（folderName 可能与目录名 folderKey 不同）
-	if req.FolderName != "" && req.FolderKey != "" && req.FolderName != req.FolderKey {
-		metaPath := filepath.Join(folderPath, ".boboproject")
-		os.WriteFile(metaPath, []byte(req.FolderName), 0644)
+	// Display metadata must live outside the mirrored workspace. A sync may
+	// legitimately remove arbitrary files inside folderPath.
+	if req.TeamID == "" {
+		folderKey := strings.TrimSpace(req.FolderKey)
+		if folderKey == "" {
+			folderKey = strings.TrimSpace(req.FolderName)
+		}
+		if err := h.writeWorkspaceDisplayName(userID, folderKey, req.FolderName); err != nil {
+			slog.Warn("Failed to persist project display name", "user_id", userID, "folder_key", folderKey, "error", err)
+		}
 	}
 
 	// ── 配额预检 ──
@@ -978,7 +986,15 @@ func (h *HTTPHandler) handleTerminal(w http.ResponseWriter, r *http.Request, req
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(h.Config.DockerTerminalTimeout)*time.Second)
 	defer cancel()
+	ctx, finalizeContainerCleanup := WithDeferredContainerCleanup(ctx)
 	var persistOperation *personalcache.Operation
+	defer func() {
+		var release func()
+		if persistOperation != nil {
+			release = persistOperation.Release
+		}
+		finalizeContainerCleanup(release)
+	}()
 	var err error
 	if h.PersonalCache != nil {
 		persistOperation, err = h.PersonalCache.BeginOperation(ctx, userID, userQuotaBytes(h.UserStore, userID))
@@ -987,7 +1003,6 @@ func (h *HTTPHandler) handleTerminal(w http.ResponseWriter, r *http.Request, req
 			return
 		}
 		if persistOperation != nil {
-			defer persistOperation.Release()
 			ctx = persistOperation.Context()
 		}
 	}
@@ -1285,6 +1300,27 @@ func (h *HTTPHandler) handleListProjects(w http.ResponseWriter, r *http.Request)
 
 	var projects []model.ProjectInfo
 	if entries, err := os.ReadDir(wsDir); err == nil {
+		workspaceKeys := make(map[string]bool, len(entries))
+		for _, entry := range entries {
+			if entry.IsDir() {
+				workspaceKeys[entry.Name()] = true
+			}
+		}
+		displayNames := h.loadWorkspaceDisplayNames(userID, workspaceKeys)
+		cacheNames := make(map[string]string)
+		cacheNameTimes := make(map[string]time.Time)
+		if h.PersonalCache != nil {
+			for _, cacheEntry := range h.PersonalCache.Inspect(userID, 0).Entries {
+				folderKey := personalCacheWorkspaceFolderKey(cacheEntry.WorkspaceID, userID)
+				if folderKey == "" || !workspaceKeys[folderKey] || !validWorkspaceDisplayValue(cacheEntry.WorkspaceName) {
+					continue
+				}
+				if previous, ok := cacheNameTimes[folderKey]; !ok || cacheEntry.LastUsed.After(previous) {
+					cacheNames[folderKey] = strings.TrimSpace(cacheEntry.WorkspaceName)
+					cacheNameTimes[folderKey] = cacheEntry.LastUsed
+				}
+			}
+		}
 		for _, entry := range entries {
 			if !entry.IsDir() {
 				continue
@@ -1296,12 +1332,26 @@ func (h *HTTPHandler) handleListProjects(w http.ResponseWriter, r *http.Request)
 			if err == nil {
 				modTime = info.ModTime().Unix()
 			}
-			// 读取项目真实名称（.boboproject 元数据文件）
-			displayName := entry.Name()
-			if data, err := os.ReadFile(filepath.Join(fullPath, ".boboproject")); err == nil {
-				n := strings.TrimSpace(string(data))
-				if n != "" {
-					displayName = n
+			// Durable metadata is primary. Legacy in-workspace metadata and the
+			// dependency cache provide migration fallbacks for existing projects.
+			displayName := displayNames[entry.Name()]
+			if displayName == "" {
+				if data, err := os.ReadFile(filepath.Join(fullPath, ".boboproject")); err == nil {
+					n := strings.TrimSpace(string(data))
+					if validWorkspaceDisplayValue(n) {
+						displayName = n
+					}
+				}
+			}
+			if displayName == "" {
+				displayName = cacheNames[entry.Name()]
+			}
+			if displayName == "" {
+				displayName = entry.Name()
+			}
+			if displayName != entry.Name() && displayNames[entry.Name()] == "" {
+				if err := h.writeWorkspaceDisplayName(userID, entry.Name(), displayName); err != nil {
+					slog.Warn("Failed to migrate project display name", "user_id", userID, "folder_key", entry.Name(), "error", err)
 				}
 			}
 			projects = append(projects, model.ProjectInfo{
@@ -1428,6 +1478,9 @@ func (h *HTTPHandler) handleDeleteProject(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: fmt.Sprintf("Failed to delete: %v", err)})
 		return
 	}
+	if err := h.deleteWorkspaceDisplayName(userID, folderKey); err != nil {
+		slog.Warn("Failed to delete project display metadata", "user_id", userID, "folder_key", folderKey, "error", err)
+	}
 
 	// 删除后清除磁盘缓存，使下次查询重新计算
 	h.diskCache.Set(userID, 0, 1) // 1s TTL，几乎立即过期
@@ -1523,7 +1576,7 @@ func (h *HTTPHandler) handleListCacheModules(w http.ResponseWriter, r *http.Requ
 				continue
 			}
 			name := entry.Name()
-			if name == "project-dependencies" {
+			if name == "project-dependencies" || name == ".project-dependency-staging" || name == ".project-dependency-retired" {
 				continue
 			}
 			fullPath := filepath.Join(persistDir, name)
@@ -1559,13 +1612,70 @@ func (h *HTTPHandler) handleListCacheModules(w http.ResponseWriter, r *http.Requ
 			if name == "" {
 				name = "Unattributed project cache"
 			}
-			g := ensureGroup(language)
-			g.modules = append(g.modules, model.CacheModule{
+			module := model.CacheModule{
 				Name: name, Path: entry.Path, SizeBytes: entry.SizeBytes, Files: entry.Files,
 				Kind: "project-dependency", Language: language, WorkspaceID: entry.WorkspaceID, ProjectName: entry.WorkspaceName,
 				RuntimeID: entry.RuntimeID, Digest: entry.Digest, DigestSource: entry.DigestSource,
-				LastUsed: entry.LastUsed.UTC().UnixMilli(), Active: entry.Active, Writing: entry.Writing, Orphaned: entry.Orphaned,
-			})
+				LastUsed: entry.LastUsed.UTC().UnixMilli(), Active: entry.Active, Writing: entry.Writing, Orphaned: entry.Orphaned, Generation: entry.Generation,
+			}
+			if language == "python" && !entry.Orphaned {
+				inventoryEntry, inventory, exists, inventoryErr := h.PersonalCache.InspectEntryPackageInventory(userID, entry.Path)
+				if inventoryErr != nil {
+					module.InventoryStatus = "error"
+					module.InventoryDetail = inventoryErr.Error()
+				} else if exists {
+					module.Generation = inventoryEntry.Generation
+					module.InventoryStatus = inventory.State
+					module.InventoryDetail = inventory.Detail
+					module.InventoryRevision = inventory.Revision
+					module.InventoryExact = inventory.Exact
+					if !inventory.GeneratedAt.IsZero() {
+						module.InventoryCheckedAt = inventory.GeneratedAt.UTC().UnixMilli()
+					}
+					if inventory.Exact {
+						module.Packages = make([]model.CachePackage, 0, len(inventory.Packages))
+						for _, item := range inventory.Packages {
+							module.Packages = append(module.Packages, model.CachePackage{
+								Name: item.Name, Version: item.Version, Imports: append([]string(nil), item.Imports...), SizeBytes: item.SizeBytes, Files: item.Files,
+							})
+						}
+					}
+				} else {
+					module.InventoryStatus = "missing"
+					module.InventoryDetail = "Project dependency cache does not exist"
+				}
+			} else if !entry.Orphaned {
+				switch language {
+				case "node", "go", "rust", "java":
+					reader, observedEntry, exists, readErr := h.PersonalCache.AcquireEntryInspectionRead(userID, entry.Path)
+					if errors.Is(readErr, personalcache.ErrCacheInUse) {
+						module.InventoryStatus = "busy"
+						module.InventoryDetail = "The package cache is being written and cannot be inspected yet"
+					} else if readErr != nil {
+						module.InventoryStatus = "error"
+						module.InventoryDetail = readErr.Error()
+					} else if !exists || reader == nil {
+						module.InventoryStatus = "missing"
+						module.InventoryDetail = "Project dependency cache does not exist"
+					} else {
+						observed := inspectInstalledEnvironmentSnapshot(reader.HostRoot, language)
+						module.Generation = observedEntry.Generation
+						module.InventoryStatus = observed.State
+						module.InventoryDetail = observed.Detail
+						module.InventoryCheckedAt = observed.CheckedAt
+						module.Packages = make([]model.CachePackage, 0, len(observed.Packages))
+						for _, item := range observed.Packages {
+							module.Packages = append(module.Packages, model.CachePackage{Name: item.Name, Version: item.Version})
+						}
+						reader.Release()
+					}
+				default:
+					module.InventoryStatus = "unsupported"
+					module.InventoryDetail = "Package inventory is not available for this language"
+				}
+			}
+			g := ensureGroup(language)
+			g.modules = append(g.modules, module)
 			g.sizeBytes += entry.SizeBytes
 		}
 	}
@@ -1601,6 +1711,104 @@ func (h *HTTPHandler) handleListCacheModules(w http.ResponseWriter, r *http.Requ
 	sortCacheGroups(result)
 
 	writeJSON(w, http.StatusOK, model.Response{Success: true, CacheGroups: result})
+}
+
+func (h *HTTPHandler) handleDeleteCachePackage(w http.ResponseWriter, r *http.Request, req *model.Request) {
+	if !h.authEnabled || h.PersonalCache == nil {
+		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Package-level cache deletion is unavailable"})
+		return
+	}
+	if strings.TrimSpace(req.CachePath) == "" || strings.TrimSpace(req.CachePackageName) == "" || strings.TrimSpace(req.CachePackageVersion) == "" || strings.TrimSpace(req.CacheGeneration) == "" || strings.TrimSpace(req.CacheInventoryRevision) == "" {
+		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "cachePath, cachePackageName, cachePackageVersion, cacheGeneration, and cacheInventoryRevision are required"})
+		return
+	}
+	userID := auth.UserIDFromContext(r.Context())
+	entry, inventory, exists, inspectErr := h.PersonalCache.InspectEntryPackageInventory(userID, req.CachePath)
+	if inspectErr != nil {
+		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: inspectErr.Error()})
+		return
+	}
+	if !exists {
+		writeJSON(w, http.StatusNotFound, model.Response{Success: false, Error: "Project dependency cache not found"})
+		return
+	}
+	if entry.Writing || inventory.State == "busy" {
+		writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: personalcache.ErrCacheInUse.Error()})
+		return
+	}
+	if entry.Generation != req.CacheGeneration || inventory.Revision != req.CacheInventoryRevision {
+		writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: personalcache.ErrCacheGenerationChanged.Error()})
+		return
+	}
+	if inventory.State != "ready" || !inventory.Exact {
+		writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: "The package inventory is not exact and cannot be edited"})
+		return
+	}
+	packageFound := false
+	for _, item := range inventory.Packages {
+		if strings.EqualFold(item.Name, req.CachePackageName) {
+			packageFound = true
+			if item.Version != req.CachePackageVersion {
+				writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: personalcache.ErrPackageVersionChanged.Error()})
+				return
+			}
+			break
+		}
+	}
+	if !packageFound {
+		writeJSON(w, http.StatusNotFound, model.Response{Success: false, Error: personalcache.ErrPackageNotFound.Error()})
+		return
+	}
+	if entry.Active {
+		folderKey := personalCacheWorkspaceFolderKey(entry.WorkspaceID, userID)
+		var err error
+		if folderKey != "" {
+			err = h.stopUserWorkspaceServices(userID, folderKey)
+		} else {
+			err = h.stopUserOwnerServices(userID, "user", userID, "")
+		}
+		if err != nil {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
+			return
+		}
+	}
+	var release func()
+	if h.Lifecycle != nil {
+		mutation, err := h.Lifecycle.BeginUserMutation(userID)
+		if err != nil {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
+			return
+		}
+		release = mutation.Release
+		defer release()
+	}
+	result, err := h.PersonalCache.DeletePythonDistribution(r.Context(), personalcache.DeletePythonDistributionRequest{
+		UserID: userID, CachePath: req.CachePath, Name: req.CachePackageName, Version: req.CachePackageVersion,
+		ExpectedGeneration: req.CacheGeneration, ExpectedInventoryRevision: req.CacheInventoryRevision,
+		QuotaBytes: userQuotaBytes(h.UserStore, userID),
+	})
+	if err != nil {
+		status := http.StatusConflict
+		if errors.Is(err, personalcache.ErrPackageNotFound) {
+			status = http.StatusNotFound
+		} else if errors.Is(err, personalcache.ErrPackageDeleteUnsupported) {
+			status = http.StatusBadRequest
+		} else if !errors.Is(err, personalcache.ErrCacheGenerationChanged) && !errors.Is(err, personalcache.ErrInventoryRevisionChanged) && !errors.Is(err, personalcache.ErrPackageVersionChanged) && !errors.Is(err, personalcache.ErrCacheInUse) {
+			status = http.StatusInternalServerError
+		}
+		writeJSON(w, status, model.Response{Success: false, Error: err.Error()})
+		return
+	}
+	if h.OnPersonalCacheCleared != nil {
+		h.OnPersonalCacheCleared()
+	}
+	h.diskCache.Set(userID, 0, 1)
+	folderKey := personalCacheWorkspaceFolderKey(entry.WorkspaceID, userID)
+	if h.LSP != nil {
+		h.LSP.RestartDependencyViews(personalDependencyRefreshScope(userID, folderKey, entry.RuntimeID, entry.Language))
+	}
+	h.auditEvent(r, "", "", "deleteCachePackage", req.CachePath, req.CachePackageName+"@"+req.CachePackageVersion, true)
+	writeJSON(w, http.StatusOK, model.Response{Success: true, Message: "Cache package deleted", Data: result})
 }
 
 // ---------- deleteCacheModule ----------

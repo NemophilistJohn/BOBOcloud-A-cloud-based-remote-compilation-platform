@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -51,17 +52,60 @@ func TestManagerScopesCachesByProjectRuntimeAndDigest(t *testing.T) {
 		t.Fatalf("first lease = %+v", first)
 	}
 	first.Release()
+	if !first.Published() {
+		t.Fatal("first writable generation was not reported as published")
+	}
 	second, err := manager.Prepare(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !second.Hit || second.ContainerKey != first.ContainerKey {
-		t.Fatalf("second lease hit=%v key=%q want=%q", second.Hit, second.ContainerKey, first.ContainerKey)
+	if !second.Hit || second.ContainerKey == first.ContainerKey {
+		t.Fatalf("second writer did not receive an isolated staging generation: hit=%v first=%q second=%q", second.Hit, first.ContainerKey, second.ContainerKey)
 	}
 	second.Release()
+	if !second.Published() {
+		t.Fatal("staged writable generation was not reported as published")
+	}
 	entries := manager.Inspect("u1", 1<<20).Entries
 	if len(entries) != 1 || entries[0].WorkspaceName != "Project A" || entries[0].Digest == "" {
 		t.Fatalf("entries = %+v", entries)
+	}
+}
+
+func TestGenerationCallbackIncludesInitialAndReplacementPublications(t *testing.T) {
+	type publication struct {
+		cacheKey   string
+		generation string
+		sequence   uint64
+	}
+	var published []publication
+	manager := NewManager(t.TempDir(), Options{
+		ReservationBytes: 8,
+		OnGenerationChanged: func(cacheKey, generation string, sequence uint64) {
+			published = append(published, publication{cacheKey: cacheKey, generation: generation, sequence: sequence})
+		},
+	})
+	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
+
+	first, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Release()
+	second, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Release()
+
+	if len(published) != 2 {
+		t.Fatalf("generation callbacks = %#v", published)
+	}
+	if published[0].cacheKey != first.Key || published[0].generation != first.Generation || published[0].sequence == 0 {
+		t.Fatalf("initial publication = %#v, lease key=%q generation=%q", published[0], first.Key, first.Generation)
+	}
+	if published[1].cacheKey != second.Key || published[1].generation != second.Generation || published[1].sequence <= published[0].sequence {
+		t.Fatalf("replacement publication = %#v after %#v", published[1], published[0])
 	}
 }
 
@@ -88,6 +132,427 @@ func TestManagerWriterWaitIsCancelableWithoutReservationLeak(t *testing.T) {
 	first.Release()
 	if got := manager.Inspect("u1", request.QuotaBytes).ReservedBytes; got != 0 {
 		t.Fatalf("reserved bytes after release = %d", got)
+	}
+}
+
+func TestReadOnlyExecutionUsesPublishedGenerationWhileWriterStages(t *testing.T) {
+	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	workspace := t.TempDir()
+	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: workspace, QuotaBytes: 1 << 20}
+	first, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeInventoryDistInfo(t, filepath.Join(first.HostRoot, "python"), "numpy", "2.2.6")
+	first.Release()
+
+	reader, err := manager.PrepareReadOnly(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Release()
+	if reader.Writable() || reader.Generation == "" || reader.DockerMounts[reader.HostRoot] != "/project-deps:ro" {
+		t.Fatalf("read-only lease = %+v", reader)
+	}
+	if reader.DockerEnv["PYTHONPATH"] != "/project-deps/python" || reader.DockerEnv["PIP_TARGET"] != "" {
+		t.Fatalf("read-only lease exposed installer environment: %+v", reader.DockerEnv)
+	}
+
+	writer, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reader.reader.Stable() {
+		t.Fatal("published generation changed while the writer was only staging")
+	}
+	if inventory := manager.InspectPackageInventory(request); inventory.State != "ready" || !inventory.Exact {
+		t.Fatalf("staging writer hid the last published inventory: %+v", inventory)
+	}
+	writeInventoryDistInfo(t, filepath.Join(writer.HostRoot, "python"), "matplotlib", "3.10.9")
+	writer.Release()
+	if reader.reader.Stable() {
+		t.Fatal("reader revision did not change after publication")
+	}
+
+	next, err := manager.PrepareReadOnly(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Release()
+	if next.Generation == reader.Generation {
+		t.Fatalf("published generation did not advance: %q", next.Generation)
+	}
+	if inventory := manager.InspectPackageInventory(request); inventory.State != "ready" || len(inventory.Packages) != 2 {
+		t.Fatalf("published staged inventory = %+v", inventory)
+	}
+}
+
+func TestRetiredGenerationCleanupTracksExactReaderGeneration(t *testing.T) {
+	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
+	first, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeInventoryDistInfo(t, filepath.Join(first.HostRoot, "python"), "numpy", "2.2.6")
+	first.Release()
+
+	oldReader, err := manager.PrepareReadOnly(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldGeneration := dependencyGeneration{cacheKey: oldReader.Key, generation: oldReader.Generation}
+	writer, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		oldReader.Release()
+		t.Fatal(err)
+	}
+	writeInventoryDistInfo(t, filepath.Join(writer.HostRoot, "python"), "matplotlib", "3.10.9")
+	writer.Release()
+
+	manager.mu.Lock()
+	retired := append([]string(nil), manager.retired[oldGeneration]...)
+	manager.mu.Unlock()
+	if len(retired) != 1 {
+		oldReader.Release()
+		t.Fatalf("retired paths for old generation = %#v", retired)
+	}
+	if _, err := os.Stat(retired[0]); err != nil {
+		oldReader.Release()
+		t.Fatalf("old generation was removed while its reader was active: %v", err)
+	}
+
+	newReader, err := manager.PrepareReadOnly(context.Background(), request)
+	if err != nil {
+		oldReader.Release()
+		t.Fatal(err)
+	}
+	defer newReader.Release()
+	if newReader.Generation == oldReader.Generation {
+		oldReader.Release()
+		t.Fatalf("replacement generation did not advance: %q", newReader.Generation)
+	}
+	newGeneration := dependencyGeneration{cacheKey: newReader.Key, generation: newReader.Generation}
+
+	oldReader.Release()
+	if _, err := os.Stat(retired[0]); !os.IsNotExist(err) {
+		t.Fatalf("old retired generation survived its last reader release: %v", err)
+	}
+	manager.mu.Lock()
+	newReaders := manager.readers[newGeneration]
+	_, oldReadersRemain := manager.readers[oldGeneration]
+	_, oldRetiredRemain := manager.retired[oldGeneration]
+	manager.mu.Unlock()
+	if newReaders != 1 || oldReadersRemain || oldRetiredRemain {
+		t.Fatalf("generation reader state after old release: new=%d old_readers=%v old_retired=%v", newReaders, oldReadersRemain, oldRetiredRemain)
+	}
+	if !newReader.reader.Stable() {
+		t.Fatal("new generation reader stopped being active when the old generation was cleaned")
+	}
+}
+
+func TestRejectedInitialGenerationCleanupCannotDeleteNextWriter(t *testing.T) {
+	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
+	first, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Abort()
+
+	cleanupReady := make(chan []string, 1)
+	allowCleanup := make(chan struct{})
+	var cleanupPause sync.Once
+	var allowCleanupOnce sync.Once
+	manager.testBeforeReleaseCleanup = func(paths []string) {
+		cleanupPause.Do(func() {
+			cleanupReady <- append([]string(nil), paths...)
+			<-allowCleanup
+		})
+	}
+	t.Cleanup(func() {
+		allowCleanupOnce.Do(func() { close(allowCleanup) })
+	})
+
+	type prepareResult struct {
+		lease *Lease
+		err   error
+	}
+	secondResult := make(chan prepareResult, 1)
+	go func() {
+		lease, prepareErr := manager.Prepare(context.Background(), request)
+		secondResult <- prepareResult{lease: lease, err: prepareErr}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.mu.Lock()
+		waiting := manager.writerDone[first.Key] != nil
+		manager.mu.Unlock()
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("second writer did not begin waiting for the first generation")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	firstReleased := make(chan struct{})
+	go func() {
+		first.Release()
+		close(firstReleased)
+	}()
+	cleanupPaths := <-cleanupReady
+	for _, cleanupPath := range cleanupPaths {
+		if filepath.Clean(cleanupPath) == filepath.Clean(first.canonical) {
+			t.Fatalf("rejected canonical was scheduled for unlocked deletion: %q", cleanupPath)
+		}
+	}
+	second := <-secondResult
+	if second.err != nil || second.lease == nil {
+		t.Fatalf("second writer prepare: lease=%v err=%v", second.lease != nil, second.err)
+	}
+	if second.lease.Hit {
+		t.Fatal("second writer adopted the rejected first generation")
+	}
+	sentinel := filepath.Join(second.lease.HostRoot, "second-writer")
+	if err := os.WriteFile(sentinel, []byte("alive"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	allowCleanupOnce.Do(func() { close(allowCleanup) })
+	<-firstReleased
+	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "alive" {
+		t.Fatalf("first writer cleanup deleted the second generation: data=%q err=%v", data, err)
+	}
+	second.lease.Abort()
+	second.lease.Release()
+}
+
+func TestInitialMetadataCommitFailureDetachesCanonicalBeforeNextWriter(t *testing.T) {
+	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
+	first, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(first.HostRoot, metadataFile)
+	if err := os.Remove(metadataPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(metadataPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	first.Release()
+	if first.Published() {
+		t.Fatal("generation with failed metadata commit was published")
+	}
+	if _, err := os.Stat(first.canonical); !os.IsNotExist(err) {
+		t.Fatalf("failed initial canonical survived release: %v", err)
+	}
+
+	second, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Release()
+	if second.Hit {
+		t.Fatal("next writer adopted a generation whose metadata commit failed")
+	}
+}
+
+func TestReadOnlyMissPublishesEmptyNamespaceWithoutWritableLease(t *testing.T) {
+	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
+	lease, err := manager.PrepareReadOnly(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease == nil || lease.Writable() || lease.DockerMounts[lease.HostRoot] != "/project-deps:ro" {
+		t.Fatalf("read-only miss exposed a writable dependency namespace: %+v", lease)
+	}
+	lease.Release()
+	inspection := manager.InspectPackageInventory(request)
+	if inspection.State != "ready" || !inspection.Exact || len(inspection.Packages) != 0 {
+		t.Fatalf("empty namespace inventory = %+v", inspection)
+	}
+}
+
+func TestReadOnlyLeaseReleaseUnlocksCRUDAndRefreshesLRU(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
+	writable, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeInventoryDistInfo(t, filepath.Join(writable.HostRoot, "python"), "numpy", "2.2.6")
+	writable.Release()
+	entries := manager.Inspect(request.UserID, request.QuotaBytes).Entries
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v", entries)
+	}
+	oldLastUsed := entries[0].LastUsed
+	time.Sleep(2 * time.Millisecond)
+
+	reader, err := manager.PrepareReadOnly(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistRoot := filepath.Join(dataDir, "users", request.UserID, "persist")
+	for _, name := range []string{"pip-cache", "go-cache", "npm-cache"} {
+		if got := reader.DockerMounts[filepath.Join(persistRoot, name)]; got != "/persist/"+name+":ro" {
+			t.Fatalf("%s mount = %q", name, got)
+		}
+	}
+	if err := manager.Delete(request.UserID, reader.RelativePath); !errors.Is(err, ErrCacheInUse) {
+		t.Fatalf("active reader delete error = %v", err)
+	}
+	reader.Release()
+	entries = manager.Inspect(request.UserID, request.QuotaBytes).Entries
+	if len(entries) != 1 || !entries[0].LastUsed.After(oldLastUsed) {
+		t.Fatalf("read-only use did not refresh LRU: before=%s entries=%+v", oldLastUsed, entries)
+	}
+	if err := manager.Delete(request.UserID, reader.RelativePath); err != nil {
+		t.Fatalf("released reader left cache locked: %v", err)
+	}
+}
+
+func TestLongLivedReadDoesNotBlockLegacySharedCacheLRU(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
+	writable, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writable.Release()
+
+	legacyRoot := filepath.Join(dataDir, "users", request.UserID, "persist", "pip-cache")
+	if err := os.MkdirAll(legacyRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyRoot, "payload"), make([]byte, 4096), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reader, _, exists, err := manager.AcquireRead(request)
+	if err != nil || !exists || reader == nil {
+		t.Fatalf("acquire read: exists=%v reader=%v err=%v", exists, reader != nil, err)
+	}
+	defer reader.Release()
+
+	manager.Enforce(request.UserID, 1)
+	if _, err := os.Stat(legacyRoot); !os.IsNotExist(err) {
+		t.Fatalf("long-lived project reader blocked legacy LRU: %v", err)
+	}
+	if !reader.Stable() {
+		t.Fatal("legacy cache eviction changed the retained project generation")
+	}
+}
+
+func TestStagingCloneDoesNotConsumeLogicalWriteQuota(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := NewManager(dataDir, Options{ReservationBytes: 8, ScanInterval: 5 * time.Millisecond})
+	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
+	first, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeInventoryDistInfo(t, filepath.Join(first.HostRoot, "python"), "numpy", "2.2.6")
+	packageFile := filepath.Join(first.HostRoot, "python", "numpy", "__init__.py")
+	if err := os.WriteFile(packageFile, make([]byte, 128<<10), 0600); err != nil {
+		t.Fatal(err)
+	}
+	first.Release()
+	used := manager.Inspect(request.UserID, request.QuotaBytes).UsedBytes
+	request.QuotaBytes = used + 16<<10
+	writer, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := writer.StartGuard(context.Background())
+	select {
+	case <-guard.Context.Done():
+		t.Fatalf("staging copy exhausted logical quota: %v", context.Cause(guard.Context))
+	case <-time.After(30 * time.Millisecond):
+	}
+	writer.Abort()
+	writer.Release()
+	if writer.Published() {
+		t.Fatal("aborted writer was reported as published")
+	}
+}
+
+func TestAbortedStagingGenerationPreservesPublishedCache(t *testing.T) {
+	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	workspace := t.TempDir()
+	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: workspace, QuotaBytes: 1 << 20}
+	first, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeInventoryDistInfo(t, filepath.Join(first.HostRoot, "python"), "numpy", "2.2.6")
+	first.Release()
+	before, err := manager.PrepareReadOnly(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeGeneration := before.Generation
+	before.Release()
+
+	writer, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeInventoryDistInfo(t, filepath.Join(writer.HostRoot, "python"), "broken-install", "1.0.0")
+	writer.Abort()
+	writer.Release()
+	after, err := manager.PrepareReadOnly(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer after.Release()
+	if after.Generation != beforeGeneration {
+		t.Fatalf("aborted generation was published: before=%q after=%q", beforeGeneration, after.Generation)
+	}
+	if inventory := manager.InspectPackageInventory(request); inventory.State != "ready" || len(inventory.Packages) != 1 || inventory.Packages[0].Name != "numpy" {
+		t.Fatalf("aborted writer polluted inventory: %+v", inventory)
+	}
+}
+
+func TestUnverifiableStagingGenerationPreservesPublishedCache(t *testing.T) {
+	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
+	first, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeInventoryDistInfo(t, filepath.Join(first.HostRoot, "python"), "numpy", "2.2.6")
+	first.Release()
+	before, err := manager.PrepareReadOnly(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeGeneration := before.Generation
+	before.Release()
+
+	writer, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(writer.HostRoot, "python", "unowned-package"), []byte("partial"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	writer.Release()
+	after, err := manager.PrepareReadOnly(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer after.Release()
+	if after.Generation != beforeGeneration {
+		t.Fatalf("unverifiable staging generation replaced the published cache: before=%q after=%q", beforeGeneration, after.Generation)
+	}
+	if inspection := manager.InspectPackageInventory(request); inspection.State != "ready" || len(inspection.Packages) != 1 || inspection.Packages[0].Name != "numpy" {
+		t.Fatalf("published inventory was polluted: %+v", inspection)
 	}
 }
 
@@ -121,6 +586,169 @@ func TestManagerListsAndDeletesOrphanedNamespace(t *testing.T) {
 	}
 	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
 		t.Fatalf("orphan still exists: %v", err)
+	}
+}
+
+func TestPrepareClearsInvalidCanonicalInsteadOfAdoptingItsFiles(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
+	resolved, err := manager.resolveRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleFile := filepath.Join(resolved.hostRoot, "python", "stale-package.py")
+	if err := os.MkdirAll(filepath.Dir(staleFile), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staleFile, []byte("stale"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(resolved.hostRoot, metadataFile), []byte("{broken"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	lease, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.Hit {
+		t.Fatal("invalid canonical metadata was treated as a cache hit")
+	}
+	if _, err := os.Stat(staleFile); !os.IsNotExist(err) {
+		t.Fatalf("invalid canonical payload was adopted by the new generation: %v", err)
+	}
+}
+
+func TestPrepareDoesNotClearInvalidCanonicalHeldByReader(t *testing.T) {
+	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
+	writable, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writable.Release()
+	reader, entry, exists, err := manager.AcquireRead(request)
+	if err != nil || !exists || reader == nil {
+		t.Fatalf("acquire read: exists=%v reader=%v err=%v", exists, reader != nil, err)
+	}
+	defer reader.Release()
+	if err := os.WriteFile(filepath.Join(entry.HostPath, metadataFile), []byte("{broken"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Prepare(context.Background(), request); !errors.Is(err, ErrCacheInUse) {
+		t.Fatalf("prepare error = %v, want cache in use", err)
+	}
+	if _, err := os.Stat(entry.HostPath); err != nil {
+		t.Fatalf("active invalid canonical was removed: %v", err)
+	}
+}
+
+func TestPortableClonePreservesFileAndDirectoryMetadata(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	destination := filepath.Join(root, "destination")
+	child := filepath.Join(source, "bin")
+	file := filepath.Join(child, "tool")
+	if err := os.MkdirAll(child, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("payload"), 0751); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(source, 0550); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(child, 0510); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(source, 0700)
+		_ = os.Chmod(child, 0700)
+	})
+	if err := os.Chmod(file, 0751); err != nil {
+		t.Fatal(err)
+	}
+	fileTime := time.Unix(1_700_000_100, 0).UTC()
+	childTime := time.Unix(1_700_000_200, 0).UTC()
+	rootTime := time.Unix(1_700_000_300, 0).UTC()
+	if err := os.Chtimes(file, fileTime, fileTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(child, childTime, childTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(source, rootTime, rootTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := cloneDependencyTreePortable(source, destination); err != nil {
+		t.Fatal(err)
+	}
+	for _, pair := range [][2]string{
+		{source, destination},
+		{child, filepath.Join(destination, "bin")},
+		{file, filepath.Join(destination, "bin", "tool")},
+	} {
+		sourceInfo, err := os.Stat(pair[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		targetInfo, err := os.Stat(pair[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sourceInfo.Mode().Perm() != targetInfo.Mode().Perm() {
+			t.Fatalf("mode %s = %s, want %s", pair[1], targetInfo.Mode().Perm(), sourceInfo.Mode().Perm())
+		}
+		if !sourceInfo.ModTime().Equal(targetInfo.ModTime()) {
+			t.Fatalf("mtime %s = %s, want %s", pair[1], targetInfo.ModTime(), sourceInfo.ModTime())
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(destination, "bin", "tool"))
+	if err != nil || string(data) != "payload" {
+		t.Fatalf("cloned file = %q err=%v", data, err)
+	}
+}
+
+func TestManagerRecoversCompletedTransactionAndRemovesHiddenStaging(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
+	lease, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeInventoryDistInfo(t, filepath.Join(lease.HostRoot, "python"), "numpy", "2.2.6")
+	lease.Release()
+	canonical := lease.HostRoot
+	persistRoot := filepath.Join(dataDir, "users", request.UserID, "persist")
+	stagingRoot := filepath.Join(persistRoot, stagingDir)
+	if err := os.MkdirAll(stagingRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	completed := filepath.Join(stagingRoot, "generation-completed")
+	if err := os.Rename(canonical, completed); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(stagingRoot, "generation-stale")
+	if err := os.MkdirAll(stale, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "partial"), []byte("partial"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered := NewManager(dataDir, Options{ReservationBytes: 8})
+	recovered.RecoverOrphanedTransactions()
+	if inspection := recovered.InspectPackageInventory(request); inspection.State != "ready" || len(inspection.Packages) != 1 || inspection.Packages[0].Name != "numpy" {
+		t.Fatalf("completed transaction was not recovered: %+v", inspection)
+	}
+	if _, err := os.Stat(stagingRoot); !os.IsNotExist(err) {
+		t.Fatalf("hidden staging data survived startup recovery: %v", err)
 	}
 }
 

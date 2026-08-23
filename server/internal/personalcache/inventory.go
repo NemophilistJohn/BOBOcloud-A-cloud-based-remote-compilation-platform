@@ -1,22 +1,19 @@
 package personalcache
 
 import (
-	"crypto/sha256"
-	"encoding/csv"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 )
 
 const (
 	packageInventoryFile     = ".package-inventory.json"
-	packageInventorySchema   = 1
+	packageInventorySchema   = 2
 	maxPackageMetadataBytes  = int64(1 << 20)
 	maxPackageRecordBytes    = int64(16 << 20)
 	maxPackageRecordEntries  = 500_000
@@ -24,8 +21,11 @@ const (
 )
 
 type InventoryPackage struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
+	Name      string   `json:"name"`
+	Version   string   `json:"version"`
+	Imports   []string `json:"imports,omitempty"`
+	SizeBytes int64    `json:"size_bytes,omitempty"`
+	Files     int      `json:"files,omitempty"`
 }
 
 type InventoryInspection struct {
@@ -77,9 +77,40 @@ func (m *Manager) AcquirePackageInventoryRead(request Request) (*ReadLease, Entr
 	if inspection.State != "ready" || !inspection.Exact {
 		return nil, entry, inspection
 	}
-	reader := m.retainReadLocked(request, entry)
+	reader, err := m.retainReadLocked(request, entry)
+	if err != nil {
+		return nil, entry, InventoryInspection{State: "error", Detail: "The published dependency generation could not be retained"}
+	}
 	entry.Active = true
 	return reader, entry, inspection
+}
+
+// AcquirePackageInventorySnapshotRead inspects and retains the same published
+// Python generation under one user gate. Unlike AcquirePackageInventoryRead,
+// a published generation is retained even when its inventory is incomplete or
+// corrupt so callers can report inventory health and analyzer visibility from
+// one coherent snapshot.
+func (m *Manager) AcquirePackageInventorySnapshotRead(request Request) (*ReadLease, Entry, InventoryInspection, bool) {
+	if m == nil || m.options.ScopeMode != "project-lock" {
+		inspection := InventoryInspection{State: "unavailable", Detail: "Project dependency cache inspection is unavailable"}
+		return nil, Entry{}, inspection, false
+	}
+	gate := m.userGate(request.UserID)
+	gate.Lock()
+	defer gate.Unlock()
+	inspection, entry := m.inspectPackageInventoryLocked(request)
+	if entry.absPath == "" {
+		return nil, entry, inspection, false
+	}
+	if inspection.State == "busy" {
+		return nil, entry, inspection, true
+	}
+	reader, err := m.retainReadLocked(request, entry)
+	if err != nil {
+		return nil, entry, InventoryInspection{State: "error", Detail: "The published dependency generation could not be retained"}, true
+	}
+	entry.Active = true
+	return reader, entry, inspection, true
 }
 
 func (m *Manager) inspectPackageInventoryLocked(request Request) (InventoryInspection, Entry) {
@@ -90,58 +121,120 @@ func (m *Manager) inspectPackageInventoryLocked(request Request) (InventoryInspe
 	if !exists {
 		return InventoryInspection{State: "missing", Detail: "No cache exists for the current project dependency digest"}, entry
 	}
+	return m.inspectPackageInventoryEntryLocked(request, entry), entry
+}
+
+func (m *Manager) inspectPackageInventoryEntryLocked(request Request, entry Entry) InventoryInspection {
 	if !strings.EqualFold(strings.TrimSpace(entry.Language), "python") {
-		return InventoryInspection{State: "unsupported", Detail: "Exact package inventory is not available for this language"}, entry
+		return InventoryInspection{State: "unsupported", Detail: "Exact package inventory is not available for this language"}
 	}
-	if entry.Writing {
-		return InventoryInspection{State: "busy", Detail: "The package inventory is changing while the cache is in use"}, entry
+	m.mu.Lock()
+	writerWithoutBase := m.writers[entry.key] > 0 && !m.writerHasBase[entry.key]
+	m.mu.Unlock()
+	if writerWithoutBase {
+		return InventoryInspection{State: "busy", Detail: "The package inventory is changing while the cache is in use"}
 	}
 
 	document, err := readPackageInventory(entry.absPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return InventoryInspection{State: "missing", Detail: "The package inventory snapshot has not been published"}, entry
+		return InventoryInspection{State: "missing", Detail: "The package inventory snapshot has not been published"}
 	}
 	if err != nil {
-		return InventoryInspection{State: "corrupt", Detail: "The package inventory snapshot is missing or corrupt"}, entry
+		return InventoryInspection{State: "corrupt", Detail: "The package inventory snapshot is missing or corrupt"}
 	}
-	if document.Schema != packageInventorySchema || document.Digest != entry.Digest || !strings.EqualFold(document.Language, entry.Language) {
-		return InventoryInspection{State: "stale", Detail: "The package inventory belongs to a different dependency digest"}, entry
+	if document.Digest != entry.Digest || !strings.EqualFold(document.Language, entry.Language) {
+		return InventoryInspection{State: "stale", Detail: "The package inventory belongs to a different dependency digest"}
+	}
+	if document.Schema != packageInventorySchema {
+		if document.Schema == 1 && document.State != "busy" {
+			packages, revision, _, scanErr := scanPythonPackageTree(filepath.Join(entry.absPath, "python"))
+			if scanErr == nil {
+				upgraded := packageInventoryDocument{
+					Schema: packageInventorySchema, State: "ready", Language: "python", Digest: entry.Digest,
+					GeneratedAt: time.Now().UTC(), TreeRevision: revision, Packages: packages,
+				}
+				if writeErr := writePackageInventory(entry.absPath, upgraded); writeErr == nil {
+					return InventoryInspection{
+						State: "ready", Detail: "The package inventory was upgraded and matches the current project dependency digest",
+						Packages: packages, Exact: true, GeneratedAt: upgraded.GeneratedAt, Revision: revision,
+					}
+				}
+			} else {
+				slog.Warn("Project dependency inventory schema upgrade scan failed",
+					"user_id", request.UserID, "workspace_id", request.WorkspaceID,
+					"runtime", request.RuntimeID, "language", request.Language,
+					"path", entry.Path, "error", scanErr)
+			}
+		}
+		return InventoryInspection{State: "stale", Detail: "The package inventory was published by an incompatible scanner version"}
 	}
 	if document.State != "ready" {
+		// Older servers could publish an incomplete snapshot for a fully valid
+		// pip --target tree because relocated bin/share RECORD paths were rejected.
+		// Repair only an explicitly completed publication attempt; a leftover
+		// busy marker still means an unclean writer and remains fail-closed.
+		if document.State == "incomplete" {
+			packages, revision, _, scanErr := scanPythonPackageTree(filepath.Join(entry.absPath, "python"))
+			if scanErr == nil {
+				repaired := packageInventoryDocument{
+					Schema: packageInventorySchema, State: "ready", Language: "python", Digest: entry.Digest,
+					GeneratedAt: time.Now().UTC(), TreeRevision: revision, Packages: packages,
+				}
+				if writeErr := writePackageInventory(entry.absPath, repaired); writeErr == nil {
+					if m.options.Metrics != nil {
+						m.options.Metrics.Cache("dependency.cache.inventory.repair", true)
+					}
+					return InventoryInspection{
+						State: "ready", Detail: "The package inventory matches the current project dependency digest",
+						Packages: packages, Exact: true, GeneratedAt: repaired.GeneratedAt, Revision: revision,
+					}
+				}
+			} else {
+				slog.Warn("Project dependency inventory repair scan failed",
+					"user_id", request.UserID, "workspace_id", request.WorkspaceID,
+					"runtime", request.RuntimeID, "language", request.Language,
+					"path", entry.Path, "error", scanErr)
+			}
+			if m.options.Metrics != nil {
+				m.options.Metrics.Cache("dependency.cache.inventory.repair", false)
+			}
+		}
 		detail := strings.TrimSpace(document.Detail)
 		if detail == "" {
 			detail = "The package inventory was not published completely"
 		}
-		return InventoryInspection{State: "incomplete", Detail: detail, GeneratedAt: document.GeneratedAt}, entry
+		return InventoryInspection{State: "incomplete", Detail: detail, GeneratedAt: document.GeneratedAt}
 	}
 	packages, revision, _, scanErr := scanPythonPackageTree(filepath.Join(entry.absPath, "python"))
 	if scanErr != nil {
-		return InventoryInspection{State: "incomplete", Detail: "Python package metadata could not be read completely", GeneratedAt: document.GeneratedAt}, entry
+		return InventoryInspection{State: "incomplete", Detail: "Python package metadata could not be read completely", GeneratedAt: document.GeneratedAt}
 	}
 	if revision != document.TreeRevision {
-		return InventoryInspection{State: "stale", Detail: "The package tree changed after its inventory snapshot was published", Packages: packages, GeneratedAt: document.GeneratedAt, Revision: revision}, entry
+		return InventoryInspection{State: "stale", Detail: "The package tree changed after its inventory snapshot was published", Packages: packages, GeneratedAt: document.GeneratedAt, Revision: revision}
 	}
 	return InventoryInspection{
 		State: "ready", Detail: "The package inventory matches the current project dependency digest",
 		Packages: packages, Exact: true, GeneratedAt: document.GeneratedAt, Revision: revision,
-	}, entry
+	}
 }
 
 func (l *Lease) publishInventory() error {
 	if l == nil || l.manager == nil || !strings.EqualFold(strings.TrimSpace(l.request.Language), "python") {
 		return nil
 	}
-	gate := l.manager.userGate(l.request.UserID)
-	gate.Lock()
-	defer gate.Unlock()
-
+	started := time.Now()
 	l.manager.mu.Lock()
 	lastWriter := l.manager.writers[l.Key] == 1
 	l.manager.mu.Unlock()
 	if !lastWriter {
 		return nil
 	}
-	return publishPackageInventory(l.HostRoot, l.request.Language, l.Fingerprint.Digest)
+	err := publishPackageInventory(l.HostRoot, l.request.Language, l.Fingerprint.Digest)
+	if l.manager.options.Metrics != nil {
+		l.manager.options.Metrics.Observe("dependency.cache.inventory.publish", time.Since(started))
+		l.manager.options.Metrics.Cache("dependency.cache.inventory", err == nil)
+	}
+	return err
 }
 
 func markPackageInventoryDirty(root, language, digest string) error {
@@ -162,7 +255,7 @@ func publishPackageInventory(root, language, digest string) error {
 	}
 	packages, revision, _, err := scanPythonPackageTree(filepath.Join(root, "python"))
 	if err != nil {
-		document.Detail = "Python package metadata could not be read completely"
+		document.Detail = "Python package metadata could not be read completely: " + err.Error()
 		_ = writePackageInventory(root, document)
 		return err
 	}
@@ -200,123 +293,55 @@ func writePackageInventory(root string, document packageInventoryDocument) error
 }
 
 func scanPythonPackageTree(root string) ([]InventoryPackage, string, int64, error) {
-	info, err := os.Lstat(root)
+	tree, err := scanPythonPackageTreeDetailed(root)
 	if err != nil {
 		return nil, "", 0, err
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, "", 0, fmt.Errorf("Python package root is not a real directory")
+	return tree.Packages, tree.Revision, tree.Latest, nil
+}
+
+// pip --target relocates scheme data such as console scripts and man pages
+// into the target root, but wheel RECORD rows retain paths such as
+// ../../bin/f2py and ../../share/man/.... Treat only the standard relocated
+// roots as optional relocated data. A caller may grant ownership only after a
+// concrete relocated file has been verified.
+func pythonTargetRecordPath(root, value string) (string, string, bool, bool) {
+	value = filepath.ToSlash(strings.TrimSpace(value))
+	if value == "" || strings.HasPrefix(value, "/") {
+		return "", "", false, false
 	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nil, "", 0, err
+	parts := strings.Split(value, "/")
+	for len(parts) > 0 && (parts[0] == "" || parts[0] == ".") {
+		parts = parts[1:]
 	}
-	sort.Slice(entries, func(i, j int) bool { return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name()) })
-	hash := sha256.New()
-	packages := make([]InventoryPackage, 0)
-	latest := info.ModTime().UTC().UnixMilli()
-	seen := make(map[string]string)
-	ownedRoots := make(map[string]bool)
-	for _, entry := range entries {
-		if strings.HasSuffix(strings.ToLower(entry.Name()), ".egg-info") {
-			return nil, "", 0, fmt.Errorf("unsupported Python distribution metadata directory %q", entry.Name())
-		}
-		if !strings.HasSuffix(strings.ToLower(entry.Name()), ".dist-info") {
-			continue
-		}
-		directory := filepath.Join(root, entry.Name())
-		directoryInfo, statErr := os.Lstat(directory)
-		if statErr != nil || !directoryInfo.IsDir() || directoryInfo.Mode()&os.ModeSymlink != 0 {
-			return nil, "", 0, fmt.Errorf("invalid Python distribution metadata directory %q", entry.Name())
-		}
-		metadataPath := filepath.Join(directory, "METADATA")
-		metadataInfo, statErr := os.Lstat(metadataPath)
-		if statErr != nil || !metadataInfo.Mode().IsRegular() || metadataInfo.Mode()&os.ModeSymlink != 0 || metadataInfo.Size() > maxPackageMetadataBytes {
-			return nil, "", 0, fmt.Errorf("invalid Python distribution metadata for %q", entry.Name())
-		}
-		data, readErr := readSmallRegularFile(metadataPath, maxPackageMetadataBytes)
-		if readErr != nil {
-			return nil, "", 0, fmt.Errorf("read Python distribution metadata for %q", entry.Name())
-		}
-		name := inventoryMetadataField(data, "Name")
-		version := inventoryMetadataField(data, "Version")
-		if name == "" || version == "" {
-			return nil, "", 0, fmt.Errorf("Python distribution metadata is incomplete for %q", entry.Name())
-		}
-		recordPath := filepath.Join(directory, "RECORD")
-		recordInfo, statErr := os.Lstat(recordPath)
-		if statErr != nil || !recordInfo.Mode().IsRegular() || recordInfo.Mode()&os.ModeSymlink != 0 || recordInfo.Size() > maxPackageRecordBytes {
-			return nil, "", 0, fmt.Errorf("invalid Python installation record for %q", entry.Name())
-		}
-		recordData, readErr := readSmallRegularFile(recordPath, maxPackageRecordBytes)
-		if readErr != nil {
-			return nil, "", 0, fmt.Errorf("read Python installation record for %q", entry.Name())
-		}
-		records, parseErr := csv.NewReader(strings.NewReader(string(recordData))).ReadAll()
-		if parseErr != nil || len(records) == 0 || len(records) > maxPackageRecordEntries {
-			return nil, "", 0, fmt.Errorf("invalid Python installation record entries for %q", entry.Name())
-		}
-		for _, record := range records {
-			if len(record) == 0 || strings.TrimSpace(record[0]) == "" {
-				return nil, "", 0, fmt.Errorf("empty Python installation record entry for %q", entry.Name())
-			}
-			recorded := filepath.Clean(filepath.FromSlash(record[0]))
-			_, _ = hash.Write([]byte("record\x00" + filepath.ToSlash(recorded) + "\x00"))
-			if filepath.IsAbs(recorded) || recorded == ".." || strings.HasPrefix(recorded, ".."+string(filepath.Separator)) {
-				// Console entry points can live outside site-packages. They are
-				// represented in the revision, but are not trusted as package roots.
-				continue
-			}
-			recordedParts := strings.Split(filepath.ToSlash(recorded), "/")
-			if len(recordedParts) > 0 && recordedParts[0] != "" && recordedParts[0] != "." {
-				ownedRoots[strings.ToLower(recordedParts[0])] = true
-			}
-			lowerRecorded := strings.ToLower(filepath.ToSlash(recorded))
-			if strings.HasSuffix(lowerRecorded, ".pyc") || strings.HasSuffix(lowerRecorded, ".pyo") || strings.Contains(lowerRecorded, "/__pycache__/") {
-				continue
-			}
-			recordedPath := filepath.Join(root, recorded)
-			recordedInfo, recordErr := os.Lstat(recordedPath)
-			if recordErr != nil || !recordedInfo.Mode().IsRegular() || recordedInfo.Mode()&os.ModeSymlink != 0 {
-				return nil, "", 0, fmt.Errorf("Python package file %q is missing or invalid", filepath.ToSlash(recorded))
-			}
-			_, _ = hash.Write([]byte(fmt.Sprintf("%d\x00%d\x00", recordedInfo.Size(), recordedInfo.ModTime().UTC().UnixNano())))
-			if recordedInfo.ModTime().UTC().UnixMilli() > latest {
-				latest = recordedInfo.ModTime().UTC().UnixMilli()
-			}
-		}
-		name = normalizeInventoryPythonName(name)
-		if previous, duplicate := seen[name]; duplicate && previous != version {
-			return nil, "", 0, fmt.Errorf("conflicting Python distribution metadata for %q", name)
-		}
-		seen[name] = version
-		_, _ = hash.Write([]byte(strings.ToLower(entry.Name())))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write(data)
-		_, _ = hash.Write([]byte{0})
-		if metadataInfo.ModTime().UTC().UnixMilli() > latest {
-			latest = metadataInfo.ModTime().UTC().UnixMilli()
+	relocated := false
+	for len(parts) > 0 && parts[0] == ".." {
+		relocated = true
+		parts = parts[1:]
+	}
+	if len(parts) == 0 {
+		return "", "", false, false
+	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return "", "", false, false
 		}
 	}
-	names := make([]string, 0, len(seen))
-	for name := range seen {
-		names = append(names, name)
-	}
-	for _, entry := range entries {
-		name := strings.ToLower(entry.Name())
-		if name == "__pycache__" {
-			continue
-		}
-		if entry.Type()&os.ModeSymlink != 0 || !ownedRoots[name] {
-			return nil, "", 0, fmt.Errorf("Python package tree contains unowned top-level entry %q", entry.Name())
+	rootName := strings.ToLower(parts[0])
+	if relocated {
+		switch rootName {
+		case "bin", "share", "include":
+		default:
+			return "", "", false, false
 		}
 	}
-	sort.Strings(names)
-	for _, name := range names {
-		packages = append(packages, InventoryPackage{Name: name, Version: seen[name]})
+	candidate := filepath.Join(append([]string{root}, parts...)...)
+	cleanRoot := filepath.Clean(root)
+	cleanCandidate := filepath.Clean(candidate)
+	if cleanCandidate == cleanRoot || !strings.HasPrefix(cleanCandidate, cleanRoot+string(filepath.Separator)) {
+		return "", "", false, false
 	}
-	_, _ = hash.Write([]byte("complete"))
-	return packages, hex.EncodeToString(hash.Sum(nil)), latest, nil
+	return cleanCandidate, parts[0], relocated, true
 }
 
 func inventoryMetadataField(data []byte, field string) string {

@@ -46,20 +46,21 @@ type Config struct {
 	DataDir string `json:"data_dir"`
 
 	// Docker 池配置
-	DockerHotPoolSize           int      `json:"docker_hot_pool_size"`
-	DockerMaxContainers         int      `json:"docker_max_containers"`
-	DockerMaxIdle               int      `json:"docker_max_idle"`
-	DockerMemoryLimit           string   `json:"docker_memory_limit"`
-	DockerCPULimit              string   `json:"docker_cpu_limit"`
-	DockerTerminalTimeout       int      `json:"docker_terminal_timeout_seconds"`
-	DockerPoolReplenishInterval int      `json:"docker_pool_replenish_interval_seconds"`
-	DockerDefaultNetwork        bool     `json:"docker_default_network"`
-	DockerRegistryMirrors       []string `json:"docker_registry_mirrors"`     // 镜像加速器地址列表
-	DockerPullTimeout           int      `json:"docker_pull_timeout_seconds"` // 拉取超时（秒）
-	DockerHardening             bool     `json:"docker_hardening"`            // 容器安全加固（cap-drop/no-new-privileges/pids-limit/init）
-	DockerReadOnlyRootfs        bool     `json:"docker_readonly_rootfs"`      // 只读根文件系统（实验性，可能影响部分运行时）
-	DockerQueueSize             int      `json:"docker_queue_size"`
-	DockerQueueTimeoutSeconds   int      `json:"docker_queue_timeout_seconds"`
+	DockerHotPoolSize            int      `json:"docker_hot_pool_size"`
+	DockerMaxContainers          int      `json:"docker_max_containers"`
+	DockerMaxIdle                int      `json:"docker_max_idle"`
+	DockerMemoryLimit            string   `json:"docker_memory_limit"`
+	DockerCPULimit               string   `json:"docker_cpu_limit"`
+	DockerTerminalTimeout        int      `json:"docker_terminal_timeout_seconds"`
+	DockerPoolReplenishInterval  int      `json:"docker_pool_replenish_interval_seconds"`
+	DockerDefaultNetwork         bool     `json:"docker_default_network"`
+	DockerRegistryMirrors        []string `json:"docker_registry_mirrors"`         // 镜像加速器地址列表
+	DockerPullTimeout            int      `json:"docker_pull_timeout_seconds"`     // 拉取超时（秒）
+	DockerHardening              bool     `json:"docker_hardening"`                // 容器安全加固（cap-drop/no-new-privileges/pids-limit/init）
+	DockerReadOnlyRootfs         bool     `json:"docker_readonly_rootfs"`          // 只读根文件系统（实验性，可能影响部分运行时）
+	DockerContainerResetStrategy string   `json:"docker_container_reset_strategy"` // verified=确认无残留进程后仅清理工作区；restart=每次强制重启
+	DockerQueueSize              int      `json:"docker_queue_size"`
+	DockerQueueTimeoutSeconds    int      `json:"docker_queue_timeout_seconds"`
 
 	// 编译观测与有界结果保留。实时 WebSocket 输出不受结果保留上限影响。
 	PerformanceMetricsEnabled bool `json:"performance_metrics_enabled"`
@@ -182,6 +183,7 @@ func Default() *Config {
 		DockerPullTimeout:                   600,
 		DockerHardening:                     true,
 		DockerReadOnlyRootfs:                false,
+		DockerContainerResetStrategy:        "verified",
 		DockerQueueSize:                     50,
 		DockerQueueTimeoutSeconds:           60,
 		PerformanceMetricsEnabled:           true,
@@ -324,6 +326,13 @@ func Load(path string) (*Config, error) {
 	if cfg.DockerQueueTimeoutSeconds <= 0 {
 		cfg.DockerQueueTimeoutSeconds = 60
 	}
+	cfg.DockerContainerResetStrategy = strings.ToLower(strings.TrimSpace(cfg.DockerContainerResetStrategy))
+	if cfg.DockerContainerResetStrategy == "" {
+		cfg.DockerContainerResetStrategy = "verified"
+	}
+	if cfg.DockerContainerResetStrategy != "verified" && cfg.DockerContainerResetStrategy != "restart" {
+		return nil, fmt.Errorf("docker_container_reset_strategy must be verified or restart")
+	}
 	if cfg.PerformanceMetricsWindow <= 0 {
 		cfg.PerformanceMetricsWindow = 512
 	}
@@ -464,6 +473,9 @@ func applyEnvOverrides(cfg *Config) {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.WSPort = n
 		}
+	}
+	if v := strings.TrimSpace(os.Getenv("BOBOCLOUD_DOCKER_CONTAINER_RESET_STRATEGY")); v != "" {
+		cfg.DockerContainerResetStrategy = v
 	}
 	if v := os.Getenv("BOBOCLOUD_TERMINAL_IDLE_TTL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

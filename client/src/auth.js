@@ -26,40 +26,6 @@
   function show(el) { el.classList.add('show'); }
   function hide(el) { el.classList.remove('show'); }
 
-  // Electron 不支持 window.prompt()，用自定义弹窗替代
-  function customPrompt(title, defaultValue) {
-    return new Promise(function(resolve) {
-      var overlay = document.createElement('div');
-      overlay.style.cssText = 'position:fixed;inset:0;z-index:5000;background:rgba(0,0,0,0.55);display:flex;justify-content:center;align-items:center';
-      var card = document.createElement('div');
-      card.className = 'ss-card';
-      card.style.cssText = 'width:380px;max-width:92vw';
-      card.innerHTML =
-        '<div class="ss-head"><div class="ss-title">' + esc(title) + '</div></div>' +
-        '<div class="ss-body" style="gap:10px"><div class="ss-field">' +
-        '<input class="ss-input" type="text" inputmode="numeric" value="' + esc(String(defaultValue || '')) + '" style="font-size:15px" spellcheck="false">' +
-        '</div></div>' +
-        '<div class="ss-foot"><button class="ss-btn ss-btn-ghost cancel">Cancel</button>' +
-        '<button class="ss-btn ss-btn-primary ok">OK</button></div>';
-      overlay.appendChild(card);
-      document.body.appendChild(overlay);
-      var input = card.querySelector('input');
-      // 用 rAF 代替 setTimeout，确保在下一帧聚焦+选中文本
-      requestAnimationFrame(function() {
-        input.focus();
-        input.select();
-      });
-      function close(val) { document.body.removeChild(overlay); resolve(val); }
-      card.querySelector('.cancel').addEventListener('click', function() { close(null); });
-      card.querySelector('.ok').addEventListener('click', function() { close(input.value); });
-      input.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') { e.preventDefault(); close(input.value); }
-        if (e.key === 'Escape') { close(null); }
-      });
-      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(null); });
-    });
-  }
-
   var TOKEN_EXPIRY_MARGIN_MS = 60 * 1000; // 距到期不足 1 分钟视为已过期
 
   // ──── 本地凭证（经 main 进程持久化到 userData/auth.json）────
@@ -211,6 +177,7 @@
   }
 
   async function onAuthSuccess(res) {
+    if ($('admin-modal') && $('admin-modal').classList.contains('open')) closeAdmin();
     if (BOBO.runner && typeof BOBO.runner.invalidateRunIdentity === 'function') {
       await BOBO.runner.invalidateRunIdentity();
     }
@@ -232,6 +199,7 @@
   // ──── 凭证过期 / 被吊销 ────
   async function handleAuthExpired() {
     if (S.auth.mode !== 'multi') return;
+    if ($('admin-modal')) closeAdmin();
     var debugStopped = BOBO.dap && typeof BOBO.dap.abort === 'function'
       ? BOBO.dap.abort('auth-expired')
       : Promise.resolve();
@@ -328,6 +296,7 @@
   // ──── 退出登录 ────
   async function doLogout() {
     closeMenu();
+    closeAdmin();
     if (BOBO.workspace && BOBO.workspace.canLeaveWorkspace) {
       var allowed = await BOBO.workspace.canLeaveWorkspace({ reason: 'logout' });
       if (!allowed) return false;
@@ -378,6 +347,14 @@
   }
 
   // ──── 管理面板 ────
+  var adminUsersLoadVersion = 0;
+  var adminDialogSequence = 0;
+
+  function adminAuthIdentity() {
+    var user = S.auth.user || {};
+    return [S.serverSettings.ip || '', S.auth.token || '', user.id || user.uid || ''].join('\n');
+  }
+
   function openAdmin(tab) {
     closeMenu();
     $('admin-modal').classList.add('open');
@@ -386,11 +363,21 @@
     $('invite-role-admin').style.display =
       (S.auth.user && S.auth.user.role === 'root') ? '' : 'none';
   }
-  function closeAdmin() { $('admin-modal').classList.remove('open'); }
+  function closeAdmin() {
+    adminUsersLoadVersion += 1;
+    closeAdminActionMenus();
+    $('admin-modal').classList.remove('open');
+  }
 
   function switchAdminTab(name) {
+    closeAdminActionMenus();
     var tabs = document.querySelectorAll('#admin-modal .admin-tab');
-    tabs.forEach(function(t) { t.classList.toggle('active', t.dataset.pane === name); });
+    tabs.forEach(function(tab) {
+      var selected = tab.dataset.pane === name;
+      tab.classList.toggle('active', selected);
+      tab.setAttribute('aria-selected', selected ? 'true' : 'false');
+      tab.tabIndex = selected ? 0 : -1;
+    });
     document.querySelectorAll('#admin-modal .admin-pane').forEach(function(p) {
       p.classList.toggle('active', p.id === 'admin-pane-' + name);
     });
@@ -401,31 +388,39 @@
 
   async function loadUsers() {
     var pane = $('admin-pane-users');
-    pane.innerHTML = '<div class="admin-loading">Loading…</div>';
+    var requestVersion = ++adminUsersLoadVersion;
+    var requestIdentity = adminAuthIdentity();
+    closeAdminActionMenus();
+    pane.innerHTML = '<div class="admin-loading">' + esc(t('Loading...')) + '</div>';
     var res = await BOBO.sendToServer('listUsers', {}, { quiet: true });
+    if (requestVersion !== adminUsersLoadVersion || requestIdentity !== adminAuthIdentity() || !$('admin-modal').classList.contains('open')) return;
     if (!res || !res.success) {
-      pane.innerHTML = '<div class="admin-empty">' + esc((res && res.error) || 'Load failed') + '</div>';
+      pane.innerHTML = '<div class="admin-empty">' + esc((res && res.error) || t('Load failed')) + '</div>';
       return;
     }
+    pane.__adminUsers = res.users || [];
     var myRole = S.auth.user ? S.auth.user.role : 'member';
     var html = '<table class="admin-table"><thead><tr>' +
-      '<th>User</th><th>Email</th><th>Role</th><th>Quota</th><th>Disk</th><th>Created</th><th style="text-align:right">Actions</th>' +
+      '<th>' + esc(t('Account')) + '</th><th>' + esc(t('Access')) + '</th><th>' + esc(t('Limits')) + '</th>' +
+      '<th class="admin-created-column">' + esc(t('Created')) + '</th><th class="admin-actions-column">' + esc(t('Actions')) + '</th>' +
       '</tr></thead><tbody>';
     (res.users || []).forEach(function(u) {
       var roleBadge = '<span class="admin-role-badge admin-role-' + esc(u.role || 'member') + '">' +
-        esc(u.role || 'member') + '</span>';
-      var disabledTag = u.disabled ? '<span class="admin-disabled-tag">Disabled</span>' : '';
-      var created = u.created_at ? new Date(u.created_at).toLocaleDateString() : '-';
-      var diskQuota = u.disk_quota_mb > 0 ? (u.disk_quota_mb + ' MB') : '∞';
+        esc(adminRoleLabel(u.role)) + '</span>';
+      var disabledTag = u.disabled ? '<span class="admin-disabled-tag">' + esc(t('Disabled')) + '</span>' : '';
+      var created = u.created_at ? new Date(u.created_at).toLocaleDateString(adminLocale()) : '-';
+      var diskQuota = u.disk_quota_mb > 0 ? (u.disk_quota_mb + ' MB') : t('Unlimited');
       html += '<tr>' +
-        '<td><strong>' + esc(u.username || u.id) + '</strong>' + disabledTag + '</td>' +
-        '<td style="color:var(--text-dim)">' + esc(u.email || '-') + '</td>' +
-        '<td>' + roleBadge + '</td>' +
-        '<td style="color:var(--text-dim)">' + (u.container_limit || 0) + ' containers</td>' +
-        '<td style="color:var(--text-dim)">' + diskQuota + '</td>' +
-        '<td style="color:var(--text-dim)">' + created + '</td>' +
-        '<td><div class="admin-row-actions" data-uid="' + esc(u.id) + '" data-role="' + esc(u.role || 'member') + '" data-disabled="' + (u.disabled ? '1' : '0') + '">' +
-          buildUserActions(u, myRole) +
+        '<td><div class="admin-account-cell"><strong>' + esc(u.username || u.id) + '</strong>' +
+          '<span>' + esc(u.email || u.id || '-') + '</span></div></td>' +
+        '<td><div class="admin-access-cell">' + roleBadge + disabledTag + '</div></td>' +
+        '<td><div class="admin-limits-cell">' +
+          '<span>' + esc(t('{count} containers', { count: u.container_limit || 0 })) + '</span>' +
+          '<span>' + esc(t('{count} requests/min', { count: u.rate_limit || 0 })) + '</span>' +
+          '<span>' + esc(t('Disk: {quota}', { quota: diskQuota })) + '</span></div></td>' +
+        '<td class="admin-created-column">' + esc(created) + '</td>' +
+        '<td class="admin-actions-column"><div class="admin-row-actions" data-uid="' + esc(u.id) + '">' +
+          buildUserActions(u, myRole, S.auth.user && (S.auth.user.id || S.auth.user.uid)) +
         '</div></td>' +
       '</tr>';
     });
@@ -434,89 +429,342 @@
     bindUserActions(pane);
   }
 
-  function buildUserActions(u, myRole) {
+  function adminRoleLabel(role) {
+    if (role === 'root') return t('Root');
+    if (role === 'admin') return t('Admin');
+    return t('Member');
+  }
+
+  function adminLocale() {
+    var locale = BOBO.i18n && BOBO.i18n.getActive ? BOBO.i18n.getActive() : 'en';
+    if (locale === 'ja') return 'ja-JP';
+    return locale === 'zh-CN' ? 'zh-CN' : 'en-US';
+  }
+
+  function buildUserActions(u, myRole, currentUserID) {
     var isRoot = u.role === 'root';
-    if (isRoot) return '<span style="color:var(--text-dim);font-size:11px">—</span>';
-    var btns = [];
-    // admin 只能管 member；root 能管所有人
+    var isCurrent = Boolean(currentUserID) && u.id === currentUserID;
     var canManage = (myRole === 'root') || (myRole === 'admin' && u.role === 'member');
-    if (!canManage) return '<span style="color:var(--text-dim);font-size:11px">—</span>';
-    btns.push('<button class="admin-mini-btn" data-act="reset">Reset password</button>');
-    btns.push('<button class="admin-mini-btn" data-act="setdisk">Set disk quota</button>');
-    btns.push(u.disabled
-      ? '<button class="admin-mini-btn" data-act="enable">Enable</button>'
-      : '<button class="admin-mini-btn warn" data-act="disable">Disable</button>');
-    if (myRole === 'root') {
-      btns.push(u.role === 'admin'
-        ? '<button class="admin-mini-btn" data-act="demote">Demote to member</button>'
-        : '<button class="admin-mini-btn" data-act="promote">Promote to admin</button>');
-      btns.push('<button class="admin-mini-btn danger" data-act="delete">Delete</button>');
+    if (!canManage) return '<span class="admin-no-actions">-</span>';
+    var items = [
+      isCurrent
+        ? '<button type="button" role="menuitem" data-act="change-password">' + esc(t('Change password')) + '</button>'
+        : '<button type="button" role="menuitem" data-act="password">' + esc(t('Password')) + '</button>',
+      '<button type="button" role="menuitem" data-act="quota">' + esc(t('Set quota')) + '</button>'
+    ];
+    if (!isRoot) {
+      items.push(u.disabled
+        ? '<button type="button" role="menuitem" data-act="enable">' + esc(t('Enable')) + '</button>'
+        : '<button type="button" role="menuitem" class="warn" data-act="disable">' + esc(t('Disable')) + '</button>');
+      if (myRole === 'root') {
+        items.push(u.role === 'admin'
+          ? '<button type="button" role="menuitem" data-act="demote">' + esc(t('Demote to member')) + '</button>'
+          : '<button type="button" role="menuitem" data-act="promote">' + esc(t('Promote to admin')) + '</button>');
+        items.push('<button type="button" role="menuitem" class="danger" data-act="delete">' + esc(t('Delete')) + '</button>');
+      }
     }
-    return btns.join('');
+    var icon = BOBO.icons && BOBO.icons.moreVertical ? BOBO.icons.moreVertical : '&#8942;';
+    return '<button type="button" class="admin-actions-trigger" aria-haspopup="menu" aria-expanded="false" ' +
+      'title="' + esc(t('Actions')) + '" aria-label="' + esc(t('Actions for {user}', { user: u.username || u.id })) + '">' + icon + '</button>' +
+      '<div class="admin-action-menu" role="menu">' + items.join('') + '</div>';
+  }
+
+  function closeAdminActionMenus(except) {
+    document.querySelectorAll('.admin-action-menu.open').forEach(function(menu) {
+      if (menu === except) return;
+      menu.classList.remove('open');
+      var trigger = menu.parentElement && menu.parentElement.querySelector('.admin-actions-trigger');
+      if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    });
+  }
+
+  function positionAdminActionMenu(trigger, menu) {
+    menu.classList.add('open');
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+    var rect = trigger.getBoundingClientRect();
+    var menuRect = menu.getBoundingClientRect();
+    var left = Math.max(8, Math.min(rect.right - menuRect.width, global.innerWidth - menuRect.width - 8));
+    var top = rect.bottom + 4;
+    if (top + menuRect.height > global.innerHeight - 8) top = Math.max(8, rect.top - menuRect.height - 4);
+    menu.style.left = Math.round(left) + 'px';
+    menu.style.top = Math.round(top) + 'px';
   }
 
   function bindUserActions(pane) {
-    pane.querySelectorAll('.admin-row-actions button').forEach(function(btn) {
+    var users = Object.create(null);
+    (pane.__adminUsers || []).forEach(function(user) { users[user.id] = user; });
+    pane.querySelectorAll('.admin-actions-trigger').forEach(function(trigger) {
+      trigger.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var menu = trigger.parentElement.querySelector('.admin-action-menu');
+        var opening = !menu.classList.contains('open');
+        closeAdminActionMenus(opening ? menu : null);
+        if (opening) {
+          positionAdminActionMenu(trigger, menu);
+          var firstItem = menu.querySelector('[role="menuitem"]');
+          if (firstItem) firstItem.focus();
+        }
+        else menu.classList.remove('open');
+        trigger.setAttribute('aria-expanded', opening ? 'true' : 'false');
+      });
+      var menu = trigger.parentElement.querySelector('.admin-action-menu');
+      menu.addEventListener('keydown', function(e) {
+        var items = Array.prototype.slice.call(menu.querySelectorAll('[role="menuitem"]:not(:disabled)'));
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          closeAdminActionMenus();
+          trigger.focus();
+          return;
+        }
+        if (!items.length || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+        e.preventDefault();
+        var current = items.indexOf(document.activeElement);
+        var next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
+          : e.key === 'ArrowUp' ? (current <= 0 ? items.length - 1 : current - 1)
+            : (current + 1) % items.length;
+        items[next].focus();
+      });
+    });
+    pane.querySelectorAll('.admin-action-menu button[data-act]').forEach(function(btn) {
       btn.addEventListener('click', async function() {
         var row = btn.closest('.admin-row-actions');
         var uid = row.dataset.uid;
+        var user = users[uid];
         var act = btn.dataset.act;
+        closeAdminActionMenus();
         btn.disabled = true;
-        var cancelled = false;
         try {
-          if (act === 'disable' || act === 'enable') {
+          if (act === 'change-password') {
+            closeAdmin();
+            openChpwd();
+          } else if (act === 'disable' || act === 'enable') {
             var res = await BOBO.sendToServer('setUserDisabled',
               { userId: uid, disabled: act === 'disable' }, { quiet: true });
-            if (!res || !res.success) global.alert((res && res.error) || 'Operation failed');
-          } else if (act === 'reset') {
-            var res2 = await BOBO.sendToServer('resetUserPassword', { userId: uid }, { quiet: true });
-            if (res2 && res2.success && res2.newPassword) {
-              showGeneratedSecret('New password for ' + uid + ' (shown only once, deliver immediately)', res2.newPassword, $('admin-pane-users'));
-            } else {
-              global.alert((res2 && res2.error) || 'Reset failed');
-            }
-          } else if (act === 'setdisk') {
-            var inputVal = await customPrompt('Set disk quota (MB) for ' + uid + ' (0 = unlimited)', '2048');
-            if (inputVal === null) { cancelled = true; btn.disabled = false; return; }
-            var mb = parseInt(inputVal, 10);
-            if (isNaN(mb) || mb < 0) { global.alert('Invalid value'); btn.disabled = false; return; }
-            var res5 = await BOBO.sendToServer('updateUserQuota', { userId: uid, diskQuotaMB: mb }, { quiet: true });
-            if (!res5 || !res5.success) global.alert((res5 && res5.error) || 'Update failed');
-            else BOBO.updateRunOutput('Disk quota for ' + uid + ' set to ' + (mb > 0 ? mb + ' MB' : 'unlimited'));
+            if (!res || !res.success) { global.alert((res && res.error) || t('Operation failed')); return; }
+            await loadUsers();
+          } else if (act === 'password') {
+            var secret = await openAdminPasswordDialog(user);
+            if (secret == null) return;
+            showGeneratedSecret(t('New password for {user}. It is shown only once.', { user: user.username || uid }), secret, $('admin-pane-users'), true);
+          } else if (act === 'quota') {
+            if (await openAdminQuotaDialog(user)) await loadUsers();
           } else if (act === 'promote' || act === 'demote') {
             var role = act === 'promote' ? 'admin' : 'member';
             var res3 = await BOBO.sendToServer('setUserRole', { userId: uid, role: role }, { quiet: true });
-            if (!res3 || !res3.success) global.alert((res3 && res3.error) || 'Operation failed');
+            if (!res3 || !res3.success) { global.alert((res3 && res3.error) || t('Operation failed')); return; }
+            await loadUsers();
           } else if (act === 'delete') {
             var okDel = await BOBO.confirm({
-              title: 'Delete user',
-              message: 'Delete user ' + uid + '?\nThis will permanently delete their files, cache, and containers.',
-              confirmLabel: 'Delete',
+              title: t('Delete user'),
+              message: t('Delete user {user}?\nThis permanently deletes their files, cache, and containers.', { user: user.username || uid }),
+              confirmLabel: t('Delete'),
               danger: true
             });
-            if (!okDel) { cancelled = true; btn.disabled = false; return; }
+            if (!okDel) return;
             var res4 = await BOBO.sendToServer('deleteUser', { userId: uid }, { quiet: true });
-            if (!res4 || !res4.success) global.alert((res4 && res4.error) || 'Delete failed');
+            if (!res4 || !res4.success) { global.alert((res4 && res4.error) || t('Delete failed')); return; }
+            await loadUsers();
           }
         } finally {
-          if (!cancelled) loadUsers();
+          btn.disabled = false;
         }
       });
     });
   }
 
+  function createAdminDialog(title, bodyHTML) {
+    var overlay = document.createElement('div');
+    var titleID = 'admin-dialog-title-' + (++adminDialogSequence);
+    overlay.className = 'admin-dialog-overlay';
+    overlay.__returnFocus = document.activeElement;
+    overlay.innerHTML = '<div class="admin-dialog-card" role="dialog" aria-modal="true" aria-labelledby="' + titleID + '">' +
+      '<div class="ss-head"><div class="ss-title" id="' + titleID + '">' + esc(title) + '</div>' +
+      '<button type="button" class="close-btn admin-dialog-close" title="' + esc(t('Close')) + '" aria-label="' + esc(t('Close')) + '">&times;</button></div>' +
+      bodyHTML + '</div>';
+    document.body.appendChild(overlay);
+    overlay.addEventListener('keydown', function(e) {
+      if (e.key !== 'Tab') return;
+      var focusable = Array.prototype.slice.call(overlay.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])'));
+      if (!focusable.length) return;
+      var first = focusable[0];
+      var last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    });
+    return overlay;
+  }
+
+  function removeAdminDialog(overlay) {
+    var returnFocus = overlay.__returnFocus;
+    overlay.remove();
+    if (returnFocus && returnFocus.isConnected && typeof returnFocus.focus === 'function') {
+      requestAnimationFrame(function() { returnFocus.focus(); });
+    }
+  }
+
+  function openAdminPasswordDialog(user) {
+    return new Promise(function(resolve) {
+      var overlay = createAdminDialog(t('Password for {user}', { user: user.username || user.id }),
+        '<div class="ss-body admin-dialog-body">' +
+          '<div class="admin-dialog-note">' + esc(t('The existing password cannot be viewed because only its secure hash is stored. Set a replacement or generate a random password.')) + '</div>' +
+          '<label class="ss-label" for="admin-password-input">' + esc(t('Replacement password')) + '</label>' +
+          '<div class="admin-password-row"><input id="admin-password-input" class="ss-input" type="password" autocomplete="new-password" minlength="6">' +
+          '<button type="button" class="admin-icon-btn admin-password-reveal" title="' + esc(t('Show password')) + '" aria-label="' + esc(t('Show password')) + '">' +
+          ((BOBO.icons && BOBO.icons.eye) || esc(t('Show'))) + '</button></div>' +
+          '<div class="admin-dialog-error" role="alert"></div></div>' +
+        '<div class="ss-foot"><button type="button" class="ss-btn ss-btn-ghost admin-dialog-cancel">' + esc(t('Cancel')) + '</button>' +
+          '<button type="button" class="ss-btn ss-btn-ghost admin-password-generate">' + esc(t('Generate password')) + '</button>' +
+          '<button type="button" class="ss-btn ss-btn-primary admin-password-save">' + esc(t('Set password')) + '</button></div>');
+      var input = overlay.querySelector('#admin-password-input');
+      var reveal = overlay.querySelector('.admin-password-reveal');
+      var error = overlay.querySelector('.admin-dialog-error');
+      var controls = overlay.querySelectorAll('button,input');
+      var settled = false;
+      var submitting = false;
+      function close(value) {
+        if (settled) return;
+        settled = true;
+        removeAdminDialog(overlay);
+        resolve(value);
+      }
+      function setBusy(busy) { controls.forEach(function(control) { control.disabled = busy; }); }
+      async function submit(generate) {
+        if (settled || submitting) return;
+        var password = input.value;
+        if (!generate && password.length < 6) {
+          error.textContent = t('Password must be at least 6 characters.');
+          input.focus();
+          return;
+        }
+        error.textContent = '';
+        submitting = true;
+        setBusy(true);
+        var payload = { userId: user.id };
+        if (!generate) payload.newPassword = password;
+        var response;
+        try {
+          response = await BOBO.sendToServer('resetUserPassword', payload, { quiet: true });
+        } catch (err) {
+          error.textContent = (err && err.message) || t('Password update failed');
+          submitting = false;
+          setBusy(false);
+          return;
+        }
+        if (!response || !response.success || !response.newPassword) {
+          error.textContent = (response && response.error) || t('Password update failed');
+          submitting = false;
+          setBusy(false);
+          return;
+        }
+        close(response.newPassword);
+      }
+      overlay.querySelector('.admin-dialog-close').addEventListener('click', function() { if (!submitting) close(null); });
+      overlay.querySelector('.admin-dialog-cancel').addEventListener('click', function() { if (!submitting) close(null); });
+      overlay.querySelector('.admin-password-generate').addEventListener('click', function() { submit(true); });
+      overlay.querySelector('.admin-password-save').addEventListener('click', function() { submit(false); });
+      reveal.addEventListener('click', function() {
+        var visible = input.type === 'text';
+        input.type = visible ? 'password' : 'text';
+        reveal.innerHTML = (BOBO.icons && BOBO.icons[visible ? 'eye' : 'eyeOff']) || esc(t(visible ? 'Show' : 'Hide'));
+        var revealLabel = t(visible ? 'Show password' : 'Hide password');
+        reveal.title = revealLabel;
+        reveal.setAttribute('aria-label', revealLabel);
+      });
+      overlay.addEventListener('click', function(e) { if (e.target === overlay && !submitting) close(null); });
+      overlay.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && !submitting) close(null);
+        if (e.key === 'Enter' && e.target === input && !submitting) { e.preventDefault(); submit(false); }
+      });
+      requestAnimationFrame(function() { input.focus(); });
+    });
+  }
+
+  function openAdminQuotaDialog(user) {
+    return new Promise(function(resolve) {
+      var overlay = createAdminDialog(t('Quota for {user}', { user: user.username || user.id }),
+        '<div class="ss-body admin-dialog-body"><div class="admin-form-grid">' +
+          '<label class="admin-form-field"><span>' + esc(t('Concurrent containers')) + '</span><input class="ss-input" data-field="containers" type="number" min="1" step="1" value="' + esc(user.container_limit || 1) + '"></label>' +
+          '<label class="admin-form-field"><span>' + esc(t('Requests per minute')) + '</span><input class="ss-input" data-field="rate" type="number" min="1" step="1" value="' + esc(user.rate_limit || 1) + '"></label>' +
+          '<label class="admin-form-field admin-form-field-wide"><span>' + esc(t('Disk quota (MB)')) + '</span><input class="ss-input" data-field="disk" type="number" min="0" step="1" value="' + esc(Math.max(0, user.disk_quota_mb || 0)) + '"><small>' + esc(t('Use 0 for unlimited disk storage.')) + '</small></label>' +
+          '</div><div class="admin-dialog-error" role="alert"></div></div>' +
+        '<div class="ss-foot"><button type="button" class="ss-btn ss-btn-ghost admin-dialog-cancel">' + esc(t('Cancel')) + '</button>' +
+          '<button type="button" class="ss-btn ss-btn-primary admin-quota-save">' + esc(t('Save quota')) + '</button></div>');
+      var error = overlay.querySelector('.admin-dialog-error');
+      var settled = false;
+      function close(value) {
+        if (settled) return;
+        settled = true;
+        removeAdminDialog(overlay);
+        resolve(value);
+      }
+      overlay.querySelector('.admin-dialog-close').addEventListener('click', function() { close(false); });
+      overlay.querySelector('.admin-dialog-cancel').addEventListener('click', function() { close(false); });
+      overlay.querySelector('.admin-quota-save').addEventListener('click', async function() {
+        var containerLimit = Number(overlay.querySelector('[data-field="containers"]').value);
+        var rateLimit = Number(overlay.querySelector('[data-field="rate"]').value);
+        var diskQuotaMB = Number(overlay.querySelector('[data-field="disk"]').value);
+        if (!Number.isInteger(containerLimit) || containerLimit < 1 || !Number.isInteger(rateLimit) || rateLimit < 1 || !Number.isInteger(diskQuotaMB) || diskQuotaMB < 0) {
+          error.textContent = t('Enter valid whole-number quota values.');
+          return;
+        }
+        overlay.querySelectorAll('button,input').forEach(function(control) { control.disabled = true; });
+        var response;
+        try {
+          response = await BOBO.sendToServer('updateUserQuota', {
+            userId: user.id, containerLimit: containerLimit, rateLimit: rateLimit, diskQuotaMB: diskQuotaMB
+          }, { quiet: true });
+        } catch (err) {
+          error.textContent = (err && err.message) || t('Quota update failed');
+          overlay.querySelectorAll('button,input').forEach(function(control) { control.disabled = false; });
+          return;
+        }
+        if (!response || !response.success) {
+          error.textContent = (response && response.error) || t('Quota update failed');
+          overlay.querySelectorAll('button,input').forEach(function(control) { control.disabled = false; });
+          return;
+        }
+        close(true);
+      });
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(false); });
+      overlay.addEventListener('keydown', function(e) { if (e.key === 'Escape') close(false); });
+      requestAnimationFrame(function() { overlay.querySelector('[data-field="containers"]').focus(); });
+    });
+  }
+
   // 在面板顶部展示一次性密钥（重置密码/新邀请码）
-  function showGeneratedSecret(label, secret, pane) {
+  function showGeneratedSecret(label, secret, pane, hiddenInitially) {
     var old = pane.querySelector('.admin-new-invite');
     if (old) old.remove();
     var box = document.createElement('div');
     box.className = 'admin-new-invite';
+    box.setAttribute('role', 'status');
+    box.setAttribute('aria-live', 'polite');
     box.innerHTML = '<span style="font-size:12px;color:var(--text-dim)">' + esc(label) + '</span>' +
-      '<code>' + esc(secret) + '</code>' +
-      '<button class="admin-copy-btn">Copy</button>';
-    box.querySelector('.admin-copy-btn').addEventListener('click', function() {
-      navigator.clipboard.writeText(secret);
-      box.querySelector('.admin-copy-btn').textContent = 'Copied';
+      '<code>' + esc(hiddenInitially ? '************' : secret) + '</code>' +
+      (hiddenInitially ? '<button type="button" class="admin-icon-btn admin-secret-reveal" title="' + esc(t('Show password')) + '" aria-label="' + esc(t('Show password')) + '">' + ((BOBO.icons && BOBO.icons.eye) || esc(t('Show'))) + '</button>' : '') +
+      '<button type="button" class="admin-icon-btn admin-secret-copy" title="' + esc(t('Copy')) + '" aria-label="' + esc(t('Copy')) + '">' + ((BOBO.icons && BOBO.icons.copy) || esc(t('Copy'))) + '</button>';
+    var reveal = box.querySelector('.admin-secret-reveal');
+    if (reveal) reveal.addEventListener('click', function() {
+      var visible = box.classList.toggle('secret-visible');
+      box.querySelector('code').textContent = visible ? secret : '************';
+      reveal.innerHTML = (BOBO.icons && BOBO.icons[visible ? 'eyeOff' : 'eye']) || esc(t(visible ? 'Hide' : 'Show'));
+      var revealLabel = t(visible ? 'Hide password' : 'Show password');
+      reveal.title = revealLabel;
+      reveal.setAttribute('aria-label', revealLabel);
+    });
+    var copy = box.querySelector('.admin-secret-copy');
+    copy.addEventListener('click', async function() {
+      try {
+        await navigator.clipboard.writeText(secret);
+        copy.innerHTML = (BOBO.icons && BOBO.icons.check) || esc(t('Copied'));
+        copy.title = t('Copied');
+        copy.setAttribute('aria-label', t('Copied'));
+      } catch (err) {
+        copy.title = t('Copy failed');
+        copy.setAttribute('aria-label', t('Copy failed'));
+        global.alert(t('Copy failed'));
+      }
     });
     pane.insertBefore(box, pane.firstChild);
   }
@@ -694,6 +942,7 @@
 
   // 服务器设置变更后重新探测（由 app.js 保存设置后调用）
   async function onServerChanged(options) {
+    closeAdmin();
     if (BOBO.terminal && typeof BOBO.terminal.close === 'function') await BOBO.terminal.close('server-change');
     if (BOBO.dap && typeof BOBO.dap.abort === 'function') await BOBO.dap.abort('server-change');
     if (!(options && options.runInvalidated) && BOBO.runner && typeof BOBO.runner.invalidateRunIdentity === 'function') {
@@ -744,7 +993,7 @@
     });
     $('auth-menu-logout').addEventListener('click', doLogout);
     $('auth-menu-chpwd').addEventListener('click', openChpwd);
-    $('auth-menu-admin').addEventListener('click', openAdmin);
+    $('auth-menu-admin').addEventListener('click', function() { openAdmin('users'); });
 
     // 修改密码弹窗
     $('chpwd-cancel').addEventListener('click', closeChpwd);
@@ -757,10 +1006,29 @@
     // 管理面板
     $('admin-close-x').addEventListener('click', closeAdmin);
     $('admin-modal').addEventListener('click', function(e) {
+      if (!e.target.closest('.admin-row-actions')) closeAdminActionMenus();
       if (e.target === $('admin-modal')) closeAdmin();
     });
+    $('admin-modal').querySelector('.admin-body').addEventListener('scroll', function() { closeAdminActionMenus(); });
+    global.addEventListener('resize', function() { closeAdminActionMenus(); });
     document.querySelectorAll('#admin-modal .admin-tab').forEach(function(t) {
       t.addEventListener('click', function() { switchAdminTab(t.dataset.pane); });
+      t.addEventListener('keydown', function(e) {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+        e.preventDefault();
+        var tabs = Array.prototype.slice.call(document.querySelectorAll('#admin-modal .admin-tab'));
+        var index = tabs.indexOf(t);
+        var next = e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1
+          : e.key === 'ArrowLeft' ? (index <= 0 ? tabs.length - 1 : index - 1)
+            : (index + 1) % tabs.length;
+        tabs[next].focus();
+        switchAdminTab(tabs[next].dataset.pane);
+      });
+    });
+    global.addEventListener('bobo:language-changed', function() {
+      if (!$('admin-modal').classList.contains('open')) return;
+      var activeTab = $('admin-modal').querySelector('.admin-tab.active');
+      switchAdminTab(activeTab ? activeTab.dataset.pane : 'users');
     });
     $('invite-create').addEventListener('click', createInvite);
 

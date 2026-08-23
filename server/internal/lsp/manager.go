@@ -685,6 +685,29 @@ func (m *Manager) RefreshDependencyViews(registry *DependencyRegistry, scope Dep
 	return m.runDependencyRefresh(key, state, registry, scope)
 }
 
+// RestartDependencyViews invalidates sessions whose immutable dependency
+// generation was replaced by a project-cache transaction. The replacement
+// path cannot be discovered from the old request because that request is
+// deliberately pinned to the retired generation; reconnecting rebuilds the
+// request from the newly published canonical generation.
+func (m *Manager) RestartDependencyViews(scope DependencyRefreshScope) int {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		if scope.matches(session.Context) {
+			sessions = append(sessions, session)
+		}
+	}
+	m.mu.Unlock()
+	for _, session := range sessions {
+		session.RestartForDependency(session.DependencyStatus())
+	}
+	return len(sessions)
+}
+
 func (m *Manager) runDependencyRefresh(key string, state *dependencyRefreshState, registry *DependencyRegistry, scope DependencyRefreshScope) (restarted int) {
 	defer m.refreshRunWG.Done()
 	select {

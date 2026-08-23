@@ -441,9 +441,9 @@
     // Close all tabs from the previous project before switching.
     // Dispose Monaco models (skip image tabs which have no model).
     for (var i = 0; i < S.tabs.length; i++) {
-      var t = S.tabs[i];
-      if (t.model && t.language !== 'image') {
-        try { t.model.dispose(); } catch (e) { /* ignore */ }
+      var tab = S.tabs[i];
+      if (tab.model && tab.language !== 'image') {
+        try { tab.model.dispose(); } catch (e) { /* ignore */ }
       }
     }
     // A workbench page is not tied to the workspace and can stay open while
@@ -456,7 +456,7 @@
     var syncButton = document.getElementById('cloud-sync-btn');
     if (syncButton) syncButton.style.display = 'none';
     var workspaceLabel = document.getElementById('workspace-label');
-    if (workspaceLabel) workspaceLabel.textContent = 'No folder opened';
+    if (workspaceLabel) workspaceLabel.textContent = t('No folder opened');
 
     S.workspaceRoot = rootPath;
     S.workspaceTree = tree || null;
@@ -591,6 +591,8 @@
       var count = Math.min(CHILD_PAGE_SIZE, container._boboChildren.length - rendered);
       button.textContent = t('Load {count} more items', { count: count });
     });
+    updateEmptyState();
+    updateTitlebar();
   });
 
   function renderNextChildPage(container) {
@@ -1684,7 +1686,7 @@
     }
     var root = S.workspaceRoot || '';
     var rootParts = root.split(/[/\\]/).filter(Boolean);
-    var base = root ? (rootParts[rootParts.length - 1] || root) : 'No folder opened';
+    var base = root ? (rootParts[rootParts.length - 1] || root) : t('No folder opened');
     var active = S.tabs.find(function(t) { return t.path === S.activeTabPath; });
     var relative = active && root && active.path.indexOf(root) === 0
       ? active.path.slice(root.length).replace(/^[/\\]+/, '')
@@ -1704,12 +1706,12 @@
       var subtitle = el.querySelector('.empty-state-subtitle');
       var openButton = document.getElementById('empty-state-open');
       if (S.workspaceRoot) {
-        if (title) title.textContent = 'Choose a file to start editing';
-        if (subtitle) subtitle.textContent = 'Your workspace is ready in the Explorer';
+        if (title) title.textContent = t('Choose a file to start editing');
+        if (subtitle) subtitle.textContent = t('Your workspace is ready in the Explorer');
         if (openButton) openButton.style.display = 'none';
       } else {
-        if (title) title.textContent = 'Open a folder to start';
-        if (subtitle) subtitle.textContent = 'Browse your project files and start coding';
+        if (title) title.textContent = t('Open a folder to start');
+        if (subtitle) subtitle.textContent = t('Browse your project files and start coding');
         if (openButton) openButton.style.display = '';
       }
     } else {

@@ -627,16 +627,24 @@ func clearTerminalHandshakeDeadline(conn *websocket.Conn) error {
 	return conn.SetReadDeadline(time.Time{})
 }
 
-func terminalReadyPayload(sessionID, runtimeID string, workspace map[string]string, limits terminalLimits, usePTY bool) map[string]any {
+func terminalReadyPayload(sessionID string, runtime model.RuntimeDef, workspace map[string]string, limits terminalLimits, usePTY bool) map[string]any {
 	return map[string]any{
 		"type":      "terminal.ready",
 		"protocol":  terminalProtocolVersion,
 		"sessionId": sessionID,
-		"runtimeId": runtimeID,
+		"runtimeId": runtime.RuntimeID,
 		// Terminal edits stay in an isolated snapshot; rclone sync remains the
 		// only path that can mutate the authoritative cloud worktree.
 		"snapshot":  true,
 		"workspace": workspace,
+		"environment": map[string]string{
+			"runtimeId":     runtime.RuntimeID,
+			"displayName":   runtime.DisplayName,
+			"language":      runtime.Language,
+			"version":       runtime.Version,
+			"dockerImage":   runtime.DockerImage,
+			"workspaceKind": workspace["kind"],
+		},
 		"capabilities": map[string]bool{
 			"stdin": true, "cancel": true, "tty": usePTY,
 			"resize": false, "isolatedWorkspace": true,
@@ -828,7 +836,8 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 
 	var personalLease *personalcache.Lease
 	var persistOperation *personalcache.Operation
-	if workspace.teamID == "" && h.PersonalCache != nil {
+	cacheCommitAllowed := false
+	if workspace.teamID == "" && h.PersonalCache != nil && projectLockDependencyLanguage(runtime.Language) {
 		workspaceID := lsp.StableWorkspaceIdentity(user.ID, "", "", "", workspace.activityKey)
 		personalLease, err = h.PersonalCache.Prepare(ctx, personalcache.Request{
 			UserID: user.ID, WorkspaceID: workspaceID, WorkspaceName: start.Workspace.FolderName,
@@ -841,7 +850,13 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		if personalLease != nil {
-			pendingResourceRelease = combineTerminalResourceReleases(personalLease.Release, pendingResourceRelease)
+			dependencyScope := personalDependencyRefreshScope(user.ID, workspace.activityKey, runtime.RuntimeID, runtime.Language)
+			pendingResourceRelease = combineTerminalResourceReleases(func() {
+				if !cacheCommitAllowed {
+					personalLease.Abort()
+				}
+				h.releasePersonalCacheLease(personalLease, dependencyScope)
+			}, pendingResourceRelease)
 			if guard := personalLease.StartGuard(ctx); guard != nil {
 				ctx = guard.Context
 			}
@@ -933,12 +948,13 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 	defer inputQueue.Stop()
 
 	sessionID := auth.GenerateToken()
-	if err := writer.control(terminalReadyPayload(sessionID, runtimeID, workspace.publicFields, limits, usePTY)); err != nil {
+	if err := writer.control(terminalReadyPayload(sessionID, *runtime, workspace.publicFields, limits, usePTY)); err != nil {
 		cancel()
 		inputQueue.Stop()
 		stopTerminalShellBeforeStreaming(shell, stdin, containerID)
 		return
 	}
+	cacheCommitAllowed = true
 	sessionReady.Store(true)
 
 	type shellResult struct{ err error }
@@ -1049,8 +1065,9 @@ sessionLoop:
 				break sessionLoop
 			}
 		case <-ctx.Done():
-			if (personalLease != nil && personalLease.StartGuard(ctx).Err() != nil) || (persistOperation != nil && persistOperation.Err() != nil) {
+			if personalCacheLeaseError(personalLease, ctx) != nil || (persistOperation != nil && persistOperation.Err() != nil) {
 				reason = "storage_quota"
+				cacheCommitAllowed = false
 				_ = writer.control(map[string]any{"type": "terminal.error", "code": "storage_quota", "message": "personal storage quota was exceeded"})
 			} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				reason = "max_duration"

@@ -44,6 +44,8 @@
   "_docker_hardening": "容器安全加固：--cap-drop=ALL（丢弃所有 capabilities，防逃逸）+ --security-opt=no-new-privileges（禁提权）+ --pids-limit（防 fork 炸弹）+ --init（僵尸进程回收）。对所有运行时安全，默认开启。",
   "docker_readonly_rootfs": false,
   "_docker_readonly_rootfs": "只读根文件系统（--read-only + /tmp /workspace /home 的 tmpfs）。实验性：默认关闭，确认所有运行时正常后再开启以获得额外防御深度。",
+  "docker_container_reset_strategy": "verified",
+  "_docker_container_reset_strategy": "容器回池策略：verified 在确认只剩 docker-init/tail 受管基线进程时仅清理工作区，检测异常或额外进程会自动回退 restart；restart 每次都强制重启。",
   "docker_queue_size": 50,
   "_docker_queue_size": "容器池满时允许等待的请求数；0=关闭排队。",
   "docker_queue_timeout_seconds": 60,

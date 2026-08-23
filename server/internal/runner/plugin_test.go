@@ -2,6 +2,7 @@ package runner
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -314,6 +315,81 @@ func TestRustPlugin_CargoMode(t *testing.T) {
 	}
 }
 
+func TestDockerRustRuntimeBootstrapUsesCargoTargetWithoutMutatingLocalPlan(t *testing.T) {
+	hostDir, files := writeTempProject(t, map[string]string{
+		"Cargo.toml":  "[package]\nname = \"myapp\"\nversion = \"0.1.0\"\n",
+		"src/main.rs": "fn main(){}",
+	})
+	plan, err := RustPlugin{}.Plan(&PlanRequest{
+		EntryRelPath: "src/main.rs",
+		ProjectFiles: files,
+		HostWorkDir:  hostDir,
+		RunArgs:      []string{"$(must-not-be-evaluated)"},
+		Timeouts:     testTimeouts(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	written := withDockerRustRuntimeBootstrap(plan)
+	want := []string{"sh", "-c", rustRuntimeBootstrap, "rust-runtime", "./target/debug/myapp", "$(must-not-be-evaluated)"}
+	if got := written.Steps[1].Cmd; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Docker Rust command = %#v, want %#v", got, want)
+	}
+	if got := plan.Steps[1].Cmd; !reflect.DeepEqual(got, []string{"./target/debug/myapp", "$(must-not-be-evaluated)"}) {
+		t.Fatalf("local Rust plan was mutated: %#v", got)
+	}
+}
+
+func TestDockerRustRuntimeBootstrapExecutesCachedArtifact(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX shell is unavailable")
+	}
+	targetRoot := t.TempDir()
+	artifact := filepath.Join(targetRoot, "debug", "myapp")
+	if err := os.MkdirAll(filepath.Dir(artifact), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifact, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	argument := "$(must-not-be-evaluated)"
+	command := exec.Command(shell, "-c", rustRuntimeBootstrap, "rust-runtime", "./target/debug/myapp", argument)
+	command.Env = []string{"CARGO_TARGET_DIR=" + targetRoot}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("execute Rust bootstrap: %v: %s", err, output)
+	}
+	if got := strings.TrimSpace(string(output)); got != argument {
+		t.Fatalf("Rust argv = %q, want literal %q", got, argument)
+	}
+}
+
+func TestDockerRustArtifactCopyBootstrapUsesCargoTarget(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX shell is unavailable")
+	}
+	targetRoot := t.TempDir()
+	artifact := filepath.Join(targetRoot, "x86_64-pc-windows-gnu", "debug", "myapp.exe")
+	if err := os.MkdirAll(filepath.Dir(artifact), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifact, []byte("cross-artifact"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "myapp.exe")
+	command := exec.Command(shell, "-c", rustArtifactCopyBootstrap, "rust-artifact", "target/x86_64-pc-windows-gnu/debug/myapp.exe", destination)
+	command.Env = []string{"CARGO_TARGET_DIR=" + targetRoot}
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("copy Rust artifact: %v: %s", err, output)
+	}
+	content, err := os.ReadFile(destination)
+	if err != nil || string(content) != "cross-artifact" {
+		t.Fatalf("copied artifact = %q, err=%v", content, err)
+	}
+}
+
 func TestRustPlugin_CargoReleaseProfile(t *testing.T) {
 	hostDir, files := writeTempProject(t, map[string]string{
 		"Cargo.toml":  "[package]\nname = \"myapp\"\n",
@@ -374,6 +450,43 @@ func TestRustPlugin_CrossTargetBuildsArtifactWithoutRunning(t *testing.T) {
 	if len(plan.Steps) != 2 || plan.Steps[len(plan.Steps)-1].Stage == "run:rust" {
 		t.Fatalf("cross target must not run: %#v", plan.Steps)
 	}
+	if written := withDockerRustRuntimeBootstrap(plan); !reflect.DeepEqual(written.Steps, plan.Steps) {
+		t.Fatalf("single-file cross plan should not use Cargo target rewriting: %#v", written.Steps)
+	}
+}
+
+func TestDockerRustCargoCrossArtifactUsesCargoTarget(t *testing.T) {
+	hostDir, files := writeTempProject(t, map[string]string{
+		"Cargo.toml":  "[package]\nname = \"myapp\"\nversion = \"0.1.0\"\n",
+		"src/main.rs": "fn main(){}",
+	})
+	target, ok := model.ResolveBuildTarget("rust", "windows-x86_64")
+	if !ok {
+		t.Fatal("missing Windows target")
+	}
+	plan, err := RustPlugin{}.Plan(&PlanRequest{
+		EntryRelPath: "src/main.rs", ProjectFiles: files, HostWorkDir: hostDir,
+		BuildTarget: target, Timeouts: testTimeouts(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalCopy := plan.Steps[len(plan.Steps)-1]
+	if originalCopy.Stage != "artifact:rust" || len(originalCopy.Cmd) != 3 || originalCopy.Cmd[0] != "cp" {
+		t.Fatalf("Cargo cross plan has no artifact copy: %#v", plan.Steps)
+	}
+	written := withDockerRustRuntimeBootstrap(plan)
+	copyStep := written.Steps[len(written.Steps)-1]
+	wantCopy := []string{
+		"sh", "-c", rustArtifactCopyBootstrap, "rust-artifact",
+		originalCopy.Cmd[1], originalCopy.Cmd[2],
+	}
+	if !reflect.DeepEqual(copyStep.Cmd, wantCopy) {
+		t.Fatalf("Docker cross artifact copy = %#v, want %#v", copyStep.Cmd, wantCopy)
+	}
+	if plan.Steps[len(plan.Steps)-1].Cmd[0] != "cp" || !strings.HasPrefix(plan.Steps[len(plan.Steps)-1].Cmd[1], "target/") {
+		t.Fatalf("local cross plan was mutated: %#v", plan.Steps[len(plan.Steps)-1].Cmd)
+	}
 }
 
 // ---------- Python / Node 插件 ----------
@@ -416,10 +529,39 @@ func TestDockerPythonRuntimeBootstrapUsesScopedTargetWithoutMutatingLocalPlan(t 
 		t.Fatalf("Docker Python command = %v, want %v", got, want)
 	}
 	if _, exists := wrapped.Steps[0].Env["PYTHONPATH"]; exists {
-		t.Fatalf("Docker Python bootstrap must replace PYTHONPATH: %v", wrapped.Steps[0].Env)
+		t.Fatalf("Docker step must not replace the container dependency PYTHONPATH: %v", wrapped.Steps[0].Env)
 	}
 	if plan.Steps[0].Env["PYTHONPATH"] != "{{projectRoot}}" || plan.Steps[0].Cmd[0] != "python3" {
 		t.Fatalf("local Python plan was mutated: %+v", plan.Steps[0])
+	}
+}
+
+func TestDockerPythonRuntimeBootstrapPreservesReadOnlyProjectDependencies(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX shell is unavailable")
+	}
+	projectRoot := t.TempDir()
+	binRoot := t.TempDir()
+	pythonPath := filepath.Join(binRoot, "python3")
+	if err := os.WriteFile(pythonPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$PYTHONPATH\"\nprintf '%s\\n' \"$@\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	argument := "$(must-not-be-evaluated)"
+	command := exec.Command(shell, "-c", pythonRuntimeBootstrap, "python-runtime", "src/main.py", argument)
+	command.Dir = projectRoot
+	command.Env = []string{
+		"PATH=" + binRoot,
+		"PYTHONPATH=/project-deps/python",
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("execute Python bootstrap: %v: %s", err, output)
+	}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	wantPythonPath := "/project-deps/python:" + projectRoot
+	if len(lines) != 3 || lines[0] != wantPythonPath || lines[1] != "src/main.py" || lines[2] != argument {
+		t.Fatalf("bootstrap output = %#v, want PYTHONPATH %q and literal argv", lines, wantPythonPath)
 	}
 }
 

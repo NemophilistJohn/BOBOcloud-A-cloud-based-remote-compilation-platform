@@ -289,7 +289,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: 24px;
+  min-height: 28px;
   padding: 0 var(--space-2);
   color: var(--text-tertiary);
   border-bottom: 1px solid var(--border-default);
@@ -298,7 +298,14 @@ html, body {
   white-space: nowrap;
   overflow: hidden;
 }
-.terminal-context > span:last-child {
+.terminal-context-state {
+  flex: 0 0 auto;
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.terminal-context-details {
+  min-width: 0;
+  color: var(--text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -307,8 +314,23 @@ html, body {
   height: 7px;
   flex: 0 0 7px;
   border-radius: 50%;
+  background: var(--text-tertiary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text-tertiary) 18%, transparent);
+}
+.terminal-context[data-state="ready"] .terminal-context-dot {
   background: var(--green);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 18%, transparent);
+}
+.terminal-context[data-state="loading"] .terminal-context-dot {
+  background: var(--yellow);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--yellow) 18%, transparent);
+}
+.terminal-context[data-state="error"] .terminal-context-dot {
+  background: var(--red);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--red) 18%, transparent);
+}
+.terminal-context[data-state="error"] .terminal-context-state {
+  color: var(--red);
 }
 
 /* ---- stdin input row (interactive program input) ---- */

@@ -242,6 +242,10 @@ func projectLockDependencyLanguage(languageID string) bool {
 	}
 }
 
+func (h *WSHandler) usesProjectLockDependencyStore(languageID string) bool {
+	return h != nil && h.PersonalCache != nil && h.PersonalCache.ScopeMode() == "project-lock" && projectLockDependencyLanguage(languageID)
+}
+
 func (h *WSHandler) resolveAnalysisDependencies(userID, teamID, runtimeID, languageID, remoteRoot, workspaceID, sharedHost, snapshotRoot, generation string, project personalProjectDependencyView) (lsp.AnalysisDependencyRequest, lsp.AnalysisDependencyView, bool) {
 	ownerKind, ownerID := "user", userID
 	if teamID != "" {
@@ -292,41 +296,48 @@ func (h *WSHandler) resolvePersonalProjectDependencies(userID, workspaceID, work
 		return personalProjectDependencyView{}
 	}
 	language := canonicalRuntimeLanguage(languageID)
-	request := personalcache.Request{
+	return acquirePersonalProjectDependencyView(h.PersonalCache, personalcache.Request{
 		UserID: userID, WorkspaceID: workspaceID, WorkspaceName: workspaceName,
 		RuntimeID: runtimeID, RuntimeFingerprint: personalCacheRuntimeFingerprint(runtimeID, runtimeImage), Language: language, WorkspaceRoot: remoteRoot,
 		SetupCommands: setupCommands, QuotaBytes: userQuotaBytes(h.UserStore, userID),
+	})
+}
+
+// acquirePersonalProjectDependencyView is the single project-lock read path
+// used by live LSP sessions and Environment Center status reads. A package
+// inventory describes the cache contents, but never controls whether the
+// immutable project generation is visible to an analyzer.
+func acquirePersonalProjectDependencyView(cache *personalcache.Manager, request personalcache.Request) personalProjectDependencyView {
+	language := canonicalRuntimeLanguage(request.Language)
+	request.Language = language
+	if cache == nil || cache.ScopeMode() != "project-lock" || request.RuntimeID == "" || request.RuntimeID == "local" || !projectLockDependencyLanguage(language) {
+		return personalProjectDependencyView{}
 	}
-	var reader *personalcache.ReadLease
-	var entry personalcache.Entry
+	reader, entry, exists, err := cache.AcquireRead(request)
+	if err != nil || !exists || reader == nil {
+		return personalProjectDependencyView{}
+	}
+	generation := "project-lock:" + entry.Digest
+	if reader.Generation != "" {
+		generation += ":" + reader.Generation
+	}
 	if language == "python" {
-		var inventory personalcache.InventoryInspection
-		reader, entry, inventory = h.PersonalCache.AcquirePackageInventoryRead(request)
-		if reader == nil || inventory.State != "ready" || !inventory.Exact {
-			return personalProjectDependencyView{}
-		}
-		root := filepath.Join(entry.HostPath, "python")
+		root := filepath.Join(reader.HostRoot, "python")
 		if !realDependencyDirectory(root) {
 			reader.Release()
 			return personalProjectDependencyView{}
 		}
 		return personalProjectDependencyView{
-			Root: entry.HostPath, Generation: "project-lock:" + entry.Digest + ":" + inventory.Revision,
+			Root: reader.HostRoot, Generation: generation,
 			Extra: map[string][]string{lsp.DependencyRolePythonPackages: {root}}, Release: reader.Release,
 		}
 	}
-	var exists bool
-	var err error
-	reader, entry, exists, err = h.PersonalCache.AcquireRead(request)
-	if err != nil || !exists || reader == nil {
-		return personalProjectDependencyView{}
-	}
-	extra := personalProjectDependencyPaths(entry.HostPath, language)
+	extra := personalProjectDependencyPaths(reader.HostRoot, language)
 	if len(extra) == 0 {
 		reader.Release()
 		return personalProjectDependencyView{}
 	}
-	return personalProjectDependencyView{Root: entry.HostPath, Generation: "project-lock:" + entry.Digest, Extra: extra, Release: reader.Release}
+	return personalProjectDependencyView{Root: reader.HostRoot, Generation: generation, Extra: extra, Release: reader.Release}
 }
 
 func personalProjectDependencyPaths(root, language string) map[string][]string {
@@ -787,7 +798,7 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 		sharedHost, dependencyGeneration = dependencyLease.SharedHost, dependencyLease.ContainerKey
 		snapshotRoot = dependencyLease.DependencyHost
 		teamDependencies = dependencyLease
-	} else if teamID == "" {
+	} else if teamID == "" && !h.usesProjectLockDependencyStore(start.LanguageID) {
 		dependencyLease, dependencyErr := lsp.AcquirePersonalDependencyStore(h.Config.DataDir, user.ID)
 		if dependencyErr != nil {
 			writeLSPError(conn, "cache_error", dependencyErr.Error())

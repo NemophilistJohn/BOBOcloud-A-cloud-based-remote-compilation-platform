@@ -72,10 +72,12 @@ type dapStartMessage struct {
 }
 
 type dapDependencyCacheStatus struct {
-	State        string `json:"state"`
-	Required     bool   `json:"required"`
-	DigestSource string `json:"digestSource,omitempty"`
-	Exact        bool   `json:"exact,omitempty"`
+	State           string `json:"state"`
+	Required        bool   `json:"required"`
+	DigestSource    string `json:"digestSource,omitempty"`
+	Exact           bool   `json:"exact,omitempty"`
+	InventoryState  string `json:"inventoryState,omitempty"`
+	InventoryDetail string `json:"inventoryDetail,omitempty"`
 }
 
 type dapChildAttachMessage struct {
@@ -142,6 +144,8 @@ func canonicalDAPLanguage(value string) string {
 		return "python"
 	case "golang", "go":
 		return "go"
+	case "c++", "cplusplus", "cpp":
+		return "cpp"
 	default:
 		return strings.ToLower(strings.TrimSpace(value))
 	}
@@ -220,6 +224,10 @@ func combineDAPReleases(releases ...func()) func() {
 }
 
 func (h *DAPHandler) acquireDAPDependencyCache(userID, workspaceName, folderKey, runtimeID, runtimeImage, language, workspaceRoot string, setupCommands []string) (string, map[string]string, dapDependencyCacheStatus, func()) {
+	canonicalLanguage := canonicalDAPLanguage(language)
+	if canonicalLanguage == "c" || canonicalLanguage == "cpp" {
+		return "", nil, dapDependencyCacheStatus{State: "not_applicable"}, nil
+	}
 	status := dapDependencyCacheStatus{State: "unavailable"}
 	fingerprint, fingerprintErr := personalcache.DependencyFingerprint(workspaceRoot, language, setupCommands)
 	if fingerprintErr == nil {
@@ -240,17 +248,28 @@ func (h *DAPHandler) acquireDAPDependencyCache(userID, workspaceName, folderKey,
 	}
 	var lease *personalcache.ReadLease
 	if language == "python" {
-		var entry personalcache.Entry
-		var inspection personalcache.InventoryInspection
-		lease, entry, inspection = h.PersonalCache.AcquireProtectedPackageInventoryRead(request)
-		status.State = inspection.State
+		inspection := h.PersonalCache.InspectPackageInventory(request)
+		status.InventoryState = inspection.State
+		status.InventoryDetail = inspection.Detail
 		status.Exact = inspection.Exact
+		entryLease, entry, exists, acquireErr := h.PersonalCache.AcquireRead(request)
+		lease = entryLease
 		if entry.DigestSource != "" {
 			status.DigestSource = entry.DigestSource
 			status.Required = entry.DigestSource != "empty"
 		}
+		switch {
+		case errors.Is(acquireErr, personalcache.ErrCacheInUse):
+			status.State = "busy"
+		case acquireErr != nil:
+			status.State = "error"
+		case !exists || lease == nil:
+			status.State = "missing"
+		default:
+			status.State = "mounted"
+		}
 	} else {
-		entryLease, entry, exists, acquireErr := h.PersonalCache.AcquireProtectedRead(request)
+		entryLease, entry, exists, acquireErr := h.PersonalCache.AcquireRead(request)
 		lease = entryLease
 		if entry.DigestSource != "" {
 			status.DigestSource = entry.DigestSource
@@ -274,13 +293,47 @@ func (h *DAPHandler) acquireDAPDependencyCache(userID, workspaceName, folderKey,
 		return "", nil, status, nil
 	}
 	status.State = "mounted"
-	return lease.HostRoot, personalcache.ReadOnlyDependencyDockerEnvironment(language), status, lease.Release
+	return lease.HostRoot, dapReadOnlyDependencyDockerEnvironment(language), status, lease.Release
+}
+
+func dapReadOnlyDependencyDockerEnvironment(language string) map[string]string {
+	environment := personalcache.ReadOnlyDependencyDockerEnvironment(language)
+	if environment == nil {
+		environment = make(map[string]string)
+	}
+	switch canonicalDAPLanguage(language) {
+	case "node":
+		environment["NODE_PATH"] = "/project-deps/node_modules"
+		delete(environment, "BOBOCLOUD_NODE_MODULES")
+	case "rust":
+		environment["CARGO_HOME"] = "/project-deps/cargo"
+		environment["CARGO_TARGET_DIR"] = "/workspace/target"
+	case "java":
+		environment["MAVEN_OPTS"] = "-Dmaven.repo.local=/project-deps/maven"
+		environment["GRADLE_USER_HOME"] = "/project-deps/gradle"
+	}
+	return environment
 }
 
 func writeDAPControlError(conn *websocket.Conn, code, message string) {
 	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	_ = conn.WriteJSON(map[string]any{"type": "dap.error", "code": code, "message": message})
 	_ = conn.SetWriteDeadline(time.Time{})
+}
+
+func releaseDAPSessionAfterStartError(release func(), err error) {
+	if release == nil {
+		return
+	}
+	cleanupDone := dap.StartCleanupDone(err)
+	if cleanupDone == nil {
+		release()
+		return
+	}
+	go func() {
+		<-cleanupDone
+		release()
+	}()
 }
 
 func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -423,10 +476,10 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		UserID: user.ID, WorkspaceKind: start.Workspace.Kind, TeamID: teamID, ProjectID: projectID,
 		Branch: branch, FolderKey: folderKey, RuntimeID: runtime.RuntimeID, LanguageID: languageID,
 		RemoteRoot: tempRoot, PersistDir: filepath.Join(h.Config.DataDir, "users", user.ID, "persist"),
-		DependencyRoot: dependencyRoot, DependencyEnv: dependencyEnv, ProcessContext: processContext, Release: sessionRelease,
+		DependencyRoot: dependencyRoot, DependencyMountRoot: filepath.Join(h.Config.DataDir, "dap-cache", "mounts"), DependencyEnv: dependencyEnv, ProcessContext: processContext, Release: sessionRelease,
 	})
 	if err != nil {
-		sessionRelease()
+		releaseDAPSessionAfterStartError(sessionRelease, err)
 		writeDAPControlError(conn, "start_failed", err.Error())
 		return
 	}

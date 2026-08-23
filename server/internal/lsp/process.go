@@ -3,6 +3,7 @@ package lsp
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -55,9 +56,92 @@ type execProcess struct {
 type dockerProcess struct {
 	Process
 	name        string
-	once        sync.Once
+	removal     dockerContainerRemoval
 	releaseOnce sync.Once
 	release     func()
+}
+
+type dockerContainerRemoval struct {
+	mu         sync.Mutex
+	confirmed  bool
+	remove     func(string) error
+	retryDelay time.Duration
+}
+
+func forceRemoveDockerContainer(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("Docker container name is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "docker", "rm", "-f", name).CombinedOutput()
+	if err == nil {
+		return inspectDockerContainerAbsent(name)
+	}
+	detail := strings.TrimSpace(string(output))
+	lower := strings.ToLower(detail)
+	if strings.Contains(lower, "no such container") || strings.Contains(lower, "no such object") {
+		return nil
+	}
+	if detail == "" {
+		return fmt.Errorf("remove Docker container %q: %w", name, err)
+	}
+	return fmt.Errorf("remove Docker container %q: %w: %s", name, err, detail)
+}
+
+func dockerInspectConfirmsAbsent(name string, output []byte, err error) error {
+	detail := strings.TrimSpace(string(output))
+	if err == nil {
+		return fmt.Errorf("Docker container %q still exists after removal", name)
+	}
+	lower := strings.ToLower(detail)
+	if strings.Contains(lower, "no such container") || strings.Contains(lower, "no such object") {
+		return nil
+	}
+	if detail == "" {
+		return fmt.Errorf("confirm Docker container %q removal: %w", name, err)
+	}
+	return fmt.Errorf("confirm Docker container %q removal: %w: %s", name, err, detail)
+}
+
+func inspectDockerContainerAbsent(name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "docker", "inspect", "--type", "container", name).CombinedOutput()
+	return dockerInspectConfirmsAbsent(name, output, err)
+}
+
+func (r *dockerContainerRemoval) try(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.confirmed {
+		return nil
+	}
+	remove := r.remove
+	if remove == nil {
+		remove = forceRemoveDockerContainer
+	}
+	if err := remove(name); err != nil {
+		return err
+	}
+	r.confirmed = true
+	return nil
+}
+
+func (r *dockerContainerRemoval) wait(name string) {
+	delay := r.retryDelay
+	if delay <= 0 {
+		delay = 250 * time.Millisecond
+	}
+	for attempt := 1; ; attempt++ {
+		if err := r.try(name); err == nil {
+			return
+		} else if attempt == 1 || attempt%120 == 0 {
+			slog.Warn("Waiting for Docker LSP container removal", "container", name, "attempt", attempt, "error", err)
+		}
+		time.Sleep(delay)
+	}
 }
 
 func (p *dockerProcess) releaseMounts() {
@@ -72,20 +156,31 @@ func (p *dockerProcess) releaseMounts() {
 }
 
 func (p *dockerProcess) Wait() error {
-	err := p.Process.Wait()
+	// Confirm the container is gone before waiting on the attached Docker CLI.
+	// A transient `docker rm` failure must not leave Wait blocked behind the
+	// very container whose removal retry would otherwise run only afterwards.
+	p.removal.wait(p.name)
+	killErr := p.Process.Kill()
+	if errors.Is(killErr, os.ErrProcessDone) {
+		killErr = nil
+	}
+	waitErr := p.Process.Wait()
 	p.releaseMounts()
-	return err
+	return errors.Join(waitErr, killErr)
 }
 
 func (p *dockerProcess) Kill() error {
-	var result error
-	p.once.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = exec.CommandContext(ctx, "docker", "rm", "-f", p.name).Run()
-		result = p.Process.Kill()
-	})
-	return result
+	removalErr := p.removal.try(p.name)
+	if removalErr != nil {
+		// Keep a remover alive even if the attached Docker CLI or analyzer does
+		// not react to stdin/stdout closure. Wait will join the same retry path.
+		go p.removal.wait(p.name)
+	}
+	killErr := p.Process.Kill()
+	if errors.Is(killErr, os.ErrProcessDone) {
+		killErr = nil
+	}
+	return errors.Join(removalErr, killErr)
 }
 
 func (p *execProcess) Stdin() io.WriteCloser { return p.stdin }
@@ -307,21 +402,58 @@ func safeLabel(value string) string {
 	return b.String()
 }
 
+func cleanupDockerOrphanIDs(ids []string, remove func(string) error) error {
+	var result error
+	for _, id := range ids {
+		if err := remove(id); err != nil {
+			result = errors.Join(result, err)
+		}
+	}
+	return result
+}
+
 // CleanupDockerOrphans removes analyzer containers left by an unclean server
-// exit. It targets only the explicit bobocloud.lsp label.
-func CleanupDockerOrphans() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	output, err := exec.CommandContext(ctx, "docker", "ps", "-aq", "--filter", "label=bobocloud.lsp=true").Output()
+// exit. It covers both current labels and the historical container-name
+// convention, and succeeds only after every match is confirmed absent.
+func CleanupDockerOrphans() error {
+	ids, err := listDockerLSPOrphanIDs(dockerLSPOrphanFilters())
 	if err != nil {
-		return
+		return err
 	}
-	ids := strings.Fields(string(output))
 	if len(ids) == 0 {
-		return
+		return nil
 	}
-	args := append([]string{"rm", "-f"}, ids...)
-	_ = exec.CommandContext(ctx, "docker", args...).Run()
+	return cleanupDockerOrphanIDs(ids, forceRemoveDockerContainer)
+}
+
+func dockerLSPOrphanFilters() []string {
+	return []string{
+		"label=bobocloud.lsp=true",
+		// Older builds always used this name prefix even before every image
+		// carried the explicit service label.
+		"name=bobocloud-lsp-",
+	}
+}
+
+func listDockerLSPOrphanIDs(filters []string) ([]string, error) {
+	seen := make(map[string]struct{})
+	ids := make([]string, 0)
+	for _, filter := range filters {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		output, err := exec.CommandContext(ctx, "docker", "ps", "-aq", "--filter", filter).CombinedOutput()
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("list orphaned Docker LSP containers (%s): %w: %s", filter, err, strings.TrimSpace(string(output)))
+		}
+		for _, id := range strings.Fields(string(output)) {
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }
 
 func startCommand(cmd *exec.Cmd, sessionID string) (Process, error) {

@@ -38,7 +38,7 @@ type bridgeTestProcess struct {
 	once    sync.Once
 }
 
-func TestPersonalProjectPythonDependenciesUseOnlyExactInventoryDigest(t *testing.T) {
+func TestPersonalProjectPythonDependenciesMountExactDigestDespiteIncompleteInventory(t *testing.T) {
 	dataRoot := t.TempDir()
 	workspace := t.TempDir()
 	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
@@ -89,6 +89,21 @@ func TestPersonalProjectPythonDependenciesUseOnlyExactInventoryDigest(t *testing
 	if len(view.Mounts) != 1 || view.Mounts[0].Legacy {
 		t.Fatalf("legacy user dependencies polluted the exact project view: %+v", view.Mounts)
 	}
+	updatedWriter, err := manager.Prepare(context.Background(), cacheRequest)
+	if err != nil {
+		t.Fatalf("stage an updated dependency generation: %v", err)
+	}
+	writePythonDistInfo(t, filepath.Join(updatedWriter.HostRoot, "python"), "matplotlib", "3.10.0")
+	updatedWriter.Release()
+	updatedProject := handler.resolvePersonalProjectDependencies(
+		"user-a", workspaceID, "Project", "python:3.10", "python:3.10-slim", "python", workspace, nil,
+	)
+	if updatedProject.Release != nil {
+		updatedProject.Release()
+	}
+	if updatedProject.Root == "" || updatedProject.Generation == generation {
+		t.Fatalf("published dependency generation did not invalidate LSP analysis: before=%q after=%q", generation, updatedProject.Generation)
+	}
 	setupProject := handler.resolvePersonalProjectDependencies(
 		"user-a", workspaceID, "Project", "python:3.10", "python:3.10-slim", "python", workspace, []string{"pip install extra-package"},
 	)
@@ -130,8 +145,8 @@ func TestPersonalProjectPythonDependenciesUseOnlyExactInventoryDigest(t *testing
 	if corruptRelease != nil {
 		corruptRelease()
 	}
-	if corruptRoot != "" {
-		t.Fatalf("corrupt inventory was mounted into LSP: %q", corruptRoot)
+	if filepath.Clean(corruptRoot) != filepath.Clean(projectRoot) {
+		t.Fatalf("corrupt inventory incorrectly blocked the exact LSP dependency digest: got %q want %q", corruptRoot, projectRoot)
 	}
 	entry, exists, err := manager.Lookup(cacheRequest)
 	if err != nil || !exists {
@@ -145,6 +160,24 @@ func TestPersonalProjectPythonDependenciesUseOnlyExactInventoryDigest(t *testing
 	}
 	if err := manager.Delete("user-a", entry.Path); err != nil {
 		t.Fatalf("released LSP cache remained active: %v", err)
+	}
+}
+
+func TestProjectLockManagedLanguagesSkipLegacyLSPDependencyStore(t *testing.T) {
+	dataRoot := t.TempDir()
+	manager := personalcache.NewManager(dataRoot, personalcache.Options{})
+	handler := &WSHandler{PersonalCache: manager}
+	for _, language := range []string{"python", "node", "go", "rust", "java", "typescript"} {
+		if !handler.usesProjectLockDependencyStore(language) {
+			t.Fatalf("project-lock language %q would acquire the legacy LSP dependency store", language)
+		}
+	}
+	if handler.usesProjectLockDependencyStore("cpp") {
+		t.Fatal("non-project-lock C++ unexpectedly skipped the legacy LSP dependency store")
+	}
+	legacyRoot := filepath.Join(dataRoot, "users", "user-a", "analysis-dependencies")
+	if _, err := os.Stat(legacyRoot); !os.IsNotExist(err) {
+		t.Fatalf("checking project-lock policy created legacy state: %v", err)
 	}
 }
 

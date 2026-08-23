@@ -82,7 +82,11 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 	}
 	executionCtx := ctx
 	if personalLease != nil {
-		defer personalLease.Release()
+		folderKey := sess.FolderKey
+		if folderKey == "" {
+			folderKey = sess.FolderName
+		}
+		defer h.releasePersonalCacheLease(personalLease, personalDependencyRefreshScope(sess.UserID, folderKey, runtimeDef.RuntimeID, runtimeDef.Language))
 		guard := personalLease.StartGuard(ctx)
 		if guard != nil {
 			executionCtx = guard.Context
@@ -125,14 +129,18 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 	dockerRunner.SetSetupCommands(sess.SetupCommands)
 	dockerRunner.SetMetrics(h.Metrics)
 	if personalLease != nil {
-		dockerRunner.SetBuildCacheContext(personalLease.ContainerKey, personalLease.DockerMounts, personalLease.DockerEnv)
+		dockerRunner.SetPersonalCacheContext(personalLease.ContainerKey, personalLease.DockerMounts, personalLease.DockerEnv, personalLease.Writable())
 	}
 	result := dockerRunner.RunTaskExecution(executionCtx, sess.Task, tempDir, output, stdinReader)
+	if personalLease != nil && personalLease.Writable() && !dockerRunner.SetupPassed() {
+		personalLease.Abort()
+	}
 	if result == nil {
 		fail("Task execution returned no result")
 		return
 	}
-	if personalLease != nil && personalLease.StartGuard(ctx).Err() != nil {
+	if personalCacheLeaseError(personalLease, ctx) != nil {
+		personalLease.Abort()
 		output.WriteError("Personal storage quota was exceeded while writing project dependencies")
 		result.Success = false
 		result.ReturnCode = 1

@@ -396,6 +396,44 @@ func TestManagerRefreshesOnlyChangedDependencyViews(t *testing.T) {
 	}
 }
 
+func TestManagerRestartsPinnedProjectGenerationWithoutResolvingOldPaths(t *testing.T) {
+	root := t.TempDir()
+	request := personalDependencyRequest(root, "python", "python:3.10")
+	registry := NewDefaultDependencyRegistry()
+	view, err := registry.Resolve(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, _ := NewCatalog(Manifest{Version: 1, Servers: []ServerSpec{{LanguageID: "python", Command: []string{"pyright-langserver", "--stdio"}}}})
+	starter := &captureStarter{launches: make(chan LaunchSpec, 2)}
+	manager := NewManager(catalog, NewCacheManager(t.TempDir(), 16, 7), starter, ManagerOptions{CleanupInterval: time.Hour})
+	defer manager.Close()
+	session, err := manager.Start(SessionContext{
+		UserID: "user-1", WorkspaceKind: "personal", FolderKey: "project-a",
+		RuntimeID: "python:3.10", LanguageID: "python", Mode: ModeStandard,
+		RemoteRoot: t.TempDir(), DependencyRequest: request, DependencyView: view, DependencyResolved: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-starter.launches
+	if restarted := manager.RestartDependencyViews(DependencyRefreshScope{UserID: "user-1", FolderKey: "other"}); restarted != 0 {
+		t.Fatalf("unrelated project restarted %d sessions", restarted)
+	}
+	if restarted := manager.RestartDependencyViews(DependencyRefreshScope{UserID: "user-1", OwnerKind: "user", OwnerID: "user-1", FolderKey: "project-a", RuntimeID: "python:3.10", LanguageID: "python"}); restarted != 1 {
+		t.Fatalf("published project generation restarted %d sessions", restarted)
+	}
+	status, ok := session.DependencyRestartStatus()
+	if !ok || status.Revision != session.DependencyStatus().Revision {
+		t.Fatalf("restart status = %+v, present=%v", status, ok)
+	}
+	select {
+	case <-session.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("generation invalidation did not stop the pinned analyzer")
+	}
+}
+
 type recordingDependencyAdapter struct {
 	mu         sync.Mutex
 	workspaces []string

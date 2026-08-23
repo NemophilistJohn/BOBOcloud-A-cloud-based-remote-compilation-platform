@@ -184,3 +184,33 @@ func TestRunTaskCleanupUsesFreshContextPrunesBeforeCopyAndAlwaysReleases(t *test
 		t.Fatal("task cleanup reused the cancelled run context")
 	}
 }
+
+func TestRunTaskDestroysContainerAttachedToWritablePersonalGeneration(t *testing.T) {
+	pool := &taskPoolFake{}
+	runner := NewDockerRunner(model.RuntimeDef{DockerImage: "test-image"}, pool, nil)
+	runner.workspaceCopier = taskCopierFake{pool: pool}
+	runner.SetPersonalCacheContext("personal/cache:rw", map[string]string{"cache": "/project-deps"}, nil, true)
+	result := runner.RunTaskExecution(context.Background(), testTask(
+		model.TaskStep{ID: "run", Label: "Run", Kind: "run", Type: "process", Argv: []string{"run"}},
+	), t.TempDir(), taskTestOutput{}, nil)
+	if result == nil {
+		t.Fatal("task returned no result")
+	}
+	if got := pool.events[len(pool.events)-1]; got != "discard" {
+		t.Fatalf("writable personal cache container ended with %q, want discard; events=%v", got, pool.events)
+	}
+}
+
+func TestRunPlanReusesContainerAttachedToReadOnlyPersonalGeneration(t *testing.T) {
+	pool := &taskPoolFake{}
+	runner := NewDockerRunner(model.RuntimeDef{DockerImage: "test-image"}, pool, nil)
+	runner.workspaceCopier = taskCopierFake{pool: pool}
+	runner.SetPersonalCacheContext("personal/cache:ro", map[string]string{"cache": "/project-deps:ro"}, nil, false)
+	result := runner.RunPlan(context.Background(), &Plan{Steps: []Step{{Stage: "run", Cmd: []string{"run"}}}}, t.TempDir(), taskTestOutput{}, nil)
+	if result == nil {
+		t.Fatal("run returned no result")
+	}
+	if got := pool.events[len(pool.events)-1]; got != "release" {
+		t.Fatalf("read-only personal cache container ended with %q, want release; events=%v", got, pool.events)
+	}
+}

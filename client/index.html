@@ -73,7 +73,7 @@
     <nav id="activitybar" aria-label="Workbench views">
       <div class="activity-primary">
         <button class="activity-item active" data-workbench-view="explorer" title="Explorer" aria-label="Explorer" aria-pressed="true"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3.5 5.5h6l1.8 2H20.5v11H3.5v-13Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M3.5 8h17" stroke="currentColor" stroke-width="1.6"/></svg></button>
-        <button id="activity-search" class="activity-item" title="Quick file search (Ctrl+P)" aria-label="Quick file search"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="1.7"/><path d="m15.5 15.5 4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button>
+        <button id="activity-search" class="activity-item" data-workbench-view="search" title="Quick file search (Ctrl+P)" aria-label="Quick file search" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="1.7"/><path d="m15.5 15.5 4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button>
         <button class="activity-item" data-workbench-view="cloud" title="Cloud resources" aria-label="Cloud resources" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6.5 18a4.5 4.5 0 0 1-.35-8.98 6 6 0 0 1 11.43-1.5A4.75 4.75 0 0 1 17.5 17h-11" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button id="activity-environment" class="activity-item" data-workbench-view="environment" title="Project environment" aria-label="Project environment" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m4.4 7.7 7.6 4.2 7.6-4.2M12 12v8.5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m8.2 5.2 7.7 4.3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
         <button id="activity-team" class="activity-item" data-workbench-view="team" title="Team workspace" aria-label="Team workspace" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.6"/><circle cx="17" cy="9" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M3 19c.3-3.4 2.4-5.2 5.3-5.2s5 1.8 5.3 5.2M14 14.5c3-1.2 6.6.3 7 4.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
@@ -87,6 +87,15 @@
         <div class="sidebar-header"><span>Explorer</span><div class="sidebar-header-actions"><button id="open-folder" title="Open folder" aria-label="Open folder"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3.5 5.5h6l1.8 2H20.5v11H3.5v-13Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 11v5M9.5 13.5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><button class="sidebar-hide" title="Hide primary sidebar" aria-label="Hide primary sidebar"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m10 3-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div>
         <div class="sidebar-section-title"><span id="sidebar-workspace-name">No folder opened</span></div>
         <div class="sidebar-scroll"><div class="tree" id="file-tree" role="tree" aria-label="Workspace files"></div></div>
+      </section>
+      <section class="sidebar-view quick-file-search-view" data-sidebar-view="search" aria-label="Quick file search">
+        <div class="sidebar-header"><span>Search</span><button class="sidebar-hide" title="Hide primary sidebar" aria-label="Hide primary sidebar"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m10 3-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+        <div class="quick-file-search-box">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.35"/><path d="m10.5 10.5 3.5 3.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/></svg>
+          <input id="quick-file-search-input" type="search" placeholder="Search files..." aria-label="Search files by name..." aria-controls="quick-file-search-results" autocomplete="off" spellcheck="false">
+        </div>
+        <div id="quick-file-search-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+        <div id="quick-file-search-results" class="sidebar-scroll quick-file-search-results" role="listbox" aria-label="Quick file search"></div>
       </section>
       <section class="sidebar-view" data-sidebar-view="cloud" aria-label="Cloud resources">
         <div class="sidebar-header"><span>Cloud</span><button class="sidebar-hide" title="Hide primary sidebar" aria-label="Hide primary sidebar"><svg viewBox="0 0 16 16" fill="none"><path d="m10 3-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
@@ -319,9 +328,10 @@
         </div>
       </div>
       <div id="panel-terminal" class="panel-content" role="tabpanel">
-        <div id="terminal-context" class="terminal-context" role="status">
+        <div id="terminal-context" class="terminal-context" data-state="idle" role="status">
           <span class="terminal-context-dot" aria-hidden="true"></span>
-          <span data-i18n="Cloud terminal uses the synced workspace. Session file changes are discarded when it closes; dependency caches persist.">Cloud terminal uses the synced workspace. Session file changes are discarded when it closes; dependency caches persist.</span>
+          <span id="terminal-context-state" class="terminal-context-state" data-i18n="Cloud terminal idle">Cloud terminal idle</span>
+          <span id="terminal-context-details" class="terminal-context-details" data-i18n="No runtime selected">No runtime selected</span>
         </div>
         <div id="terminal-host" data-i18n-skip aria-label="Terminal"></div>
         <div id="terminal-announcements" class="sr-only" aria-live="polite" aria-atomic="true"></div>
@@ -1047,10 +1057,10 @@
         <div class="ss-title">Admin panel</div>
         <button id="admin-close-x" class="close-btn" title="Close">&times;</button>
       </div>
-      <div class="admin-tabs">
-        <div class="admin-tab active" data-pane="users">Users</div>
-        <div class="admin-tab" data-pane="invites">Invite codes</div>
-        <div class="admin-tab" data-pane="audit">Audit log</div>
+      <div class="admin-tabs" role="tablist">
+        <button type="button" class="admin-tab active" data-pane="users" role="tab" aria-selected="true" aria-controls="admin-pane-users">Users</button>
+        <button type="button" class="admin-tab" data-pane="invites" role="tab" aria-selected="false" aria-controls="admin-pane-invites" tabindex="-1">Invite codes</button>
+        <button type="button" class="admin-tab" data-pane="audit" role="tab" aria-selected="false" aria-controls="admin-pane-audit" tabindex="-1">Audit log</button>
       </div>
       <div class="admin-body">
         <div class="admin-pane active" id="admin-pane-users"></div>

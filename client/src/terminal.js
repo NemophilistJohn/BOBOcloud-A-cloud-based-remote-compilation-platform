@@ -25,6 +25,7 @@ import {
   var sessionKey = '';
   var sessionPhase = 'idle';
   var sessionCapabilities = null;
+  var sessionEnvironment = null;
   var sessionGeneration = 0;
   var lastDependencyRefreshSession = '';
   var startPromise = null;
@@ -104,6 +105,77 @@ import {
     if (announcement) announcement.textContent = String(message || '');
   }
 
+  function bindContextText(element, key, params) {
+    if (!element) return;
+    if (BOBO.i18n && typeof BOBO.i18n.bindText === 'function') {
+      BOBO.i18n.bindText(element, key, params || null);
+      return;
+    }
+    element.textContent = t(key, params);
+  }
+
+  function setContextDetail(key, params, rawText) {
+    var detail = document.getElementById('terminal-context-details');
+    if (!detail) return;
+    if (rawText) {
+      if (BOBO.i18n && typeof BOBO.i18n.unbind === 'function') BOBO.i18n.unbind(detail);
+      detail.textContent = String(rawText);
+      return;
+    }
+    bindContextText(detail, key, params);
+  }
+
+  function runtimeLabel(environment) {
+    var value = environment && (environment.displayName || environment.runtimeId);
+    return String(value || currentRuntime() || t('No runtime selected'));
+  }
+
+  function renderTerminalContext(phase, options) {
+    var context = document.getElementById('terminal-context');
+    var label = document.getElementById('terminal-context-state');
+    if (!context || !label) return;
+    var environment = options && options.environment || sessionEnvironment;
+    var runtime = runtimeLabel(environment);
+    var image = String(environment && environment.dockerImage || '');
+    var message = options && options.message ? String(options.message) : '';
+    var state = String(phase || 'idle');
+
+    if (state === 'ready') {
+      context.dataset.state = 'ready';
+      bindContextText(label, 'Cloud terminal connected');
+      if (image) setContextDetail('{runtime} · Docker image {image} · Isolated workspace', { runtime: runtime, image: image });
+      else setContextDetail('{runtime} · Isolated workspace', { runtime: runtime });
+      return;
+    }
+    if (state === 'preparing') {
+      context.dataset.state = 'loading';
+      bindContextText(label, 'Synchronizing terminal workspace');
+      setContextDetail('Runtime: {runtime}', { runtime: runtime });
+      return;
+    }
+    if (state === 'connecting') {
+      context.dataset.state = 'loading';
+      bindContextText(label, 'Starting Docker terminal');
+      setContextDetail('Runtime: {runtime}', { runtime: runtime });
+      return;
+    }
+    if (state === 'closing') {
+      context.dataset.state = 'loading';
+      bindContextText(label, 'Closing cloud terminal');
+      setContextDetail('Runtime: {runtime}', { runtime: runtime });
+      return;
+    }
+    if (state === 'error') {
+      context.dataset.state = 'error';
+      bindContextText(label, 'Cloud terminal error');
+      setContextDetail('', null, message || t('Unknown error'));
+      return;
+    }
+    context.dataset.state = 'idle';
+    bindContextText(label, 'Cloud terminal idle');
+    setContextDetail('Runtime: {runtime}', { runtime: runtime });
+  }
+
   function cssVariable(name, fallback) {
     if (!global.getComputedStyle || !document.documentElement) return fallback;
     var value = global.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -134,12 +206,6 @@ import {
       brightCyan: cssVariable('--teal', '#59b7b1'),
       brightWhite: cssVariable('--text-primary', '#d8ded8')
     };
-  }
-
-  function writeLocal(message, tone) {
-    if (!terminal) return;
-    var color = tone === 'error' ? '31' : tone === 'warning' ? '33' : '90';
-    terminal.write('\r\n\x1b[' + color + 'm' + String(message || '') + '\x1b[0m\r\n');
   }
 
   function fitTerminal() {
@@ -274,10 +340,12 @@ import {
     sessionKey = '';
     sessionPhase = 'idle';
     sessionCapabilities = null;
+    sessionEnvironment = null;
     startPromise = null;
     startPromiseKey = '';
     clearQueuedInput();
     if (reason) setAnnouncement(reason);
+    renderTerminalContext('idle');
   }
 
   function refreshDependenciesAfterConfirmedClose(closedSessionId) {
@@ -304,7 +372,6 @@ import {
 
   async function closeTerminal(reason) {
     var closingSession = sessionId;
-    var wasReady = sessionPhase === 'ready';
     var wasStarting = !!startPromise;
     sessionGeneration += 1;
     if ((!closingSession && !wasStarting) || !global.api || typeof global.api.terminalStop !== 'function') {
@@ -313,6 +380,7 @@ import {
     }
     sessionPhase = 'closing';
     sessionCapabilities = null;
+    renderTerminalContext('closing');
     clearQueuedInput();
     try {
       var result = await global.api.terminalStop(String(reason || 'close'));
@@ -320,13 +388,16 @@ import {
       var closedMessage = confirmed
         ? t('Cloud terminal session closed.')
         : t('Cloud terminal closed locally, but server cleanup was not confirmed.');
-      if (closingSession && wasReady && terminal) writeLocal(closedMessage, 'warning');
       resetSessionState(closedMessage);
       if (confirmed) refreshDependenciesAfterConfirmedClose(closingSession);
-      else if (BOBO.toast && typeof BOBO.toast.error === 'function') BOBO.toast.error(closedMessage);
+      else {
+        renderTerminalContext('error', { message: closedMessage });
+        if (BOBO.toast && typeof BOBO.toast.error === 'function') BOBO.toast.error(closedMessage);
+      }
       return confirmed;
-    } catch (_) {
+    } catch (error) {
       resetSessionState('');
+      renderTerminalContext('error', { message: error && error.message ? error.message : t('Unknown error') });
       return false;
     }
   }
@@ -340,7 +411,7 @@ import {
 
   function showUnavailable(message) {
     setAnnouncement(message);
-    writeLocal(message, 'warning');
+    renderTerminalContext('error', { message: message });
   }
 
   function terminalStartErrorText(error) {
@@ -397,6 +468,7 @@ import {
     sessionKey = key;
     sessionPhase = 'preparing';
     setAnnouncement(t('Preparing cloud terminal...'));
+    renderTerminalContext('preparing');
 
     var pending = (async function() {
       var synced;
@@ -422,6 +494,7 @@ import {
 
       sessionPhase = 'connecting';
       setAnnouncement(t('Connecting cloud terminal...'));
+      renderTerminalContext('connecting');
       var result;
       try {
         result = await global.api.terminalStart(request);
@@ -454,6 +527,10 @@ import {
       sessionCapabilities = result.capabilities && typeof result.capabilities === 'object'
         ? Object.assign({}, result.capabilities)
         : {};
+      sessionEnvironment = result.environment && typeof result.environment === 'object'
+        ? Object.assign({}, result.environment)
+        : { runtimeId: String(result.runtimeId || request.runtimeId || '') };
+      renderTerminalContext('ready', { environment: sessionEnvironment });
       replayEarlyOutput(startedSession);
       replayEarlyStatus(startedSession);
       flushQueuedInput();
@@ -534,9 +611,11 @@ import {
         if (!isSessionReady() || entry.key !== sessionKey) return false;
         return global.api.terminalWrite(entry.data);
       }).catch(function(error) {
-        if (terminal) writeLocal(t('Terminal input failed: {message}', {
+        var message = t('Terminal input failed: {message}', {
           message: error && error.message ? error.message : t('Unknown error')
-        }), 'error');
+        });
+        setAnnouncement(message);
+        renderTerminalContext('error', { message: message });
         return false;
       });
     });
@@ -548,7 +627,9 @@ import {
     var byteLength = utf8ByteLength(text);
     if (byteLength > MAX_PENDING_TERMINAL_INPUT_BYTES ||
         queuedInputBytes + byteLength > MAX_PENDING_TERMINAL_INPUT_BYTES) {
-      if (terminal) writeLocal(t('Terminal input is too large.'), 'error');
+      var message = t('Terminal input is too large.');
+      setAnnouncement(message);
+      renderTerminalContext('error', { message: message });
       return;
     }
     var key = requestKey(currentRequest());
@@ -576,7 +657,9 @@ import {
     var status = event.status && typeof event.status === 'object' ? event.status : {};
     var eventSession = eventSessionIdentifier(status);
     if (!eventSession && status.state === 'error' && startPromise) {
-      setAnnouncement(t('Cloud terminal error: {message}', { message: status.message || t('Unknown error') }));
+      var startError = t('Cloud terminal error: {message}', { message: status.message || t('Unknown error') });
+      setAnnouncement(startError);
+      renderTerminalContext('error', { message: startError });
       return;
     }
     if (!eventSession) return;
@@ -592,7 +675,11 @@ import {
       sessionCapabilities = status.capabilities && typeof status.capabilities === 'object'
         ? Object.assign({}, status.capabilities)
         : (sessionCapabilities || {});
+      sessionEnvironment = status.environment && typeof status.environment === 'object'
+        ? Object.assign({}, status.environment)
+        : (sessionEnvironment || { runtimeId: String(status.runtimeId || currentRuntime()) });
       setAnnouncement(t('Cloud terminal connected.'));
+      renderTerminalContext('ready', { environment: sessionEnvironment });
       deferFit();
       flushQueuedInput();
       return;
@@ -602,7 +689,7 @@ import {
       clearQueuedInput();
       var errorMessage = t('Cloud terminal error: {message}', { message: status.message || t('Unknown error') });
       setAnnouncement(errorMessage);
-      writeLocal(errorMessage, 'error');
+      renderTerminalContext('error', { message: errorMessage });
       return;
     }
     if (state === 'closed' || state === 'idle') {
@@ -616,14 +703,16 @@ import {
       sessionKey = '';
       sessionPhase = 'idle';
       sessionCapabilities = null;
+      sessionEnvironment = null;
       clearQueuedInput();
       setAnnouncement(closeAnnouncement);
+      if (cleanupPending) renderTerminalContext('error', { message: closeAnnouncement });
+      else renderTerminalContext('idle');
       if (exitedSession) {
         earlyOutputs.delete(exitedSession);
         earlyStatuses.delete(exitedSession);
       }
       if (cleanupPending && !wasClosing) {
-        writeLocal(closeAnnouncement, 'warning');
         if (BOBO.toast && typeof BOBO.toast.error === 'function') BOBO.toast.error(closeAnnouncement);
       }
       if (exitedSession && status.confirmed === true) refreshDependenciesAfterConfirmedClose(exitedSession);
@@ -673,6 +762,7 @@ import {
     if (initialized) return true;
     initialized = true;
     renderCapabilityState();
+    renderTerminalContext(sessionPhase, { environment: sessionEnvironment });
     if (!capabilitySubscription && BOBO.serverCapabilities && typeof BOBO.serverCapabilities.subscribe === 'function') {
       capabilitySubscription = BOBO.serverCapabilities.subscribe(capabilitiesChanged);
     }
@@ -793,6 +883,7 @@ import {
         sessionId: sessionId,
         phase: sessionPhase,
         capabilities: sessionCapabilities && Object.assign({}, sessionCapabilities),
+        environment: sessionEnvironment && Object.assign({}, sessionEnvironment),
         cols: terminal ? Number(terminal.cols || 0) : 0,
         rows: terminal ? Number(terminal.rows || 0) : 0,
         generation: sessionGeneration,

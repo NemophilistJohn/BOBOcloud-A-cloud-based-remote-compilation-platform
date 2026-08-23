@@ -124,24 +124,9 @@
     return true;
   }
 
-  // Open Folder button
-  document.getElementById('open-folder').addEventListener('click', async function() {
-    try {
-      var res = await window.api.pickWorkspace();
-      await applyOpenedWorkspace(res);
-    } catch (e) { console.error('open-folder:', e); }
-  });
-
-  // Empty state - Open Folder button
-  var emptyStateOpen = document.getElementById('empty-state-open');
-  if (emptyStateOpen) {
-    emptyStateOpen.addEventListener('click', async function() {
-      try {
-        var res = await window.api.pickWorkspace();
-        await applyOpenedWorkspace(res);
-      } catch (e) { console.error('empty-state-open:', e); }
-    });
-  }
+  // Requests from the first painted frame are buffered until workspace/editor
+  // services can apply the selected tree without losing the user's click.
+  if (BOBO.workspaceLaunch) await BOBO.workspaceLaunch.setConsumer(applyOpenedWorkspace);
 
   var cloudSyncButton = document.getElementById('cloud-sync-btn');
   if (cloudSyncButton) {
@@ -242,11 +227,6 @@
   }
 
   // ── IPC events ──
-
-  // Workspace opened from menu
-  window.api.onWorkspaceOpened(async function(data) {
-    try { await applyOpenedWorkspace(data); } catch (e) { console.error(e); }
-  });
 
   window.api.onWorkspaceLeaveRequest(async function(request) {
     var allowed = false;
@@ -490,13 +470,12 @@
   };
 
   // ── Initial label ──
-  document.getElementById('workspace-label').textContent = 'No folder opened';
+  document.getElementById('workspace-label').textContent = BOBO.i18n.t('No folder opened');
 
   // ═══ Command Palette Registration ═══
   if (BOBO.commands) {
     BOBO.commands.register('open-folder', 'Open Folder', '', 'File', async function() {
-      var res = await window.api.pickWorkspace();
-	  await applyOpenedWorkspace(res);
+      if (BOBO.workspaceLaunch) await BOBO.workspaceLaunch.requestOpen();
     });
     BOBO.commands.register('save', 'Save File', 'Ctrl+S', 'File', function() {
       BOBO.workspace.saveActiveTab();

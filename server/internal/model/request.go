@@ -25,27 +25,31 @@ type Request struct {
 	Revision          string         `json:"revision,omitempty"`          // project environment snapshot revision
 
 	// ── 账户系统字段 ──
-	Identity       string `json:"identity,omitempty"`       // login：用户名或邮箱
-	Username       string `json:"username,omitempty"`       // register：用户名
-	Email          string `json:"email,omitempty"`          // register：邮箱
-	Password       string `json:"password,omitempty"`       // login / register
-	OldPassword    string `json:"oldPassword,omitempty"`    // changePassword
-	NewPassword    string `json:"newPassword,omitempty"`    // changePassword / resetUserPassword
-	InviteCode     string `json:"inviteCode,omitempty"`     // register / revokeInvite
-	Role           string `json:"role,omitempty"`           // createInvite / setUserRole
-	UserID         string `json:"userId,omitempty"`         // 用户管理操作的目标用户
-	Disabled       *bool  `json:"disabled,omitempty"`       // setUserDisabled（指针区分未传与 false）
-	ContainerLimit int    `json:"containerLimit,omitempty"` // updateUserQuota
-	RateLimit      int    `json:"rateLimit,omitempty"`      // updateUserQuota
-	DiskQuotaMB    int    `json:"diskQuotaMB,omitempty"`    // updateUserQuota：磁盘配额
-	TotalSize      int64  `json:"totalSize,omitempty"`      // checkFolder：客户端本地文件总大小（字节）
-	CachePath      string `json:"cachePath,omitempty"`      // deleteCacheModule：要删除的缓存路径（相对 persist/）
-	MaxUses        int    `json:"maxUses,omitempty"`        // createInvite
-	ExpiresInHours int    `json:"expiresInHours,omitempty"` // createInvite
-	Limit          int    `json:"limit,omitempty"`          // listAuditLog
-	Name           string `json:"name,omitempty"`           // updateProfile / team / project display name
-	Description    string `json:"description,omitempty"`
-	Avatar         string `json:"avatar,omitempty"`
+	Identity               string `json:"identity,omitempty"`       // login：用户名或邮箱
+	Username               string `json:"username,omitempty"`       // register：用户名
+	Email                  string `json:"email,omitempty"`          // register：邮箱
+	Password               string `json:"password,omitempty"`       // login / register
+	OldPassword            string `json:"oldPassword,omitempty"`    // changePassword
+	NewPassword            string `json:"newPassword,omitempty"`    // changePassword / resetUserPassword
+	InviteCode             string `json:"inviteCode,omitempty"`     // register / revokeInvite
+	Role                   string `json:"role,omitempty"`           // createInvite / setUserRole
+	UserID                 string `json:"userId,omitempty"`         // 用户管理操作的目标用户
+	Disabled               *bool  `json:"disabled,omitempty"`       // setUserDisabled（指针区分未传与 false）
+	ContainerLimit         int    `json:"containerLimit,omitempty"` // updateUserQuota
+	RateLimit              int    `json:"rateLimit,omitempty"`      // updateUserQuota
+	DiskQuotaMB            int    `json:"diskQuotaMB,omitempty"`    // updateUserQuota：磁盘配额
+	TotalSize              int64  `json:"totalSize,omitempty"`      // checkFolder：客户端本地文件总大小（字节）
+	CachePath              string `json:"cachePath,omitempty"`      // deleteCacheModule：要删除的缓存路径（相对 persist/）
+	CachePackageName       string `json:"cachePackageName,omitempty"`
+	CachePackageVersion    string `json:"cachePackageVersion,omitempty"`
+	CacheGeneration        string `json:"cacheGeneration,omitempty"`
+	CacheInventoryRevision string `json:"cacheInventoryRevision,omitempty"`
+	MaxUses                int    `json:"maxUses,omitempty"`        // createInvite
+	ExpiresInHours         int    `json:"expiresInHours,omitempty"` // createInvite
+	Limit                  int    `json:"limit,omitempty"`          // listAuditLog
+	Name                   string `json:"name,omitempty"`           // updateProfile / team / project display name
+	Description            string `json:"description,omitempty"`
+	Avatar                 string `json:"avatar,omitempty"`
 
 	// ── 团队协作字段 ──
 	TeamID             string `json:"teamId,omitempty"`
@@ -129,21 +133,36 @@ type CacheGroup struct {
 
 // CacheModule 单个缓存模块
 type CacheModule struct {
-	Name         string `json:"name"`       // 模块名（目录名）
-	Path         string `json:"path"`       // 相对 persist 的路径
-	SizeBytes    int64  `json:"size_bytes"` // 大小（字节）
-	Files        int    `json:"files"`      // 文件数
-	Kind         string `json:"kind,omitempty"`
-	Language     string `json:"language,omitempty"`
-	WorkspaceID  string `json:"workspace_id,omitempty"`
-	ProjectName  string `json:"project_name,omitempty"`
-	RuntimeID    string `json:"runtime_id,omitempty"`
-	Digest       string `json:"digest,omitempty"`
-	DigestSource string `json:"digest_source,omitempty"`
-	LastUsed     int64  `json:"last_used,omitempty"`
-	Active       bool   `json:"active,omitempty"`
-	Writing      bool   `json:"writing,omitempty"`
-	Orphaned     bool   `json:"orphaned,omitempty"`
+	Name               string         `json:"name"`       // 模块名（目录名）
+	Path               string         `json:"path"`       // 相对 persist 的路径
+	SizeBytes          int64          `json:"size_bytes"` // 大小（字节）
+	Files              int            `json:"files"`      // 文件数
+	Kind               string         `json:"kind,omitempty"`
+	Language           string         `json:"language,omitempty"`
+	WorkspaceID        string         `json:"workspace_id,omitempty"`
+	ProjectName        string         `json:"project_name,omitempty"`
+	RuntimeID          string         `json:"runtime_id,omitempty"`
+	Digest             string         `json:"digest,omitempty"`
+	DigestSource       string         `json:"digest_source,omitempty"`
+	LastUsed           int64          `json:"last_used,omitempty"`
+	Active             bool           `json:"active,omitempty"`
+	Writing            bool           `json:"writing,omitempty"`
+	Orphaned           bool           `json:"orphaned,omitempty"`
+	Generation         string         `json:"generation,omitempty"`
+	InventoryStatus    string         `json:"inventory_status,omitempty"`
+	InventoryDetail    string         `json:"inventory_detail,omitempty"`
+	InventoryRevision  string         `json:"inventory_revision,omitempty"`
+	InventoryExact     bool           `json:"inventory_exact,omitempty"`
+	InventoryCheckedAt int64          `json:"inventory_checked_at,omitempty"`
+	Packages           []CachePackage `json:"packages,omitempty"`
+}
+
+type CachePackage struct {
+	Name      string   `json:"name"`
+	Version   string   `json:"version"`
+	Imports   []string `json:"imports,omitempty"`
+	SizeBytes int64    `json:"size_bytes,omitempty"`
+	Files     int      `json:"files,omitempty"`
 }
 
 // UserInfo 是用户信息的安全视图（不含密码哈希）

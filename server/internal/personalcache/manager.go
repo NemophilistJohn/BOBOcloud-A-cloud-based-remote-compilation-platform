@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"bobocloud-server/internal/metrics"
@@ -27,6 +29,8 @@ var (
 
 const (
 	dependenciesDir     = "project-dependencies"
+	stagingDir          = ".project-dependency-staging"
+	retiredDir          = ".project-dependency-retired"
 	metadataFile        = ".cache-meta.json"
 	generationFile      = ".container-generation"
 	maxMetadataBytes    = int64(1 << 20)
@@ -36,14 +40,15 @@ const (
 )
 
 type Options struct {
-	ScopeMode        string
-	ReservationBytes int64
-	MaxFiles         int64
-	ReservationFiles int64
-	ScanInterval     time.Duration
-	Retention        time.Duration
-	Metrics          *metrics.Registry
-	OnEvicted        func()
+	ScopeMode           string
+	ReservationBytes    int64
+	MaxFiles            int64
+	ReservationFiles    int64
+	ScanInterval        time.Duration
+	Retention           time.Duration
+	Metrics             *metrics.Registry
+	OnEvicted           func()
+	OnGenerationChanged func(cacheKey, currentGeneration string, publication uint64)
 }
 
 type Request struct {
@@ -90,6 +95,7 @@ type Entry struct {
 	Active        bool      `json:"active"`
 	Writing       bool      `json:"writing"`
 	Orphaned      bool      `json:"orphaned"`
+	Generation    string    `json:"generation,omitempty"`
 	HostPath      string    `json:"-"`
 	key           string
 	absPath       string
@@ -109,48 +115,70 @@ type Info struct {
 }
 
 type Manager struct {
-	root             string
-	options          Options
-	mu               sync.Mutex
-	active           map[string]int
-	writers          map[string]int
-	mutations        map[string]uint64
-	activePaths      map[string]int
-	activeUsers      map[string]int
-	reserved         map[string]int64
-	reservedFiles    map[string]int64
-	writerDone       map[string]chan struct{}
-	protectedReaders map[string]int
-	userGates        sync.Map
+	root                     string
+	options                  Options
+	mu                       sync.Mutex
+	active                   map[string]int
+	writers                  map[string]int
+	mutations                map[string]uint64
+	publicationSeq           uint64
+	activePaths              map[string]int
+	activeUsers              map[string]int
+	reserved                 map[string]int64
+	reservedFiles            map[string]int64
+	writerDone               map[string]chan struct{}
+	protectedReaders         map[string]int
+	readers                  map[dependencyGeneration]int
+	writerHasBase            map[string]bool
+	retired                  map[dependencyGeneration][]string
+	testBeforeReleaseCleanup func([]string)
+	userGates                sync.Map
+}
+
+type dependencyGeneration struct {
+	cacheKey   string
+	generation string
 }
 
 type Lease struct {
-	Key          string
-	ContainerKey string
-	HostRoot     string
-	RelativePath string
-	DockerMounts map[string]string
-	DockerEnv    map[string]string
-	Fingerprint  Fingerprint
-	Hit          bool
-	manager      *Manager
-	request      Request
-	meta         metadata
-	guard        *Guard
-	released     sync.Once
+	Key           string
+	ContainerKey  string
+	Generation    string
+	HostRoot      string
+	RelativePath  string
+	DockerMounts  map[string]string
+	DockerEnv     map[string]string
+	Fingerprint   Fingerprint
+	Hit           bool
+	manager       *Manager
+	request       Request
+	meta          metadata
+	guard         *Guard
+	reader        *ReadLease
+	canonical     string
+	staged        bool
+	writable      bool
+	stageBaseline directoryUsage
+	reserved      bool
+	aborted       atomic.Bool
+	published     atomic.Bool
+	released      sync.Once
 }
 
 // ReadLease keeps an exact project dependency namespace alive while a
 // language server reads it. It does not mark the package inventory dirty and
 // does not reserve write quota.
 type ReadLease struct {
-	Key       string
-	HostRoot  string
-	manager   *Manager
-	request   Request
-	version   uint64
-	protected bool
-	released  sync.Once
+	Key        string
+	HostRoot   string
+	Generation string
+	sourceRoot string
+	manager    *Manager
+	request    Request
+	version    uint64
+	protected  bool
+	releasePin func()
+	released   sync.Once
 }
 
 type leaseContextKey struct{}
@@ -168,15 +196,17 @@ func LeaseFromContext(ctx context.Context) *Lease {
 }
 
 type Guard struct {
-	Context context.Context
-	cancel  context.CancelCauseFunc
-	done    chan struct{}
-	once    sync.Once
-	manager *Manager
-	userID  string
-	before  int64
-	mu      sync.Mutex
-	err     error
+	Context        context.Context
+	cancel         context.CancelCauseFunc
+	done           chan struct{}
+	once           sync.Once
+	manager        *Manager
+	userID         string
+	before         int64
+	allowanceBytes int64
+	allowanceFiles int64
+	mu             sync.Mutex
+	err            error
 }
 
 type Operation struct {
@@ -206,12 +236,23 @@ func NewManager(dataDir string, options Options) *Manager {
 	if options.ScanInterval <= 0 {
 		options.ScanInterval = 250 * time.Millisecond
 	}
+	managerRoot := filepath.Join(filepath.Clean(dataDir), "users")
 	return &Manager{
-		root: filepath.Join(filepath.Clean(dataDir), "users"), options: options,
+		root: managerRoot, options: options,
 		active: make(map[string]int), writers: make(map[string]int), mutations: make(map[string]uint64), activePaths: make(map[string]int),
 		activeUsers: make(map[string]int), reserved: make(map[string]int64), reservedFiles: make(map[string]int64), writerDone: make(map[string]chan struct{}),
-		protectedReaders: make(map[string]int),
+		protectedReaders: make(map[string]int), readers: make(map[dependencyGeneration]int), writerHasBase: make(map[string]bool), retired: make(map[dependencyGeneration][]string),
 	}
+}
+
+// RecoverOrphanedTransactions must run only after all Docker containers from
+// the previous server process have been confirmed removed.
+func (m *Manager) RecoverOrphanedTransactions() {
+	if m == nil {
+		return
+	}
+	cleanupPublishedDependencyPins(m.root)
+	recoverDependencyTransactions(m.root)
 }
 
 func (m *Manager) ScopeMode() string {
@@ -221,35 +262,139 @@ func (m *Manager) ScopeMode() string {
 	return m.options.ScopeMode
 }
 
-func (m *Manager) Prepare(ctx context.Context, request Request) (*Lease, error) {
-	if m == nil || m.options.ScopeMode != "project-lock" {
-		return nil, nil
-	}
+type resolvedCacheRequest struct {
+	fingerprint Fingerprint
+	key         string
+	persistRoot string
+	hostRoot    string
+	relative    string
+	workspace   string
+	runtime     string
+	language    string
+}
+
+func (m *Manager) resolveRequest(request Request) (resolvedCacheRequest, error) {
 	if strings.TrimSpace(request.UserID) == "" || strings.TrimSpace(request.WorkspaceID) == "" || strings.TrimSpace(request.RuntimeID) == "" {
-		return nil, fmt.Errorf("personal dependency cache requires user, workspace, and runtime")
+		return resolvedCacheRequest{}, fmt.Errorf("personal dependency cache requires user, workspace, and runtime")
 	}
 	fingerprint, err := DependencyFingerprintWithRuntime(request.WorkspaceRoot, request.Language, request.SetupCommands, request.RuntimeFingerprint)
 	if err != nil {
-		return nil, err
+		return resolvedCacheRequest{}, err
 	}
 	workspacePart := safePart(request.WorkspaceID)
 	runtimePart := safePart(request.RuntimeID)
 	languagePart := safePart(request.Language)
-	key := strings.Join([]string{safePart(request.UserID), workspacePart, runtimePart, languagePart, fingerprint.Digest}, "/")
 	persistRoot := filepath.Join(m.root, request.UserID, "persist")
 	hostRoot := filepath.Join(persistRoot, dependenciesDir, workspacePart, runtimePart, languagePart, fingerprint.Digest)
 	relative, _ := filepath.Rel(persistRoot, hostRoot)
+	return resolvedCacheRequest{
+		fingerprint: fingerprint,
+		key:         strings.Join([]string{safePart(request.UserID), workspacePart, runtimePart, languagePart, fingerprint.Digest}, "/"),
+		persistRoot: persistRoot, hostRoot: hostRoot, relative: relative,
+		workspace: workspacePart, runtime: runtimePart, language: languagePart,
+	}, nil
+}
+
+// PrepareReadOnly retains the last published project dependency generation.
+// A concurrent terminal or setup command writes a staging generation, so an
+// existing published generation remains stable and immediately reusable.
+func (m *Manager) PrepareReadOnly(ctx context.Context, request Request) (*Lease, error) {
+	if m == nil || m.options.ScopeMode != "project-lock" {
+		return nil, nil
+	}
+	started := time.Now()
+	resolved, err := m.resolveRequest(request)
+	if err != nil {
+		return nil, err
+	}
+	gate := m.userGate(request.UserID)
+	gate.Lock()
+	for {
+		entry, exists, lookupErr := m.lookupResolvedLocked(request, resolved)
+		if lookupErr != nil {
+			gate.Unlock()
+			return nil, lookupErr
+		}
+		m.mu.Lock()
+		writerActive := m.writers[resolved.key] > 0
+		hasPublishedBase := m.writerHasBase[resolved.key]
+		m.mu.Unlock()
+		if exists && (!writerActive || hasPublishedBase) {
+			reader, retainErr := m.retainReadLocked(request, entry)
+			if retainErr != nil {
+				gate.Unlock()
+				return nil, retainErr
+			}
+			generation := reader.Generation
+			gate.Unlock()
+			lease := &Lease{
+				Key: entry.key, ContainerKey: "personal/" + entry.key + "@" + generation + ":ro", Generation: generation,
+				HostRoot: reader.HostRoot, RelativePath: entry.Path,
+				DockerMounts: readOnlyProjectDependencyMounts(resolved.persistRoot, reader.HostRoot),
+				DockerEnv:    ReadOnlyDependencyDockerEnvironment(request.Language), Fingerprint: resolved.fingerprint,
+				Hit: true, manager: m, request: request, meta: metadata{}, reader: reader,
+				canonical: entry.absPath, writable: false,
+			}
+			if m.options.Metrics != nil {
+				m.options.Metrics.Cache("dependency.cache", true)
+				m.options.Metrics.Observe("dependency.cache.prepare.read", time.Since(started))
+			}
+			return lease, nil
+		}
+		if writerActive && !hasPublishedBase {
+			if err := m.waitForWriter(ctx, resolved.key, gate); err != nil {
+				gate.Unlock()
+				return nil, err
+			}
+			continue
+		}
+		gate.Unlock()
+		// A read-only caller must never receive a writable cache merely because
+		// this digest has not been seen before. Publish an empty server-owned
+		// generation, then retain it read-only; terminals and explicit setup
+		// paths use Prepare directly when they need to install dependencies.
+		initializer, prepareErr := m.Prepare(ctx, request)
+		if prepareErr != nil {
+			return nil, prepareErr
+		}
+		if initializer == nil {
+			return nil, nil
+		}
+		initializer.Release()
+		return m.PrepareReadOnly(ctx, request)
+	}
+}
+
+func (l *Lease) Writable() bool { return l != nil && l.writable }
+
+// Published reports whether Release successfully made this writable lease the
+// canonical generation. Callers use it after Release to restart consumers that
+// are intentionally pinned to the previous immutable generation.
+func (l *Lease) Published() bool { return l != nil && l.published.Load() }
+
+// Abort prevents a writable staging generation from replacing the last good
+// published generation. It is used when dependency setup or quota validation
+// fails; Release still drops reservations and removes the staging tree.
+func (l *Lease) Abort() {
+	if l != nil && l.writable {
+		l.aborted.Store(true)
+	}
+}
+
+func (m *Manager) Prepare(ctx context.Context, request Request) (*Lease, error) {
+	if m == nil || m.options.ScopeMode != "project-lock" {
+		return nil, nil
+	}
+	started := time.Now()
+	resolved, err := m.resolveRequest(request)
+	if err != nil {
+		return nil, err
+	}
 	gate := m.userGate(request.UserID)
 	gate.Lock()
 	defer gate.Unlock()
-	if err := m.waitForWriter(ctx, key, gate); err != nil {
+	if err := m.waitForWriter(ctx, resolved.key, gate); err != nil {
 		return nil, err
-	}
-	m.mu.Lock()
-	protected := m.protectedReaders[key] > 0
-	m.mu.Unlock()
-	if protected {
-		return nil, ErrCacheInUse
 	}
 	if err := m.reserveLocked(request.UserID, request.QuotaBytes); err != nil {
 		return nil, err
@@ -257,63 +402,102 @@ func (m *Manager) Prepare(ctx context.Context, request Request) (*Lease, error) 
 	releaseReservation := true
 	defer func() {
 		if releaseReservation {
-			m.releaseReservation(request.UserID, key)
+			m.releaseReservation(request.UserID, resolved.key)
 		}
 	}()
-	hit, stored := readValidMetadata(hostRoot, request, fingerprint)
+	hit, stored := readValidMetadata(resolved.hostRoot, request, resolved.fingerprint)
+	if !hit {
+		if err := m.resetInvalidCanonicalLocked(resolved); err != nil {
+			return nil, err
+		}
+	}
 	now := time.Now().UTC()
 	meta := metadata{
 		Schema: 1, UserID: request.UserID, WorkspaceID: request.WorkspaceID, WorkspaceName: request.WorkspaceName,
-		RuntimeID: request.RuntimeID, RuntimeFingerprint: request.RuntimeFingerprint, Language: request.Language, Digest: fingerprint.Digest,
-		DigestSource: fingerprint.Source, Manifests: fingerprint.Manifests, CreatedAt: now, LastUsed: now,
+		RuntimeID: request.RuntimeID, RuntimeFingerprint: request.RuntimeFingerprint, Language: request.Language, Digest: resolved.fingerprint.Digest,
+		DigestSource: resolved.fingerprint.Source, Manifests: resolved.fingerprint.Manifests, CreatedAt: now, LastUsed: now,
 	}
 	if hit {
 		meta.CreatedAt = stored.CreatedAt
 	}
-	userRoot := filepath.Join(m.root, request.UserID)
-	for _, dir := range []string{
-		filepath.Dir(m.root), m.root, userRoot, persistRoot, filepath.Join(persistRoot, dependenciesDir),
-		filepath.Join(persistRoot, dependenciesDir, workspacePart),
-		filepath.Join(persistRoot, dependenciesDir, workspacePart, runtimePart),
-		filepath.Join(persistRoot, dependenciesDir, workspacePart, runtimePart, languagePart),
-		hostRoot, filepath.Join(hostRoot, "python"), filepath.Join(hostRoot, "node_modules"),
-		filepath.Join(hostRoot, "go"), filepath.Join(hostRoot, "go", "pkg"),
-		filepath.Join(hostRoot, "go", "pkg", "mod"), filepath.Join(hostRoot, "cargo"),
-		filepath.Join(hostRoot, "cargo-target"), filepath.Join(hostRoot, "maven"), filepath.Join(hostRoot, "gradle"),
-	} {
-		if err := ensureRealDirectory(dir); err != nil {
+	if err := ensureCacheParents(m.root, request.UserID, resolved); err != nil {
+		return nil, err
+	}
+	workRoot := resolved.hostRoot
+	staged := false
+	leaseBaseline := directoryUsage{}
+	if hit {
+		stagingRoot := filepath.Join(resolved.persistRoot, stagingDir)
+		if err := ensureRealDirectory(stagingRoot); err != nil {
 			return nil, err
 		}
+		workRoot, err = os.MkdirTemp(stagingRoot, "generation-")
+		if err != nil {
+			return nil, err
+		}
+		staged = true
+		cloneStarted := time.Now()
+		var baseline directoryUsage
+		baseline, err = cloneDependencyTree(resolved.hostRoot, workRoot)
+		if err != nil {
+			if m.options.Metrics != nil {
+				m.options.Metrics.Cache("dependency.cache.stage.clone", false)
+				m.options.Metrics.Observe("dependency.cache.stage.clone", time.Since(cloneStarted))
+			}
+			_ = os.RemoveAll(workRoot)
+			return nil, fmt.Errorf("stage project dependency cache: %w", err)
+		}
+		if m.options.Metrics != nil {
+			m.options.Metrics.Cache("dependency.cache.stage.clone", true)
+			m.options.Metrics.Observe("dependency.cache.stage.clone", time.Since(cloneStarted))
+		}
+		leaseBaseline = baseline
 	}
-	generation, err := ensureGeneration(hostRoot)
+	if err := ensureDependencyDirectories(workRoot); err != nil {
+		if staged {
+			_ = os.RemoveAll(workRoot)
+		}
+		return nil, err
+	}
+	generation, err := replaceGeneration(workRoot)
 	if err != nil {
+		if staged {
+			_ = os.RemoveAll(workRoot)
+		}
 		return nil, err
 	}
-	if err := writeMetadata(hostRoot, meta); err != nil {
+	if err := writeMetadata(workRoot, meta); err != nil {
+		if staged {
+			_ = os.RemoveAll(workRoot)
+		}
 		return nil, err
 	}
-	if err := markPackageInventoryDirty(hostRoot, request.Language, fingerprint.Digest); err != nil {
+	if err := markPackageInventoryDirty(workRoot, request.Language, resolved.fingerprint.Digest); err != nil {
+		if staged {
+			_ = os.RemoveAll(workRoot)
+		}
 		return nil, err
 	}
 	m.mu.Lock()
-	m.mutations[key]++
-	m.active[key]++
-	m.writers[key]++
-	m.activePaths[filepath.Clean(hostRoot)]++
+	m.active[resolved.key]++
+	m.writers[resolved.key]++
+	m.writerHasBase[resolved.key] = hit
+	m.activePaths[filepath.Clean(workRoot)]++
 	m.activeUsers[request.UserID]++
 	m.mu.Unlock()
 	lease := &Lease{
-		Key: key, ContainerKey: "personal/" + key + "@" + generation,
-		HostRoot: hostRoot, RelativePath: filepath.ToSlash(relative),
-		DockerMounts: map[string]string{hostRoot: "/project-deps"},
+		Key: resolved.key, ContainerKey: "personal/" + resolved.key + "@" + generation + ":rw", Generation: generation,
+		HostRoot: workRoot, RelativePath: filepath.ToSlash(resolved.relative),
+		DockerMounts: map[string]string{workRoot: "/project-deps"},
 		DockerEnv:    dependencyEnvironment(request.Language),
-		Fingerprint:  fingerprint, Hit: hit, manager: m, request: request, meta: meta,
+		Fingerprint:  resolved.fingerprint, Hit: hit, manager: m, request: request, meta: meta,
+		canonical: resolved.hostRoot, staged: staged, writable: true, stageBaseline: leaseBaseline, reserved: true,
 	}
 	releaseReservation = false
 	if m.options.Metrics != nil {
 		m.options.Metrics.Cache("dependency.cache", hit)
+		m.options.Metrics.Observe("dependency.cache.prepare.write", time.Since(started))
 	}
-	_ = ctx
 	return lease, nil
 }
 
@@ -334,24 +518,37 @@ func dependencyEnvironment(language string) map[string]string {
 	}
 }
 
+func readOnlyProjectDependencyMounts(persistRoot, dependencyRoot string) map[string]string {
+	mounts := map[string]string{dependencyRoot: "/project-deps:ro"}
+	// The Docker pool normally exposes these shared download/build caches as
+	// writable. Import-only runs override the same host paths as read-only, so
+	// they cannot grow /persist and do not need a full-tree quota guard.
+	for _, cache := range []string{"pip-cache", "go-cache", "npm-cache"} {
+		mounts[filepath.Join(persistRoot, cache)] = "/persist/" + cache + ":ro"
+	}
+	return mounts
+}
+
 func (l *Lease) StartGuard(parent context.Context) *Guard {
-	if l == nil || l.manager == nil {
+	if l == nil || l.manager == nil || !l.writable {
 		return nil
 	}
 	if l.guard != nil {
 		return l.guard
 	}
-	guard := l.manager.newGuard(parent, l.request.UserID, l.request.QuotaBytes)
+	guard := l.manager.newGuard(parent, l.request.UserID, l.request.QuotaBytes, l.stageBaseline)
 	l.guard = guard
 	return guard
 }
 
-func (m *Manager) newGuard(parent context.Context, userID string, quotaBytes int64) *Guard {
+func (m *Manager) newGuard(parent context.Context, userID string, quotaBytes int64, allowance directoryUsage) *Guard {
 	ctx, cancel := context.WithCancelCause(parent)
+	initial := m.directoryUsage(filepath.Join(m.root, userID))
 	guard := &Guard{
 		Context: ctx, cancel: cancel, done: make(chan struct{}),
 		manager: m, userID: userID,
-		before: m.directoryUsage(filepath.Join(m.root, userID)).bytes,
+		before:         subtractFloorZero(initial.bytes, allowance.bytes),
+		allowanceBytes: allowance.bytes, allowanceFiles: allowance.files,
 	}
 	go func() {
 		defer close(guard.done)
@@ -363,7 +560,9 @@ func (m *Manager) newGuard(parent context.Context, userID string, quotaBytes int
 				return
 			case <-ticker.C:
 				usage := m.directoryUsage(filepath.Join(m.root, userID))
-				if (quotaBytes > 0 && usage.bytes > quotaBytes) || usage.truncated || usage.files > m.options.MaxFiles {
+				logicalBytes := subtractFloorZero(usage.bytes, guard.allowanceBytes)
+				logicalFiles := subtractFloorZero(usage.files, guard.allowanceFiles)
+				if (quotaBytes > 0 && logicalBytes > quotaBytes) || usage.truncated || logicalFiles > m.options.MaxFiles {
 					guard.mu.Lock()
 					guard.err = ErrQuotaExceeded
 					guard.mu.Unlock()
@@ -391,7 +590,7 @@ func (m *Manager) BeginOperation(parent context.Context, userID string, quotaByt
 	m.activeUsers[userID]++
 	m.mu.Unlock()
 	gate.Unlock()
-	return &Operation{manager: m, userID: userID, quota: quotaBytes, guard: m.newGuard(parent, userID, quotaBytes)}, nil
+	return &Operation{manager: m, userID: userID, quota: quotaBytes, guard: m.newGuard(parent, userID, quotaBytes, directoryUsage{})}, nil
 }
 
 func (o *Operation) Context() context.Context {
@@ -437,8 +636,8 @@ func (g *Guard) Stop() {
 		g.cancel(context.Canceled)
 		<-g.done
 		if g.manager != nil && g.manager.options.Metrics != nil {
-			after := g.manager.directoryUsage(filepath.Join(g.manager.root, g.userID)).bytes
-			g.manager.options.Metrics.AddBytes("persist.growth", after-g.before)
+			after := g.manager.directoryUsage(filepath.Join(g.manager.root, g.userID))
+			g.manager.options.Metrics.AddBytes("persist.growth", subtractFloorZero(after.bytes, g.allowanceBytes)-g.before)
 		}
 	})
 }
@@ -457,19 +656,84 @@ func (l *Lease) Release() {
 		return
 	}
 	l.released.Do(func() {
+		if l.reader != nil {
+			l.reader.Release()
+			return
+		}
 		if l.guard != nil {
 			l.guard.Stop()
 		}
-		_ = l.publishInventory()
+		committed := !l.aborted.Load()
+		if committed {
+			if err := l.publishInventory(); err != nil {
+				// A writer based on an existing good generation is transactional:
+				// never replace that generation with an unverifiable tree. A first
+				// generation remains visible as explicitly incomplete so users can
+				// inspect, repair, or delete it instead of creating hidden disk data.
+				if l.staged {
+					committed = false
+				}
+				slog.Warn("Project dependency inventory publication was incomplete", "user_id", l.request.UserID, "workspace_id", l.request.WorkspaceID, "runtime", l.request.RuntimeID, "language", l.request.Language, "error", err)
+			}
+		}
+		leaseRoot := filepath.Clean(l.HostRoot)
+		cleanupPaths := make([]string, 0, 2)
+		invalidatesIdleMounts := false
+		publication := uint64(0)
+		retiredPath := ""
+		retiredGeneration := ""
 		gate := l.manager.userGate(l.request.UserID)
 		gate.Lock()
-		l.meta.LastUsed = time.Now().UTC()
-		_ = writeMetadata(l.HostRoot, l.meta)
+		if committed {
+			l.meta.LastUsed = time.Now().UTC()
+			if err := writeMetadata(l.HostRoot, l.meta); err != nil {
+				committed = false
+				slog.Warn("Project dependency metadata commit failed", "user_id", l.request.UserID, "workspace_id", l.request.WorkspaceID, "error", err)
+			}
+		}
+		if committed && l.staged {
+			var swapErr error
+			retiredPath, retiredGeneration, swapErr = l.manager.publishStagedLocked(l)
+			if swapErr != nil {
+				committed = false
+				slog.Warn("Project dependency generation commit failed", "user_id", l.request.UserID, "workspace_id", l.request.WorkspaceID, "error", swapErr)
+			} else {
+				invalidatesIdleMounts = true
+			}
+		}
+		if !committed {
+			if l.staged {
+				cleanupPaths = append(cleanupPaths, leaseRoot)
+			} else if !l.Hit {
+				failedPath, detachErr := l.manager.detachFailedCanonicalLocked(l)
+				if detachErr != nil {
+					slog.Error("Failed to detach rejected initial dependency generation", "user_id", l.request.UserID, "workspace_id", l.request.WorkspaceID, "error", detachErr)
+				}
+				if failedPath != "" {
+					cleanupPaths = append(cleanupPaths, failedPath)
+				}
+			}
+		}
+		l.published.Store(committed)
 		l.manager.mu.Lock()
+		if committed {
+			l.manager.mutations[l.Key]++
+			l.manager.publicationSeq++
+			publication = l.manager.publicationSeq
+		}
+		if retiredPath != "" {
+			retiredKey := dependencyGeneration{cacheKey: l.Key, generation: retiredGeneration}
+			if l.manager.readers[retiredKey] > 0 {
+				l.manager.retired[retiredKey] = append(l.manager.retired[retiredKey], retiredPath)
+			} else {
+				cleanupPaths = append(cleanupPaths, retiredPath)
+			}
+		}
 		if l.manager.writers[l.Key] > 1 {
 			l.manager.writers[l.Key]--
 		} else {
 			delete(l.manager.writers, l.Key)
+			delete(l.manager.writerHasBase, l.Key)
 			if done := l.manager.writerDone[l.Key]; done != nil {
 				close(done)
 				delete(l.manager.writerDone, l.Key)
@@ -480,11 +744,10 @@ func (l *Lease) Release() {
 		} else {
 			delete(l.manager.active, l.Key)
 		}
-		cleanRoot := filepath.Clean(l.HostRoot)
-		if l.manager.activePaths[cleanRoot] > 1 {
-			l.manager.activePaths[cleanRoot]--
+		if l.manager.activePaths[leaseRoot] > 1 {
+			l.manager.activePaths[leaseRoot]--
 		} else {
-			delete(l.manager.activePaths, cleanRoot)
+			delete(l.manager.activePaths, leaseRoot)
 		}
 		if l.manager.activeUsers[l.request.UserID] > 1 {
 			l.manager.activeUsers[l.request.UserID]--
@@ -492,10 +755,88 @@ func (l *Lease) Release() {
 			delete(l.manager.activeUsers, l.request.UserID)
 		}
 		l.manager.mu.Unlock()
-		l.manager.releaseReservation(l.request.UserID, l.Key)
+		if l.reserved {
+			l.manager.releaseReservation(l.request.UserID, l.Key)
+		}
 		gate.Unlock()
+		if len(cleanupPaths) > 0 && l.manager.testBeforeReleaseCleanup != nil {
+			l.manager.testBeforeReleaseCleanup(cleanupPaths)
+		}
+		if committed && l.manager.options.OnGenerationChanged != nil {
+			l.manager.options.OnGenerationChanged(l.Key, l.Generation, publication)
+		} else if invalidatesIdleMounts {
+			if l.manager.options.OnEvicted != nil {
+				l.manager.options.OnEvicted()
+			}
+		}
+		for _, path := range cleanupPaths {
+			_ = os.RemoveAll(path)
+		}
 		l.manager.Enforce(l.request.UserID, l.request.QuotaBytes)
 	})
+}
+
+func (m *Manager) publishStagedLocked(lease *Lease) (string, string, error) {
+	if m == nil || lease == nil || !lease.staged {
+		return "", "", nil
+	}
+	retiredGeneration := readGeneration(lease.canonical)
+	if retiredGeneration == "" {
+		retiredGeneration = lease.Fingerprint.Digest
+	}
+	retiredRoot := filepath.Join(m.root, lease.request.UserID, "persist", retiredDir)
+	if err := os.MkdirAll(retiredRoot, 0700); err != nil {
+		return "", "", err
+	}
+	retiredPath, err := uniqueDependencyPath(retiredRoot, "generation-")
+	if err != nil {
+		return "", "", err
+	}
+	if err := publishDependencyGeneration(lease.canonical, lease.HostRoot, retiredPath); err != nil {
+		return "", "", err
+	}
+	lease.HostRoot = lease.canonical
+	lease.DockerMounts = map[string]string{lease.canonical: "/project-deps"}
+	lease.staged = false
+	return retiredPath, retiredGeneration, nil
+}
+
+// detachFailedCanonicalLocked removes a rejected first generation from the
+// canonical pathname before waiters are notified. The metadata is removed
+// first, so even an unusual rename/delete failure cannot make the rejected
+// tree look like a valid cache hit to the next writer.
+func (m *Manager) detachFailedCanonicalLocked(lease *Lease) (string, error) {
+	if m == nil || lease == nil {
+		return "", nil
+	}
+	canonical := filepath.Clean(lease.canonical)
+	if canonical == "." || canonical != filepath.Clean(lease.HostRoot) {
+		return "", fmt.Errorf("rejected initial generation is not canonical")
+	}
+	if _, err := os.Lstat(canonical); os.IsNotExist(err) {
+		return "", nil
+	} else if err != nil {
+		return "", fmt.Errorf("inspect rejected initial generation: %w", err)
+	}
+	metadataErr := os.Remove(filepath.Join(canonical, metadataFile))
+	if metadataErr != nil && !os.IsNotExist(metadataErr) {
+		metadataErr = fmt.Errorf("invalidate rejected initial generation: %w", metadataErr)
+	} else {
+		metadataErr = nil
+	}
+	retiredRoot := filepath.Join(m.root, lease.request.UserID, "persist", retiredDir)
+	if err := ensureRealDirectory(retiredRoot); err == nil {
+		failedPath, allocateErr := uniqueDependencyPath(retiredRoot, "failed-")
+		if allocateErr == nil {
+			if renameErr := os.Rename(canonical, failedPath); renameErr == nil {
+				return failedPath, metadataErr
+			}
+		}
+	}
+	if removeErr := os.RemoveAll(canonical); removeErr != nil {
+		return "", errors.Join(metadataErr, fmt.Errorf("remove rejected initial generation: %w", removeErr))
+	}
+	return "", metadataErr
 }
 
 // waitForWriter serializes package-manager mutations for one exact namespace.
@@ -729,7 +1070,7 @@ func (m *Manager) inspectLocked(userID string, quotaBytes int64) Info {
 				Path: filepath.ToSlash(relative), WorkspaceName: "Unattributed project cache",
 				RuntimeID: parts[1], Language: parts[2], Digest: parts[3], DigestSource: "unknown",
 				SizeBytes: entryUsage.bytes, Files: entryFiles, LastUsed: lastUsed, Active: pathActive, Writing: pathActive,
-				Orphaned: true, HostPath: path, absPath: path,
+				Orphaned: true, Generation: readGeneration(path), HostPath: path, absPath: path,
 			})
 			if entryUsage.truncated {
 				break
@@ -741,7 +1082,7 @@ func (m *Manager) inspectLocked(userID string, quotaBytes int64) Info {
 		info.Entries = append(info.Entries, Entry{
 			Path: filepath.ToSlash(relative), WorkspaceID: meta.WorkspaceID, WorkspaceName: meta.WorkspaceName,
 			RuntimeID: meta.RuntimeID, Language: meta.Language, Digest: meta.Digest, DigestSource: meta.DigestSource,
-			SizeBytes: entryUsage.bytes, Files: entryFiles, LastUsed: meta.LastUsed, Active: active[key], Writing: writing[key], HostPath: path, key: key, absPath: path,
+			SizeBytes: entryUsage.bytes, Files: entryFiles, LastUsed: meta.LastUsed, Active: active[key], Writing: writing[key], Generation: readGeneration(path), HostPath: path, key: key, absPath: path,
 		})
 		if entryUsage.truncated {
 			break
@@ -756,21 +1097,16 @@ func (l *ReadLease) Release() {
 		return
 	}
 	l.released.Do(func() {
+		cleanup := []string(nil)
 		gate := l.manager.userGate(l.request.UserID)
 		gate.Lock()
-		data, err := readSmallRegularFile(filepath.Join(l.HostRoot, metadataFile), maxMetadataBytes)
-		var current metadata
-		if err == nil && json.Unmarshal(data, &current) == nil && metadataKey(current) == l.Key {
-			current.LastUsed = time.Now().UTC()
-			_ = writeMetadata(l.HostRoot, current)
-		}
 		l.manager.mu.Lock()
 		if l.manager.active[l.Key] > 1 {
 			l.manager.active[l.Key]--
 		} else {
 			delete(l.manager.active, l.Key)
 		}
-		cleanRoot := filepath.Clean(l.HostRoot)
+		cleanRoot := filepath.Clean(l.sourceRoot)
 		if l.manager.activePaths[cleanRoot] > 1 {
 			l.manager.activePaths[cleanRoot]--
 		} else {
@@ -783,9 +1119,22 @@ func (l *ReadLease) Release() {
 				delete(l.manager.protectedReaders, l.Key)
 			}
 		}
+		generationKey := dependencyGeneration{cacheKey: l.Key, generation: l.Generation}
+		if l.manager.readers[generationKey] > 1 {
+			l.manager.readers[generationKey]--
+		} else {
+			delete(l.manager.readers, generationKey)
+			cleanup = append(cleanup, l.manager.retired[generationKey]...)
+			delete(l.manager.retired, generationKey)
+		}
 		l.manager.mu.Unlock()
 		gate.Unlock()
-		l.manager.Enforce(l.request.UserID, l.request.QuotaBytes)
+		if l.releasePin != nil {
+			l.releasePin()
+		}
+		for _, path := range cleanup {
+			_ = os.RemoveAll(path)
+		}
 	})
 }
 
@@ -798,31 +1147,63 @@ func (l *ReadLease) Stable() bool {
 	}
 	l.manager.mu.Lock()
 	defer l.manager.mu.Unlock()
-	return l.manager.writers[l.Key] == 0 && l.manager.mutations[l.Key] == l.version
+	return l.manager.mutations[l.Key] == l.version
 }
 
-func (m *Manager) retainReadLocked(request Request, entry Entry) *ReadLease {
-	return m.retainReadModeLocked(request, entry, false)
+func (m *Manager) retainReadLocked(request Request, entry Entry) (*ReadLease, error) {
+	return m.retainReadModeLocked(request, entry, false, true)
 }
 
-func (m *Manager) retainProtectedReadLocked(request Request, entry Entry) *ReadLease {
-	return m.retainReadModeLocked(request, entry, true)
+func (m *Manager) retainProtectedReadLocked(request Request, entry Entry) (*ReadLease, error) {
+	return m.retainReadModeLocked(request, entry, true, true)
 }
 
-func (m *Manager) retainReadModeLocked(request Request, entry Entry, protected bool) *ReadLease {
+func (m *Manager) retainInspectionReadLocked(request Request, entry Entry) (*ReadLease, error) {
+	return m.retainReadModeLocked(request, entry, false, false)
+}
+
+func (m *Manager) retainReadModeLocked(request Request, entry Entry, protected, touchLRU bool) (*ReadLease, error) {
+	if touchLRU {
+		if err := touchDependencyMetadata(entry.absPath, request); err != nil {
+			slog.Warn("Project dependency cache access time update failed", "user_id", request.UserID, "workspace_id", request.WorkspaceID, "error", err)
+		}
+	}
+	generation := readGeneration(entry.absPath)
+	if generation == "" {
+		generation = entry.Digest
+	}
+	pinnedRoot, releasePin, err := pinPublishedDependency(m.root, entry.absPath)
+	if err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	version := m.mutations[entry.key]
 	m.active[entry.key]++
+	m.readers[dependencyGeneration{cacheKey: entry.key, generation: generation}]++
 	m.activePaths[filepath.Clean(entry.absPath)]++
 	if protected {
 		m.protectedReaders[entry.key]++
 	}
 	m.mu.Unlock()
-	return &ReadLease{Key: entry.key, HostRoot: entry.absPath, manager: m, request: request, version: version, protected: protected}
+	return &ReadLease{Key: entry.key, HostRoot: pinnedRoot, Generation: generation, sourceRoot: entry.absPath, manager: m, request: request, version: version, protected: protected, releasePin: releasePin}, nil
 }
 
-// AcquireRead retains an exact project/runtime/digest namespace for a
-// read-only consumer. It refuses to begin while a writer is already active.
+func touchDependencyMetadata(root string, request Request) error {
+	data, err := readSmallRegularFile(filepath.Join(root, metadataFile), maxMetadataBytes)
+	if err != nil {
+		return err
+	}
+	var meta metadata
+	if json.Unmarshal(data, &meta) != nil || meta.Schema != 1 || meta.UserID != request.UserID ||
+		meta.WorkspaceID != request.WorkspaceID || meta.RuntimeID != request.RuntimeID || !strings.EqualFold(meta.Language, request.Language) {
+		return fmt.Errorf("project dependency metadata no longer matches its request")
+	}
+	meta.LastUsed = time.Now().UTC()
+	return writeMetadata(root, meta)
+}
+
+// AcquireRead retains the last published exact project/runtime/digest
+// namespace. A writer with a staging base does not block this immutable view.
 func (m *Manager) AcquireRead(request Request) (*ReadLease, Entry, bool, error) {
 	if m == nil || m.options.ScopeMode != "project-lock" {
 		return nil, Entry{}, false, nil
@@ -830,14 +1211,24 @@ func (m *Manager) AcquireRead(request Request) (*ReadLease, Entry, bool, error) 
 	gate := m.userGate(request.UserID)
 	gate.Lock()
 	defer gate.Unlock()
-	entry, exists, err := m.lookupLocked(request)
+	resolved, err := m.resolveRequest(request)
+	if err != nil {
+		return nil, Entry{}, false, err
+	}
+	entry, exists, err := m.lookupResolvedLocked(request, resolved)
 	if err != nil || !exists {
 		return nil, entry, exists, err
 	}
-	if entry.Writing {
+	m.mu.Lock()
+	writerWithoutBase := m.writers[entry.key] > 0 && !m.writerHasBase[entry.key]
+	m.mu.Unlock()
+	if writerWithoutBase {
 		return nil, entry, true, ErrCacheInUse
 	}
-	reader := m.retainReadLocked(request, entry)
+	reader, retainErr := m.retainReadLocked(request, entry)
+	if retainErr != nil {
+		return nil, entry, true, retainErr
+	}
 	entry.Active = true
 	return reader, entry, true, nil
 }
@@ -853,17 +1244,28 @@ func (m *Manager) Lookup(request Request) (Entry, bool, error) {
 }
 
 func (m *Manager) lookupLocked(request Request) (Entry, bool, error) {
-	fingerprint, err := DependencyFingerprintWithRuntime(request.WorkspaceRoot, request.Language, request.SetupCommands, request.RuntimeFingerprint)
+	resolved, err := m.resolveRequest(request)
 	if err != nil {
 		return Entry{}, false, err
 	}
-	info := m.inspectLocked(request.UserID, request.QuotaBytes)
-	for _, entry := range info.Entries {
-		if entry.WorkspaceID == request.WorkspaceID && entry.RuntimeID == request.RuntimeID && strings.EqualFold(entry.Language, request.Language) && entry.Digest == fingerprint.Digest {
-			return entry, true, nil
-		}
+	return m.lookupResolvedLocked(request, resolved)
+}
+
+func (m *Manager) lookupResolvedLocked(request Request, resolved resolvedCacheRequest) (Entry, bool, error) {
+	hit, meta := readValidMetadata(resolved.hostRoot, request, resolved.fingerprint)
+	if !hit {
+		return Entry{WorkspaceID: request.WorkspaceID, WorkspaceName: request.WorkspaceName, RuntimeID: request.RuntimeID, Language: request.Language, Digest: resolved.fingerprint.Digest, DigestSource: resolved.fingerprint.Source}, false, nil
 	}
-	return Entry{WorkspaceID: request.WorkspaceID, WorkspaceName: request.WorkspaceName, RuntimeID: request.RuntimeID, Language: request.Language, Digest: fingerprint.Digest, DigestSource: fingerprint.Source}, false, nil
+	m.mu.Lock()
+	active := m.active[resolved.key] > 0
+	writing := m.writers[resolved.key] > 0
+	m.mu.Unlock()
+	return Entry{
+		Path: filepath.ToSlash(resolved.relative), WorkspaceID: meta.WorkspaceID, WorkspaceName: meta.WorkspaceName,
+		RuntimeID: meta.RuntimeID, Language: meta.Language, Digest: meta.Digest, DigestSource: meta.DigestSource,
+		LastUsed: meta.LastUsed, Active: active, Writing: writing, Generation: readGeneration(resolved.hostRoot), HostPath: resolved.hostRoot,
+		key: resolved.key, absPath: resolved.hostRoot,
+	}, true, nil
 }
 
 func (m *Manager) Delete(userID, relative string) error {
@@ -947,6 +1349,234 @@ func (m *Manager) userGate(userID string) *sync.Mutex {
 	created := &sync.Mutex{}
 	actual, _ := m.userGates.LoadOrStore(userID, created)
 	return actual.(*sync.Mutex)
+}
+
+func ensureCacheParents(managerRoot, userID string, resolved resolvedCacheRequest) error {
+	userRoot := filepath.Join(managerRoot, userID)
+	for _, directory := range []string{
+		filepath.Dir(managerRoot), managerRoot, userRoot, resolved.persistRoot,
+		filepath.Join(resolved.persistRoot, dependenciesDir),
+		filepath.Join(resolved.persistRoot, dependenciesDir, resolved.workspace),
+		filepath.Join(resolved.persistRoot, dependenciesDir, resolved.workspace, resolved.runtime),
+		filepath.Join(resolved.persistRoot, dependenciesDir, resolved.workspace, resolved.runtime, resolved.language),
+	} {
+		if err := ensureRealDirectory(directory); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Manager) resetInvalidCanonicalLocked(resolved resolvedCacheRequest) error {
+	info, err := os.Lstat(resolved.hostRoot)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect invalid project dependency namespace: %w", err)
+	}
+	m.mu.Lock()
+	active := m.active[resolved.key] > 0 || m.activePaths[filepath.Clean(resolved.hostRoot)] > 0
+	m.mu.Unlock()
+	if active {
+		return ErrCacheInUse
+	}
+	if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		if err := os.RemoveAll(resolved.hostRoot); err != nil {
+			return fmt.Errorf("clear invalid project dependency namespace: %w", err)
+		}
+		return nil
+	}
+	if err := os.Remove(resolved.hostRoot); err != nil {
+		return fmt.Errorf("clear invalid project dependency namespace: %w", err)
+	}
+	return nil
+}
+
+func ensureDependencyDirectories(root string) error {
+	for _, directory := range []string{
+		root, filepath.Join(root, "python"), filepath.Join(root, "node_modules"),
+		filepath.Join(root, "go"), filepath.Join(root, "go", "pkg"), filepath.Join(root, "go", "pkg", "mod"),
+		filepath.Join(root, "cargo"), filepath.Join(root, "cargo-target"), filepath.Join(root, "maven"), filepath.Join(root, "gradle"),
+	} {
+		if err := ensureRealDirectory(directory); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func cloneDependencyTree(source, destination string) (directoryUsage, error) {
+	info, err := os.Lstat(source)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return directoryUsage{}, fmt.Errorf("published dependency root is not a real directory")
+	}
+	usage := directoryUsage{}
+	err = filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("dependency staging path escapes source")
+		}
+		if relative == "." {
+			return nil
+		}
+		entryInfo, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		usage.files++
+		if !entryInfo.IsDir() {
+			usage.bytes += entryInfo.Size()
+		}
+		switch {
+		case entryInfo.Mode()&os.ModeSymlink != 0:
+			_, readErr := os.Readlink(path)
+			return readErr
+		case entryInfo.IsDir():
+			return nil
+		case entryInfo.Mode().IsRegular():
+			return nil
+		default:
+			return fmt.Errorf("dependency tree contains unsupported file %q", filepath.ToSlash(relative))
+		}
+	})
+	if err != nil {
+		return usage, err
+	}
+	if used, fastErr := cloneDependencyTreeFast(source, destination); used {
+		if fastErr != nil {
+			return usage, fastErr
+		}
+		return usage, nil
+	}
+	if err := cloneDependencyTreePortable(source, destination); err != nil {
+		return usage, err
+	}
+	return usage, nil
+}
+
+type clonedDirectoryMetadata struct {
+	path    string
+	mode    fs.FileMode
+	modTime time.Time
+}
+
+func cloneDependencyTreePortable(source, destination string) error {
+	directories := make([]clonedDirectoryMetadata, 0, 32)
+	err := filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, relErr := filepath.Rel(source, path)
+		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("dependency staging path escapes source")
+		}
+		entryInfo, infoErr := entry.Info()
+		if infoErr != nil {
+			return infoErr
+		}
+		if relative == "." {
+			directories = append(directories, clonedDirectoryMetadata{path: destination, mode: entryInfo.Mode().Perm(), modTime: entryInfo.ModTime()})
+			return nil
+		}
+		target := filepath.Join(destination, relative)
+		switch {
+		case entryInfo.Mode()&os.ModeSymlink != 0:
+			linkTarget, readErr := os.Readlink(path)
+			if readErr != nil {
+				return readErr
+			}
+			return os.Symlink(linkTarget, target)
+		case entryInfo.IsDir():
+			if err := os.Mkdir(target, entryInfo.Mode().Perm()|0700); err != nil {
+				return err
+			}
+			directories = append(directories, clonedDirectoryMetadata{path: target, mode: entryInfo.Mode().Perm(), modTime: entryInfo.ModTime()})
+			return nil
+		case entryInfo.Mode().IsRegular():
+			return cloneRegularFile(path, target, entryInfo)
+		default:
+			return fmt.Errorf("dependency tree contains unsupported file %q", filepath.ToSlash(relative))
+		}
+	})
+	if err != nil {
+		return err
+	}
+	for index := len(directories) - 1; index >= 0; index-- {
+		directory := directories[index]
+		if err := os.Chmod(directory.path, directory.mode); err != nil {
+			return err
+		}
+		if err := os.Chtimes(directory.path, directory.modTime, directory.modTime); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func cloneRegularFile(source, destination string, info fs.FileInfo) error {
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	closeErr := output.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err := os.Chmod(destination, info.Mode().Perm()); err != nil {
+		return err
+	}
+	return os.Chtimes(destination, info.ModTime(), info.ModTime())
+}
+
+func replaceGeneration(root string) (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	encoded := hex.EncodeToString(value)
+	return encoded, atomicWriteFile(root, generationFile, []byte(encoded+"\n"), 0600)
+}
+
+func readGeneration(root string) string {
+	data, err := readSmallRegularFile(filepath.Join(root, generationFile), maxGenerationBytes)
+	if err != nil {
+		return ""
+	}
+	value := strings.TrimSpace(string(data))
+	if len(value) != 32 {
+		return ""
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return ""
+	}
+	return value
+}
+
+func uniqueDependencyPath(root, prefix string) (string, error) {
+	for attempts := 0; attempts < 8; attempts++ {
+		value := make([]byte, 16)
+		if _, err := rand.Read(value); err != nil {
+			return "", err
+		}
+		candidate := filepath.Join(root, prefix+hex.EncodeToString(value))
+		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("allocate dependency generation path")
 }
 
 func readValidMetadata(root string, request Request, fingerprint Fingerprint) (bool, metadata) {
@@ -1095,7 +1725,12 @@ func (m *Manager) scanLimit() int64 {
 }
 
 func (m *Manager) directoryUsage(root string) directoryUsage {
-	return boundedDirectoryStats(root, m.scanLimit())
+	started := time.Now()
+	usage := boundedDirectoryStats(root, m.scanLimit())
+	if m != nil && m.options.Metrics != nil {
+		m.options.Metrics.Observe("persist.quota.scan", time.Since(started))
+	}
+	return usage
 }
 
 // boundedDirectoryStats counts every descendant filesystem entry, including
@@ -1321,7 +1956,7 @@ func (m *Manager) legacyCandidates(persistRoot string) ([]legacyCandidate, bool)
 				break
 			}
 			remaining--
-			if entry.Name() == dependenciesDir {
+			if isManagedDependencyDirectory(entry.Name()) {
 				if remaining <= 0 {
 					truncated = index < len(entries)-1
 					break
@@ -1377,4 +2012,8 @@ func (m *Manager) legacyCandidates(persistRoot string) ([]legacyCandidate, bool)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].lastUsed.Before(result[j].lastUsed) })
 	return result, truncated
+}
+
+func isManagedDependencyDirectory(name string) bool {
+	return name == dependenciesDir || name == stagingDir || name == retiredDir
 }

@@ -32,6 +32,11 @@ type hotPoolKey struct {
 	userID string
 }
 
+type personalGenerationState struct {
+	generation  string
+	publication uint64
+}
+
 // Pool 管理 Docker 容器生命周期。
 // 三层命中策略：
 //
@@ -60,6 +65,7 @@ type Pool struct {
 	// Phase 2: 用户配额
 	userActiveContainers  map[string]int
 	userPendingContainers map[string]int
+	userBackgroundCreates map[string]int
 	userContainerLimits   map[string]int
 	deletedUsers          map[string]bool
 
@@ -67,10 +73,13 @@ type Pool struct {
 	queue *RequestQueue
 
 	// Phase 3: 容器复用（按用户隔离）
-	idlePool          map[string][]string // image → containerIDs (LRU, most recent first)
-	containerUser     map[string]string   // containerID → userID
-	containerContext  map[string]string   // containerID → team build cache context; non-empty containers are not pooled
-	taintedContainers map[string]bool     // cancelled docker exec may still have a live process and must not be reused
+	idlePool                  map[string][]string // image → containerIDs (LRU, most recent first)
+	containerUser             map[string]string   // containerID → userID
+	containerContext          map[string]string   // containerID → exact cache mount generation
+	taintedContainers         map[string]bool     // cancelled docker exec may still have a live process and must not be reused
+	pendingRemoval            map[string]bool     // detached from reuse but owned until Docker confirms absence; value marks retry started
+	stalePersonalContext      map[string]bool     // published personal dependency generations that active containers still mount
+	currentPersonalGeneration map[string]personalGenerationState
 
 	// Phase 3: 镜像加速
 	registryMirrors []string
@@ -83,6 +92,7 @@ type Pool struct {
 	metrics                 *metrics.Registry
 	outputRetainedBytes     int
 	personalDependencyScope string
+	resetStrategy           string
 	runDockerCommand        func(context.Context, ...string) ([]byte, error)
 	waitDockerRetry         func(time.Duration)
 }
@@ -109,30 +119,34 @@ func NewPool(
 	}
 
 	dp := &Pool{
-		hotPool:               make(map[hotPoolKey]chan string),
-		imageLocal:            make(map[string]bool),
-		poolSize:              hotPoolSize,
-		maxTotal:              maxTotal,
-		maxIdle:               maxIdle,
-		sec:                   sec,
-		lruByImage:            make(map[string]time.Time),
-		imageByContainerID:    make(map[string]string),
-		memLimit:              memLimit,
-		cpuLimit:              cpuLimit,
-		replenishInterval:     replenishInterval,
-		userActiveContainers:  make(map[string]int),
-		userPendingContainers: make(map[string]int),
-		userContainerLimits:   make(map[string]int),
-		deletedUsers:          make(map[string]bool),
-		queue:                 rq,
-		idlePool:              make(map[string][]string),
-		containerUser:         make(map[string]string),
-		containerContext:      make(map[string]string),
-		taintedContainers:     make(map[string]bool),
-		registryMirrors:       registryMirrors,
-		pullTimeout:           pullTimeout,
-		userDataDir:           userDataDir,
-		outputRetainedBytes:   256 << 10,
+		hotPool:                   make(map[hotPoolKey]chan string),
+		imageLocal:                make(map[string]bool),
+		poolSize:                  hotPoolSize,
+		maxTotal:                  maxTotal,
+		maxIdle:                   maxIdle,
+		sec:                       sec,
+		lruByImage:                make(map[string]time.Time),
+		imageByContainerID:        make(map[string]string),
+		memLimit:                  memLimit,
+		cpuLimit:                  cpuLimit,
+		replenishInterval:         replenishInterval,
+		userActiveContainers:      make(map[string]int),
+		userPendingContainers:     make(map[string]int),
+		userBackgroundCreates:     make(map[string]int),
+		userContainerLimits:       make(map[string]int),
+		deletedUsers:              make(map[string]bool),
+		queue:                     rq,
+		idlePool:                  make(map[string][]string),
+		containerUser:             make(map[string]string),
+		containerContext:          make(map[string]string),
+		taintedContainers:         make(map[string]bool),
+		pendingRemoval:            make(map[string]bool),
+		stalePersonalContext:      make(map[string]bool),
+		currentPersonalGeneration: make(map[string]personalGenerationState),
+		registryMirrors:           registryMirrors,
+		pullTimeout:               pullTimeout,
+		userDataDir:               userDataDir,
+		outputRetainedBytes:       256 << 10,
 	}
 
 	go dp.replenishLoop()
@@ -151,6 +165,24 @@ func (dp *Pool) SetOutputRetentionLimit(limit int) {
 
 func (dp *Pool) SetPersonalDependencyScope(scope string) {
 	dp.personalDependencyScope = scope
+}
+
+const (
+	ResetStrategyVerified = "verified"
+	ResetStrategyRestart  = "restart"
+)
+
+// SetResetStrategy selects how a successfully used container is sanitized
+// before returning to the idle pool. Invalid values fail closed to restart;
+// config validation normally prevents them from reaching this boundary.
+func (dp *Pool) SetResetStrategy(strategy string) {
+	strategy = strings.ToLower(strings.TrimSpace(strategy))
+	if strategy != ResetStrategyVerified && strategy != ResetStrategyRestart {
+		strategy = ResetStrategyRestart
+	}
+	dp.mu.Lock()
+	dp.resetStrategy = strategy
+	dp.mu.Unlock()
 }
 
 // SetHardening 配置容器安全加固开关。
@@ -190,16 +222,15 @@ func (dp *Pool) Shutdown() {
 // CleanupOrphanedContainers 清理上次进程异常退出后遗留的孤儿容器。
 // 通过 docker label 筛选本服务创建的容器，销毁所有不在当前 containerUser 映射中的。
 // 在服务启动时调用，确保干净的起始状态。
-func (dp *Pool) CleanupOrphanedContainers() {
+func (dp *Pool) CleanupOrphanedContainers() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	// 列出所有带 bobocloud.managed=true 标签的容器
-	cmd := exec.CommandContext(ctx, "docker", "ps", "-q", "--filter", "label=bobocloud.managed=true")
-	out, err := cmd.Output()
+	out, err := dp.executeDockerCommand(ctx, "ps", "-aq", "--filter", "label=bobocloud.managed=true")
 	if err != nil {
 		slog.Warn("Failed to list orphaned containers", "error", err)
-		return
+		return fmt.Errorf("list orphaned containers: %w", err)
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
@@ -219,31 +250,76 @@ func (dp *Pool) CleanupOrphanedContainers() {
 
 	if len(orphans) == 0 {
 		slog.Info("No orphaned containers found")
-		return
+		return nil
 	}
 
 	slog.Info("Cleaning up orphaned containers", "count", len(orphans))
+	destroyed := 0
+	var cleanupErrors []error
 	for _, id := range orphans {
-		dp.destroyContainer(id)
+		if destroyErr := dp.destroyContainer(id); destroyErr != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("destroy %s: %w", shortContainerID(id), destroyErr))
+			continue
+		}
+		destroyed++
 	}
-	slog.Info("Orphaned container cleanup complete", "destroyed", len(orphans))
+	slog.Info("Orphaned container cleanup complete", "destroyed", destroyed, "failed", len(cleanupErrors))
+	return errors.Join(cleanupErrors...)
 }
 
-// DestroyUserContainers 销毁指定用户的所有活跃容器。
-// 在管理员删除用户时调用，防止已删除用户的容器继续占用资源。
-func (dp *Pool) DestroyUserContainers(userID string) {
-	ids := dp.detachUserContainers(userID)
+// DestroyUserContainers freezes the user and destroys every container that may
+// still hold one of their bind mounts. Ownership and quota accounting are
+// released per container only after Docker confirms that container is absent.
+// A caller must not remove the user's data directory when this method returns
+// an error; the idempotent deletion-cleanup pipeline can retry it later.
+func (dp *Pool) DestroyUserContainers(userID string) error {
+	if strings.TrimSpace(userID) == "" {
+		return fmt.Errorf("destroy user containers: user ID is required")
+	}
+
+	dp.mu.Lock()
+	if dp.deletedUsers == nil {
+		dp.deletedUsers = make(map[string]bool)
+	}
+	dp.deletedUsers[userID] = true
+	dp.mu.Unlock()
 	if dp.queue != nil {
 		dp.queue.RemoveByUser(userID, fmt.Errorf("user %s was deleted", userID))
 	}
 
+	ids, pending, background := dp.snapshotUserContainersForDeletion(userID)
+	if pending > 0 || background > 0 {
+		return fmt.Errorf("destroy user containers: user %s still has %d acquisition(s) and %d background creation(s) draining", userID, pending, background)
+	}
+
+	destroyed := 0
+	var cleanupErrors []error
 	for _, id := range ids {
-		dp.destroyContainer(id)
+		if err := dp.destroyUserContainerWithRetry(id); err != nil {
+			cleanupErrors = append(cleanupErrors, err)
+			continue
+		}
+		if dp.forgetConfirmedUserContainer(id, userID) {
+			destroyed++
+			dp.wakeNextQueued()
+		}
 	}
-	if len(ids) > 0 {
+
+	remaining, pending, background := dp.finishUserContainerDeletion(userID)
+	if pending > 0 || background > 0 {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("user %s still has %d acquisition(s) and %d background creation(s) draining", userID, pending, background))
+	}
+	if len(remaining) > 0 {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("user %s still owns %d container(s): %s", userID, len(remaining), strings.Join(remaining, ", ")))
+	}
+	if err := errors.Join(cleanupErrors...); err != nil {
+		return fmt.Errorf("destroy user containers: %w", err)
+	}
+	if destroyed > 0 {
 		slog.Info("Destroyed user containers after account deletion",
-			"user_id", userID, "count", len(ids))
+			"user_id", userID, "count", destroyed)
 	}
+	return nil
 }
 
 // InvalidateIdleBuildCacheContainers unmounts cache directories held by idle
@@ -251,32 +327,152 @@ func (dp *Pool) DestroyUserContainers(userID string) {
 // deleted bind-mounted files release their disk blocks before the API returns.
 // Leased containers are not present in idlePool and are never interrupted.
 func (dp *Pool) InvalidateIdleBuildCacheContainers() {
-	ids := dp.detachIdleBuildCacheContainers()
+	ids := dp.detachIdleContextContainers(func(cacheKey string) bool { return cacheKey != "" })
 	for _, id := range ids {
-		dp.destroyContainer(id)
+		if err := dp.removeQuarantinedContainer(id); err != nil {
+			slog.Warn("Idle cache container removal was not confirmed", "container_id", shortContainerID(id), "error", err)
+		}
 	}
 	if len(ids) > 0 {
 		slog.Info("Invalidated idle team-cache containers", "count", len(ids))
 	}
 }
 
+// InvalidateIdlePersonalDependencyContainers removes idle containers pinned to
+// older generations and marks matching active containers stale. An active old
+// generation is destroyed when it is released, while a concurrently acquired
+// container for currentGeneration remains reusable. publication orders
+// callbacks that can finish out of order after the personal-cache gate opens.
+func (dp *Pool) InvalidateIdlePersonalDependencyContainers(cacheKey, currentGeneration string, publication uint64) {
+	cacheKey = strings.TrimSpace(cacheKey)
+	currentGeneration = strings.TrimSpace(currentGeneration)
+	if cacheKey == "" || currentGeneration == "" {
+		return
+	}
+
+	dp.mu.Lock()
+	if dp.stalePersonalContext == nil {
+		dp.stalePersonalContext = make(map[string]bool)
+	}
+	if dp.currentPersonalGeneration == nil {
+		dp.currentPersonalGeneration = make(map[string]personalGenerationState)
+	}
+	if previous, exists := dp.currentPersonalGeneration[cacheKey]; exists {
+		if publication < previous.publication {
+			dp.mu.Unlock()
+			slog.Debug("Ignored out-of-order personal dependency publication", "cache_key", cacheKey, "publication", publication, "current_publication", previous.publication)
+			return
+		}
+		if publication == previous.publication && previous.generation != currentGeneration {
+			dp.mu.Unlock()
+			slog.Warn("Ignored conflicting personal dependency publication", "cache_key", cacheKey, "publication", publication)
+			return
+		}
+	}
+	dp.currentPersonalGeneration[cacheKey] = personalGenerationState{generation: currentGeneration, publication: publication}
+	for contextKey := range dp.stalePersonalContext {
+		contextCacheKey, generation, personal := parsePersonalDependencyContext(contextKey)
+		if personal && contextCacheKey == cacheKey && generation == currentGeneration {
+			delete(dp.stalePersonalContext, contextKey)
+		}
+	}
+	isOldGeneration := func(contextKey string) bool {
+		contextCacheKey, generation, personal := parsePersonalDependencyContext(contextKey)
+		return personal && contextCacheKey == cacheKey && generation != currentGeneration
+	}
+	ids := dp.detachIdleContextContainersLocked(isOldGeneration)
+	for _, contextKey := range dp.containerContext {
+		if isOldGeneration(contextKey) {
+			dp.stalePersonalContext[contextKey] = true
+		}
+	}
+	dp.pruneUnusedStalePersonalContextsLocked()
+	dp.mu.Unlock()
+
+	for _, id := range ids {
+		if err := dp.removeQuarantinedContainer(id); err != nil {
+			slog.Warn("Old personal dependency container removal was not confirmed", "container_id", shortContainerID(id), "cache_key", cacheKey, "error", err)
+		}
+	}
+	if len(ids) > 0 {
+		slog.Info("Invalidated old personal dependency containers", "cache_key", cacheKey, "count", len(ids))
+	}
+}
+
+func parsePersonalDependencyContext(contextKey string) (cacheKey, generation string, ok bool) {
+	const prefix = "personal/"
+	if !strings.HasPrefix(contextKey, prefix) {
+		return "", "", false
+	}
+	remainder := strings.TrimPrefix(contextKey, prefix)
+	modeSeparator := strings.LastIndexByte(remainder, ':')
+	if modeSeparator <= 0 || modeSeparator == len(remainder)-1 {
+		return "", "", false
+	}
+	mode := remainder[modeSeparator+1:]
+	if mode != "ro" && mode != "rw" {
+		return "", "", false
+	}
+	generationSeparator := strings.LastIndexByte(remainder[:modeSeparator], '@')
+	if generationSeparator <= 0 || generationSeparator == modeSeparator-1 {
+		return "", "", false
+	}
+	return remainder[:generationSeparator], remainder[generationSeparator+1 : modeSeparator], true
+}
+
+func (dp *Pool) personalContextSupersededLocked(contextKey string) bool {
+	cacheKey, generation, personal := parsePersonalDependencyContext(contextKey)
+	if !personal {
+		return false
+	}
+	current, known := dp.currentPersonalGeneration[cacheKey]
+	return known && current.generation != generation
+}
+
+func (dp *Pool) recordContainerContextLocked(containerID, contextKey string) {
+	if contextKey == "" {
+		return
+	}
+	if dp.containerContext == nil {
+		dp.containerContext = make(map[string]string)
+	}
+	dp.containerContext[containerID] = contextKey
+	if dp.personalContextSupersededLocked(contextKey) {
+		if dp.stalePersonalContext == nil {
+			dp.stalePersonalContext = make(map[string]bool)
+		}
+		dp.stalePersonalContext[contextKey] = true
+	}
+}
+
 func (dp *Pool) detachIdleBuildCacheContainers() []string {
+	return dp.detachIdleContextContainers(func(cacheKey string) bool { return cacheKey != "" })
+}
+
+func (dp *Pool) detachIdleContextContainers(matches func(string) bool) []string {
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
+	return dp.detachIdleContextContainersLocked(matches)
+}
+
+// detachIdleContextContainersLocked removes matching containers from reuse
+// while preserving their owner and mount generation. Docker removal happens
+// after unlocking, so an uncertain result remains tracked and quarantined.
+func (dp *Pool) detachIdleContextContainersLocked(matches func(string) bool) []string {
 	var removed []string
+	if dp.pendingRemoval == nil {
+		dp.pendingRemoval = make(map[string]bool)
+	}
 	for image, ids := range dp.idlePool {
 		kept := ids[:0]
 		for _, id := range ids {
-			if dp.containerContext[id] == "" {
+			if matches == nil || !matches(dp.containerContext[id]) {
 				kept = append(kept, id)
 				continue
 			}
 			removed = append(removed, id)
-			delete(dp.containerUser, id)
-			delete(dp.containerContext, id)
-			delete(dp.taintedContainers, id)
+			dp.pendingRemoval[id] = false
 			delete(dp.lruByImage, id)
-			delete(dp.imageByContainerID, id)
 		}
 		if len(kept) == 0 {
 			delete(dp.idlePool, image)
@@ -291,84 +487,196 @@ func (dp *Pool) detachIdleBuildCacheContainers() []string {
 	return removed
 }
 
-// detachUserContainers removes all references under one lock and adjusts each
-// counter according to the container's real state (hot, idle, or active).
-// Docker I/O is deliberately left to the caller outside the lock.
-func (dp *Pool) detachUserContainers(userID string) []string {
+// quarantinePooledContainerLocked transitions an already-detached hot/idle
+// container into a non-reusable capacity bucket without releasing ownership.
+// The caller must hold dp.mu and pass the bucket returned by the detach helper.
+func (dp *Pool) quarantinePooledContainerLocked(containerID, poolKind string) {
+	if dp.pendingRemoval == nil {
+		dp.pendingRemoval = make(map[string]bool)
+	}
+	dp.pendingRemoval[containerID] = false
+	delete(dp.lruByImage, containerID)
+	switch poolKind {
+	case "idle":
+		if dp.idleCount > 0 {
+			dp.idleCount--
+		}
+	case "hot":
+		if dp.activeCount > 0 {
+			dp.activeCount--
+		}
+	}
+}
+
+// removeQuarantinedContainer makes one immediate removal attempt. A transient
+// failure starts one retry loop and keeps the container outside every reuse
+// list while it continues to count against the pool's global capacity.
+func (dp *Pool) removeQuarantinedContainer(containerID string) error {
+	if err := dp.destroyContainer(containerID); err != nil {
+		dp.mu.Lock()
+		retrying, tracked := dp.pendingRemoval[containerID]
+		if tracked && !retrying {
+			dp.pendingRemoval[containerID] = true
+		}
+		dp.mu.Unlock()
+		if tracked && !retrying {
+			go dp.retryQuarantinedContainerRemoval(containerID)
+		}
+		return err
+	}
+	dp.finishQuarantinedContainerRemoval(containerID)
+	return nil
+}
+
+func (dp *Pool) retryQuarantinedContainerRemoval(containerID string) {
+	delay := 250 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		if dp.waitDockerRetry != nil {
+			dp.waitDockerRetry(delay)
+		} else {
+			time.Sleep(delay)
+		}
+		dp.mu.Lock()
+		_, tracked := dp.pendingRemoval[containerID]
+		dp.mu.Unlock()
+		if !tracked {
+			return
+		}
+		if err := dp.destroyContainer(containerID); err == nil {
+			dp.finishQuarantinedContainerRemoval(containerID)
+			slog.Info("Quarantined container removal confirmed", "container_id", shortContainerID(containerID), "attempt", attempt+1)
+			return
+		} else if attempt == 1 || attempt%10 == 0 {
+			slog.Warn("Quarantined container still holds pool ownership", "container_id", shortContainerID(containerID), "attempt", attempt+1, "error", err)
+		}
+		if delay < 30*time.Second {
+			delay *= 2
+			if delay > 30*time.Second {
+				delay = 30 * time.Second
+			}
+		}
+	}
+}
+
+func (dp *Pool) finishQuarantinedContainerRemoval(containerID string) {
+	dp.mu.Lock()
+	if _, tracked := dp.pendingRemoval[containerID]; !tracked {
+		dp.mu.Unlock()
+		return
+	}
+	contextKey := dp.containerContext[containerID]
+	delete(dp.pendingRemoval, containerID)
+	delete(dp.containerUser, containerID)
+	delete(dp.containerContext, containerID)
+	delete(dp.taintedContainers, containerID)
+	delete(dp.lruByImage, containerID)
+	delete(dp.imageByContainerID, containerID)
+	dp.pruneStalePersonalContextLocked(contextKey)
+	dp.mu.Unlock()
+	dp.wakeNextQueued()
+}
+
+func (dp *Pool) snapshotUserContainersForDeletion(userID string) (ids []string, pending, background int) {
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
-	dp.deletedUsers[userID] = true
-
-	ids := make(map[string]struct{})
-	hotCount := 0
-	idleCount := 0
-	for key, ch := range dp.hotPool {
-		if key.userID != userID {
-			continue
+	for id, owner := range dp.containerUser {
+		if owner == userID {
+			ids = append(ids, id)
 		}
-		for {
-			select {
-			case id := <-ch:
-				ids[id] = struct{}{}
-				hotCount++
-			default:
-				delete(dp.hotPool, key)
-				goto hotDrained
-			}
-		}
-	hotDrained:
 	}
+	return ids, dp.userPendingContainers[userID], dp.userBackgroundCreates[userID]
+}
 
-	for image, list := range dp.idlePool {
-		kept := list[:0]
-		for _, id := range list {
-			if dp.containerUser[id] == userID {
-				ids[id] = struct{}{}
-				idleCount++
-			} else {
-				kept = append(kept, id)
-			}
-		}
-		if len(kept) == 0 {
-			delete(dp.idlePool, image)
+const userContainerRemovalAttempts = 3
+
+func (dp *Pool) destroyUserContainerWithRetry(containerID string) error {
+	delay := 250 * time.Millisecond
+	var lastErr error
+	for attempt := 1; attempt <= userContainerRemovalAttempts; attempt++ {
+		if err := dp.destroyContainer(containerID); err == nil {
+			return nil
 		} else {
-			dp.idlePool[image] = kept
+			lastErr = err
 		}
+		if attempt == userContainerRemovalAttempts {
+			break
+		}
+		if dp.waitDockerRetry != nil {
+			dp.waitDockerRetry(delay)
+		} else {
+			time.Sleep(delay)
+		}
+		delay *= 2
 	}
+	return fmt.Errorf("container %s removal was not confirmed after %d attempt(s): %w", shortContainerID(containerID), userContainerRemovalAttempts, lastErr)
+}
 
-	activeCount := 0
-	for id, uid := range dp.containerUser {
-		if uid == userID {
-			if _, classified := ids[id]; !classified {
-				activeCount++
+// forgetConfirmedUserContainer performs the accounting transition that used to
+// happen before docker rm. It classifies the container while holding dp.mu so a
+// concurrent release or health check cannot decrement a different bucket.
+func (dp *Pool) forgetConfirmedUserContainer(containerID, userID string) bool {
+	dp.mu.Lock()
+	defer dp.mu.Unlock()
+	owner, known := dp.containerUser[containerID]
+	if !known || owner != userID {
+		return false
+	}
+	contextKey := dp.containerContext[containerID]
+	if _, quarantined := dp.pendingRemoval[containerID]; quarantined {
+		delete(dp.pendingRemoval, containerID)
+	} else {
+		poolKind := dp.detachPooledContainerLocked(containerID)
+		switch poolKind {
+		case "idle":
+			if dp.idleCount > 0 {
+				dp.idleCount--
 			}
-			ids[id] = struct{}{}
+		case "hot":
+			if dp.activeCount > 0 {
+				dp.activeCount--
+			}
+		default:
+			if dp.activeCount > 0 {
+				dp.activeCount--
+			}
+			if dp.userActiveContainers[userID] > 1 {
+				dp.userActiveContainers[userID]--
+			} else {
+				delete(dp.userActiveContainers, userID)
+			}
 		}
 	}
-	for id := range ids {
-		delete(dp.containerUser, id)
-		delete(dp.containerContext, id)
-		delete(dp.taintedContainers, id)
-		delete(dp.lruByImage, id)
-		delete(dp.imageByContainerID, id)
-	}
-	dp.activeCount -= hotCount + activeCount
-	if dp.activeCount < 0 {
-		dp.activeCount = 0
-	}
-	dp.idleCount -= idleCount
-	if dp.idleCount < 0 {
-		dp.idleCount = 0
-	}
-	delete(dp.userActiveContainers, userID)
-	delete(dp.userPendingContainers, userID)
-	delete(dp.userContainerLimits, userID)
+	delete(dp.containerUser, containerID)
+	delete(dp.containerContext, containerID)
+	delete(dp.taintedContainers, containerID)
+	delete(dp.lruByImage, containerID)
+	delete(dp.imageByContainerID, containerID)
+	dp.pruneStalePersonalContextLocked(contextKey)
+	return true
+}
 
-	result := make([]string, 0, len(ids))
-	for id := range ids {
-		result = append(result, id)
+func (dp *Pool) finishUserContainerDeletion(userID string) (remaining []string, pending, background int) {
+	dp.mu.Lock()
+	defer dp.mu.Unlock()
+	for id, owner := range dp.containerUser {
+		if owner == userID {
+			remaining = append(remaining, id)
+		}
 	}
-	return result
+	pending = dp.userPendingContainers[userID]
+	background = dp.userBackgroundCreates[userID]
+	if len(remaining) == 0 && pending == 0 && background == 0 {
+		delete(dp.userActiveContainers, userID)
+		delete(dp.userPendingContainers, userID)
+		delete(dp.userBackgroundCreates, userID)
+		delete(dp.userContainerLimits, userID)
+		for key, ch := range dp.hotPool {
+			if key.userID == userID && len(ch) == 0 {
+				delete(dp.hotPool, key)
+			}
+		}
+	}
+	return remaining, pending, background
 }
 
 // SetUserLimit 设置用户的容器配额上限
@@ -445,7 +753,7 @@ func (dp *Pool) acquireForUser(ctx context.Context, userID, image, cacheKey stri
 	// 空闲热池容器来腾出槽位；只有真正无可复用容器且无法新建时才进入排队。
 	id, err := dp.acquireInternal(ctx, userID, image, output, cacheKey, volumes, env)
 	if err == nil {
-		return id, nil
+		return dp.finishUserAcquisition(id, userID)
 	}
 
 	// 直接获取失败且全局已满 -> 进入排队等待其它请求释放
@@ -454,10 +762,31 @@ func (dp *Pool) acquireForUser(ctx context.Context, userID, image, cacheKey stri
 	dp.mu.Unlock()
 
 	if full && dp.queue != nil && userID != "" {
-		return dp.acquireViaQueue(ctx, userID, image, cacheKey, volumes, env, output)
+		id, err = dp.acquireViaQueue(ctx, userID, image, cacheKey, volumes, env, output)
+		if err == nil {
+			return dp.finishUserAcquisition(id, userID)
+		}
+		return "", err
 	}
 
 	return "", err
+}
+
+// finishUserAcquisition closes the race where account deletion begins after an
+// acquisition reserved quota but before it returns a container to the caller.
+// The pending reservation remains held until removal is confirmed.
+func (dp *Pool) finishUserAcquisition(containerID, userID string) (string, error) {
+	if userID == "" || containerID == "" {
+		return containerID, nil
+	}
+	dp.mu.Lock()
+	deleted := dp.deletedUsers[userID]
+	dp.mu.Unlock()
+	if !deleted {
+		return containerID, nil
+	}
+	dp.DiscardForUser(containerID, userID)
+	return "", fmt.Errorf("user %s is no longer available", userID)
 }
 
 // acquireViaQueue 通过请求队列等待容器
@@ -488,6 +817,15 @@ func (dp *Pool) acquireViaQueue(ctx context.Context, userID, image, cacheKey str
 		}
 		if err := dp.queue.Enqueue(req); err != nil {
 			return "", err
+		}
+		// Enqueue first, then recheck deletion. In either ordering, account
+		// deletion can now observe and remove this exact queued request.
+		dp.mu.Lock()
+		deleted := dp.deletedUsers[userID]
+		dp.mu.Unlock()
+		if deleted {
+			dp.queue.Remove(req)
+			return "", fmt.Errorf("user %s is no longer available", userID)
 		}
 
 		select {
@@ -527,6 +865,10 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 		dp.mu.Unlock()
 		return "", fmt.Errorf("docker pool is shutting down")
 	}
+	if userID != "" && dp.deletedUsers[userID] {
+		dp.mu.Unlock()
+		return "", fmt.Errorf("user %s is no longer available", userID)
+	}
 	dp.mu.Unlock()
 
 	// L1: 热池命中（预创建的新容器，按用户隔离，已挂载 /persist 卷）
@@ -563,6 +905,7 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 		}
 		dp.mu.Lock()
 		dp.containerUser[id] = userID
+		dp.recordContainerContextLocked(id, dp.containerContext[id])
 		dp.mu.Unlock()
 		dp.incUserActive(userID)
 		dp.mu.Lock()
@@ -581,6 +924,10 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 		dp.mu.Unlock()
 		return "", fmt.Errorf("docker pool is shutting down")
 	}
+	if userID != "" && dp.deletedUsers[userID] {
+		dp.mu.Unlock()
+		return "", fmt.Errorf("user %s is no longer available", userID)
+	}
 	if dp.totalContainersLocked() >= dp.maxTotal {
 		// 容量满：尝试淘汰一个其它用户的空闲热池容器腾出槽位。
 		// 这样即使活跃用户没有命中自己的热池（例如预热时容量不足未为其创建），
@@ -595,23 +942,35 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 			dp.mu.Unlock()
 			return "", fmt.Errorf("maximum container count (%d) reached", dp.maxTotal)
 		}
-		delete(dp.lruByImage, evictedID)
-		delete(dp.imageByContainerID, evictedID)
-		delete(dp.containerUser, evictedID)
-		delete(dp.containerContext, evictedID)
-		delete(dp.taintedContainers, evictedID)
-		// 淘汰容器释放一个槽位，立即为本容器占用（原子操作，避免被 replenish 抢占）。
-		// 净 activeCount 不变，但本容器已正常计入，后续失败路径的 decActive() 语义一致。
+		poolKind := "hot"
 		if evictedIdle {
-			dp.idleCount--
-		} else {
-			dp.activeCount--
+			poolKind = "idle"
+		}
+		dp.quarantinePooledContainerLocked(evictedID, poolKind)
+		dp.mu.Unlock()
+		if err := dp.removeQuarantinedContainer(evictedID); err != nil {
+			return "", fmt.Errorf("evict pooled container %s: %w", shortContainerID(evictedID), err)
+		}
+
+		// Container absence, capacity reservation, and deletion state are all
+		// revalidated because another request may claim the released slot while
+		// docker rm is in flight.
+		dp.mu.Lock()
+		if dp.closed {
+			dp.mu.Unlock()
+			return "", fmt.Errorf("docker pool is shutting down")
+		}
+		if dp.deletedUsers[userID] {
+			dp.mu.Unlock()
+			return "", fmt.Errorf("user %s is no longer available", userID)
+		}
+		if dp.totalContainersLocked() >= dp.maxTotal {
+			dp.mu.Unlock()
+			return "", fmt.Errorf("maximum container count (%d) reached", dp.maxTotal)
 		}
 		dp.activeCount++
 		dp.mu.Unlock()
-		// 锁外销毁旧容器（docker stop/rm 为阻塞 I/O）
-		dp.destroyContainer(evictedID)
-		slog.Info("Evicted hot-pool container to free slot for new container",
+		slog.Info("Evicted pooled container to free slot for new container",
 			"evicted_id", evictedID[:12], "from_user", evictedUser, "for_user", userID, "image", image)
 	} else {
 		dp.activeCount++
@@ -648,22 +1007,35 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 		dp.metrics.Observe("container.create", time.Since(createStarted))
 	}
 	if err != nil {
-		dp.decActive()
+		if containerID == "" {
+			dp.decActive()
+		} else {
+			dp.mu.Lock()
+			dp.containerUser[containerID] = userID
+			dp.imageByContainerID[containerID] = image
+			dp.recordContainerContextLocked(containerID, cacheKey)
+			dp.mu.Unlock()
+			dp.DiscardForUser(containerID, userID)
+		}
 		return "", fmt.Errorf("failed to create container: %w", err)
 	}
 
 	dp.mu.Lock()
-	if dp.closed {
+	if dp.closed || (userID != "" && dp.deletedUsers[userID]) {
+		dp.containerUser[containerID] = userID
+		dp.imageByContainerID[containerID] = image
+		dp.recordContainerContextLocked(containerID, cacheKey)
+		closed := dp.closed
 		dp.mu.Unlock()
-		dp.destroyContainer(containerID)
-		dp.decActive()
-		return "", fmt.Errorf("docker pool is shutting down")
+		dp.DiscardForUser(containerID, userID)
+		if closed {
+			return "", fmt.Errorf("docker pool is shutting down")
+		}
+		return "", fmt.Errorf("user %s is no longer available", userID)
 	}
 	dp.containerUser[containerID] = userID
 	dp.imageByContainerID[containerID] = image
-	if cacheKey != "" {
-		dp.containerContext[containerID] = cacheKey
-	}
+	dp.recordContainerContextLocked(containerID, cacheKey)
 	dp.mu.Unlock()
 	dp.incUserActive(userID)
 	if output != nil {
@@ -750,6 +1122,7 @@ func (dp *Pool) discardActiveLease(containerID, userID string) bool {
 	if userID == "" || userID != owner {
 		userID = owner
 	}
+	contextKey := dp.containerContext[containerID]
 	delete(dp.containerUser, containerID)
 	delete(dp.containerContext, containerID)
 	delete(dp.taintedContainers, containerID)
@@ -763,7 +1136,26 @@ func (dp *Pool) discardActiveLease(containerID, userID string) bool {
 	} else {
 		delete(dp.userActiveContainers, userID)
 	}
+	dp.pruneStalePersonalContextLocked(contextKey)
 	return true
+}
+
+func (dp *Pool) pruneStalePersonalContextLocked(contextKey string) {
+	if contextKey == "" || !dp.stalePersonalContext[contextKey] {
+		return
+	}
+	for _, activeContext := range dp.containerContext {
+		if activeContext == contextKey {
+			return
+		}
+	}
+	delete(dp.stalePersonalContext, contextKey)
+}
+
+func (dp *Pool) pruneUnusedStalePersonalContextsLocked() {
+	for contextKey := range dp.stalePersonalContext {
+		dp.pruneStalePersonalContextLocked(contextKey)
+	}
 }
 
 // releaseInternal 释放容器核心逻辑。
@@ -791,6 +1183,11 @@ func (dp *Pool) releaseInternal(containerID, userID string) {
 		dp.DiscardForUser(containerID, userID)
 		return
 	}
+	if dp.isStalePersonalContainer(containerID) {
+		slog.Info("Discarding container pinned to a stale personal dependency generation", "container_id", shortContainerID(containerID))
+		dp.DiscardForUser(containerID, userID)
+		return
+	}
 	if err := dp.resetContainerForReuse(containerID); err != nil {
 		slog.Warn("Discarding container that could not be reset", "container_id", containerID[:12], "error", err)
 		dp.DiscardForUser(containerID, userID)
@@ -810,44 +1207,81 @@ func (dp *Pool) releaseInternal(containerID, userID string) {
 		return
 	}
 
-	// 扣减用户配额（容器回池不算用户占用）
-	dp.decUser(userID)
-	// 保留 containerUser 映射——tryIdlePool 靠它匹配同用户复用
-	defer dp.wakeNextQueued()
-
-	// 步骤 4: 回空闲池（LRU 策略）
-	image := dp.getContainerImage(containerID)
-	dp.mu.Lock()
-	currentIdle := len(dp.idlePool[image])
-	dp.mu.Unlock()
-
-	if currentIdle < dp.maxIdle {
-		dp.addToIdlePool(image, containerID)
-		dp.mu.Lock()
-		dp.activeCount-- // current: active -> idle
-		dp.idleCount++
-		dp.mu.Unlock()
-		slog.Debug("Container returned to idle pool",
-			"container_id", containerID[:12],
-			"image", image,
-			"idle_count", dp.idleCount,
-		)
-	} else {
-		// 空闲池满，LRU 淘汰最旧 + 当前入池
-		evicted := dp.evictLRU(image) // 已对 evicted 做 idleCount--
-		if evicted != "" {
-			dp.destroyContainer(evicted)
-			// evicted 原在空闲池（activeCount 已在入池时扣减），此处不再 decActive，
-			// 否则会导致 activeCount 重复扣减而逐渐低于实际值。
+	returned, stale, evicted, image, idleCount := dp.returnActiveContainerToIdle(containerID, userID)
+	if !returned {
+		if stale {
+			slog.Info("Discarding container invalidated while it was being reset", "container_id", shortContainerID(containerID))
+			dp.DiscardForUser(containerID, userID)
 		}
-		dp.addToIdlePool(image, containerID)
-		dp.mu.Lock()
-		dp.idleCount++   // evicted 出(-1) + current 入(+1) = net 0
-		dp.activeCount-- // current: active -> idle
-		dp.mu.Unlock()
+		return
 	}
-	// 注意：不再无条件 activeCount--。各分支已对 current 容器恰好扣减一次
-	// （旧实现在此额外扣减一次，导致 activeCount 持续偏低）。
+	defer dp.wakeNextQueued()
+	if evicted != "" {
+		if err := dp.removeQuarantinedContainer(evicted); err != nil {
+			slog.Warn("Evicted idle container removal was not confirmed", "container_id", shortContainerID(evicted), "error", err)
+		}
+	}
+	slog.Debug("Container returned to idle pool",
+		"container_id", shortContainerID(containerID),
+		"image", image,
+		"idle_count", idleCount,
+	)
+}
+
+func (dp *Pool) isStalePersonalContainer(containerID string) bool {
+	dp.mu.Lock()
+	defer dp.mu.Unlock()
+	contextKey := dp.containerContext[containerID]
+	return dp.stalePersonalContext[contextKey] || dp.personalContextSupersededLocked(contextKey)
+}
+
+// returnActiveContainerToIdle makes the stale-generation check and the
+// active-to-idle transition atomic with cache invalidation. This closes both
+// orderings: invalidation just before return marks the active context stale;
+// invalidation just after return removes it from the idle pool.
+func (dp *Pool) returnActiveContainerToIdle(containerID, userID string) (returned, stale bool, evicted, image string, idleCount int) {
+	dp.mu.Lock()
+	defer dp.mu.Unlock()
+	owner, known := dp.containerUser[containerID]
+	if !known {
+		return false, false, "", "", dp.idleCount
+	}
+	if userID == "" || userID != owner {
+		userID = owner
+	}
+	if dp.deletedUsers[userID] {
+		return false, true, "", "", dp.idleCount
+	}
+	contextKey := dp.containerContext[containerID]
+	if dp.stalePersonalContext[contextKey] || dp.personalContextSupersededLocked(contextKey) {
+		return false, true, "", "", dp.idleCount
+	}
+
+	image = dp.imageByContainerID[containerID]
+	if dp.idlePool == nil {
+		dp.idlePool = make(map[string][]string)
+	}
+	if dp.lruByImage == nil {
+		dp.lruByImage = make(map[string]time.Time)
+	}
+	if len(dp.idlePool[image]) >= dp.maxIdle && len(dp.idlePool[image]) > 0 {
+		last := len(dp.idlePool[image]) - 1
+		evicted = dp.idlePool[image][last]
+		dp.idlePool[image] = dp.idlePool[image][:last]
+		dp.quarantinePooledContainerLocked(evicted, "idle")
+	}
+	dp.idlePool[image] = append([]string{containerID}, dp.idlePool[image]...)
+	dp.lruByImage[containerID] = time.Now()
+	if dp.activeCount > 0 {
+		dp.activeCount--
+	}
+	dp.idleCount++
+	if dp.userActiveContainers[userID] > 1 {
+		dp.userActiveContainers[userID]--
+	} else {
+		delete(dp.userActiveContainers, userID)
+	}
+	return true, false, evicted, image, dp.idleCount
 }
 
 // wakeNextQueued only signals a waiter to retry acquisition. It deliberately
@@ -892,15 +1326,9 @@ func (dp *Pool) tryIdlePool(image, userID, cacheKey string) string {
 		}
 
 		dp.mu.Lock()
-		delete(dp.imageByContainerID, id)
-		delete(dp.containerUser, id)
-		delete(dp.containerContext, id)
-		delete(dp.taintedContainers, id)
-		if dp.idleCount > 0 {
-			dp.idleCount--
-		}
+		dp.quarantinePooledContainerLocked(id, "idle")
 		dp.mu.Unlock()
-		if err := dp.destroyContainer(id); err != nil {
+		if err := dp.removeQuarantinedContainer(id); err != nil {
 			slog.Warn("Dead idle container removal was not confirmed", "container_id", shortContainerID(id), "error", err)
 		} else {
 			slog.Warn("Dead idle container removed during acquire", "container_id", shortContainerID(id))
@@ -920,6 +1348,7 @@ func (dp *Pool) takeIdleMatchLocked(image, userID, cacheKey string) string {
 			delete(dp.idlePool, image)
 		}
 		delete(dp.lruByImage, id)
+		dp.recordContainerContextLocked(id, dp.containerContext[id])
 		return id
 	}
 	return ""
@@ -947,40 +1376,148 @@ func (dp *Pool) evictLRU(image string) string {
 	lastIdx := len(list) - 1
 	evicted := list[lastIdx]
 	dp.idlePool[image] = list[:lastIdx]
-	delete(dp.lruByImage, evicted)
-	delete(dp.imageByContainerID, evicted)
-	delete(dp.containerUser, evicted)
-	delete(dp.containerContext, evicted)
-	delete(dp.taintedContainers, evicted)
-	dp.idleCount--
+	dp.quarantinePooledContainerLocked(evicted, "idle")
 	return evicted
 }
 
-// cleanWorkspace 异步清理容器内工作区
+// A managed container runs only tail -f /dev/null, optionally under Docker's
+// --init process. verified reset avoids a restart only when docker top proves
+// that exact baseline is still the complete process set.
 func containerRestartArguments(containerID string) []string {
 	return []string{"restart", "-t", "0", containerID}
 }
 
 func (dp *Pool) resetContainerForReuse(containerID string) error {
+	strategy := dp.containerResetStrategy()
+	if strategy == ResetStrategyVerified {
+		verifyStarted := time.Now()
+		baselineOnly, verifyErr := dp.hasOnlyManagedBaselineProcesses(containerID)
+		if dp.metrics != nil {
+			dp.metrics.Observe("container.recycle.verify", time.Since(verifyStarted))
+		}
+		if verifyErr == nil && baselineOnly {
+			if cleanErr := dp.cleanWorkspaceObserved(containerID); cleanErr == nil {
+				return nil
+			} else {
+				slog.Warn("Verified container workspace cleanup failed; falling back to restart", "container_id", shortContainerID(containerID), "error", cleanErr)
+			}
+		} else if verifyErr != nil {
+			slog.Warn("Container process verification failed; falling back to restart", "container_id", shortContainerID(containerID), "error", verifyErr)
+		} else {
+			slog.Info("Container has non-baseline processes; falling back to restart", "container_id", shortContainerID(containerID))
+		}
+	}
+
+	restartStarted := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if output, err := exec.CommandContext(ctx, "docker", containerRestartArguments(containerID)...).CombinedOutput(); err != nil {
-		return fmt.Errorf("restart container: %w: %s", err, strings.TrimSpace(string(output)))
+	output, restartErr := dp.executeDockerCommand(ctx, containerRestartArguments(containerID)...)
+	if dp.metrics != nil {
+		dp.metrics.Observe("container.recycle.restart", time.Since(restartStarted))
 	}
-	return dp.cleanWorkspace(containerID)
+	if restartErr != nil {
+		return fmt.Errorf("restart container: %w: %s", restartErr, strings.TrimSpace(string(output)))
+	}
+	return dp.cleanWorkspaceObserved(containerID)
+}
+
+func (dp *Pool) containerResetStrategy() string {
+	dp.mu.Lock()
+	defer dp.mu.Unlock()
+	if dp.resetStrategy == ResetStrategyRestart {
+		return ResetStrategyRestart
+	}
+	return ResetStrategyVerified
+}
+
+func (dp *Pool) hasOnlyManagedBaselineProcesses(containerID string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := dp.executeDockerCommand(ctx, "top", containerID, "-eo", "pid,ppid,comm,args")
+	if err != nil {
+		return false, fmt.Errorf("docker top: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return parseManagedBaselineProcesses(output)
+}
+
+func parseManagedBaselineProcesses(output []byte) (bool, error) {
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) < 2 {
+		return false, fmt.Errorf("docker top returned no process rows")
+	}
+	header := strings.Fields(lines[0])
+	if len(header) < 4 || !strings.EqualFold(header[0], "PID") || !strings.EqualFold(header[1], "PPID") {
+		return false, fmt.Errorf("docker top returned an unexpected header")
+	}
+
+	initCount := 0
+	tailCount := 0
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			return false, fmt.Errorf("docker top returned a malformed process row")
+		}
+		command := filepath.Base(fields[2])
+		args := fields[3:]
+		switch command {
+		case "docker-init":
+			if !managedInitArguments(args) {
+				return false, nil
+			}
+			initCount++
+		case "tail":
+			if !managedTailArguments(args) {
+				return false, nil
+			}
+			tailCount++
+		default:
+			return false, nil
+		}
+	}
+	return tailCount == 1 && initCount <= 1 && initCount+tailCount == len(lines)-1, nil
+}
+
+func managedTailArguments(args []string) bool {
+	return len(args) == 3 && filepath.Base(args[0]) == "tail" && args[1] == "-f" && args[2] == "/dev/null"
+}
+
+func managedInitArguments(args []string) bool {
+	if len(args) < 5 || filepath.Base(args[0]) != "docker-init" {
+		return false
+	}
+	separator := -1
+	for index, arg := range args {
+		if arg == "--" {
+			separator = index
+			break
+		}
+	}
+	return separator >= 0 && managedTailArguments(args[separator+1:])
+}
+
+func (dp *Pool) cleanWorkspaceObserved(containerID string) error {
+	started := time.Now()
+	err := dp.cleanWorkspace(containerID)
+	if dp.metrics != nil {
+		dp.metrics.Observe("container.recycle.workspace", time.Since(started))
+	}
+	return err
 }
 
 func (dp *Pool) cleanWorkspace(containerID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 清理 /workspace 内所有文件，然后重建空目录
-	_, stderr, exitCode, err := dp.Exec(ctx, containerID, []string{"sh", "-c", "rm -rf /workspace; mkdir -p /workspace"}, "/")
-	if err != nil {
-		return err
+	cleanupCommand := "rm -rf /workspace; mkdir -p /workspace"
+	if dp.readOnlyRootfs {
+		// These paths are independent tmpfs mounts in read-only-rootfs mode.
+		// Restarting the container clears them; the verified fast path must
+		// provide the same isolation without trying to remove mount points.
+		cleanupCommand = "rm -rf -- /workspace/* /workspace/.[!.]* /workspace/..?* /tmp/* /tmp/.[!.]* /tmp/..?* /home/* /home/.[!.]* /home/..?*; mkdir -p /workspace /tmp /home; chmod 1777 /tmp"
 	}
-	if exitCode != 0 {
-		return fmt.Errorf("workspace reset exited with code %d: %s", exitCode, strings.TrimSpace(stderr))
+	output, err := dp.executeDockerCommand(ctx, "exec", "-w", "/", containerID, "sh", "-c", cleanupCommand)
+	if err != nil {
+		return fmt.Errorf("workspace reset: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
@@ -1270,13 +1807,11 @@ func (dp *Pool) tryHotPool(image, userID string) string {
 		// 热池容器在 replenishHotPool 创建时已计入 activeCount，此处必须 decActive，
 		// 否则 activeCount 会持续偏高（计入已销毁容器），最终误判为满。
 		dp.mu.Lock()
-		delete(dp.imageByContainerID, containerID)
-		delete(dp.containerUser, containerID)
-		delete(dp.containerContext, containerID)
-		delete(dp.taintedContainers, containerID)
+		dp.quarantinePooledContainerLocked(containerID, "hot")
 		dp.mu.Unlock()
-		dp.destroyContainer(containerID)
-		dp.decActive()
+		if err := dp.removeQuarantinedContainer(containerID); err != nil {
+			slog.Warn("Dead hot-pool container removal was not confirmed", "container_id", shortContainerID(containerID), "error", err)
+		}
 		slog.Warn("Dead hot-pool container removed during acquire", "container_id", containerID[:12])
 		return ""
 	default:
@@ -1361,9 +1896,22 @@ func (dp *Pool) replenishHotPool(image, userID string) {
 		ch = make(chan string, dp.poolSize)
 		dp.hotPool[key] = ch
 	}
+	if dp.userBackgroundCreates == nil {
+		dp.userBackgroundCreates = make(map[string]int)
+	}
+	dp.userBackgroundCreates[userID]++
 	dp.mu.Unlock()
 
 	go func() {
+		defer func() {
+			dp.mu.Lock()
+			if dp.userBackgroundCreates[userID] > 1 {
+				dp.userBackgroundCreates[userID]--
+			} else {
+				delete(dp.userBackgroundCreates, userID)
+			}
+			dp.mu.Unlock()
+		}()
 		for {
 			dp.mu.Lock()
 			currentSize := len(ch)
@@ -1401,15 +1949,27 @@ func (dp *Pool) replenishHotPool(image, userID string) {
 			containerID, err := dp.createContainer(ctx, image, extraVolumes, extraEnv)
 			cancel()
 			if err != nil {
-				dp.decActive()
+				if containerID == "" {
+					dp.decActive()
+				} else {
+					dp.mu.Lock()
+					dp.containerUser[containerID] = userID
+					dp.imageByContainerID[containerID] = image
+					dp.mu.Unlock()
+					dp.DiscardForUser(containerID, userID)
+				}
 				return
 			}
 
 			dp.mu.Lock()
 			if dp.closed || dp.deletedUsers[userID] || dp.hotPool[key] != ch {
+				// Track the just-created container before attempting removal. If
+				// Docker is temporarily unavailable, the background-creation count
+				// and ownership remain until Discard confirms absence.
+				dp.containerUser[containerID] = userID
+				dp.imageByContainerID[containerID] = image
 				dp.mu.Unlock()
-				dp.destroyContainer(containerID)
-				dp.decActive()
+				dp.DiscardForUser(containerID, userID)
 				return
 			}
 			// 记录容器归属用户，供 healthCheckLoop 死容器补池时定位正确的用户热池
@@ -1420,11 +1980,7 @@ func (dp *Pool) replenishHotPool(image, userID string) {
 				dp.imageByContainerID[containerID] = image
 			default:
 				dp.mu.Unlock()
-				delete(dp.containerUser, containerID)
-				delete(dp.containerContext, containerID)
-				delete(dp.taintedContainers, containerID)
-				dp.destroyContainer(containerID)
-				dp.decActive()
+				dp.DiscardForUser(containerID, userID)
 				return
 			}
 			dp.mu.Unlock()
@@ -1717,7 +2273,7 @@ func (dp *Pool) createContainer(ctx context.Context, image string, extraVolumes 
 
 	startCmd := exec.CommandContext(ctx, "docker", "start", containerID)
 	if err := startCmd.Run(); err != nil {
-		return "", fmt.Errorf("docker start failed: %w", err)
+		return containerID, fmt.Errorf("docker start failed: %w", err)
 	}
 
 	// Ensure /workspace exists before any later exec selects it as a working
@@ -1727,8 +2283,7 @@ func (dp *Pool) createContainer(ctx context.Context, image string, extraVolumes 
 	defer mkdirCancel()
 	mkdirCmd := exec.CommandContext(mkdirCtx, "docker", containerWorkspaceBootstrapArguments(containerID)...)
 	if output, err := mkdirCmd.CombinedOutput(); err != nil {
-		dp.destroyContainer(containerID)
-		return "", fmt.Errorf("docker workspace initialization failed: %s", strings.TrimSpace(string(output)))
+		return containerID, fmt.Errorf("docker workspace initialization failed: %s", strings.TrimSpace(string(output)))
 	}
 
 	return containerID, nil
@@ -1926,7 +2481,7 @@ func (dp *Pool) markContainerTainted(containerID string) {
 // totalContainersLocked includes hot, leased and idle containers. Callers
 // must hold dp.mu. Creation reservations are represented in activeCount.
 func (dp *Pool) totalContainersLocked() int {
-	return dp.activeCount + dp.idleCount
+	return dp.activeCount + dp.idleCount + len(dp.pendingRemoval)
 }
 
 func (dp *Pool) decActive() {
@@ -1999,21 +2554,12 @@ func (dp *Pool) healthCheckLoop() {
 				dp.mu.Unlock()
 				continue
 			}
-			delete(dp.lruByImage, c.id)
-			delete(dp.imageByContainerID, c.id)
-			delete(dp.containerUser, c.id)
-			delete(dp.containerContext, c.id)
-			delete(dp.taintedContainers, c.id)
-			if poolKind == "idle" {
-				if dp.idleCount > 0 {
-					dp.idleCount--
-				}
-			} else if dp.activeCount > 0 {
-				dp.activeCount--
-			}
+			dp.quarantinePooledContainerLocked(c.id, poolKind)
 			dp.mu.Unlock()
 
-			dp.destroyContainer(c.id)
+			if err := dp.removeQuarantinedContainer(c.id); err != nil {
+				slog.Warn("Dead pooled container removal was not confirmed", "container_id", shortContainerID(c.id), "error", err)
+			}
 
 			if poolKind == "hot" && c.image != "" {
 				go dp.replenishHotPool(c.image, c.userID)

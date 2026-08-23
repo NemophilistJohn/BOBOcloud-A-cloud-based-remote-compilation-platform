@@ -3,6 +3,7 @@ package dap
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,16 +17,17 @@ import (
 )
 
 type LaunchSpec struct {
-	SessionID      string
-	UserID         string
-	Workspace      string
-	PersistDir     string
-	DependencyRoot string
-	DependencyEnv  map[string]string
-	Adapter        AdapterSpec
-	MemoryLimit    string
-	CPULimit       string
-	NetworkEnable  bool
+	SessionID           string
+	UserID              string
+	Workspace           string
+	PersistDir          string
+	DependencyRoot      string
+	DependencyMountRoot string
+	DependencyEnv       map[string]string
+	Adapter             AdapterSpec
+	MemoryLimit         string
+	CPULimit            string
+	NetworkEnable       bool
 }
 
 type Process interface {
@@ -65,8 +67,8 @@ func (p *execProcess) Kill() error {
 
 type dockerProcess struct {
 	Process
-	name string
-	once sync.Once
+	name    string
+	removal dockerContainerRemoval
 }
 
 // tcpDockerProcess represents an adapter whose DAP server listens inside its
@@ -77,7 +79,7 @@ type tcpDockerProcess struct {
 	name     string
 	hostPort string
 	root     net.Conn
-	once     sync.Once
+	removal  dockerContainerRemoval
 }
 
 // unixDockerProcess keeps TCP inside an internal Docker network. The adapter
@@ -88,13 +90,153 @@ type unixDockerProcess struct {
 	socketDir string
 	socket    string
 	root      net.Conn
-	once      sync.Once
+	removal   dockerContainerRemoval
+}
+
+type dockerContainerRemoval struct {
+	mu         sync.Mutex
+	confirmed  bool
+	remove     func(string) error
+	retryDelay time.Duration
+}
+
+func forceRemoveDockerContainer(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("Docker container name is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "docker", "rm", "-f", name).CombinedOutput()
+	if err == nil {
+		return inspectDockerContainerAbsent(name)
+	}
+	detail := strings.TrimSpace(string(output))
+	lower := strings.ToLower(detail)
+	if strings.Contains(lower, "no such container") || strings.Contains(lower, "no such object") {
+		return nil
+	}
+	if detail == "" {
+		return fmt.Errorf("remove Docker container %q: %w", name, err)
+	}
+	return fmt.Errorf("remove Docker container %q: %w: %s", name, err, detail)
+}
+
+func dockerInspectConfirmsAbsent(name string, output []byte, err error) error {
+	detail := strings.TrimSpace(string(output))
+	if err == nil {
+		return fmt.Errorf("Docker container %q still exists after removal", name)
+	}
+	lower := strings.ToLower(detail)
+	if strings.Contains(lower, "no such container") || strings.Contains(lower, "no such object") {
+		return nil
+	}
+	if detail == "" {
+		return fmt.Errorf("confirm Docker container %q removal: %w", name, err)
+	}
+	return fmt.Errorf("confirm Docker container %q removal: %w: %s", name, err, detail)
+}
+
+func inspectDockerContainerAbsent(name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "docker", "inspect", "--type", "container", name).CombinedOutput()
+	return dockerInspectConfirmsAbsent(name, output, err)
+}
+
+func (r *dockerContainerRemoval) try(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.confirmed {
+		return nil
+	}
+	remove := r.remove
+	if remove == nil {
+		remove = forceRemoveDockerContainer
+	}
+	if err := remove(name); err != nil {
+		return err
+	}
+	r.confirmed = true
+	return nil
+}
+
+func (r *dockerContainerRemoval) wait(name string) {
+	delay := r.retryDelay
+	if delay <= 0 {
+		delay = 250 * time.Millisecond
+	}
+	for attempt := 1; ; attempt++ {
+		if err := r.try(name); err == nil {
+			return
+		} else if attempt == 1 || attempt%120 == 0 {
+			slog.Warn("Waiting for Docker DAP container removal", "container", name, "attempt", attempt, "error", err)
+		}
+		time.Sleep(delay)
+	}
+}
+
+type dockerAdapterStartCleanupError struct {
+	cause   error
+	removed <-chan struct{}
+}
+
+func (e *dockerAdapterStartCleanupError) Error() string { return e.cause.Error() }
+func (e *dockerAdapterStartCleanupError) Unwrap() error { return e.cause }
+func (e *dockerAdapterStartCleanupError) CleanupDone() <-chan struct{} {
+	return e.removed
+}
+
+func failDockerAdapterStart(cause error, name, socketDir string) error {
+	return failDockerAdapterStartWithRemoval(cause, name, socketDir, &dockerContainerRemoval{})
+}
+
+func failDockerAdapterStartWithRemoval(cause error, name, socketDir string, removal *dockerContainerRemoval) error {
+	removed := make(chan struct{})
+	go func() {
+		removal.wait(name)
+		if strings.TrimSpace(socketDir) != "" {
+			_ = os.RemoveAll(socketDir)
+		}
+		close(removed)
+	}()
+	return &dockerAdapterStartCleanupError{cause: cause, removed: removed}
+}
+
+// StartCleanupDone returns a completion signal when a failed adapter start may
+// still own a Docker container. It deliberately survives error wrapping so the
+// WebSocket owner can retain the whole SessionContext until absence is proven.
+func StartCleanupDone(err error) <-chan struct{} {
+	var pending interface {
+		CleanupDone() <-chan struct{}
+	}
+	if !errors.As(err, &pending) {
+		return nil
+	}
+	return pending.CleanupDone()
+}
+
+func releaseDependencyMountAfterStartError(release func(), err error) {
+	if release == nil {
+		return
+	}
+	cleanupDone := StartCleanupDone(err)
+	if cleanupDone == nil {
+		release()
+		return
+	}
+	go func() {
+		<-cleanupDone
+		release()
+	}()
 }
 
 func (p *unixDockerProcess) Stdin() io.WriteCloser { return p.root }
 func (p *unixDockerProcess) Stdout() io.ReadCloser { return p.root }
 func (p *unixDockerProcess) Wait() error {
-	return exec.Command("docker", "wait", p.name).Run()
+	p.removal.wait(p.name)
+	_ = os.RemoveAll(p.socketDir)
+	return nil
 }
 func (p *unixDockerProcess) OpenChild(ctx context.Context) (io.ReadWriteCloser, error) {
 	if p == nil || strings.TrimSpace(p.socket) == "" {
@@ -106,23 +248,21 @@ func (p *unixDockerProcess) Kill() error {
 	if p == nil {
 		return nil
 	}
-	var result error
-	p.once.Do(func() {
-		if p.root != nil {
-			_ = p.root.Close()
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		result = exec.CommandContext(ctx, "docker", "rm", "-f", p.name).Run()
-		_ = os.RemoveAll(p.socketDir)
-	})
-	return result
+	if p.root != nil {
+		_ = p.root.Close()
+	}
+	err := p.removal.try(p.name)
+	if err != nil {
+		go p.removal.wait(p.name)
+	}
+	return err
 }
 
 func (p *tcpDockerProcess) Stdin() io.WriteCloser { return p.root }
 func (p *tcpDockerProcess) Stdout() io.ReadCloser { return p.root }
 func (p *tcpDockerProcess) Wait() error {
-	return exec.Command("docker", "wait", p.name).Run()
+	p.removal.wait(p.name)
+	return nil
 }
 func (p *tcpDockerProcess) OpenChild(ctx context.Context) (io.ReadWriteCloser, error) {
 	if p == nil || strings.TrimSpace(p.hostPort) == "" {
@@ -134,27 +274,36 @@ func (p *tcpDockerProcess) Kill() error {
 	if p == nil {
 		return nil
 	}
-	var result error
-	p.once.Do(func() {
-		if p.root != nil {
-			_ = p.root.Close()
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		result = exec.CommandContext(ctx, "docker", "rm", "-f", p.name).Run()
-	})
-	return result
+	if p.root != nil {
+		_ = p.root.Close()
+	}
+	err := p.removal.try(p.name)
+	if err != nil {
+		go p.removal.wait(p.name)
+	}
+	return err
+}
+
+func (p *dockerProcess) Wait() error {
+	p.removal.wait(p.name)
+	killErr := p.Process.Kill()
+	if errors.Is(killErr, os.ErrProcessDone) {
+		killErr = nil
+	}
+	waitErr := p.Process.Wait()
+	return errors.Join(waitErr, killErr)
 }
 
 func (p *dockerProcess) Kill() error {
-	var result error
-	p.once.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = exec.CommandContext(ctx, "docker", "rm", "-f", p.name).Run()
-		result = p.Process.Kill()
-	})
-	return result
+	removalErr := p.removal.try(p.name)
+	if removalErr != nil {
+		go p.removal.wait(p.name)
+	}
+	killErr := p.Process.Kill()
+	if errors.Is(killErr, os.ErrProcessDone) {
+		killErr = nil
+	}
+	return errors.Join(removalErr, killErr)
 }
 
 func safeContainerLabel(value string) string {
@@ -290,20 +439,71 @@ func ensureDAPInternalNetwork() error {
 }
 
 func (ExecStarter) Start(ctx context.Context, spec LaunchSpec) (Process, error) {
+	var releaseDependencyMount func()
+	if strings.TrimSpace(spec.DependencyRoot) != "" {
+		pinnedRoot, release, err := pinDAPDependencyMount(spec.DependencyMountRoot, spec.SessionID, spec.DependencyRoot)
+		if err != nil {
+			return nil, err
+		}
+		spec.DependencyRoot = pinnedRoot
+		releaseDependencyMount = release
+	}
 	name := "bobocloud-dap-" + safeContainerLabel(spec.SessionID)
 	args, err := dockerRunArgs(spec, name, false)
 	if err != nil {
+		releaseDependencyMountAfterStartError(releaseDependencyMount, err)
 		return nil, err
 	}
+	var process Process
 	if spec.Adapter.Transport == "tcp" {
-		return startTCPDockerAdapter(ctx, spec, name, args)
+		process, err = startTCPDockerAdapter(ctx, spec, name, args)
+	} else if spec.Adapter.Transport == "unix" {
+		process, err = startUnixDockerAdapter(ctx, spec, name, args)
+	} else {
+		args = append(args, spec.Adapter.Image)
+		args = append(args, spec.Adapter.Command...)
+		process, err = startDockerCommand(ctx, exec.CommandContext(ctx, "docker", args...), name, spec.SessionID)
 	}
-	if spec.Adapter.Transport == "unix" {
-		return startUnixDockerAdapter(ctx, spec, name, args)
+	if err != nil {
+		releaseDependencyMountAfterStartError(releaseDependencyMount, err)
+		return nil, err
 	}
-	args = append(args, spec.Adapter.Image)
-	args = append(args, spec.Adapter.Command...)
-	return startDockerCommand(ctx, exec.CommandContext(ctx, "docker", args...), name, spec.SessionID)
+	return wrapDAPDependencyProcess(process, releaseDependencyMount), nil
+}
+
+type dependencyMountedProcess struct {
+	Process
+	release func()
+	once    sync.Once
+}
+
+func wrapDAPDependencyProcess(process Process, release func()) Process {
+	if release == nil {
+		return process
+	}
+	return &dependencyMountedProcess{Process: process, release: release}
+}
+
+func (process *dependencyMountedProcess) releaseMount() {
+	process.once.Do(process.release)
+}
+
+func (process *dependencyMountedProcess) Wait() error {
+	err := process.Process.Wait()
+	process.releaseMount()
+	return err
+}
+
+func (process *dependencyMountedProcess) Kill() error {
+	return process.Process.Kill()
+}
+
+func (process *dependencyMountedProcess) OpenChild(ctx context.Context) (io.ReadWriteCloser, error) {
+	provider, ok := process.Process.(ChildConnectionProvider)
+	if !ok {
+		return nil, fmt.Errorf("DAP child connection is unavailable")
+	}
+	return provider.OpenChild(ctx)
 }
 
 func startUnixDockerAdapter(ctx context.Context, spec LaunchSpec, name string, args []string) (Process, error) {
@@ -316,16 +516,14 @@ func startUnixDockerAdapter(ctx context.Context, spec LaunchSpec, name string, a
 	args = append(args, spec.Adapter.Image)
 	args = append(args, spec.Adapter.Command...)
 	if output, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
-		_ = os.RemoveAll(socketDir)
-		return nil, fmt.Errorf("start Unix DAP adapter: %w: %s", err, strings.TrimSpace(string(output)))
+		cause := fmt.Errorf("start Unix DAP adapter: %w: %s", err, strings.TrimSpace(string(output)))
+		return nil, failDockerAdapterStart(cause, name, socketDir)
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	root, err := dialDAPUnix(dialCtx, socketPath)
 	if err != nil {
-		_ = exec.Command("docker", "rm", "-f", name).Run()
-		_ = os.RemoveAll(socketDir)
-		return nil, fmt.Errorf("connect to Unix DAP adapter: %w", err)
+		return nil, failDockerAdapterStart(fmt.Errorf("connect to Unix DAP adapter: %w", err), name, socketDir)
 	}
 	return &unixDockerProcess{name: name, socketDir: socketDir, socket: socketPath, root: root}, nil
 }
@@ -335,19 +533,18 @@ func startTCPDockerAdapter(ctx context.Context, spec LaunchSpec, name string, ar
 	args = append(args, spec.Adapter.Image)
 	args = append(args, spec.Adapter.Command...)
 	if output, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("start tcp DAP adapter: %w: %s", err, strings.TrimSpace(string(output)))
+		cause := fmt.Errorf("start tcp DAP adapter: %w: %s", err, strings.TrimSpace(string(output)))
+		return nil, failDockerAdapterStart(cause, name, "")
 	}
 	portCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	hostPort, err := resolvePublishedPort(portCtx, name, spec.Adapter.ContainerPort)
 	if err != nil {
-		_ = exec.Command("docker", "rm", "-f", name).Run()
-		return nil, err
+		return nil, failDockerAdapterStart(err, name, "")
 	}
 	root, err := dialDAPTCP(portCtx, hostPort)
 	if err != nil {
-		_ = exec.Command("docker", "rm", "-f", name).Run()
-		return nil, fmt.Errorf("connect to tcp DAP adapter: %w", err)
+		return nil, failDockerAdapterStart(fmt.Errorf("connect to tcp DAP adapter: %w", err), name, "")
 	}
 	return &tcpDockerProcess{name: name, hostPort: hostPort, root: root}, nil
 }
@@ -436,17 +633,54 @@ func startDockerCommand(ctx context.Context, cmd *exec.Cmd, name, sessionID stri
 	return &dockerProcess{Process: base, name: name}, nil
 }
 
-func CleanupDockerOrphans() {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	output, err := exec.CommandContext(ctx, "docker", "ps", "-aq", "--filter", "label=bobocloud.dap=true").Output()
+func cleanupDockerOrphanIDs(ids []string, remove func(string) error) error {
+	var result error
+	for _, id := range ids {
+		if err := remove(id); err != nil {
+			result = errors.Join(result, err)
+		}
+	}
+	return result
+}
+
+func CleanupDockerOrphans() error {
+	ids, err := listDockerDAPOrphanIDs(dockerDAPOrphanFilters())
 	if err != nil {
-		return
+		return err
 	}
-	ids := strings.Fields(string(output))
 	if len(ids) == 0 {
-		return
+		return nil
 	}
-	args := append([]string{"rm", "-f"}, ids...)
-	_ = exec.CommandContext(ctx, "docker", args...).Run()
+	return cleanupDockerOrphanIDs(ids, forceRemoveDockerContainer)
+}
+
+func dockerDAPOrphanFilters() []string {
+	return []string{
+		"label=bobocloud.dap=true",
+		// Toolkit image labels identify adapters created by pre-service-label
+		// builds, including containers that Docker assigned a random name.
+		"label=bobocloud.dap.adapter",
+		"name=bobocloud-dap-",
+	}
+}
+
+func listDockerDAPOrphanIDs(filters []string) ([]string, error) {
+	seen := make(map[string]struct{})
+	ids := make([]string, 0)
+	for _, filter := range filters {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		output, err := exec.CommandContext(ctx, "docker", "ps", "-aq", "--filter", filter).CombinedOutput()
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("list orphaned Docker DAP containers (%s): %w: %s", filter, err, strings.TrimSpace(string(output)))
+		}
+		for _, id := range strings.Fields(string(output)) {
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }

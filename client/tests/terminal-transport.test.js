@@ -102,12 +102,21 @@ test('starts an authenticated terminal session and streams binary output lossles
   });
   socket.fire('message', JSON.stringify({
     type: 'terminal.ready', sessionId: 'term-1', runtimeId: 'python:3.12', snapshot: true,
-    capabilities: { tty: true, resize: true, isolatedWorkspace: true }
+    capabilities: { tty: true, resize: true, isolatedWorkspace: true },
+    environment: {
+      runtimeId: 'python:3.12', displayName: 'Python 3.12', language: 'python', version: '3.12',
+      dockerImage: 'python:3.12-slim', workspaceKind: 'personal'
+    }
   }));
   assert.deepEqual(await started, {
     sessionId: 'term-1', runtimeId: 'python:3.12', snapshot: true, limits: null,
-    capabilities: { tty: true, resize: true, isolatedWorkspace: true }
+    capabilities: { tty: true, resize: true, isolatedWorkspace: true },
+    environment: {
+      runtimeId: 'python:3.12', displayName: 'Python 3.12', language: 'python', version: '3.12',
+      dockerImage: 'python:3.12-slim', workspaceKind: 'personal'
+    }
   });
+  assert.equal(transport.snapshot().environment.dockerImage, 'python:3.12-slim');
 
   const bytes = Buffer.from('你好 \x1b[31mred\x1b[0m', 'utf8');
   socket.fire('message', JSON.stringify({ type: 'terminal.output', stream: 'stdout', encoding: 'base64', data: bytes.subarray(0, 2).toString('base64') }));

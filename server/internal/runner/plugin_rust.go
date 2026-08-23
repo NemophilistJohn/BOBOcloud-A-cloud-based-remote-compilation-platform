@@ -6,6 +6,14 @@ import (
 	"strings"
 )
 
+// Cargo honors CARGO_TARGET_DIR when compiling, so Docker execution must resolve
+// the generated binary from the same container-provided directory. Artifact
+// paths and user arguments remain positional parameters and are never evaluated
+// as shell source.
+const rustRuntimeBootstrap = `artifact=$1; shift; if [ -n "${CARGO_TARGET_DIR:-}" ]; then case "$artifact" in ./target/*) artifact="$CARGO_TARGET_DIR/${artifact#./target/}" ;; target/*) artifact="$CARGO_TARGET_DIR/${artifact#target/}" ;; esac; fi; exec "$artifact" "$@"`
+
+const rustArtifactCopyBootstrap = `artifact=$1; destination=$2; if [ -n "${CARGO_TARGET_DIR:-}" ]; then case "$artifact" in ./target/*) artifact="$CARGO_TARGET_DIR/${artifact#./target/}" ;; target/*) artifact="$CARGO_TARGET_DIR/${artifact#target/}" ;; esac; fi; exec cp "$artifact" "$destination"`
+
 // ============================================================
 // plugin_rust.go — Rust 语言插件（Cargo 感知）
 //
@@ -30,6 +38,31 @@ func (RustPlugin) Plan(req *PlanRequest) (*Plan, error) {
 		return cargoPlan(req, cargoDir)
 	}
 	return singleFilePlan(req)
+}
+
+func withDockerRustRuntimeBootstrap(plan *Plan) *Plan {
+	if plan == nil {
+		return nil
+	}
+	copyPlan := *plan
+	copyPlan.Steps = append([]Step(nil), plan.Steps...)
+	for index := range copyPlan.Steps {
+		step := copyPlan.Steps[index]
+		switch {
+		case step.Stage == "run:rust" && len(step.Cmd) > 0 && isRustCargoArtifactPath(step.Cmd[0]):
+			step.Cmd = append([]string{"sh", "-c", rustRuntimeBootstrap, "rust-runtime", step.Cmd[0]}, step.Cmd[1:]...)
+		case step.Stage == "artifact:rust" && len(step.Cmd) == 3 && step.Cmd[0] == "cp" && isRustCargoArtifactPath(step.Cmd[1]):
+			step.Cmd = []string{"sh", "-c", rustArtifactCopyBootstrap, "rust-artifact", step.Cmd[1], step.Cmd[2]}
+		default:
+			continue
+		}
+		copyPlan.Steps[index] = step
+	}
+	return &copyPlan
+}
+
+func isRustCargoArtifactPath(path string) bool {
+	return strings.HasPrefix(path, "./target/") || strings.HasPrefix(path, "target/")
 }
 
 // cargoPlan Cargo 项目：cargo build + 运行目标二进制
