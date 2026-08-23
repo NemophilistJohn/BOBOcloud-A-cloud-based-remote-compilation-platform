@@ -56,7 +56,9 @@ workspaceSettings = createWorkspaceSettingsController({
   getWorkspaceIdentity: workspace.getIdentity
 });
 const plugins = createPluginController({ app, ipcMain, dialog, shell, getWindow, t: languagePacks.t,
-  getWorkspaceIdentity: workspace.getIdentity, onDidChange: () => { if (menu) menu.rebuild(); }
+  getWorkspaceIdentity: workspace.getIdentity,
+  resolveWorkspaceFile: workspace.resolveWorkspaceFile,
+  onDidChange: () => { if (menu) menu.rebuild(); }
 });
 const marketplace = createMarketplaceController({ app, ipcMain, getWindow, pluginManager: plugins, hostVersion: app.getVersion() });
 const auth = createAuthController({ ipcMain, settings, disposeLsp: disposeRemoteEditorServices,

@@ -543,6 +543,64 @@ test('extension sandbox keeps downloaded source out of the renderer document and
   assert.doesNotMatch(documentSource, /operation: 'detect', args: args \|\| \{\}/);
 });
 
+test('document views are manifest-authorized, lifecycle-owned, and rendered in a separate networkless sandbox', async () => {
+  const platform = core.createRendererPlatform();
+  let sandbox;
+  const host = new core.PluginExtensionHost({
+    services: platform.services,
+    commands: platform.commands,
+    contributions: platform.contributions,
+    loadEntry: async (id) => ({ id, source: 'export function activate() {}' }),
+    broker: async (_id, method, args) => ({
+      authorized: true,
+      method,
+      viewer: method === 'documentViews.register' ? {
+        id: args.id,
+        title: args.title,
+        extensions: ['.pdf'],
+        entry: 'dist/view.js',
+        resources: ['dist/view.css'],
+        priority: 20
+      } : undefined
+    }),
+    sandboxFactory: (options) => (sandbox = createExtensionSandboxHarness(options))
+  });
+  const descriptor = {
+    id: 'acme.documents',
+    revision: 'first',
+    manifest: {
+      id: 'acme.documents',
+      version: '1.0.0',
+      engines: { pluginApi: '^1.3.0' },
+      permissions: [core.PluginPermission.DOCUMENT_VIEWS_REGISTER, core.PluginPermission.DOCUMENTS_READ],
+      contributes: { documentViewers: [{ id: 'acme.documents.pdf' }] }
+    },
+    grantedPermissions: [core.PluginPermission.DOCUMENT_VIEWS_REGISTER, core.PluginPermission.DOCUMENTS_READ]
+  };
+  assert.equal((await host.activate(descriptor)).ok, true);
+  sandbox.emit({ type: 'request', id: 1, method: 'documentViews.register', args: { id: 'acme.documents.pdf', title: 'PDF Preview' } });
+  await nextTurn();
+  const response = sandbox.sent.find((message) => message.type === 'response' && message.id === 1);
+  assert.equal(response.ok, true);
+  const entries = platform.contributions.listEntries(core.ContributionPoint.DOCUMENT_VIEWS);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].owner, 'acme.documents');
+  assert.equal(core.selectDocumentView(entries, 'REPORT.PDF').id, 'acme.documents.pdf');
+
+  const sandboxDocument = core.buildDocumentViewSandboxDocument();
+  assert.match(core.DOCUMENT_VIEW_SANDBOX_CSP, /connect-src 'none'/);
+  assert.match(core.DOCUMENT_VIEW_SANDBOX_CSP, /worker-src blob:/);
+  assert.doesNotMatch(sandboxDocument, /window\.api/);
+  assert.doesNotMatch(sandboxDocument, /window\.BOBO/);
+  assert.doesNotMatch(sandboxDocument, /allow-same-origin/);
+  assert.match(sandboxDocument, /Direct document-view network access is disabled/);
+  assert.match(sandboxDocument, /document\.read/);
+
+  await host.deactivate('acme.documents');
+  assert.equal(platform.contributions.listEntries(core.ContributionPoint.DOCUMENT_VIEWS).length, 0);
+  await platform.dispose();
+});
+
 test('SCM data contracts reject path escape and keep presentation host-controlled', () => {
   const provider = core.createScmFileDecorationProvider({
     id: 'acme.scm.decorations',
@@ -1088,7 +1146,7 @@ test('thin BOBO adapter projects the same registered file icon service', () => {
   vm.runInNewContext(compatibilityBundle, context);
 
   const BOBO = context.window.BOBO;
-  assert.equal(BOBO.platform.apiVersion, '1.2.0');
+  assert.equal(BOBO.platform.apiVersion, '1.3.0');
   assert.equal(BOBO.platform.services.has('workbench.fileIcons'), true);
   assert.equal(BOBO.platform.services.get('workbench.fileIcons'), BOBO.fileIcons);
   assert.equal(BOBO.fileIcons.getFileIcon('main.go'), 'ico/file_type_go.svg');

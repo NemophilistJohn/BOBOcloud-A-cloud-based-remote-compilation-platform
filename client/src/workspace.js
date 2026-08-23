@@ -446,6 +446,7 @@
         try { tab.model.dispose(); } catch (e) { /* ignore */ }
       }
     }
+    if (BOBO.documentViews) BOBO.documentViews.disposeAll();
     // A workbench page is not tied to the workspace and can stay open while
     // files are replaced. File tabs are still disposed below as before.
     var retainedWorkbenchTab = findWorkbenchTab(S.activeTabPath);
@@ -518,6 +519,7 @@
         try { t.model.dispose(); } catch (e) { /* ignore */ }
       }
     }
+    if (BOBO.documentViews) BOBO.documentViews.disposeAll();
     var retainedWorkbenchTab = findWorkbenchTab(S.activeTabPath);
     S.tabs = [];
     S.activeTabPath = retainedWorkbenchTab ? retainedWorkbenchTab.tab.key : null;
@@ -1341,6 +1343,32 @@
       return;
     }
 
+    var documentRegistration = BOBO.documentViews && BOBO.documentViews.find
+      ? BOBO.documentViews.find(name)
+      : null;
+    if (documentRegistration) {
+      try {
+        var documentView = await BOBO.documentViews.create(filePath, name, documentRegistration);
+        var documentTab = {
+          path: filePath,
+          name: name,
+          model: null,
+          language: 'document-view',
+          documentView: documentView,
+          dirty: false
+        };
+        S.tabs.push(documentTab);
+        activateTab(filePath);
+        addTabToBar(documentTab, S.tabs.length - 1);
+        updateTitlebar();
+        if (BOBO.collaboration && BOBO.collaboration.onFileOpened) BOBO.collaboration.onFileOpened(filePath);
+        return true;
+      } catch (error) {
+        if (BOBO.toast && BOBO.toast.error) BOBO.toast.error(t('Document preview failed') + ': ' + error.message);
+        return false;
+      }
+    }
+
     var content = await window.api.readFile(filePath);
     var detectedLanguage = BOBO.detectLanguage(name, content);
     var language = BOBO.workspaceSettings && BOBO.workspaceSettings.languageForFile
@@ -1373,14 +1401,19 @@
     S.activeTabPath = filePath;
     // Docker mode follows the active source language, while an explicit Local
     // choice remains untouched inside the runtime selector.
-    if (BOBO.runtime && BOBO.runtime.autoSelectForLanguage) BOBO.runtime.autoSelectForLanguage(tab.language);
+    if (tab.language !== 'document-view' && BOBO.runtime && BOBO.runtime.autoSelectForLanguage) BOBO.runtime.autoSelectForLanguage(tab.language);
     if (BOBO.runConfig && BOBO.runConfig.refreshForActiveFile) BOBO.runConfig.refreshForActiveFile();
 
-    if (tab.language === 'image') {
+    if (tab.language === 'document-view') {
+      if (S.editor) S.editor.setModel(null);
+      if (BOBO.documentViews) BOBO.documentViews.show(tab);
+    } else if (tab.language === 'image') {
+      if (BOBO.documentViews) BOBO.documentViews.hideAll();
       if (BOBO.views && BOBO.views.showImagePreview) {
         BOBO.views.showImagePreview(tab.path, tab.name);
       }
     } else {
+      if (BOBO.documentViews) BOBO.documentViews.hideAll();
       if (BOBO.views) BOBO.views.closeImagePreview();
 
       if (S.currentViewMode === 'split' && S.splitEditor) {
@@ -1400,7 +1433,7 @@
     refreshTabBarActive();
     updateTitlebar();
     updateEmptyState();
-    BOBO.editorCore.updateStatusBar(tab.model, tab.language !== 'image' ? S.editor.getPosition() : null);
+    BOBO.editorCore.updateStatusBar(tab.model, tab.model ? S.editor.getPosition() : null);
     if (BOBO.environmentActivity) BOBO.environmentActivity.contextChanged('language');
     if (BOBO.collaboration && BOBO.collaboration.onFileActivated) BOBO.collaboration.onFileActivated(filePath);
   }
@@ -1431,6 +1464,7 @@
     if (tab.model && tab.language !== 'image') {
       try { tab.model.dispose(); } catch(e) { /* ignore */ }
     }
+    if (BOBO.documentViews) BOBO.documentViews.disposeTab(tab);
 
 	S.tabs.splice(idx, 1);
 	syncDirtyPaths.delete(filePath);
@@ -1442,13 +1476,9 @@
       var next = S.tabs[idx] || S.tabs[idx - 1];
       S.activeTabPath = next ? next.path : null;
       if (next) {
-        if (S.currentViewMode === 'split' && S.splitEditor) {
-          S.splitEditor.setModel(next.model);
-        } else if (S.currentViewMode === 'diff') {
-          if (BOBO.views && BOBO.views.closeDiff) BOBO.views.closeDiff();
-        }
-        S.editor.setModel(next ? next.model : null);
+        activateTab(next.path);
       } else {
+        if (BOBO.documentViews) BOBO.documentViews.hideAll();
         S.editor.setModel(null);
         S.currentDiagnostics = { errors: 0, warnings: 0, infos: 0 };
         BOBO.editorCore.updateDiagnosticsStatus();

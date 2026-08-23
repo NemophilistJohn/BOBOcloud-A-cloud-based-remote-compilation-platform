@@ -1,8 +1,9 @@
 import { DisposableStore } from './disposable.js';
 import { ContributionPoint } from './contribution-registry.js';
 import { SourceControlStateStore, validateSourceControlDescriptor } from './source-control.js';
+import { validateDocumentViewDescriptor } from './document-view.js';
 
-export const PLUGIN_API_VERSION = '1.2.0';
+export const PLUGIN_API_VERSION = '1.3.0';
 
 export const PluginPermission = Object.freeze({
   COMMANDS_REGISTER: 'commands.register',
@@ -12,7 +13,9 @@ export const PluginPermission = Object.freeze({
   SOURCE_CONTROL_REGISTER: 'sourceControl.register',
   SCM_GIT_READ: 'scm.git.read',
   SCM_GIT_WRITE: 'scm.git.write',
-  FILE_DECORATIONS_SCM: 'fileDecorations.scm'
+  FILE_DECORATIONS_SCM: 'fileDecorations.scm',
+  DOCUMENT_VIEWS_REGISTER: 'documentViews.register',
+  DOCUMENTS_READ: 'documents.read'
 });
 
 const KNOWN_PERMISSIONS = new Set(Object.values(PluginPermission));
@@ -21,7 +24,9 @@ const KNOWN_PERMISSIONS = new Set(Object.values(PluginPermission));
 // validation. Installed packages use the isolated extension host; this legacy
 // runtime mirrors the same contribution ownership boundary for core callers.
 const KNOWN_CONTRIBUTION_POINTS = new Set(
-  Object.values(ContributionPoint).filter((point) => point !== ContributionPoint.SOURCE_CONTROL)
+  Object.values(ContributionPoint).filter((point) => (
+    point !== ContributionPoint.SOURCE_CONTROL && point !== ContributionPoint.DOCUMENT_VIEWS
+  ))
 );
 
 function isNonEmptyString(value) {
@@ -160,7 +165,10 @@ export function validatePluginManifest(manifest) {
     version: manifest.version,
     displayName: isNonEmptyString(manifest.displayName) ? manifest.displayName : manifest.id,
     engines: Object.freeze({ ...manifest.engines }),
-    permissions: Object.freeze([...new Set(permissions)])
+    permissions: Object.freeze([...new Set(permissions)]),
+    contributes: manifest.contributes && typeof manifest.contributes === 'object'
+      ? Object.freeze(JSON.parse(JSON.stringify(manifest.contributes)))
+      : Object.freeze({})
   });
 }
 
@@ -364,6 +372,23 @@ export class PluginRuntime {
           });
           subscriptions.add(provider);
           return provider;
+        }
+      }),
+      documentViews: Object.freeze({
+        register: (descriptor) => {
+          requirePermission(PluginPermission.DOCUMENT_VIEWS_REGISTER);
+          requirePermission(PluginPermission.DOCUMENTS_READ);
+          const normalizedDescriptor = validateDocumentViewDescriptor(descriptor, manifest.id);
+          const declared = Array.isArray(manifest.contributes.documentViewers)
+            ? manifest.contributes.documentViewers.find((candidate) => candidate.id === normalizedDescriptor.id)
+            : null;
+          if (!declared) throw new Error('Document viewer is not declared in the plugin manifest.');
+          const disposable = this._contributions.register(ContributionPoint.DOCUMENT_VIEWS, normalizedDescriptor, {
+            id: normalizedDescriptor.id,
+            owner: manifest.id
+          });
+          subscriptions.add(disposable);
+          return disposable;
         }
       }),
       i18n: this._createPluginI18n(manifest)

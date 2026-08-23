@@ -47,6 +47,7 @@ import './compat/file-icons-adapter.js';
 import '../src/workspace-sync-status.js';
 import '../src/workspace-settings.js';
 import '../src/editor-core.js';
+import '../src/document-views.js';
 import '../src/workspace.js';
 import '../src/plugin-details.js';
 import '../src/rclone-client.js';

@@ -4,6 +4,7 @@ import { PLUGIN_API_VERSION, PluginPermission, validatePluginManifest } from './
 import { createScmFileDecorationProvider } from './scm-file-decoration.js';
 import { normalizeScmGitRequest } from './scm-git.js';
 import { SourceControlStateStore, validateSourceControlDescriptor } from './source-control.js';
+import { validateDocumentViewDescriptor } from './document-view.js';
 import {
   EXTENSION_PROTOCOL_VERSION,
   ExtensionErrorCode,
@@ -545,6 +546,10 @@ export class PluginExtensionHost {
         return this._clearScmFileDecorations(record, args);
       case ExtensionHostMethod.FILE_DECORATIONS_SCM_DISPOSE:
         return this._disposeHandle(record, args, 'scm-decoration');
+      case ExtensionHostMethod.DOCUMENT_VIEW_REGISTER:
+        return this._registerDocumentView(record, args);
+      case ExtensionHostMethod.DOCUMENT_VIEW_DISPOSE:
+        return this._disposeHandle(record, args, 'document-view');
       case ExtensionHostMethod.SCM_GIT_REQUEST:
         return this._requestScmGit(record, args);
       case ExtensionHostMethod.SERVICE_GET:
@@ -834,6 +839,43 @@ export class PluginExtensionHost {
     this._requirePermission(record, request.permission);
     if (!this._broker) throw createExtensionError(ExtensionErrorCode.UNAVAILABLE, 'SCM Git broker is unavailable.');
     return cloneExtensionData(await this._broker(record.descriptor.id, 'scm.git.' + request.operation, request.args));
+  }
+
+  async _registerDocumentView(record, args) {
+    this._requirePermission(record, PluginPermission.DOCUMENT_VIEWS_REGISTER);
+    this._requirePermission(record, PluginPermission.DOCUMENTS_READ);
+    const value = cloneExtensionData(args || {});
+    const id = assertExtensionOwnedId(
+      record.descriptor.id,
+      asNonEmptyString(value.id, 'Document viewer'),
+      'Document viewer'
+    );
+    const title = boundedString(value.title, '', 120);
+    if (!title || Object.keys(value).some((key) => key !== 'id' && key !== 'title')) {
+      throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Document viewer registration is invalid.');
+    }
+    const authorization = await this._authorize(record, ExtensionHostMethod.DOCUMENT_VIEW_REGISTER, { id, title }, PluginPermission.DOCUMENT_VIEWS_REGISTER);
+    let descriptor;
+    try {
+      descriptor = validateDocumentViewDescriptor(authorization.viewer, record.descriptor.id);
+    } catch (error) {
+      throw extensionInvalidRequest(error, 'Document viewer descriptor is invalid.');
+    }
+    if (descriptor.id !== id || descriptor.title !== title) {
+      throw createExtensionError(ExtensionErrorCode.PROTOCOL, 'Document viewer authorization returned mismatched identity.');
+    }
+    const handle = 'document-view-' + (++record.nextRequestId);
+    const contributionDisposable = this._contributions.register(ContributionPoint.DOCUMENT_VIEWS, descriptor, {
+      id,
+      owner: record.descriptor.id
+    });
+    const resource = toDisposable(() => {
+      record.handles.delete(handle);
+      contributionDisposable.dispose();
+    });
+    record.handles.set(handle, { kind: 'document-view', disposable: resource });
+    record.subscriptions.add(resource);
+    return { handle, id };
   }
 
   _disposeHandle(record, args, kind) {

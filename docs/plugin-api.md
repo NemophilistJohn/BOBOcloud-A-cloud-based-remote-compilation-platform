@@ -1,6 +1,6 @@
-# BOBOCloud Plugin API 1.2.0
+# BOBOCloud Plugin API 1.3.0
 
-Status: public package and isolated extension-host contract. BOBOCloud `2.6.0` is the first host release for this API.
+Status: public package and isolated extension-host contract. BOBOCloud `2.6.1` is the first host release for API 1.3.
 
 The reference guide, package checklist, and complete example are in [Plugin Development Guide](./plugin-development.md).
 
@@ -17,8 +17,8 @@ The reference guide, package checklist, and complete example are in [Plugin Deve
   "displayName": "Acme Project Tools",
   "version": "1.0.0",
   "engines": {
-    "bobocloud": ">=2.6.0 <3.0.0",
-    "pluginApi": "^1.2.0"
+    "bobocloud": ">=2.6.1 <3.0.0",
+    "pluginApi": "^1.3.0"
   },
   "main": "dist/extension.js",
   "activationEvents": ["onStartupFinished"],
@@ -33,7 +33,7 @@ The reference guide, package checklist, and complete example are in [Plugin Deve
 }
 ```
 
-The root file is named `manifest.json`. A `.boboplugin` is a ZIP archive with that file at archive root. The user-facing installer accepts only this archive format; development-folder installation is reserved for internal development and test controllers. A package contains one bundled JavaScript entry in API v1 and the integrity map covers every non-manifest file exactly once.
+The root file is named `manifest.json`. A `.boboplugin` is a ZIP archive with that file at archive root. The user-facing installer accepts only this archive format; development-folder installation is reserved for internal development and test controllers. Schema 1 retains the single bundled JavaScript entry rule. Schema 2 may additionally contain only the document-view entries and text resources explicitly declared in `contributes.documentViewers`. The integrity map covers every non-manifest file exactly once.
 
 The matching TypeScript declaration is [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts). [examples/plugins/hello-plugin](../client/examples/plugins/hello-plugin) is a minimal installable directory package with a verified integrity hash.
 
@@ -41,7 +41,7 @@ The matching TypeScript declaration is [plugin-sdk/bobocloud-plugin.d.ts](../cli
 
 An opaque-origin sandboxed iframe is used only as a strict transport shell (`sandbox=allow-scripts`); it does not execute package code directly. The shell creates one host-generated Blob Worker, and that dedicated worker executes the installed entry after receiving it over a `MessageChannel`. The worker has no Node.js, Electron API, raw preload bridge, direct renderer object, arbitrary DOM, local filesystem, process, or network access. Its CSP permits only the Blob Worker (`worker-src blob:`) and denies external connections, frames, and object/media loads; the worker also disables `fetch`, XHR, WebSocket, EventSource, `importScripts`, nested workers, and shared workers.
 
-The host verifies the entry SHA-256 before passing the source through the channel. The sandbox imports that single source from a Blob URL. Relative JavaScript imports are consequently unsupported.
+The host verifies the entry SHA-256 before passing the source through the channel. The activation sandbox imports that single source from a Blob URL. Relative JavaScript imports are consequently unsupported. A schema-2 document view runs in a separate opaque-origin iframe described under [Document Views](#document-views); it is not the activation Worker and receives a different, narrower context.
 
 All values exchanged with the host are bounded JSON-like data: plain objects, arrays, strings, booleans, finite numbers, and `null`. Functions, class instances, DOM objects, accessors, circular structures, non-finite numbers, and oversized payloads are rejected.
 
@@ -107,6 +107,9 @@ interface PluginContext {
   readonly sourceControl: Readonly<{
     register(descriptor: SourceControlDescriptor): Promise<SourceControlStateProvider>;
   }>;
+  readonly documentViews: Readonly<{
+    register(descriptor: { id: string; title: string }): Promise<Disposable>;
+  }>;
   readonly services: Readonly<{
     get(id: string): Promise<unknown>;
   }>;
@@ -120,7 +123,7 @@ interface PluginContext {
 
 ## Permissions
 
-For API 1.2.0, a package may request only these permissions:
+For API 1.3.0, a package may request only these permissions:
 
 | Permission | Enables |
 | --- | --- |
@@ -132,10 +135,12 @@ For API 1.2.0, a package may request only these permissions:
 | `fileDecorations.scm` | `context.fileDecorations.registerScm()` and its state publisher |
 | `scm.git.read` | Read-only local SCM requests through `context.scm.git` |
 | `scm.git.write` | Local SCM mutation requests through `context.scm.git` |
+| `documentViews.register` | Register a manifest-declared document viewer with the workbench. |
+| `documents.read` | Let that viewer read only the document the user opened through a scoped opaque handle. |
 
 A manifest declaration is the package's hard capability ceiling. BOBOCloud automatically enables all declared permissions after a verified install or update; users can revoke or restore each permission in the **Extensions** detail tab. A call still requires both the manifest declaration and a currently active grant. Undeclared or revoked calls reject with `EXTENSION_PERMISSION_DENIED`.
 
-There is no plugin capability for workspace reads or writes, shell/process spawning, raw network connections, credentials, MCP process control, AI model access, DAP, or arbitrary IPC in API 1.2.0. The local SCM methods below are a narrow main-process broker, not a general workspace, process, or network capability.
+There is no plugin capability for workspace enumeration or general reads or writes, shell/process spawning, raw network connections, credentials, MCP process control, AI model access, DAP, or arbitrary IPC in API 1.3.0. `documents.read` is not a filesystem API: it can read only the current user-opened document through a sender-, plugin-, viewer-, workspace-, size-, and modification-bound opaque handle. The local SCM methods below are likewise a narrow main-process broker, not a general workspace, process, or network capability.
 
 ## Commands
 
@@ -156,7 +161,7 @@ Some BOBOCloud command palette builds do not yet expose disposable third-party c
 
 ## Contributions
 
-Plugin contribution ids must also begin with the plugin id plus `.`. API 1.2.0 accepts only data declarations at these points:
+Plugin contribution ids must also begin with the plugin id plus `.`. API 1.3.0 accepts data declarations at these points:
 
 | Point | API status |
 | --- | --- |
@@ -168,7 +173,69 @@ Plugin contribution ids must also begin with the plugin id plus `.`. API 1.2.0 a
 | `mcp.providers` | Declarative storage; main-process MCP lifecycle is pending. |
 | `skills.providers` | Declarative storage; skill catalog consumer is pending. |
 
-Executable file-decoration callbacks and debug-configuration providers are intentionally not exposed to installed package code because they require executable callbacks or security-sensitive workflow ownership. The static SCM decoration publisher documented below is the sole data-only file-decoration exception in API 1.2.0.
+`documentViews` uses the dedicated manifest-authorized registration API below and cannot be registered through `context.contributions.register()`. Executable file-decoration callbacks and debug-configuration providers are intentionally not exposed to installed package code because they require executable callbacks or security-sensitive workflow ownership. The static SCM decoration publisher documented below remains the sole data-only file-decoration exception in API 1.3.0.
+
+## Document Views
+
+Document viewers require package schema 2 and both `documentViews.register` and `documents.read`. The manifest is the executable-code allowlist:
+
+```json
+{
+  "schemaVersion": 2,
+  "permissions": ["documentViews.register", "documents.read"],
+  "contributes": {
+    "documentViewers": [{
+      "id": "acme.project-tools.markdown",
+      "extensions": [".md", ".markdown"],
+      "entry": "dist/document-view.js",
+      "resources": ["dist/document-view.css"],
+      "priority": 100
+    }]
+  }
+}
+```
+
+A package may declare at most 16 viewers. Viewer ids are unique and namespaced; each viewer has 1 to 32 unique lowercase extensions, one included `.js` or `.mjs` entry, up to 16 included text resources, and an integer priority from -1000 to 1000. The host selects the longest matching extension, then the highest priority. A view entry or resource is limited to 8 MiB and the combined loaded view is limited to 24 MiB. Every file remains covered by the package integrity map and is SHA-256 verified at load time.
+
+The activation Worker registers only a manifest-declared viewer id and a localized title:
+
+```js
+export async function activate(context) {
+  const registration = await context.documentViews.register({
+    id: 'acme.project-tools.markdown',
+    title: context.i18n.t('Markdown preview')
+  });
+  context.subscriptions.add(registration);
+}
+```
+
+The view entry separately exports `activate(context)`. It runs inside its own `sandbox="allow-scripts"` iframe with an opaque origin. Its CSP denies connections, forms, nested frames, object/media loads, and undeclared URLs. `fetch`, XHR, WebSocket, EventSource, WebTransport, RTC, `window.open`, and beacons are blocked. The iframe has no Node.js, Electron, preload bridge, workbench object, parent DOM, workspace path, or absolute document path. Blob Workers are allowed only so bundled parsers such as PDF.js can process bytes without blocking the view.
+
+```ts
+interface DocumentViewContext {
+  readonly root: HTMLElement;
+  readonly document: Readonly<{
+    documentId: string;
+    name: string;
+    extension: string;
+    size: number;
+    lastModified: string;
+  }>;
+  readonly viewer: Readonly<{
+    id: string;
+    title: string;
+    extensions: readonly string[];
+    priority: number;
+  }>;
+  readonly i18n: PluginI18n;
+  readonly assets: Readonly<{ url(resourcePath: string): string }>;
+  read(offset: number, length: number): Promise<Uint8Array>;
+  readAll(maximumBytes?: number): Promise<Uint8Array>;
+  readText(maximumBytes?: number, encoding?: string): Promise<string>;
+}
+```
+
+`read()` accepts only a bounded range and returns at most 2 MiB. `readAll()` and `readText()` reject above the caller-supplied bound and never exceed the host's 128 MiB ceiling. The main process revalidates the current workspace and file identity on every chunk. A workspace switch, file replacement, size/mtime change, permission revocation, plugin disable, sender destruction, or tab close invalidates the session. `assets.url()` returns a temporary Blob URL only for a resource declared by that viewer; no package path is exposed.
 
 ## Source-Control Sidebar
 
@@ -331,7 +398,7 @@ Stable local-SCM error codes are:
 
 ### Implemented vs Reserved
 
-API v1 implements package installation and validation, permission storage, isolated activation, lifecycle cleanup, the command registry, the `workbench.projectTasks` read-only snapshot, local SCM broker mediation, the host-rendered source-control sidebar, and static SCM file-tree decorations. The remaining declarative contribution points are stored and disposed correctly, but their user-facing consumers are reserved: they do not yet add a visible menu, create a settings UI, run a cloud task, register a Monaco provider, invoke an AI tool, start MCP, or load a skill. Do not advertise those effects from an API v1 package.
+API v1 implements package installation and validation, permission storage, isolated activation, lifecycle cleanup, the command registry, the `workbench.projectTasks` read-only snapshot, local SCM broker mediation, the host-rendered source-control sidebar, static SCM file-tree decorations, and schema-2 document views. The remaining declarative contribution points are stored and disposed correctly, but their user-facing consumers are reserved: they do not yet add a visible menu, create a settings UI, run a cloud task, register a Monaco provider, invoke an AI tool, start MCP, or load a skill. Do not advertise those effects from an API v1 package.
 
 ## Services
 
@@ -371,7 +438,7 @@ BOBO.pluginDetails.open(pluginId: string): Promise<boolean>
 
 It opens or reuses one closeable main-workbench tab per installed plugin id. The page renders only the sanitized `PluginRecord`: identity, version, status, integrity state, engine ranges, requested/granted permissions, activation events, and contribution-point names. It never displays package source, an installation path, or secrets, and it never creates or changes a Monaco editor model. A `plugins:changed` event refreshes opened details or closes a tab for an uninstalled package.
 
-This helper is not available to installed package code and is not part of Plugin API 1.2.0.
+This helper is not available to installed package code and is not part of Plugin API 1.3.0.
 
 Typical runtime failures have stable error codes:
 

@@ -53,6 +53,7 @@ const EXPECTED_MODULES = [
   '../src/workspace-sync-status.js',
   '../src/workspace-settings.js',
   '../src/editor-core.js',
+  '../src/document-views.js',
   '../src/workspace.js',
   '../src/plugin-details.js',
   '../src/rclone-client.js',

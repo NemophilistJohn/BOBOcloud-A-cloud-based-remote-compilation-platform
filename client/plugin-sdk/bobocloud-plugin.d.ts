@@ -1,5 +1,5 @@
 /**
- * BOBOCloud Plugin API 1.2.0 declarations.
+ * BOBOCloud Plugin API 1.3.0 declarations.
  *
  * Copy or reference this file from a plugin's TypeScript project. The runtime
  * is a sandboxed ES module; Node.js, Electron, DOM, and window APIs are not
@@ -26,7 +26,9 @@ export type PluginPermission =
   | 'sourceControl.register'
   | 'fileDecorations.scm'
   | 'scm.git.read'
-  | 'scm.git.write';
+  | 'scm.git.write'
+  | 'documentViews.register'
+  | 'documents.read';
 
 export interface CommandMetadata {
   readonly title?: string;
@@ -275,6 +277,18 @@ export interface PluginFileDecorations {
   registerScm(options: Readonly<{ id: string; priority?: number }>): Promise<ScmFileDecorationProvider>;
 }
 
+export interface DocumentViewRegistration {
+  /** Must match one contributes.documentViewers entry and use the plugin namespace. */
+  readonly id: string;
+  /** Localized title used by the host for accessibility and diagnostics. */
+  readonly title: string;
+}
+
+export interface PluginDocumentViews {
+  /** Requires both `documentViews.register` and `documents.read`. */
+  register(descriptor: DocumentViewRegistration): Promise<Disposable>;
+}
+
 export interface ScmRepositoryDescriptor {
   /** An opaque, workspace-session-scoped repository token. */
   readonly repositoryId: string;
@@ -462,6 +476,7 @@ export interface PluginContext {
   readonly i18n: PluginI18n;
   readonly sourceControl: PluginSourceControl;
   readonly fileDecorations: PluginFileDecorations;
+  readonly documentViews: PluginDocumentViews;
   readonly scm: PluginScm;
   readonly services: PluginServices;
   readonly host: PluginHost;
@@ -503,3 +518,33 @@ export type ActivationResult = void | (() => void | Promise<void>) | Disposable 
 
 export type Activate = (context: PluginContext) => ActivationResult;
 export type Deactivate = () => void | Promise<void>;
+
+/** API supplied only to a declared schema-2 document-view entry inside its isolated iframe. */
+export interface DocumentViewContext {
+  readonly root: HTMLElement;
+  readonly document: Readonly<{
+    readonly documentId: string;
+    readonly name: string;
+    readonly extension: string;
+    readonly size: number;
+    readonly lastModified: string;
+  }>;
+  readonly viewer: Readonly<{
+    readonly id: string;
+    readonly title: string;
+    readonly extensions: readonly string[];
+    readonly priority: number;
+  }>;
+  readonly i18n: PluginI18n;
+  readonly assets: Readonly<{
+    /** Returns a temporary Blob URL only for a resource declared by this viewer. */
+    url(resourcePath: string): string;
+  }>;
+  /** Reads at most 2 MiB from the current document handle. */
+  read(offset: number, length: number): Promise<Uint8Array>;
+  /** Reads the current document only when it is within the supplied bounded limit. */
+  readAll(maximumBytes?: number): Promise<Uint8Array>;
+  readText(maximumBytes?: number, encoding?: string): Promise<string>;
+}
+
+export type ActivateDocumentView = (context: DocumentViewContext) => ActivationResult;

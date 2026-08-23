@@ -90,7 +90,9 @@ async function createHarness(t, options = {}) {
   const window = {
     isDestroyed: () => false,
     webContents: {
+      id: 7,
       isDestroyed: () => false,
+      once: () => {},
       send: (channel, payload) => events.push({ channel, payload })
     }
   };
@@ -100,11 +102,19 @@ async function createHarness(t, options = {}) {
     dialog: options.dialog || { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
     shell: { openPath: async () => '' },
     getWindow: () => window,
-    getWorkspaceIdentity: () => ({ ...workspaceState })
+    getWorkspaceIdentity: () => ({ ...workspaceState }),
+    resolveWorkspaceFile: (candidate) => {
+      const filePath = path.resolve(candidate);
+      const relative = path.relative(workspaceRoot, filePath);
+      if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+        throw new Error('Path is outside the workspace');
+      }
+      return { filePath, workspaceIdentity: workspaceState.workspaceIdentity };
+    }
   });
   controller.registerIpc();
   await controller.initialize();
-  return { root, workspaceRoot, workspaceState, controller, handlers, events };
+  return { root, workspaceRoot, workspaceState, controller, handlers, events, window };
 }
 
 test('plugin packages install atomically, remain disabled, and receive declared permissions by default', async (t) => {
@@ -246,6 +256,110 @@ test('plugin-localization loader returns only a verified selected flat message t
   assert.equal(harness.controller.get('acme.sample-plugin').status, 'invalid');
 });
 
+test('schema-2 document viewers load only verified resources and read through sender-bound workspace handles', async (t) => {
+  const harness = await createHarness(t);
+  const sourceRoot = path.join(harness.root, 'document-view-package');
+  const mainSource = 'export async function activate(context) { await context.documentViews.register({ id: "acme.sample-plugin.preview", title: "Preview" }); }\n';
+  const viewSource = 'export async function activate(context) { await context.read(0, 4); }\n';
+  const styleSource = ':root { color: white; }\n';
+  await fsp.mkdir(path.join(sourceRoot, 'dist'), { recursive: true });
+  await fsp.writeFile(path.join(sourceRoot, 'dist', 'extension.js'), mainSource, 'utf8');
+  await fsp.writeFile(path.join(sourceRoot, 'dist', 'view.js'), viewSource, 'utf8');
+  await fsp.writeFile(path.join(sourceRoot, 'dist', 'view.css'), styleSource, 'utf8');
+  const manifest = makeManifest('1.0.0', mainSource, {
+    permissions: ['documentViews.register', 'documents.read']
+  });
+  manifest.schemaVersion = 2;
+  manifest.engines.pluginApi = '^1.3.0';
+  manifest.contributes = {
+    documentViewers: [{
+      id: 'acme.sample-plugin.preview',
+      extensions: ['.pdf', '.csv'],
+      entry: 'dist/view.js',
+      resources: ['dist/view.css'],
+      priority: 10
+    }]
+  };
+  manifest.integrity.files = {
+    'dist/extension.js': hash(mainSource),
+    'dist/view.js': hash(viewSource),
+    'dist/view.css': hash(styleSource)
+  };
+  await fsp.writeFile(path.join(sourceRoot, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
+  const documentPath = path.join(harness.workspaceRoot, 'sample.pdf');
+  await fsp.writeFile(documentPath, Buffer.from([1, 2, 3, 4, 5, 6]));
+
+  await harness.controller.installFromPath(sourceRoot);
+  await harness.controller.setEnabled('acme.sample-plugin', true);
+  const loaded = await harness.controller.loadDocumentView('acme.sample-plugin', 'acme.sample-plugin.preview');
+  assert.equal(loaded.entry.source, viewSource);
+  assert.equal(loaded.resources[0].source, styleSource);
+  assert.equal(JSON.stringify(loaded).includes(harness.root), false, 'view source payload must not leak package paths');
+  const registration = await harness.controller.rpc('acme.sample-plugin', 'documentViews.register', {
+    id: 'acme.sample-plugin.preview', title: 'Preview'
+  });
+  assert.equal(registration.authorized, true);
+  assert.equal(registration.viewer.entry, 'dist/view.js');
+
+  const trustedEvent = { sender: harness.window.webContents };
+  const openHandler = harness.handlers.get('plugins:document-open');
+  const readHandler = harness.handlers.get('plugins:document-read');
+  const closeHandler = harness.handlers.get('plugins:document-close');
+  const opened = await openHandler(trustedEvent, {
+    pluginId: 'acme.sample-plugin', viewerId: 'acme.sample-plugin.preview', filePath: documentPath
+  });
+  assert.equal(opened.name, 'sample.pdf');
+  assert.equal(JSON.stringify(opened).includes(harness.workspaceRoot), false, 'document handle must not leak paths');
+  const chunk = await readHandler(trustedEvent, { documentId: opened.documentId, offset: 1, length: 3 });
+  assert.deepEqual([...chunk.data], [2, 3, 4]);
+  await assert.rejects(
+    () => readHandler({ sender: { id: 10 } }, { documentId: opened.documentId, offset: 0, length: 1 }),
+    { code: 'plugins.ipc.sender' }
+  );
+  const replacementPath = path.join(harness.workspaceRoot, 'replacement.pdf');
+  await fsp.writeFile(replacementPath, Buffer.from([7, 8, 9, 10, 11, 12]));
+  await fsp.rm(documentPath);
+  await fsp.rename(replacementPath, documentPath);
+  await assert.rejects(
+    () => readHandler(trustedEvent, { documentId: opened.documentId, offset: 0, length: 1 }),
+    { code: 'DOCUMENT_VIEW_CHANGED' }
+  );
+  await harness.controller.grant('acme.sample-plugin', 'documents.read', false);
+  await assert.rejects(
+    () => harness.controller.loadDocumentView('acme.sample-plugin', 'acme.sample-plugin.preview'),
+    { code: 'plugins.documentView.permission' }
+  );
+  await assert.rejects(
+    () => readHandler(trustedEvent, { documentId: opened.documentId, offset: 0, length: 1 }),
+    { code: 'DOCUMENT_VIEW_NOT_FOUND' }
+  );
+  assert.deepEqual(await closeHandler(trustedEvent, { documentId: opened.documentId }), { closed: false });
+
+  await harness.controller.grant('acme.sample-plugin', 'documents.read', true);
+  const reopened = await openHandler(trustedEvent, {
+    pluginId: 'acme.sample-plugin', viewerId: 'acme.sample-plugin.preview', filePath: documentPath
+  });
+  await fsp.rm(path.join(harness.controller.root, 'acme.sample-plugin'), { recursive: true });
+  await harness.controller.refresh();
+  await assert.rejects(
+    () => readHandler(trustedEvent, { documentId: reopened.documentId, offset: 0, length: 1 }),
+    { code: 'DOCUMENT_VIEW_NOT_FOUND' }
+  );
+});
+
+test('schema-1 packages still reject extra executable view code', async (t) => {
+  const harness = await createHarness(t);
+  const sourceRoot = path.join(harness.root, 'legacy-extra-script');
+  const source = 'export function activate() {}\n';
+  await fsp.mkdir(path.join(sourceRoot, 'dist'), { recursive: true });
+  await fsp.writeFile(path.join(sourceRoot, 'dist', 'extension.js'), source, 'utf8');
+  await fsp.writeFile(path.join(sourceRoot, 'dist', 'view.js'), source, 'utf8');
+  const manifest = makeManifest('1.0.0', source);
+  manifest.integrity.files['dist/view.js'] = hash(source);
+  await fsp.writeFile(path.join(sourceRoot, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
+  await assert.rejects(() => harness.controller.installFromPath(sourceRoot), { code: 'plugins.manifest.main' });
+});
+
 test('a replacement package is disabled and receives its declared permissions', async (t) => {
   const harness = await createHarness(t);
   const first = path.join(harness.root, 'first');
@@ -337,7 +451,8 @@ test('plugin IPC surface is explicit and sender-bound', async (t) => {
   const harness = await createHarness(t);
   const expected = [
     'plugins:list', 'plugins:get', 'plugins:install', 'plugins:enable', 'plugins:disable', 'plugins:uninstall',
-    'plugins:grant', 'plugins:revoke', 'plugins:runtime-descriptors', 'plugins:load-entry', 'plugins:load-localization', 'plugins:rpc',
+    'plugins:grant', 'plugins:revoke', 'plugins:runtime-descriptors', 'plugins:load-entry', 'plugins:load-localization',
+    'plugins:load-document-view', 'plugins:document-open', 'plugins:document-read', 'plugins:document-close', 'plugins:rpc',
     'plugins:open-folder', 'plugins:refresh'
   ];
   assert.deepEqual(Array.from(harness.handlers.keys()), expected);
