@@ -71,6 +71,7 @@ func newProjectEnvironmentTestHandler(t *testing.T) (*HTTPHandler, string, strin
 	cfg.ServerRoot = serverRoot
 	cfg.DataDir = dataRoot
 	handler := NewHTTPHandler(cfg, storage.NewMemorySessionStore(), session.NewChannelManager(), false, nil, nil, nil, nil, nil)
+	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8, ReservationFiles: 1})
 	return handler, serverRoot, dataRoot
 }
 
@@ -108,14 +109,49 @@ func writePythonDistInfo(t *testing.T, root, name, version string) {
 	writeEnvironmentFile(t, filepath.Join(directory, "RECORD"), record)
 }
 
+func projectEnvironmentCacheRequest(workspace, folderKey, runtimeID string) personalcache.Request {
+	image := ""
+	if runtime := model.GetRuntimeDef(runtimeID); runtime != nil {
+		image = runtime.DockerImage
+	}
+	return personalcache.Request{
+		UserID: "default", WorkspaceID: lsp.StableWorkspaceIdentity("default", "", "", "", folderKey), WorkspaceName: "Project",
+		RuntimeID: runtimeID, RuntimeFingerprint: personalCacheRuntimeFingerprint(runtimeID, image), Language: "python", WorkspaceRoot: workspace,
+	}
+}
+
+func publishPythonProjectEnvironment(t *testing.T, handler *HTTPHandler, workspace, folderKey, runtimeID string, packages map[string]string) *personalcache.Lease {
+	t.Helper()
+	request := projectEnvironmentCacheRequest(workspace, folderKey, runtimeID)
+	lease, err := handler.PersonalCache.Prepare(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, version := range packages {
+		writePythonDistInfo(t, filepath.Join(lease.HostRoot, "python"), name, version)
+	}
+	lease.Release()
+	if !lease.Published() {
+		t.Fatal("exact Python project environment was not published")
+	}
+	return lease
+}
+
+func writePythonEnvironmentLeasePackage(t *testing.T, ctx context.Context, name, version string) {
+	t.Helper()
+	lease := personalcache.LeaseFromContext(ctx)
+	if lease == nil || !lease.Writable() {
+		t.Fatal("environment setup did not receive a writable project dependency generation")
+	}
+	writePythonDistInfo(t, filepath.Join(lease.HostRoot, "python"), name, version)
+}
+
 func TestGetProjectEnvironmentUsesOnlySelectedPythonRuntimeScope(t *testing.T) {
-	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+	handler, serverRoot, _ := newProjectEnvironmentTestHandler(t)
 	workspace := filepath.Join(serverRoot, "project-key")
 	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\nrequests>=2\n")
-	selected := filepath.Join(dataRoot, "users", "default", "persist", "pip-packages", "runtimes", "python-3.10")
-	other := filepath.Join(dataRoot, "users", "default", "persist", "pip-packages", "runtimes", "python-3.11")
-	writePythonDistInfo(t, selected, "numpy", "2.1.0")
-	writePythonDistInfo(t, other, "requests", "2.32.0")
+	publishPythonProjectEnvironment(t, handler, workspace, "project-key", "python:3.10", map[string]string{"numpy": "2.1.0"})
+	publishPythonProjectEnvironment(t, handler, workspace, "project-key", "python:3.11", map[string]string{"requests": "2.32.0"})
 
 	recorder, envelope := callProjectEnvironment(t, handler, `{"action":"getProjectEnvironment","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python"}`)
 	if recorder.Code != http.StatusOK || !envelope.Success {
@@ -152,12 +188,11 @@ func TestGetProjectEnvironmentUsesOnlySelectedPythonRuntimeScope(t *testing.T) {
 }
 
 func TestProjectEnvironmentExactPythonVersionMismatchAndUnknown(t *testing.T) {
-	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+	handler, serverRoot, _ := newProjectEnvironmentTestHandler(t)
 	workspace := filepath.Join(serverRoot, "project-key")
 	manifest := filepath.Join(workspace, "requirements.txt")
-	installed := filepath.Join(dataRoot, "users", "default", "persist", "pip-packages", "runtimes", "python-3.10")
 	writeEnvironmentFile(t, manifest, "numpy>=2.2,<3\n")
-	writePythonDistInfo(t, installed, "numpy", "2.1.0")
+	publishPythonProjectEnvironment(t, handler, workspace, "project-key", "python:3.10", map[string]string{"numpy": "2.1.0"})
 
 	_, envelope := callProjectEnvironment(t, handler, `{"action":"getProjectEnvironment","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python"}`)
 	var environment model.ProjectEnvironment
@@ -169,6 +204,7 @@ func TestProjectEnvironmentExactPythonVersionMismatchAndUnknown(t *testing.T) {
 	}
 
 	writeEnvironmentFile(t, manifest, "numpy^2.2\n")
+	publishPythonProjectEnvironment(t, handler, workspace, "project-key", "python:3.10", map[string]string{"numpy": "2.1.0"})
 	_, envelope = callProjectEnvironment(t, handler, `{"action":"getProjectEnvironment","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python"}`)
 	environment = model.ProjectEnvironment{}
 	if err := json.Unmarshal(envelope.Data, &environment); err != nil {
@@ -592,10 +628,10 @@ func TestProjectEnvironmentDoesNotInspectActiveNodeCacheAsExact(t *testing.T) {
 }
 
 func TestProjectEnvironmentLSPCheckReportsSourceStatusAndRuntime(t *testing.T) {
-	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+	handler, serverRoot, _ := newProjectEnvironmentTestHandler(t)
 	workspace := filepath.Join(serverRoot, "project-key")
 	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
-	writePythonDistInfo(t, filepath.Join(dataRoot, "users", "default", "persist", "pip-packages", "runtimes", "python-3.10"), "numpy", "2.1.0")
+	publishPythonProjectEnvironment(t, handler, workspace, "project-key", "python:3.10", map[string]string{"numpy": "2.1.0"})
 	handler.DependencyViews = lsp.NewDefaultDependencyRegistry()
 
 	recorder, envelope := callProjectEnvironment(t, handler, `{"action":"getProjectEnvironment","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python"}`)
@@ -748,16 +784,16 @@ func TestUntrustedPythonInventoryDoesNotClaimVersionTruth(t *testing.T) {
 }
 
 func TestProjectEnvironmentPlanAndApplyIgnoreClientCommand(t *testing.T) {
-	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+	handler, serverRoot, _ := newProjectEnvironmentTestHandler(t)
 	workspace := filepath.Join(serverRoot, "project-key")
 	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
 	var received []string
-	handler.EnvironmentSetup = func(_ context.Context, _, runtimeID, workspaceRoot string, commands []string) (string, string, int, error) {
+	handler.EnvironmentSetup = func(ctx context.Context, _, runtimeID, workspaceRoot string, commands []string) (string, string, int, error) {
 		received = append([]string(nil), commands...)
 		if runtimeID != "python:3.10" || filepath.Clean(workspaceRoot) != filepath.Clean(workspace) {
 			t.Fatalf("executor scope runtime=%s workspace=%s", runtimeID, workspaceRoot)
 		}
-		writePythonDistInfo(t, filepath.Join(dataRoot, "users", "default", "persist", "pip-packages", "runtimes", "python-3.10"), "numpy", "2.1.0")
+		writePythonEnvironmentLeasePackage(t, ctx, "numpy", "2.1.0")
 		return "installed", "", 0, nil
 	}
 
@@ -1124,27 +1160,25 @@ func TestProjectEnvironmentApplyRequiresExactPythonVerification(t *testing.T) {
 	if err := json.Unmarshal(envelope.Data, &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Applied || result.Environment == nil || result.Environment.Consistency.DependencyRuntime.Status != "unknown" || len(result.Environment.Packages.Unknown) != 1 {
+	if result.Applied || result.Environment == nil || result.Environment.Consistency.DependencyRuntime.Status != "mismatch" || len(result.Environment.Packages.Missing) != 1 || len(result.Environment.Packages.Unknown) != 0 {
 		t.Fatalf("untrusted Python state falsely applied: %+v", result)
 	}
 }
 
 func TestProjectEnvironmentRebuildClearsOnlySelectedRuntime(t *testing.T) {
-	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+	handler, serverRoot, _ := newProjectEnvironmentTestHandler(t)
 	workspace := filepath.Join(serverRoot, "project-key")
 	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
-	selected := filepath.Join(dataRoot, "users", "default", "persist", "pip-packages", "runtimes", "python-3.10")
-	other := filepath.Join(dataRoot, "users", "default", "persist", "pip-packages", "runtimes", "python-3.11")
-	writePythonDistInfo(t, selected, "old-package", "1.0")
-	writePythonDistInfo(t, other, "keep-package", "1.0")
-	handler.EnvironmentSetup = func(_ context.Context, _, _, _ string, _ []string) (string, string, int, error) {
-		if _, err := os.Stat(selected); !os.IsNotExist(err) {
-			t.Fatalf("selected runtime was not reset before setup: %v", err)
+	selected := publishPythonProjectEnvironment(t, handler, workspace, "project-key", "python:3.10", map[string]string{"old-package": "1.0"})
+	other := publishPythonProjectEnvironment(t, handler, workspace, "project-key", "python:3.11", map[string]string{"keep-package": "1.0"})
+	handler.EnvironmentSetup = func(ctx context.Context, _, _, _ string, _ []string) (string, string, int, error) {
+		if _, err := os.Stat(filepath.Join(selected.HostRoot, "python", "old_package")); !os.IsNotExist(err) {
+			t.Fatalf("selected runtime contents were not reset before setup: %v", err)
 		}
-		if _, err := os.Stat(other); err != nil {
+		if _, err := os.Stat(other.HostRoot); err != nil {
 			t.Fatalf("another runtime was removed: %v", err)
 		}
-		writePythonDistInfo(t, selected, "numpy", "2.1.0")
+		writePythonEnvironmentLeasePackage(t, ctx, "numpy", "2.1.0")
 		return "rebuilt", "", 0, nil
 	}
 	recorder, envelope := callProjectEnvironment(t, handler, `{"action":"applyProjectEnvironmentAction","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python","environmentAction":"rebuild"}`)
@@ -1155,16 +1189,16 @@ func TestProjectEnvironmentRebuildClearsOnlySelectedRuntime(t *testing.T) {
 
 func TestProjectEnvironmentApplyHoldsLifecycleLeaseThroughSetup(t *testing.T) {
 	t.Run("repair holds workspace activity", func(t *testing.T) {
-		handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+		handler, serverRoot, _ := newProjectEnvironmentTestHandler(t)
 		handler.Lifecycle = lifecycle.NewManager()
 		workspace := filepath.Join(serverRoot, "project-key")
 		writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
-		handler.EnvironmentSetup = func(_ context.Context, _, _, _ string, _ []string) (string, string, int, error) {
+		handler.EnvironmentSetup = func(ctx context.Context, _, _, _ string, _ []string) (string, string, int, error) {
 			if lease, err := handler.Lifecycle.BeginWorkspaceMutation("default", "project-key"); err == nil {
 				lease.Release()
 				t.Fatal("repair released its workspace activity before setup completed")
 			}
-			writePythonDistInfo(t, filepath.Join(dataRoot, "users", "default", "persist", "pip-packages", "runtimes", "python-3.10"), "numpy", "2.1.0")
+			writePythonEnvironmentLeasePackage(t, ctx, "numpy", "2.1.0")
 			return "installed", "", 0, nil
 		}
 		recorder, envelope := callProjectEnvironment(t, handler, `{"action":"applyProjectEnvironmentAction","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python","environmentAction":"repair"}`)
@@ -1179,16 +1213,16 @@ func TestProjectEnvironmentApplyHoldsLifecycleLeaseThroughSetup(t *testing.T) {
 	})
 
 	t.Run("rebuild holds user mutation", func(t *testing.T) {
-		handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+		handler, serverRoot, _ := newProjectEnvironmentTestHandler(t)
 		handler.Lifecycle = lifecycle.NewManager()
 		workspace := filepath.Join(serverRoot, "project-key")
 		writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
-		handler.EnvironmentSetup = func(_ context.Context, _, _, _ string, _ []string) (string, string, int, error) {
+		handler.EnvironmentSetup = func(ctx context.Context, _, _, _ string, _ []string) (string, string, int, error) {
 			if lease, err := handler.Lifecycle.AcquireActivity("default", "other-project"); err == nil {
 				lease.Release()
 				t.Fatal("rebuild released its user mutation before setup completed")
 			}
-			writePythonDistInfo(t, filepath.Join(dataRoot, "users", "default", "persist", "pip-packages", "runtimes", "python-3.10"), "numpy", "2.1.0")
+			writePythonEnvironmentLeasePackage(t, ctx, "numpy", "2.1.0")
 			return "rebuilt", "", 0, nil
 		}
 		recorder, envelope := callProjectEnvironment(t, handler, `{"action":"applyProjectEnvironmentAction","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python","environmentAction":"rebuild"}`)
@@ -1203,7 +1237,7 @@ func TestProjectEnvironmentApplyHoldsLifecycleLeaseThroughSetup(t *testing.T) {
 	})
 
 	t.Run("rebuild stops LSP activity before user mutation", func(t *testing.T) {
-		handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+		handler, serverRoot, _ := newProjectEnvironmentTestHandler(t)
 		handler.Lifecycle = lifecycle.NewManager()
 		workspace := filepath.Join(serverRoot, "project-key")
 		writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
@@ -1227,7 +1261,7 @@ func TestProjectEnvironmentApplyHoldsLifecycleLeaseThroughSetup(t *testing.T) {
 			activity.Release()
 			t.Fatal(err)
 		}
-		handler.EnvironmentSetup = func(_ context.Context, _, _, _ string, _ []string) (string, string, int, error) {
+		handler.EnvironmentSetup = func(ctx context.Context, _, _, _ string, _ []string) (string, string, int, error) {
 			select {
 			case <-session.ResourcesDone():
 			default:
@@ -1237,7 +1271,7 @@ func TestProjectEnvironmentApplyHoldsLifecycleLeaseThroughSetup(t *testing.T) {
 				lease.Release()
 				t.Fatal("rebuild did not acquire user mutation after stopping LSP")
 			}
-			writePythonDistInfo(t, filepath.Join(dataRoot, "users", "default", "persist", "pip-packages", "runtimes", "python-3.10"), "numpy", "2.1.0")
+			writePythonEnvironmentLeasePackage(t, ctx, "numpy", "2.1.0")
 			return "rebuilt", "", 0, nil
 		}
 		recorder, envelope := callProjectEnvironment(t, handler, `{"action":"applyProjectEnvironmentAction","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python","environmentAction":"rebuild"}`)

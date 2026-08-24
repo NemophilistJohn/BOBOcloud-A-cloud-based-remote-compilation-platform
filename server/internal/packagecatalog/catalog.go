@@ -26,6 +26,8 @@ const (
 	searchSchema          = "package-catalog-search/v1"
 	exactMetadataCacheTTL = 2 * time.Minute
 	exactMetadataCacheMax = 256
+	catalogHedgeMaxDelay  = 200 * time.Millisecond
+	catalogEnrichmentWait = 750 * time.Millisecond
 )
 
 var (
@@ -243,37 +245,103 @@ func (s *Service) Item(ctx context.Context, request ItemRequest) (model.PackageC
 		return s.fetchVersionItem(queryContext, official, name, version, request.RuntimeVersion, request.RuntimeVersionTrust)
 	}
 	candidates := s.catalogCandidates(source, request.PreferredCatalogAuthority)
-	var failures []string
+	type catalogResult struct {
+		index int
+		item  model.PackageCatalogItem
+		err   error
+	}
+	results := make(chan catalogResult, len(candidates))
+	failures := make([]string, len(candidates))
 	notFound := false
-	for index, candidate := range candidates {
-		attemptContext, cancelAttempt := catalogAttemptContext(queryContext, len(candidates)-index)
-		item, fetchErr := s.fetchItem(attemptContext, candidate, name, request.RuntimeVersion, request.RuntimeVersionTrust)
-		cancelAttempt()
-		if fetchErr == nil {
-			return item, nil
-		}
-		if errors.Is(fetchErr, ErrNotFound) {
-			notFound = true
-			if candidate.Public.Official {
-				return model.PackageCatalogItem{}, ErrNotFound
+	timedOut := false
+	launched := 0
+	completed := 0
+	launch := func(index int) {
+		candidate := candidates[index]
+		launched++
+		go func() {
+			item, fetchErr := s.fetchItem(queryContext, candidate, name, request.RuntimeVersion, request.RuntimeVersionTrust)
+			results <- catalogResult{index: index, item: item, err: fetchErr}
+		}()
+	}
+	launch(0)
+	var hedgeTimer *time.Timer
+	var hedge <-chan time.Time
+	armHedge := func() {
+		for launched < len(candidates) {
+			delay := catalogHedgeDelay(queryContext)
+			if delay > 0 {
+				hedgeTimer = time.NewTimer(delay)
+				hedge = hedgeTimer.C
+				return
 			}
-			continue
+			launch(launched)
 		}
-		failures = append(failures, candidate.Public.CatalogAuthority+": "+fetchErr.Error())
-		if queryContext.Err() != nil {
-			break
+		hedge = nil
+	}
+	stopHedge := func() {
+		if hedgeTimer != nil {
+			if !hedgeTimer.Stop() {
+				select {
+				case <-hedgeTimer.C:
+				default:
+				}
+			}
+			hedgeTimer = nil
+		}
+		hedge = nil
+	}
+	defer stopHedge()
+	armHedge()
+	for completed < len(candidates) {
+		select {
+		case outcome := <-results:
+			completed++
+			candidate := candidates[outcome.index]
+			if outcome.err == nil {
+				return outcome.item, nil
+			}
+			if errors.Is(outcome.err, ErrNotFound) {
+				notFound = true
+				if candidate.Public.Official {
+					return model.PackageCatalogItem{}, ErrNotFound
+				}
+			} else {
+				failures[outcome.index] = candidate.Public.CatalogAuthority + ": " + outcome.err.Error()
+				timedOut = timedOut || errors.Is(outcome.err, context.DeadlineExceeded) || errors.Is(outcome.err, context.Canceled)
+			}
+			if launched < len(candidates) {
+				stopHedge()
+				launch(launched)
+				armHedge()
+			}
+		case <-hedge:
+			stopHedge()
+			launch(launched)
+			armHedge()
+		case <-queryContext.Done():
+			return model.PackageCatalogItem{}, fmt.Errorf("query equivalent package catalogs: %w", queryContext.Err())
 		}
 	}
 	if queryContext.Err() != nil {
 		return model.PackageCatalogItem{}, fmt.Errorf("query equivalent package catalogs: %w", queryContext.Err())
 	}
-	if len(failures) == 0 {
+	compactFailures := failures[:0]
+	for _, failure := range failures {
+		if failure != "" {
+			compactFailures = append(compactFailures, failure)
+		}
+	}
+	if len(compactFailures) == 0 {
 		if notFound {
 			return model.PackageCatalogItem{}, ErrNotFound
 		}
 		return model.PackageCatalogItem{}, fmt.Errorf("package catalog has no configured authority")
 	}
-	return model.PackageCatalogItem{}, fmt.Errorf("query equivalent package catalogs: %s", strings.Join(failures, "; "))
+	if timedOut {
+		return model.PackageCatalogItem{}, fmt.Errorf("query equivalent package catalogs: %w: %s", context.DeadlineExceeded, strings.Join(compactFailures, "; "))
+	}
+	return model.PackageCatalogItem{}, fmt.Errorf("query equivalent package catalogs: %s", strings.Join(compactFailures, "; "))
 }
 
 func (s *Service) officialSource(source Source) (Source, bool) {
@@ -285,16 +353,32 @@ func (s *Service) officialSource(source Source) (Source, bool) {
 	return Source{}, false
 }
 
-func catalogAttemptContext(parent context.Context, remainingCandidates int) (context.Context, context.CancelFunc) {
-	deadline, bounded := parent.Deadline()
-	if !bounded || remainingCandidates <= 1 {
-		return context.WithCancel(parent)
+func catalogHedgeDelay(parent context.Context) time.Duration {
+	delay := catalogHedgeMaxDelay
+	if deadline, bounded := parent.Deadline(); bounded {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return 0
+		}
+		if fraction := remaining / 8; fraction < delay {
+			delay = fraction
+		}
 	}
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
-		return context.WithCancel(parent)
+	return delay
+}
+
+func catalogEnrichmentContext(parent context.Context) (context.Context, context.CancelFunc) {
+	wait := catalogEnrichmentWait
+	if deadline, bounded := parent.Deadline(); bounded {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return context.WithCancel(parent)
+		}
+		if fraction := remaining / 3; fraction < wait {
+			wait = fraction
+		}
 	}
-	return context.WithTimeout(parent, remaining/time.Duration(remainingCandidates))
+	return context.WithTimeout(parent, wait)
 }
 
 func (s *Service) catalogCandidates(primary Source, preferredAuthority string) []Source {
@@ -335,32 +419,29 @@ func (s *Service) fetchItem(ctx context.Context, source Source, name, runtimeVer
 	if !ok {
 		return model.PackageCatalogItem{}, fmt.Errorf("package source has no configured official metadata authority")
 	}
-	metadata, _, err := s.fetchVersionProject(ctx, official, name, latest)
-	if err != nil {
-		return model.PackageCatalogItem{}, fmt.Errorf("verify package metadata revision: %w", err)
+	metadata := pypiProject{
+		Info:       pypiInfo{Name: strings.TrimSpace(simple.Name), Version: latest},
+		Releases:   releases,
+		LastSerial: simple.Meta.LastSerial,
 	}
-	if simple.Meta.LastSerial != "" && metadata.LastSerial != "" && simple.Meta.LastSerial != metadata.LastSerial {
-		if !source.Public.Official {
-			return model.PackageCatalogItem{}, fmt.Errorf("package index revision does not match the official metadata authority")
+	enrichmentContext, cancelEnrichment := catalogEnrichmentContext(ctx)
+	enrichment, _, enrichmentErr := s.fetchVersionProjectDirect(enrichmentContext, official, name, latest)
+	cancelEnrichment()
+	if enrichmentErr == nil && !catalogRevisionAhead(simple.Meta.LastSerial, enrichment.LastSerial) {
+		for index := range enrichment.URLs {
+			enrichment.URLs[index].MetadataKnown = true
+			if strings.TrimSpace(enrichment.URLs[index].RequiresPython) == "" {
+				enrichment.URLs[index].RequiresPython = strings.TrimSpace(enrichment.Info.RequiresPython)
+			}
 		}
-		s.invalidateVersionProject(official, name, latest)
-		metadata, _, err = s.fetchVersionProject(ctx, official, name, latest)
-		if err != nil || (metadata.LastSerial != "" && simple.Meta.LastSerial != metadata.LastSerial) {
-			return model.PackageCatalogItem{}, fmt.Errorf("package index revision does not match the official metadata authority")
+		releases[latest] = enrichment.URLs
+		enrichment.Releases = releases
+		if strings.TrimSpace(enrichment.Info.Name) == "" {
+			enrichment.Info.Name = strings.TrimSpace(simple.Name)
 		}
+		enrichment.Info.Version = latest
+		metadata = enrichment
 	}
-	for index := range metadata.URLs {
-		metadata.URLs[index].MetadataKnown = true
-		if strings.TrimSpace(metadata.URLs[index].RequiresPython) == "" {
-			metadata.URLs[index].RequiresPython = strings.TrimSpace(metadata.Info.RequiresPython)
-		}
-	}
-	releases[latest] = metadata.URLs
-	metadata.Releases = releases
-	if strings.TrimSpace(metadata.Info.Name) == "" {
-		metadata.Info.Name = strings.TrimSpace(simple.Name)
-	}
-	metadata.Info.Version = latest
 	actualSource := source
 	if response != nil && response.Request != nil && response.Request.URL != nil && response.Request.URL.Hostname() != "" {
 		actualSource.Public.CatalogAuthority = response.Request.URL.Hostname()
@@ -371,34 +452,6 @@ func (s *Service) fetchItem(ctx context.Context, source Source, name, runtimeVer
 		if !stablePythonRelease(candidate.Version) || candidate.Yanked || !selectablePythonCompatibility(candidate.Compatibility) {
 			continue
 		}
-		if candidate.Version == latest {
-			setRecommendedCatalogVersion(&item, candidate.Version)
-			return item, nil
-		}
-		exact, _, exactErr := s.fetchVersionProject(ctx, official, name, candidate.Version)
-		if exactErr != nil {
-			return model.PackageCatalogItem{}, fmt.Errorf("verify recommended package version: %w", exactErr)
-		}
-		if simple.Meta.LastSerial != "" && exact.LastSerial != "" && simple.Meta.LastSerial != exact.LastSerial {
-			s.invalidateVersionProject(official, name, candidate.Version)
-			exact, _, exactErr = s.fetchVersionProject(ctx, official, name, candidate.Version)
-			if exactErr != nil || (exact.LastSerial != "" && simple.Meta.LastSerial != exact.LastSerial) {
-				return model.PackageCatalogItem{}, fmt.Errorf("package index revision does not match the official metadata authority")
-			}
-		}
-		for fileIndex := range exact.URLs {
-			exact.URLs[fileIndex].MetadataKnown = true
-			if strings.TrimSpace(exact.URLs[fileIndex].RequiresPython) == "" {
-				exact.URLs[fileIndex].RequiresPython = strings.TrimSpace(exact.Info.RequiresPython)
-			}
-		}
-		exact.Info.Version = candidate.Version
-		exact.Releases = map[string][]pypiRelease{candidate.Version: exact.URLs}
-		exactItem := packageItemFromPyPI(exact, actualSource, runtimeVersion, runtimeVersionTrust)
-		if len(exactItem.Versions) != 1 || exactItem.Versions[0].Yanked || !selectablePythonCompatibility(exactItem.Versions[0].Compatibility) {
-			continue
-		}
-		item.Versions[index] = exactItem.Versions[0]
 		setRecommendedCatalogVersion(&item, candidate.Version)
 		return item, nil
 	}
@@ -450,9 +503,7 @@ func (s *Service) fetchVersionProject(ctx context.Context, official Source, name
 	s.exactInFlight[key] = call
 	s.exactMu.Unlock()
 
-	endpoint := official.CatalogURL + "/pypi/" + url.PathEscape(name) + "/" + url.PathEscape(version) + "/json"
-	var payload pypiProject
-	response, err := s.fetchJSON(ctx, endpoint, "application/json", &payload)
+	payload, response, err := s.fetchVersionProjectDirect(ctx, official, name, version)
 	authorityURL := ""
 	if response != nil && response.Request != nil && response.Request.URL != nil {
 		authorityURL = response.Request.URL.String()
@@ -478,6 +529,13 @@ func (s *Service) fetchVersionProject(ctx context.Context, official Source, name
 	delete(s.exactInFlight, key)
 	close(call.done)
 	s.exactMu.Unlock()
+	return payload, response, err
+}
+
+func (s *Service) fetchVersionProjectDirect(ctx context.Context, official Source, name, version string) (pypiProject, *http.Response, error) {
+	endpoint := official.CatalogURL + "/pypi/" + url.PathEscape(name) + "/" + url.PathEscape(version) + "/json"
+	var payload pypiProject
+	response, err := s.fetchJSON(ctx, endpoint, "application/json", &payload)
 	return payload, response, err
 }
 
@@ -555,6 +613,15 @@ func (value *pypiSerial) UnmarshalJSON(data []byte) error {
 	}
 	*value = pypiSerial(raw)
 	return nil
+}
+
+func catalogRevisionAhead(candidate, official pypiSerial) bool {
+	if candidate == "" || official == "" {
+		return false
+	}
+	candidateValue, candidateErr := strconv.ParseUint(string(candidate), 10, 64)
+	officialValue, officialErr := strconv.ParseUint(string(official), 10, 64)
+	return candidateErr == nil && officialErr == nil && candidateValue > officialValue
 }
 
 type pypiSimpleProject struct {

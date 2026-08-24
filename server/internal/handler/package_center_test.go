@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"bobocloud-server/internal/cachev2"
 	"bobocloud-server/internal/config"
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/model"
@@ -137,6 +138,218 @@ func TestPackageCenterAutoResolvesExactRuntimeAndCompatiblePackageVersion(t *tes
 	if catalogRequest.RuntimeVersion != "3.10.21" || catalogRequest.RuntimeVersionTrust != "exact" || catalogRequest.Version != "" {
 		t.Fatalf("catalog request did not use exact runtime/automatic selection: %+v", catalogRequest)
 	}
+}
+
+func TestPackageCenterFirstContextRevisionRemainsStableForImmediatePlan(t *testing.T) {
+	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+	configurePackageCenterTestHandler(handler, dataRoot)
+	provider := NewDockerImageRuntimeMetadataProvider(time.Hour, time.Second)
+	inspectCalls := 0
+	provider.inspect = func(context.Context, string) ([]byte, error) {
+		inspectCalls++
+		return []byte(`[{"Id":"sha256:python-31021","Config":{"Env":["PYTHON_VERSION=3.10.21"]}}]`), nil
+	}
+	handler.RuntimeMetadata = provider
+	handler.EnvironmentSetup = func(context.Context, string, string, string, []string) (string, string, int, error) {
+		return "", "", 0, nil
+	}
+	workspace := filepath.Join(serverRoot, "project-key")
+	writeEnvironmentFile(t, filepath.Join(workspace, "main.py"), "import numpy\n")
+
+	contextRecorder, contextEnvelope := callProjectEnvironment(t, handler, `{"action":"getPackageCenterContext","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python"}`)
+	if contextRecorder.Code != http.StatusOK || !contextEnvelope.Success {
+		t.Fatalf("first context response: %s", contextRecorder.Body.String())
+	}
+	var center model.ProjectPackageCenterContext
+	if err := json.Unmarshal(contextEnvelope.Data, &center); err != nil {
+		t.Fatal(err)
+	}
+	if center.Revision == "" || center.Language.Source != "editor" || center.Runtime.ResolvedVersion != "3.10.21" || center.Runtime.ResolvedVersionTrust != "exact" {
+		t.Fatalf("first context = %+v", center)
+	}
+	planBody, err := json.Marshal(map[string]any{
+		"action": "planProjectPackageChanges", "folderName": "Project", "folderKey": "project-key",
+		"runtime": "python:3.10", "language": "python", "revision": center.Revision, "sourceId": "pypi-official",
+		"changes": []map[string]string{{"operation": "add", "name": "numpy", "version": "2.1.0"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planRecorder, planEnvelope := callProjectEnvironment(t, handler, string(planBody))
+	if planRecorder.Code != http.StatusOK || !planEnvelope.Success {
+		t.Fatalf("immediate plan response: %s", planRecorder.Body.String())
+	}
+	var plan model.ProjectPackageChangePlan
+	if err := json.Unmarshal(planEnvelope.Data, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.Revision != center.Revision || inspectCalls != 1 {
+		t.Fatalf("first context drifted before plan: context=%q plan=%q inspect_calls=%d", center.Revision, plan.Revision, inspectCalls)
+	}
+}
+
+func TestPackageCenterRevisionRejectsChangedLanguageRequestContext(t *testing.T) {
+	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+	configurePackageCenterTestHandler(handler, dataRoot)
+	provider := NewDockerImageRuntimeMetadataProvider(time.Hour, time.Second)
+	inspectCalls := 0
+	provider.inspect = func(context.Context, string) ([]byte, error) {
+		inspectCalls++
+		return []byte(`[{"Id":"sha256:python-31021","Config":{"Env":["PYTHON_VERSION=3.10.21"]}}]`), nil
+	}
+	handler.RuntimeMetadata = provider
+	handler.EnvironmentSetup = func(context.Context, string, string, string, []string) (string, string, int, error) {
+		return "", "", 0, nil
+	}
+	workspace := filepath.Join(serverRoot, "project-key")
+	writeEnvironmentFile(t, filepath.Join(workspace, "main.py"), "import numpy\n")
+
+	contextRecorder, contextEnvelope := callProjectEnvironment(t, handler, `{"action":"getPackageCenterContext","folderName":"Project","folderKey":"project-key","runtime":"python:3.10"}`)
+	if contextRecorder.Code != http.StatusOK || !contextEnvelope.Success {
+		t.Fatalf("inferred-language context response: %s", contextRecorder.Body.String())
+	}
+	var center model.ProjectPackageCenterContext
+	if err := json.Unmarshal(contextEnvelope.Data, &center); err != nil {
+		t.Fatal(err)
+	}
+	if center.Language.ID != "python" || center.Language.Source != "runtime" {
+		t.Fatalf("inferred language context = %+v", center.Language)
+	}
+	planBody, err := json.Marshal(map[string]any{
+		"action": "planProjectPackageChanges", "folderName": "Project", "folderKey": "project-key",
+		"runtime": "python:3.10", "language": "python", "revision": center.Revision, "sourceId": "pypi-official",
+		"changes": []map[string]string{{"operation": "add", "name": "numpy", "version": "2.1.0"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planRecorder, planEnvelope := callProjectEnvironment(t, handler, string(planBody))
+	if planRecorder.Code != http.StatusConflict || planEnvelope.Success || planEnvelope.ErrorCode != "package_plan_workspace_changed" {
+		t.Fatalf("changed language request context was accepted: status=%d body=%s", planRecorder.Code, planRecorder.Body.String())
+	}
+	var current model.ProjectEnvironment
+	if err := json.Unmarshal(planEnvelope.Data, &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Language.ID != center.Language.ID || current.Language.Source != "editor" || current.Revision == center.Revision || inspectCalls != 1 {
+		t.Fatalf("language-source drift was not isolated: before=%+v after=%+v inspect_calls=%d", center.Language, current.Language, inspectCalls)
+	}
+}
+
+func TestPackageCenterApplyPanicReleasesPackageCacheLeases(t *testing.T) {
+	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+	configurePackageCenterTestHandler(handler, dataRoot)
+	handler.EnvironmentSetup = func(context.Context, string, string, string, []string) (string, string, int, error) {
+		return "", "", 0, nil
+	}
+	workspace := filepath.Join(serverRoot, "project-key")
+	writeEnvironmentFile(t, filepath.Join(workspace, "main.py"), "import numpy\n")
+
+	planRecorder, planEnvelope := callProjectEnvironment(t, handler, `{"action":"planProjectPackageChanges","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python","sourceId":"pypi-official","changes":[{"operation":"add","name":"numpy","version":"2.1.0"}]}`)
+	if planRecorder.Code != http.StatusOK || !planEnvelope.Success {
+		t.Fatalf("plan response: %s", planRecorder.Body.String())
+	}
+	var plan model.ProjectPackageChangePlan
+	if err := json.Unmarshal(planEnvelope.Data, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.PlanID == "" || len(plan.LocalChanges) != 1 {
+		t.Fatalf("executable plan = %+v", plan)
+	}
+	writeEnvironmentFile(t, filepath.Join(workspace, plan.LocalChanges[0].Path), plan.LocalChanges[0].NewContent)
+	cleanupStarted := make(chan struct{})
+	allowCleanup := make(chan struct{})
+	cleanupReturned := make(chan struct{})
+	handler.EnvironmentSetup = func(ctx context.Context, _ string, _ string, _ string, _ []string) (string, string, int, error) {
+		if !RetainResourcesUntilContainerRemoved(ctx, func() {
+			close(cleanupStarted)
+			<-allowCleanup
+			close(cleanupReturned)
+		}) {
+			panic("container cleanup handoff unavailable")
+		}
+		panic("package executor panic")
+	}
+	applyBody, err := json.Marshal(map[string]any{
+		"action": "applyProjectPackageChanges", "folderName": "Project", "folderKey": "project-key",
+		"runtime": "python:3.10", "language": "python", "sourceId": "pypi-official", "packagePlanId": plan.PlanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api", strings.NewReader(string(applyBody)))
+		request.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(recorder, request)
+	}()
+	if recovered == nil {
+		t.Fatal("package executor panic did not propagate through the test handler")
+	}
+	select {
+	case <-cleanupStarted:
+	case <-time.After(time.Second):
+		t.Fatal("container cleanup ownership was not retained before panic unwind")
+	}
+	close(allowCleanup)
+	select {
+	case <-cleanupReturned:
+	case <-time.After(time.Second):
+		t.Fatal("container cleanup did not return")
+	}
+
+	var inventory cachev2.Inventory
+	deadline := time.Now().Add(time.Second)
+	for {
+		inventory, err = handler.PersonalCache.Catalog("default", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		busy := false
+		for _, entry := range inventory.Entries {
+			busy = busy || entry.Writing || entry.ActiveReaders != 0
+		}
+		if !busy {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("panic cleanup did not release cache entries: %+v", inventory.Entries)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var toolchainID cachev2.CacheID
+	for _, entry := range inventory.Entries {
+		if entry.Writing || entry.ActiveReaders != 0 {
+			t.Fatalf("panic left cache entry active: %+v", entry)
+		}
+		if entry.Category == cachev2.CategoryToolchains {
+			toolchainID = entry.ID
+		}
+	}
+	if toolchainID == "" {
+		t.Fatalf("panic cleanup removed or hid the reusable toolchain cache: %+v", inventory.Entries)
+	}
+	deleted, err := handler.PersonalCache.DeleteByID("default", toolchainID, inventory.Revision, 0)
+	if err != nil || len(deleted.DeletedIDs) != 1 || deleted.DeletedIDs[0] != toolchainID {
+		t.Fatalf("released toolchain cache was not deletable: result=%+v err=%v", deleted, err)
+	}
+
+	retryContext, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	retryLease, err := handler.PersonalCache.Prepare(retryContext, personalcache.Request{
+		UserID: "default", WorkspaceID: lsp.StableWorkspaceIdentity("default", "", "", "", "project-key"), WorkspaceName: "Project",
+		RuntimeID: "python:3.10", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.10", "python:3.10-slim"),
+		Language: "python", WorkspaceRoot: workspace,
+		ManifestSnapshot: []personalcache.ManifestSnapshot{{Path: plan.LocalChanges[0].Path, Content: []byte(plan.LocalChanges[0].NewContent)}},
+		OperationID:      "retry-after-panic",
+	})
+	if err != nil || retryLease == nil {
+		t.Fatalf("panic left dependency writer locked: lease=%v err=%v", retryLease, err)
+	}
+	retryLease.Abort()
+	retryLease.Release()
 }
 
 func TestPackageCenterNewManifestPlanEmitsEmptyOldSHA256(t *testing.T) {
@@ -287,7 +500,7 @@ func TestPackageCenterContextAndAddApplyCloseTheProjectLifecycle(t *testing.T) {
 	if err := json.Unmarshal(contextEnvelope.Data, &center); err != nil {
 		t.Fatal(err)
 	}
-	if center.SearchMode != "exact" || center.DefaultSource != "pypi-official" || len(center.Sources) < 2 || !center.CanPlanChanges.Supported || center.OperationTimeoutSeconds != handler.Config.PackageOperationTimeoutSeconds {
+	if center.SearchMode != "exact" || center.DefaultSource != "pypi-official" || len(center.Sources) < 2 || !center.CanPlanChanges.Supported || center.CatalogTimeoutSeconds != handler.Config.PackageCatalogTimeoutSeconds || center.OperationTimeoutSeconds != handler.Config.PackageOperationTimeoutSeconds {
 		t.Fatalf("package center context = %+v", center)
 	}
 
@@ -332,7 +545,7 @@ func TestPackageCenterContextAndAddApplyCloseTheProjectLifecycle(t *testing.T) {
 	if recorder.Code != http.StatusOK || !envelope.Success {
 		t.Fatalf("apply response: %s", recorder.Body.String())
 	}
-	if len(received) != 1 || !strings.Contains(received[0], "mkdir -p \"$PIP_TARGET\"") || !strings.Contains(received[0], "pip --isolated") || !strings.Contains(received[0], "--cache-dir /persist/pip-cache") || !strings.Contains(received[0], "install --target \"$PIP_TARGET\"") || !strings.Contains(received[0], "--index-url 'https://pypi.tuna.tsinghua.edu.cn/simple/'") || !strings.Contains(received[0], "-r '/project-deps/.bobocloud-package-input/requirements.txt'") {
+	if len(received) != 1 || !strings.Contains(received[0], "mkdir -p \"$PIP_TARGET\"") || !strings.Contains(received[0], "pip --isolated") || !strings.Contains(received[0], "--cache-dir \"$PIP_CACHE_DIR\"") || !strings.Contains(received[0], "install --target \"$PIP_TARGET\"") || !strings.Contains(received[0], "--index-url 'https://pypi.tuna.tsinghua.edu.cn/simple/'") || !strings.Contains(received[0], "-r '/project-deps/.bobocloud-package-input/requirements.txt'") {
 		t.Fatalf("executor command = %#v", received)
 	}
 	var result model.ProjectPackageChangeResult
@@ -446,6 +659,103 @@ func TestPackageCenterReinstallsDeclaredMissingPackageWithoutManifestWrite(t *te
 	recorder, envelope = callProjectEnvironment(t, handler, planBody)
 	if recorder.Code != http.StatusBadRequest || envelope.Success || executions != 1 || !strings.Contains(envelope.Error, "do not modify") {
 		t.Fatalf("installed same-version update was not rejected as a no-op: %s", recorder.Body.String())
+	}
+}
+
+func TestPackageCenterRehydratesDeclaredPackageWithoutCurrentCache(t *testing.T) {
+	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+	configurePackageCenterTestHandler(handler, dataRoot)
+	workspace := filepath.Join(serverRoot, "project-key")
+	manifest := filepath.Join(workspace, "requirements.txt")
+	writeEnvironmentFile(t, manifest, "numpy==2.1.0\n")
+
+	contextRecorder, contextEnvelope := callProjectEnvironment(t, handler, `{"action":"getPackageCenterContext","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python"}`)
+	if contextRecorder.Code != http.StatusOK || !contextEnvelope.Success {
+		t.Fatalf("cold context response: %s", contextRecorder.Body.String())
+	}
+	var center model.ProjectPackageCenterContext
+	if err := json.Unmarshal(contextEnvelope.Data, &center); err != nil {
+		t.Fatal(err)
+	}
+	if center.Inventory.Exact || center.Inventory.Status != "missing" || len(center.Packages.Missing) != 0 || len(center.Packages.Unknown) != 1 || center.Packages.Unknown[0].Name != "numpy" {
+		t.Fatalf("cold cache must remain unknown environment truth: %+v", center)
+	}
+
+	executions := 0
+	handler.EnvironmentSetup = func(ctx context.Context, _, _, _ string, _ []string) (string, string, int, error) {
+		executions++
+		lease := personalcache.LeaseFromContext(ctx)
+		if lease == nil || !lease.Writable() {
+			t.Fatal("cold rehydrate did not receive a writable generation")
+		}
+		reviewed, readErr := os.ReadFile(filepath.Join(lease.HostRoot, ".bobocloud-package-input", "requirements.txt"))
+		if readErr != nil || string(reviewed) != "numpy==2.1.0\n" {
+			t.Fatalf("cold rehydrate snapshot = %q err=%v", reviewed, readErr)
+		}
+		writePythonDistInfo(t, filepath.Join(lease.HostRoot, "python"), "numpy", "2.1.0")
+		return "rehydrated", "", 0, nil
+	}
+
+	planBody := `{"action":"planProjectPackageChanges","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python","sourceId":"pypi-official","changes":[{"operation":"update","name":"numpy","version":"2.1.0"}]}`
+	recorder, envelope := callProjectEnvironment(t, handler, planBody)
+	if recorder.Code != http.StatusOK || !envelope.Success {
+		t.Fatalf("cold rehydrate plan response: %s", recorder.Body.String())
+	}
+	var plan model.ProjectPackageChangePlan
+	if err := json.Unmarshal(envelope.Data, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Supported || !plan.Reinstall || len(plan.LocalChanges) != 0 || len(plan.ManifestBindings) != 1 || len(plan.Changes) != 1 || plan.Changes[0].Operation != "update" {
+		t.Fatalf("cold rehydrate plan = %+v", plan)
+	}
+	applyBody, err := json.Marshal(map[string]any{
+		"action": "applyProjectPackageChanges", "folderName": "Project", "folderKey": "project-key", "runtime": "python:3.10", "language": "python",
+		"sourceId": "pypi-official", "packagePlanId": plan.PlanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder, envelope = callProjectEnvironment(t, handler, string(applyBody))
+	if recorder.Code != http.StatusOK || !envelope.Success || executions != 1 {
+		t.Fatalf("cold rehydrate apply: executions=%d body=%s", executions, recorder.Body.String())
+	}
+	if data, err := os.ReadFile(manifest); err != nil || string(data) != "numpy==2.1.0\n" {
+		t.Fatalf("cold rehydrate changed manifest: data=%q err=%v", data, err)
+	}
+
+	contextRecorder, contextEnvelope = callProjectEnvironment(t, handler, `{"action":"getPackageCenterContext","folderName":"Project","folderKey":"project-key","runtime":"python:3.10","language":"python"}`)
+	if contextRecorder.Code != http.StatusOK || !contextEnvelope.Success {
+		t.Fatalf("rehydrated context response: %s", contextRecorder.Body.String())
+	}
+	if err := json.Unmarshal(contextEnvelope.Data, &center); err != nil {
+		t.Fatal(err)
+	}
+	if !center.Inventory.Exact || center.Inventory.Status != "ready" || len(center.Packages.Unknown) != 0 || len(center.Packages.Installed) != 1 || center.Packages.Installed[0].Name != "numpy" {
+		t.Fatalf("rehydrated inventory is not authoritative: %+v", center)
+	}
+}
+
+func TestPackageCenterRehydrateCandidatesRejectBusyAndExactInventory(t *testing.T) {
+	base := &model.ProjectEnvironment{
+		Language:        model.ProjectEnvironmentLanguage{ID: "python"},
+		DependencyCache: model.ProjectEnvironmentDependencyCache{Scope: "project-lock", Status: "miss", InventoryStatus: "missing"},
+		Manifests:       []model.ProjectEnvironmentManifest{{Path: "requirements.txt", Kind: "requirements", Language: "python", Parsed: true}},
+		Packages:        model.ProjectEnvironmentPackages{Declared: []model.ProjectEnvironmentPackage{{Name: "numpy", Source: "requirements.txt"}}},
+	}
+	if !packageCenterReinstallCandidates(base, "requirements.txt")["numpy"] {
+		t.Fatal("cold direct declaration was not eligible for rehydrate")
+	}
+	busy := *base
+	busy.DependencyCache.InventoryStatus = "busy"
+	if packageCenterReinstallCandidates(&busy, "requirements.txt")["numpy"] {
+		t.Fatal("busy dependency writer was misclassified as a cold rehydrate")
+	}
+	exact := *base
+	exact.DependencyCache.Status = "hit"
+	exact.DependencyCache.InventoryStatus = "ready"
+	exact.Packages.Installed = []model.ProjectEnvironmentPackage{{Name: "numpy", Version: "2.1.0", Scope: "project-lock", Source: "project-lock-python", Trust: "exact"}}
+	if packageCenterReinstallCandidates(&exact, "requirements.txt")["numpy"] {
+		t.Fatal("exact installed package was misclassified as a rehydrate candidate")
 	}
 }
 
@@ -649,7 +959,7 @@ func configureCatalogSourcesForTest() []config.PackageSourceConfig {
 	return config.Default().PackageSources
 }
 
-func TestPackageCenterCapabilityRequiresProjectLockAndAdvertisesTimeout(t *testing.T) {
+func TestPackageCenterCapabilityRequiresManagedCacheAndAdvertisesTimeout(t *testing.T) {
 	handler, _, dataRoot := newProjectEnvironmentTestHandler(t)
 	configurePackageCenterTestHandler(handler, dataRoot)
 	handler.EnvironmentSetup = func(context.Context, string, string, string, []string) (string, string, int, error) {
@@ -659,9 +969,9 @@ func TestPackageCenterCapabilityRequiresProjectLockAndAdvertisesTimeout(t *testi
 	if !descriptor.Capabilities.PackageCenter || descriptor.Limits.PackageOperationTimeoutSeconds != handler.Config.PackageOperationTimeoutSeconds {
 		t.Fatalf("package center capability = %+v limits=%+v", descriptor.Capabilities, descriptor.Limits)
 	}
-	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ScopeMode: "legacy-user"})
+	handler.PersonalCache = nil
 	if handler.serverCapabilities().Capabilities.PackageCenter {
-		t.Fatal("legacy-user dependency scope advertised the project package center")
+		t.Fatal("package center was advertised without the managed project cache service")
 	}
 }
 

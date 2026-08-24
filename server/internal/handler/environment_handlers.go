@@ -790,7 +790,7 @@ func dedupeEnvironmentPackages(items []model.ProjectEnvironmentPackage) []model.
 }
 
 func (h *HTTPHandler) acquireEnvironmentDependencySnapshot(r *http.Request, req *model.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string) *environmentDependencySnapshot {
-	managed := resolved.workspace.Kind == "personal" && h.PersonalCache != nil && h.PersonalCache.ScopeMode() == "project-lock" && runtime.ID != "" && runtime.ID != "local" && projectLockDependencyLanguage(language)
+	managed := resolved.workspace.Kind == "personal" && h.PersonalCache != nil && runtime.ID != "" && runtime.ID != "local" && projectLockDependencyLanguage(language)
 	if !managed {
 		return nil
 	}
@@ -855,7 +855,6 @@ func inspectInstalledEnvironmentSnapshot(root, language string) installedEnviron
 }
 
 func (h *HTTPHandler) inspectInstalledEnvironmentPackages(r *http.Request, req *model.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string, snapshots ...*environmentDependencySnapshot) installedEnvironmentInspection {
-	userID := auth.UserIDFromContext(r.Context())
 	if resolved.workspace.Kind == "team" {
 		return installedEnvironmentInspection{State: "unavailable", Detail: "The team dependency cache has no read-only package inventory lease"}
 	}
@@ -936,46 +935,7 @@ func (h *HTTPHandler) inspectInstalledEnvironmentPackages(r *http.Request, req *
 		}
 		return installedEnvironmentInspection{Packages: items, Exact: exact, CheckedAt: at, State: state}
 	}
-	persist := filepath.Join(h.Config.DataDir, "users", userID, "persist")
-	switch language {
-	case "python":
-		if runtime.ID == "local" || runtime.ID == "" {
-			return installedEnvironmentInspection{State: "unavailable", Detail: "Local Python package truth cannot be inspected without execution"}
-		}
-		root := filepath.Join(persist, "pip-packages", "runtimes", environmentRuntimePathPart(runtime.ID))
-		items, at, ok := inspectPythonInstalled(root)
-		state := "unavailable"
-		if ok {
-			state = "legacy-ready"
-		}
-		return installedEnvironmentInspection{Packages: items, Exact: ok, CheckedAt: at, State: state}
-	case "node":
-		if runtime.ID == "local" || runtime.ID == "" {
-			return installedEnvironmentInspection{State: "unavailable"}
-		}
-		inspection, err := lsp.InspectPersonalDependencies(h.Config.DataDir, userID)
-		if err != nil || !inspection.Exists {
-			return installedEnvironmentInspection{State: "unavailable"}
-		}
-		root := lsp.NodeDependencySnapshot(inspection.Root, resolved.workspace.ID, runtime.ID)
-		items, at, ok := inspectNodeInstalled(root)
-		state := "observed"
-		if ok {
-			state = "ready"
-		}
-		return installedEnvironmentInspection{Packages: items, Exact: ok, CheckedAt: at, State: state}
-	case "go":
-		items, at := inspectGoInstalled(filepath.Join(persist, "go", "pkg", "mod"))
-		return installedEnvironmentInspection{Packages: items, CheckedAt: at, State: "observed"}
-	case "rust":
-		items, at := inspectRustInstalled(filepath.Join(persist, "cargo", "registry", "src"))
-		return installedEnvironmentInspection{Packages: items, CheckedAt: at, State: "observed"}
-	case "java":
-		items, at := inspectMavenInstalled(filepath.Join(persist, "maven"))
-		return installedEnvironmentInspection{Packages: items, CheckedAt: at, State: "observed"}
-	default:
-		return installedEnvironmentInspection{State: "unavailable"}
-	}
+	return installedEnvironmentInspection{State: "unavailable", Detail: "The project cache service is unavailable"}
 }
 
 func (h *HTTPHandler) inspectProjectDependencyCache(r *http.Request, req *model.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string, snapshots ...*environmentDependencySnapshot) model.ProjectEnvironmentDependencyCache {
@@ -983,7 +943,7 @@ func (h *HTTPHandler) inspectProjectDependencyCache(r *http.Request, req *model.
 		return model.ProjectEnvironmentDependencyCache{Scope: "none", Status: "unavailable"}
 	}
 	if h.PersonalCache == nil {
-		return model.ProjectEnvironmentDependencyCache{Scope: "legacy-user", Status: "legacy"}
+		return model.ProjectEnvironmentDependencyCache{Scope: "project-lock", Status: "unavailable"}
 	}
 	var entry personalcache.Entry
 	var exists bool
@@ -998,7 +958,8 @@ func (h *HTTPHandler) inspectProjectDependencyCache(r *http.Request, req *model.
 		return model.ProjectEnvironmentDependencyCache{Scope: "project-lock", Status: "error"}
 	}
 	result := model.ProjectEnvironmentDependencyCache{
-		Scope: "project-lock", Digest: entry.Digest, Source: entry.DigestSource, Status: "miss",
+		Scope: "project-lock", CacheID: entry.ID, Digest: entry.Digest, Generation: entry.Generation,
+		Source: entry.DigestSource, Status: "miss",
 	}
 	if exists {
 		result.Status = "hit"
@@ -1690,21 +1651,12 @@ func (h *HTTPHandler) resolveEnvironmentDependencyStatus(r *http.Request, req *m
 	userID := auth.UserIDFromContext(r.Context())
 	ownerKind, ownerID := "user", userID
 	paths := lsp.AnalysisDependencyPaths{WorkspaceRoot: resolved.root}
-	projectScoped := resolved.workspace.Kind == "personal" && h.PersonalCache != nil && h.PersonalCache.ScopeMode() == "project-lock" && projectLockDependencyLanguage(language)
+	projectScoped := resolved.workspace.Kind == "personal" && h.PersonalCache != nil && projectLockDependencyLanguage(language)
 	if resolved.workspace.Kind == "team" {
 		// The existing team cache lease prepares directories. A status read must
 		// not create cache state, so report unknown until buildcache exposes a
 		// read-only resolver.
 		return environmentDependencyStatus{Status: "unavailable", RuntimeID: runtime.ID, Detail: "The team LSP dependency view is unavailable until a build publishes a read-only dependency snapshot"}, 0
-	} else if !projectScoped {
-		userRoot := filepath.Join(h.Config.DataDir, "users", userID)
-		paths.UserPersistRoot = filepath.Join(userRoot, "persist")
-		paths.AllowedRoots = appendExistingDependencyRoot(paths.AllowedRoots, userRoot)
-		inspection, err := lsp.InspectPersonalDependencies(h.Config.DataDir, userID)
-		if err == nil && inspection.Exists {
-			paths.SnapshotRoot = inspection.Root
-			paths.AllowedRoots = appendExistingDependencyRoot(paths.AllowedRoots, inspection.Root)
-		}
 	}
 	dependencyGeneration := ""
 	if projectScoped {
@@ -2048,7 +2000,7 @@ func projectEnvironmentInstalledTruthExact(environment *model.ProjectEnvironment
 
 func (h *HTTPHandler) clearProjectEnvironmentDependencyScope(r *http.Request, req *model.Request, environment *model.ProjectEnvironment, resolved environmentResolved) error {
 	if h.PersonalCache == nil {
-		return h.clearPythonRuntimeScope(auth.UserIDFromContext(r.Context()), environment.Runtime.ID)
+		return fmt.Errorf("project cache service is unavailable")
 	}
 	cacheRequest := h.environmentCacheRequest(r, req, resolved, environment.Runtime, environment.Language.ID)
 	entry, exists, err := h.PersonalCache.Lookup(cacheRequest)
@@ -2060,29 +2012,6 @@ func (h *HTTPHandler) clearProjectEnvironmentDependencyScope(r *http.Request, re
 	}
 	if h.OnPersonalCacheCleared != nil {
 		h.OnPersonalCacheCleared()
-	}
-	return nil
-}
-
-func (h *HTTPHandler) clearPythonRuntimeScope(userID, runtimeID string) error {
-	persistRoot := filepath.Join(h.Config.DataDir, "users", userID, "persist")
-	relative := filepath.Join("pip-packages", "runtimes", environmentRuntimePathPart(runtimeID))
-	target, err := safePath(persistRoot, relative)
-	if err != nil {
-		return fmt.Errorf("invalid Python runtime scope")
-	}
-	if filepath.Dir(target) != filepath.Join(persistRoot, "pip-packages", "runtimes") {
-		return fmt.Errorf("invalid Python runtime scope")
-	}
-	if info, statErr := os.Lstat(target); statErr == nil {
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("Python runtime scope is not a real directory")
-		}
-		if err := os.RemoveAll(target); err != nil {
-			return fmt.Errorf("clear Python runtime scope: %w", err)
-		}
-	} else if !os.IsNotExist(statErr) {
-		return statErr
 	}
 	return nil
 }

@@ -323,9 +323,9 @@ func dapEnvironment(spec LaunchSpec) map[string]string {
 	env := map[string]string{
 		"HOME":             "/tmp/bobocloud-home",
 		"TMPDIR":           "/tmp",
-		"PIP_CACHE_DIR":    "/persist/pip-cache",
-		"GOCACHE":          "/persist/go-cache",
-		"NPM_CONFIG_CACHE": "/persist/npm-cache",
+		"PIP_CACHE_DIR":    "/dap-cache/pip",
+		"GOCACHE":          "/dap-cache/go-build",
+		"NPM_CONFIG_CACHE": "/dap-cache/npm",
 	}
 	for key, value := range spec.DependencyEnv {
 		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
@@ -389,7 +389,7 @@ func dockerRunArgs(spec LaunchSpec, name string, detached bool) ([]string, error
 		if statErr != nil || !persistInfo.IsDir() || persistInfo.Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("DAP persist directory must be a real directory")
 		}
-		for _, cacheDirectory := range []string{"pip-cache", "go-cache", "npm-cache"} {
+		for _, cacheDirectory := range []string{"pip", "go-build", "npm"} {
 			hostCache := filepath.Join(persist, cacheDirectory)
 			if err := os.MkdirAll(hostCache, 0755); err != nil {
 				return nil, fmt.Errorf("prepare DAP %s directory: %w", cacheDirectory, err)
@@ -398,7 +398,7 @@ func dockerRunArgs(spec LaunchSpec, name string, detached bool) ([]string, error
 			if cacheErr != nil || !cacheInfo.IsDir() || cacheInfo.Mode()&os.ModeSymlink != 0 {
 				return nil, fmt.Errorf("DAP %s directory must be a real directory", cacheDirectory)
 			}
-			args = append(args, "-v", hostCache+":/persist/"+cacheDirectory+":rw")
+			args = append(args, "-v", hostCache+":/dap-cache/"+cacheDirectory+":rw")
 		}
 	}
 	if strings.TrimSpace(spec.DependencyRoot) != "" {

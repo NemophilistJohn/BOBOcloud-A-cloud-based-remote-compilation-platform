@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -27,6 +29,11 @@ const (
 	packagePlanRetryAfterSeconds = 1
 	packagePlanMaxCatalogChecks  = 16
 )
+
+func packageSourcePolicyDigest(sourceID, installURL string) string {
+	digest := sha256.Sum256([]byte(strings.TrimSpace(sourceID) + "\x00" + strings.TrimSpace(installURL)))
+	return hex.EncodeToString(digest[:16])
+}
 
 func (h *HTTPHandler) handlePackageCenter(w http.ResponseWriter, r *http.Request, req *model.Request) {
 	switch req.Action {
@@ -60,6 +67,7 @@ func (h *HTTPHandler) projectPackageCenterContext(environment *model.ProjectEnvi
 	result := model.ProjectPackageCenterContext{
 		Schema: packageCenterContextSchema, Revision: environment.Revision, Workspace: environment.Workspace,
 		Language: environment.Language, Runtime: environment.Runtime, SearchMode: packagecatalog.SearchModeExact,
+		CatalogTimeoutSeconds:   h.packageCatalogTimeoutSeconds(),
 		OperationTimeoutSeconds: h.packageOperationTimeoutSeconds(),
 		DefaultManifestPath:     defaultEditablePythonManifest(environment.Manifests),
 		Manifests:               append([]model.ProjectEnvironmentManifest(nil), environment.Manifests...),
@@ -70,7 +78,8 @@ func (h *HTTPHandler) projectPackageCenterContext(environment *model.ProjectEnvi
 		},
 		Inventory: model.ProjectPackageInventory{
 			Status: environment.DependencyCache.InventoryStatus, Detail: environment.DependencyCache.InventoryDetail,
-			CheckedAt: environment.DependencyCache.InventoryCheckedAt,
+			CheckedAt: environment.DependencyCache.InventoryCheckedAt, CacheID: environment.DependencyCache.CacheID,
+			DependencyDigest: environment.DependencyCache.Digest, Generation: environment.DependencyCache.Generation,
 		},
 	}
 	if h.PackageCatalog != nil {
@@ -110,6 +119,13 @@ func (h *HTTPHandler) projectPackageCenterContext(environment *model.ProjectEnvi
 	return result
 }
 
+func (h *HTTPHandler) packageCatalogTimeoutSeconds() int {
+	if h != nil && h.Config != nil && h.Config.PackageCatalogTimeoutSeconds > 0 {
+		return h.Config.PackageCatalogTimeoutSeconds
+	}
+	return 8
+}
+
 func (h *HTTPHandler) packageOperationTimeoutSeconds() int {
 	if h != nil && h.Config != nil && h.Config.PackageOperationTimeoutSeconds > 0 {
 		return h.Config.PackageOperationTimeoutSeconds
@@ -133,7 +149,7 @@ func (h *HTTPHandler) packageCenterPlanCapability(environment *model.ProjectEnvi
 		capability.Reason = "package-center-disabled"
 	case h.PackageCatalog == nil:
 		capability.Reason = "package-catalog-unavailable"
-	case h.PersonalCache == nil || h.PersonalCache.ScopeMode() != "project-lock":
+	case h.PersonalCache == nil:
 		capability.Reason = "project-lock-cache-required"
 	case h.EnvironmentSetup == nil:
 		capability.Reason = "environment-setup-unavailable"
@@ -282,10 +298,8 @@ func (h *HTTPHandler) planProjectPackageChanges(w http.ResponseWriter, r *http.R
 		return
 	}
 	candidates := editablePythonRequirementManifests(environment.Manifests)
-	allowReinstall := make(map[string]bool, len(environment.Packages.Missing))
-	for _, item := range environment.Packages.Missing {
-		allowReinstall[normalizePythonPackageName(item.Name)] = true
-	}
+	manifestPathHint := selectedEditablePythonManifest(req.PackageManifestPath, candidates)
+	allowReinstall := packageCenterReinstallCandidates(environment, manifestPathHint)
 	requirementsPlan, err := packageops.PlanPythonRequirementsWithOptions(
 		resolved.root, req.PackageManifestPath, candidates, resolvedChanges,
 		packageops.RequirementsPlanOptions{AllowReinstall: allowReinstall},
@@ -463,6 +477,51 @@ func defaultEditablePythonManifest(manifests []model.ProjectEnvironmentManifest)
 	return candidates[0]
 }
 
+func selectedEditablePythonManifest(requested string, candidates []string) string {
+	requested = filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(requested))))
+	if requested != "." && requested != "" {
+		return requested
+	}
+	normalized := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(candidate))))
+		if candidate == "." || candidate == "" {
+			continue
+		}
+		if strings.EqualFold(candidate, "requirements.txt") {
+			return candidate
+		}
+		normalized = append(normalized, candidate)
+	}
+	if len(normalized) == 1 {
+		return normalized[0]
+	}
+	return ""
+}
+
+func packageCenterReinstallCandidates(environment *model.ProjectEnvironment, manifestPath string) map[string]bool {
+	result := make(map[string]bool)
+	if environment == nil || strings.EqualFold(environment.DependencyCache.InventoryStatus, "busy") || strings.EqualFold(environment.DependencyCache.Status, "busy") {
+		return result
+	}
+	for _, item := range environment.Packages.Missing {
+		result[normalizePythonPackageName(item.Name)] = true
+	}
+	if projectPackageInventoryExact(environment) || environment.DependencyCache.Scope != "project-lock" || strings.TrimSpace(manifestPath) == "" {
+		return result
+	}
+	counts := make(map[string]int)
+	for _, item := range projectManifestPackageDeclarations(environment.Packages.Declared, manifestPath) {
+		counts[normalizePythonPackageName(item.Name)]++
+	}
+	for name, count := range counts {
+		if name != "" && count == 1 {
+			result[name] = true
+		}
+	}
+	return result
+}
+
 func validateProjectPackageDeclarations(environment *model.ProjectEnvironment, manifestPath string, changes []model.ProjectPackageChange) error {
 	manifestSet := make(map[string]bool)
 	for _, manifest := range environment.Manifests {
@@ -598,7 +657,7 @@ func (h *HTTPHandler) applyProjectPackageChanges(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error(), ErrorCode: "package_manifest_set_changed", Data: stored.Public})
 		return
 	}
-	if h.EnvironmentSetup == nil || h.PersonalCache == nil || h.PersonalCache.ScopeMode() != "project-lock" {
+	if h.EnvironmentSetup == nil || h.PersonalCache == nil {
 		writeJSON(w, http.StatusServiceUnavailable, model.Response{Success: false, Error: "Project package installation is unavailable", ErrorCode: "package_service_unavailable"})
 		return
 	}
@@ -620,6 +679,34 @@ func (h *HTTPHandler) applyProjectPackageChanges(w http.ResponseWriter, r *http.
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 	ctx, finalizeContainerCleanup := WithDeferredContainerCleanup(ctx)
+	var dependencyLease *personalcache.Lease
+	var toolchainLease *personalcache.ToolchainLease
+	packageCachesFinalized := false
+	releasePackageCaches := func() {
+		if toolchainLease != nil {
+			toolchainLease.Release()
+		}
+		h.releasePersonalCacheLease(dependencyLease, personalDependencyRefreshScope(userID, resolved.folderKey, environment.Runtime.ID, environment.Language.ID))
+	}
+	finalizePackageCaches := func(abort bool, released func()) {
+		if packageCachesFinalized {
+			return
+		}
+		packageCachesFinalized = true
+		if abort && dependencyLease != nil {
+			dependencyLease.Abort()
+		}
+		finalizeContainerCleanup(func() {
+			releasePackageCaches()
+			if released != nil {
+				released()
+			}
+		})
+	}
+	// Panics from the executor still unwind through an aborted dependency
+	// transaction. The cleanup handoff keeps both mounts retained until a
+	// container removal accepted by the executor has completed.
+	defer finalizePackageCaches(true, nil)
 	if err := h.PackagePlans.BeginCompletionIntent(planID, userID); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, model.Response{Success: false, Error: "Could not persist package operation intent", ErrorCode: "package_completion_persistence_unavailable", Data: stored.Public})
 		return
@@ -633,7 +720,7 @@ func (h *HTTPHandler) applyProjectPackageChanges(w http.ResponseWriter, r *http.
 		Path: manifestPath, Content: manifestContent,
 	}}
 	cacheRequest.OperationID = planID
-	dependencyLease, err := h.PersonalCache.Prepare(ctx, cacheRequest)
+	dependencyLease, err = h.PersonalCache.Prepare(ctx, cacheRequest)
 	if err != nil {
 		status, code := packageOperationError(ctx, 0, err)
 		writeJSON(w, status, model.Response{Success: false, Error: err.Error(), ErrorCode: code, Data: stored.Public})
@@ -649,27 +736,38 @@ func (h *HTTPHandler) applyProjectPackageChanges(w http.ResponseWriter, r *http.
 	}
 	ctx = personalcache.WithLease(ctx, dependencyLease)
 	if err := resetPythonPackageTarget(dependencyLease); err != nil {
-		dependencyLease.Abort()
-		finalizeContainerCleanup(func() {
-			h.releasePersonalCacheLease(dependencyLease, personalDependencyRefreshScope(userID, resolved.folderKey, environment.Runtime.ID, environment.Language.ID))
-		})
+		finalizePackageCaches(true, nil)
 		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Could not prepare an empty project package target", ErrorCode: "package_cache_prepare_failed", Data: stored.Public})
 		return
 	}
 	installManifest, cleanupInstallManifest, err := preparePackageInstallSnapshot(dependencyLease, string(manifestContent))
 	if err != nil {
-		dependencyLease.Abort()
-		finalizeContainerCleanup(func() {
-			h.releasePersonalCacheLease(dependencyLease, personalDependencyRefreshScope(userID, resolved.folderKey, environment.Runtime.ID, environment.Language.ID))
-		})
+		finalizePackageCaches(true, nil)
 		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Could not prepare the reviewed package manifest", ErrorCode: "package_cache_prepare_failed", Data: stored.Public})
 		return
 	}
+	toolchainLease, err = h.PersonalCache.PrepareToolchainCache(ctx, personalcache.ToolchainRequest{
+		UserID: userID, RuntimeID: environment.Runtime.ID, RuntimeFingerprint: cacheRequest.RuntimeFingerprint,
+		Language: environment.Language.ID, Tool: "pip",
+		SourcePolicyDigest: packageSourcePolicyDigest(stored.Public.Source.ID, stored.InstallURL),
+		QuotaBytes:         userQuotaBytes(h.UserStore, userID),
+	})
+	if err != nil || toolchainLease == nil {
+		_ = cleanupInstallManifest()
+		finalizePackageCaches(true, nil)
+		message := "Could not prepare the package download cache"
+		if err != nil {
+			message = err.Error()
+		}
+		writeJSON(w, http.StatusServiceUnavailable, model.Response{Success: false, Error: message, ErrorCode: "package_cache_unavailable", Data: stored.Public})
+		return
+	}
+	ctx = personalcache.ContextWithToolchainLeases(ctx, toolchainLease)
 	// pip does not create PIP_TARGET for an empty requirements file. Creating it
 	// explicitly is what lets removing the final direct dependency publish a
 	// valid, exact, empty generation instead of retaining packages from the old
 	// digest.
-	command := "mkdir -p \"$PIP_TARGET\" && python3 -m pip --isolated --disable-pip-version-check --no-input --cache-dir /persist/pip-cache install --target \"$PIP_TARGET\" --index-url " + shellQuoteEnvironmentPath(stored.InstallURL) + " -r " + shellQuoteEnvironmentPath(installManifest)
+	command := "mkdir -p \"$PIP_TARGET\" && python3 -m pip --isolated --disable-pip-version-check --no-input --cache-dir \"$PIP_CACHE_DIR\" install --target \"$PIP_TARGET\" --index-url " + shellQuoteEnvironmentPath(stored.InstallURL) + " -r " + shellQuoteEnvironmentPath(installManifest)
 	started := time.Now()
 	stdout, stderr, exitCode, execErr := h.EnvironmentSetup(ctx, userID, environment.Runtime.ID, resolved.root, []string{command})
 	cleanupErr := cleanupInstallManifest()
@@ -685,10 +783,7 @@ func (h *HTTPHandler) applyProjectPackageChanges(w http.ResponseWriter, r *http.
 	}
 	if execErr != nil || exitCode != 0 {
 		status, code := packageOperationError(ctx, exitCode, execErr)
-		dependencyLease.Abort()
-		finalizeContainerCleanup(func() {
-			h.releasePersonalCacheLease(dependencyLease, personalDependencyRefreshScope(userID, resolved.folderKey, environment.Runtime.ID, environment.Language.ID))
-		})
+		finalizePackageCaches(true, nil)
 		message := "Package installation failed"
 		if execErr != nil {
 			message = execErr.Error()
@@ -698,10 +793,7 @@ func (h *HTTPHandler) applyProjectPackageChanges(w http.ResponseWriter, r *http.
 		return
 	}
 	if _, err := verifyPackageManifestBindings(resolved.root, stored.Public.ManifestBindings); err != nil {
-		dependencyLease.Abort()
-		finalizeContainerCleanup(func() {
-			h.releasePersonalCacheLease(dependencyLease, personalDependencyRefreshScope(userID, resolved.folderKey, environment.Runtime.ID, environment.Language.ID))
-		})
+		finalizePackageCaches(true, nil)
 		result := model.ProjectPackageChangeResult{Schema: packageChangeActionSchema, PlanID: planID, Applied: false, ExitCode: exitCode, Stdout: stdout, Stderr: stderr, Message: err.Error()}
 		writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error(), ErrorCode: "package_plan_workspace_changed", Data: result})
 		return
@@ -711,10 +803,7 @@ func (h *HTTPHandler) applyProjectPackageChanges(w http.ResponseWriter, r *http.
 	directDeclarations := projectManifestPackageDeclarations(environment.Packages.Declared, manifestPath)
 	previewPackages := classifyEnvironmentPackages(directDeclarations, previewInstalled.Packages, "python", preview.Exact)
 	if preview.State != "ready" || !preview.Exact || len(previewPackages.Missing) > 0 || len(previewPackages.Unknown) > 0 || (len(directDeclarations) == 0 && len(preview.Packages) > 0) {
-		dependencyLease.Abort()
-		finalizeContainerCleanup(func() {
-			h.releasePersonalCacheLease(dependencyLease, personalDependencyRefreshScope(userID, resolved.folderKey, environment.Runtime.ID, environment.Language.ID))
-		})
+		finalizePackageCaches(true, nil)
 		message := "Package installation completed, but the staged package inventory does not match the reviewed project manifest"
 		if preview.State != "ready" && strings.TrimSpace(preview.Detail) != "" {
 			message += ": " + preview.Detail
@@ -724,10 +813,7 @@ func (h *HTTPHandler) applyProjectPackageChanges(w http.ResponseWriter, r *http.
 		return
 	}
 	released := make(chan struct{})
-	finalizeContainerCleanup(func() {
-		h.releasePersonalCacheLease(dependencyLease, personalDependencyRefreshScope(userID, resolved.folderKey, environment.Runtime.ID, environment.Language.ID))
-		close(released)
-	})
+	finalizePackageCaches(false, func() { close(released) })
 	<-released
 	operationPublished = dependencyLease.Published()
 	if !dependencyLease.Published() {

@@ -23,14 +23,14 @@ func hasDAPArgPair(args []string, flag, value string) bool {
 	return false
 }
 
-func TestDAPEnvironmentKeepsPersistForDownloadsAndBuildsOnly(t *testing.T) {
+func TestDAPEnvironmentUsesDedicatedDownloadAndBuildCache(t *testing.T) {
 	env := dapEnvironment(LaunchSpec{Adapter: AdapterSpec{LanguageID: "python", RuntimeID: "python:3.11"}})
 	for _, key := range []string{"PYTHONPATH", "NODE_PATH", "NPM_CONFIG_PREFIX", "GOPATH", "GOMODCACHE"} {
 		if value := env[key]; value != "" {
 			t.Fatalf("legacy installed dependency environment %s=%q was retained", key, value)
 		}
 	}
-	if env["PIP_CACHE_DIR"] != "/persist/pip-cache" || env["GOCACHE"] != "/persist/go-cache" || env["NPM_CONFIG_CACHE"] != "/persist/npm-cache" {
+	if env["PIP_CACHE_DIR"] != "/dap-cache/pip" || env["GOCACHE"] != "/dap-cache/go-build" || env["NPM_CONFIG_CACHE"] != "/dap-cache/npm" {
 		t.Fatalf("download/build cache environment = %#v", env)
 	}
 	for _, value := range env {
@@ -42,7 +42,15 @@ func TestDAPEnvironmentKeepsPersistForDownloadsAndBuildsOnly(t *testing.T) {
 
 func TestDockerRunArgsMountProjectDependenciesReadOnly(t *testing.T) {
 	workspace := t.TempDir()
-	persist := t.TempDir()
+	cacheParent := t.TempDir()
+	persist := filepath.Join(cacheParent, "dap-cache", "users", "user")
+	lspSentinel := filepath.Join(cacheParent, "lsp-cache", "sentinel")
+	if err := os.MkdirAll(filepath.Dir(lspSentinel), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lspSentinel, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	dependencies := t.TempDir()
 	spec := LaunchSpec{
 		SessionID: "session", UserID: "user", Workspace: workspace, PersistDir: persist,
@@ -58,10 +66,16 @@ func TestDockerRunArgsMountProjectDependenciesReadOnly(t *testing.T) {
 	if hasDAPArgPair(args, "-v", absolutePersist+":/persist:rw") {
 		t.Fatalf("the complete persist tree was mounted writable: %v", args)
 	}
-	for _, cacheDirectory := range []string{"pip-cache", "go-cache", "npm-cache"} {
+	for _, cacheDirectory := range []string{"pip", "go-build", "npm"} {
 		hostCache := filepath.Join(absolutePersist, cacheDirectory)
-		if !hasDAPArgPair(args, "-v", hostCache+":/persist/"+cacheDirectory+":rw") {
+		if !hasDAPArgPair(args, "-v", hostCache+":/dap-cache/"+cacheDirectory+":rw") {
 			t.Fatalf("writable %s mount missing from %v", cacheDirectory, args)
+		}
+	}
+	absoluteLSP, _ := filepath.Abs(filepath.Dir(lspSentinel))
+	for _, arg := range args {
+		if strings.Contains(arg, absoluteLSP) {
+			t.Fatalf("DAP launch crossed into LSP cache root: %v", args)
 		}
 	}
 	if !hasDAPArgPair(args, "-v", absoluteDependencies+":/project-deps:ro") {
@@ -69,6 +83,9 @@ func TestDockerRunArgsMountProjectDependenciesReadOnly(t *testing.T) {
 	}
 	if !hasDAPArgPair(args, "-e", "PYTHONPATH=/project-deps/python") {
 		t.Fatalf("dependency environment missing from %v", args)
+	}
+	if data, err := os.ReadFile(lspSentinel); err != nil || string(data) != "keep" {
+		t.Fatalf("DAP argument planning changed LSP cache sentinel: data=%q err=%v", data, err)
 	}
 }
 

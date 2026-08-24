@@ -306,6 +306,8 @@ test('terminal rendering stays behind the sender-bound main-process bridge', () 
   assert.match(source, /global\.api\.terminalWrite\(entry\.data\)/);
   assert.match(source, /global\.api\.onTerminalOutput\(handleTerminalOutput\)/);
   assert.match(source, /global\.api\.onTerminalStatus\(handleTerminalStatus\)/);
+  assert.match(source, /global\.api\.onTerminalPackageIntent\(handleTerminalPackageIntent\)/);
+  assert.match(source, /applyManagedPackageChanges\(terminalIntentChanges\(event\)/);
   assert.doesNotMatch(source, /sendToServer\(['"]terminal['"]/);
   assert.doesNotMatch(source, /getElementById\(['"]terminal-input['"]\)/);
   assert.doesNotMatch(source, /getElementById\(['"]terminal-output['"]\)/);

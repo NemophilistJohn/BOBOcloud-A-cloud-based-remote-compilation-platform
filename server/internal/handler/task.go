@@ -6,9 +6,11 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"bobocloud-server/internal/files"
+	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/runner"
@@ -105,6 +107,58 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 			executionCtx = persistOperation.Context()
 		}
 	}
+	workspaceKey := strings.TrimSpace(sess.FolderKey)
+	if workspaceKey == "" {
+		workspaceKey = strings.TrimSpace(sess.FolderName)
+	}
+	runtimeFingerprint := resolvedRuntimeFingerprint(ctx, h.RuntimeMetadata, runtimeDef.RuntimeID, runtimeDef.DockerImage, runtimeDef.Version)
+	var toolchainLease *personalcache.ToolchainLease
+	if personalLease != nil && personalLease.Writable() {
+		tool := ""
+		switch runtimeDef.Language {
+		case "python":
+			tool = "pip"
+		case "node":
+			tool = "npm"
+		}
+		if tool != "" {
+			toolchainLease, err = h.PersonalCache.PrepareToolchainCache(executionCtx, personalcache.ToolchainRequest{
+				UserID: sess.UserID, RuntimeID: runtimeDef.RuntimeID, RuntimeFingerprint: runtimeFingerprint,
+				Language: runtimeDef.Language, Tool: tool,
+				SourcePolicyDigest: packageSourcePolicyDigest("task-setup", strings.Join(sess.SetupCommands, "\x00")),
+				QuotaBytes:         userQuotaBytes(h.UserStore, sess.UserID),
+			})
+			if err != nil {
+				fail("Failed to prepare task tool download cache: " + err.Error())
+				return
+			}
+			if toolchainLease != nil {
+				defer toolchainLease.Release()
+			}
+		}
+	}
+	var buildLease *personalcache.BuildLease
+	if sess.TeamID == "" && h.PersonalCache != nil && h.Config.PersonalBuildCacheEnabled {
+		switch runtimeDef.Language {
+		case "c", "cpp", "go", "rust", "java":
+			dependencyDigest := ""
+			if personalLease != nil {
+				dependencyDigest = personalLease.Fingerprint.Digest
+			}
+			buildLease, err = h.PersonalCache.PrepareBuild(executionCtx, personalcache.BuildRequest{
+				UserID: sess.UserID, WorkspaceID: lsp.StableWorkspaceIdentity(sess.UserID, "", "", "", workspaceKey), WorkspaceName: sess.FolderName,
+				RuntimeID: runtimeDef.RuntimeID, RuntimeFingerprint: runtimeFingerprint, Language: runtimeDef.Language,
+				DependencyDigest: dependencyDigest, Target: "task:" + strings.TrimSpace(sess.Task.Label),
+			})
+			if err != nil {
+				fail("Failed to prepare task build cache: " + err.Error())
+				return
+			}
+			if buildLease != nil {
+				defer buildLease.Release()
+			}
+		}
+	}
 
 	tempDir, err := os.MkdirTemp("", fmt.Sprintf("task-%s-", runID[:min(8, len(runID))]))
 	if err != nil {
@@ -128,8 +182,30 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 	dockerRunner.SetUserID(sess.UserID)
 	dockerRunner.SetSetupCommands(sess.SetupCommands)
 	dockerRunner.SetMetrics(h.Metrics)
-	if personalLease != nil {
-		dockerRunner.SetPersonalCacheContext(personalLease.ContainerKey, personalLease.DockerMounts, personalLease.DockerEnv, personalLease.Writable())
+	if personalLease != nil || toolchainLease != nil || buildLease != nil {
+		keys := make([]string, 0, 3)
+		mounts := make(map[string]string)
+		environment := make(map[string]string)
+		writable := false
+		if personalLease != nil {
+			keys = append(keys, personalLease.ContainerKey)
+			mounts = mergeCacheContext(mounts, personalLease.DockerMounts)
+			environment = mergeCacheContext(environment, personalLease.DockerEnv)
+			writable = personalLease.Writable()
+		}
+		if toolchainLease != nil {
+			keys = append(keys, toolchainLease.ContainerKey)
+			mounts = mergeCacheContext(mounts, toolchainLease.DockerMounts)
+			environment = mergeCacheContext(environment, toolchainLease.DockerEnv)
+			writable = true
+		}
+		if buildLease != nil {
+			keys = append(keys, buildLease.ContainerKey)
+			mounts = mergeCacheContext(mounts, buildLease.DockerMounts)
+			environment = mergeCacheContext(environment, buildLease.DockerEnv)
+			writable = true
+		}
+		dockerRunner.SetPersonalCacheContext(strings.Join(keys, "+"), mounts, environment, writable)
 	}
 	result := dockerRunner.RunTaskExecution(executionCtx, sess.Task, tempDir, output, stdinReader)
 	if personalLease != nil && personalLease.Writable() && !dockerRunner.SetupPassed() {

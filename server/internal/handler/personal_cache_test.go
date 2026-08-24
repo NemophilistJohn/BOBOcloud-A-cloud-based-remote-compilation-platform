@@ -9,17 +9,58 @@ import (
 	"strings"
 	"testing"
 
+	"bobocloud-server/internal/cachev2"
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/personalcache"
 )
 
-func cacheModules(response model.Response) []model.CacheModule {
-	modules := make([]model.CacheModule, 0)
-	for _, group := range response.CacheGroups {
-		modules = append(modules, group.Modules...)
+func personalCacheV2Inventory(t *testing.T, handler http.Handler, apiKey string) cachev2.Inventory {
+	t.Helper()
+	recorder := serveAuthenticatedAction(t, handler, apiKey, `{"action":"getCacheInventory"}`)
+	response := decodeCacheV2TestEnvelope(t, recorder.Body.Bytes())
+	if recorder.Code != http.StatusOK || !response.Success {
+		t.Fatalf("cache-v2 inventory status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	return modules
+	return response.Data.CacheInventory
+}
+
+func dependencyCacheV2Entry(t *testing.T, inventory cachev2.Inventory, predicate func(cachev2.Entry) bool) cachev2.Entry {
+	t.Helper()
+	for _, entry := range inventory.Entries {
+		if entry.Category == cachev2.CategoryDependencies && (predicate == nil || predicate(entry)) {
+			return entry
+		}
+	}
+	t.Fatalf("dependency entry was not found in %+v", inventory.Entries)
+	return cachev2.Entry{}
+}
+
+func personalCacheV2EntryDetail(t *testing.T, handler http.Handler, apiKey string, id cachev2.CacheID) (cachev2.Entry, cachePackageInventoryDetail) {
+	t.Helper()
+	payload, _ := json.Marshal(map[string]any{"action": "getCacheEntry", "cacheId": id})
+	recorder := serveAuthenticatedAction(t, handler, apiKey, string(payload))
+	response := decodeCacheV2TestEnvelope(t, recorder.Body.Bytes())
+	if recorder.Code != http.StatusOK || !response.Success {
+		t.Fatalf("cache-v2 detail status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	encodedEntry, err := json.Marshal(response.Data.CacheEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry cachev2.Entry
+	if err := json.Unmarshal(encodedEntry, &entry); err != nil {
+		t.Fatal(err)
+	}
+	encodedInventory, err := json.Marshal(response.Data.CacheEntry["package_inventory"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inventory cachePackageInventoryDetail
+	if err := json.Unmarshal(encodedInventory, &inventory); err != nil {
+		t.Fatal(err)
+	}
+	return entry, inventory
 }
 
 func TestProjectDependencyWriteRequiredByRuntimeBehavior(t *testing.T) {
@@ -131,62 +172,62 @@ func TestProjectDependencyCacheCRUDAndProjectCleanup(t *testing.T) {
 	}
 	request := personalcache.Request{
 		UserID: user.ID, WorkspaceID: lsp.StableWorkspaceIdentity(user.ID, "", "", "", "project"), WorkspaceName: "Project",
-		RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: workspace,
+		RuntimeID: "python:3.11", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.11", "python:3.11-slim"),
+		Language: "python", WorkspaceRoot: workspace,
 	}
 	lease, err := handler.PersonalCache.Prepare(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	recorder := serveAuthenticatedAction(t, handler, user.APIKey, `{"action":"deleteCacheModule","cachePath":"`+lease.RelativePath+`"}`)
-	if recorder.Code != http.StatusConflict {
+	activeInventory := personalCacheV2Inventory(t, handler, user.APIKey)
+	activeEntry := dependencyCacheV2Entry(t, activeInventory, nil)
+	if !activeEntry.Writing || activeEntry.Capabilities["delete"] {
+		t.Fatalf("active writer state/capability not exposed: %+v", activeEntry)
+	}
+	deleteActivePayload, _ := json.Marshal(map[string]any{"action": "deleteCacheEntry", "cacheId": activeEntry.ID, "expectedRevision": activeInventory.Revision})
+	recorder := serveAuthenticatedAction(t, handler, user.APIKey, string(deleteActivePayload))
+	if recorder.Code != http.StatusConflict || decodeCacheV2TestEnvelope(t, recorder.Body.Bytes()).ErrorCode != "cache_in_use" {
 		t.Fatalf("active cache delete status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-	recorder = serveAuthenticatedAction(t, handler, user.APIKey, `{"action":"listCacheModules"}`)
-	var activeList model.Response
-	if err := json.Unmarshal(recorder.Body.Bytes(), &activeList); err != nil {
-		t.Fatal(err)
-	}
-	activeModules := cacheModules(activeList)
-	if len(activeModules) != 1 || !activeModules[0].Active || !activeModules[0].Writing {
-		t.Fatalf("active writer state not exposed: %+v", activeModules)
 	}
 	lease.Release()
 	reader, _, inventory := handler.PersonalCache.AcquirePackageInventoryRead(request)
 	if reader == nil || inventory.State != "ready" {
 		t.Fatalf("read lease unavailable: reader=%v inventory=%+v", reader, inventory)
 	}
-	recorder = serveAuthenticatedAction(t, handler, user.APIKey, `{"action":"listCacheModules"}`)
-	var readList model.Response
-	if err := json.Unmarshal(recorder.Body.Bytes(), &readList); err != nil {
-		t.Fatal(err)
-	}
-	readModules := cacheModules(readList)
-	if len(readModules) != 1 || !readModules[0].Active || readModules[0].Writing {
-		t.Fatalf("read-only activity state not exposed: %+v", readModules)
+	readInventory := personalCacheV2Inventory(t, handler, user.APIKey)
+	readEntry := dependencyCacheV2Entry(t, readInventory, nil)
+	if readEntry.ActiveReaders != 1 || readEntry.Writing || readEntry.Capabilities["delete"] {
+		t.Fatalf("read-only activity state not exposed: %+v", readEntry)
 	}
 	reader.Release()
 
-	recorder = serveAuthenticatedAction(t, handler, user.APIKey, `{"action":"listCacheModules"}`)
-	var listed model.Response
-	if err := json.Unmarshal(recorder.Body.Bytes(), &listed); err != nil {
-		t.Fatal(err)
-	}
-	if recorder.Code != http.StatusOK || len(listed.CacheGroups) != 1 || len(listed.CacheGroups[0].Modules) != 1 || listed.CacheGroups[0].Modules[0].Kind != "project-dependency" {
-		t.Fatalf("project cache not exposed through CRUD: status=%d response=%+v", recorder.Code, listed)
-	}
-	recorder = serveAuthenticatedAction(t, handler, user.APIKey, `{"action":"deleteCacheModule","cachePath":"`+lease.RelativePath+`"}`)
-	if recorder.Code != http.StatusOK || len(handler.PersonalCache.Inspect(user.ID, 0).Entries) != 0 || cleared != 1 {
-		t.Fatalf("cache delete failed: status=%d body=%s cleared=%d", recorder.Code, recorder.Body.String(), cleared)
+	currentInventory := personalCacheV2Inventory(t, handler, user.APIKey)
+	currentEntry := dependencyCacheV2Entry(t, currentInventory, nil)
+	deleteCurrentPayload, _ := json.Marshal(map[string]any{"action": "deleteCacheEntry", "cacheId": currentEntry.ID, "expectedRevision": currentInventory.Revision})
+	recorder = serveAuthenticatedAction(t, handler, user.APIKey, string(deleteCurrentPayload))
+	if recorder.Code != http.StatusConflict || decodeCacheV2TestEnvelope(t, recorder.Body.Bytes()).ErrorCode != "cache_current_environment_protected" {
+		t.Fatalf("current project environment was deletable: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 
+	if err := os.WriteFile(filepath.Join(workspace, "requirements.txt"), []byte("demo==2\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	second, err := handler.PersonalCache.Prepare(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	second.Release()
+	historyInventory := personalCacheV2Inventory(t, handler, user.APIKey)
+	historyEntry := dependencyCacheV2Entry(t, historyInventory, func(entry cachev2.Entry) bool { return entry.State == cachev2.EntryStateSuperseded })
+	deleteHistoryPayload, _ := json.Marshal(map[string]any{"action": "deleteCacheEntry", "cacheId": historyEntry.ID, "expectedRevision": historyInventory.Revision})
+	recorder = serveAuthenticatedAction(t, handler, user.APIKey, string(deleteHistoryPayload))
+	if recorder.Code != http.StatusOK || cleared != 1 {
+		t.Fatalf("superseded cache delete failed: status=%d body=%s cleared=%d", recorder.Code, recorder.Body.String(), cleared)
+	}
 	recorder = serveAuthenticatedAction(t, handler, user.APIKey, `{"action":"deleteProject","folderKey":"project"}`)
-	if recorder.Code != http.StatusOK || len(handler.PersonalCache.Inspect(user.ID, 0).Entries) != 0 {
+	afterDelete := personalCacheV2Inventory(t, handler, user.APIKey)
+	if recorder.Code != http.StatusOK || len(afterDelete.Entries) != 0 {
 		t.Fatalf("project deletion left dependency cache: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
@@ -216,44 +257,35 @@ func TestProjectDependencyCacheListsExactPythonDistributionAndRejectsDigestMutat
 	writePythonDistInfo(t, filepath.Join(lease.HostRoot, "python"), "matplotlib", "3.9.0")
 	lease.Release()
 
-	listedRecorder := serveAuthenticatedAction(t, handler, user.APIKey, `{"action":"listCacheModules"}`)
-	var listed model.Response
-	if err := json.Unmarshal(listedRecorder.Body.Bytes(), &listed); err != nil {
-		t.Fatal(err)
+	listed := personalCacheV2Inventory(t, handler, user.APIKey)
+	module := dependencyCacheV2Entry(t, listed, nil)
+	if module.Generation == "" || module.PackageInventory == nil || module.PackageInventory.State != "deferred" || !module.PackageInventory.Deferred {
+		t.Fatalf("lazy cache-v2 summary = entry:%+v inventory:%+v", module, module.PackageInventory)
 	}
-	modules := cacheModules(listed)
-	if listedRecorder.Code != http.StatusOK || len(modules) != 1 {
-		t.Fatalf("list response: status=%d body=%s", listedRecorder.Code, listedRecorder.Body.String())
+	detailedEntry, packageInventory := personalCacheV2EntryDetail(t, handler, user.APIKey, module.ID)
+	if packageInventory.State != "ready" || !packageInventory.Exact || packageInventory.Revision == "" || len(packageInventory.Packages) != 2 {
+		t.Fatalf("exact cache-v2 detail = %+v", packageInventory)
 	}
-	module := modules[0]
-	if module.InventoryStatus != "ready" || !module.InventoryExact || module.Generation == "" || module.InventoryRevision == "" || len(module.Packages) != 2 {
-		t.Fatalf("exact cache module = %+v", module)
-	}
-	if module.Packages[0].Name != "matplotlib" || module.Packages[1].Name != "numpy" || len(module.Packages[1].Imports) != 1 || module.Packages[1].Imports[0] != "numpy" {
-		t.Fatalf("package inventory = %+v", module.Packages)
+	if packageInventory.Packages[0].Name != "matplotlib" || packageInventory.Packages[1].Name != "numpy" || len(packageInventory.Packages[1].Imports) != 1 || packageInventory.Packages[1].Imports[0] != "numpy" {
+		t.Fatalf("package inventory = %+v", packageInventory.Packages)
 	}
 
 	deletePayload, _ := json.Marshal(&model.Request{
-		Action: "deleteCachePackage", CachePath: module.Path, CachePackageName: "numpy", CachePackageVersion: "2.1.0",
-		CacheGeneration: module.Generation, CacheInventoryRevision: module.InventoryRevision,
+		Action: "deleteCachePackage", CachePackageName: "numpy", CachePackageVersion: "2.1.0",
+		CacheGeneration: module.Generation, CacheInventoryRevision: packageInventory.Revision,
 	})
 	deleted := serveAuthenticatedAction(t, handler, user.APIKey, string(deletePayload))
-	if deleted.Code != http.StatusConflict || cleared != 0 || !strings.Contains(deleted.Body.String(), "invalidate the project dependency digest") {
+	if deleted.Code != http.StatusBadRequest || cleared != 0 || !strings.Contains(deleted.Body.String(), "Unknown action") {
 		t.Fatalf("delete status=%d body=%s cleared=%d", deleted.Code, deleted.Body.String(), cleared)
 	}
 
-	afterRecorder := serveAuthenticatedAction(t, handler, user.APIKey, `{"action":"listCacheModules"}`)
-	var after model.Response
-	if err := json.Unmarshal(afterRecorder.Body.Bytes(), &after); err != nil {
-		t.Fatal(err)
-	}
-	afterModules := cacheModules(after)
-	if afterRecorder.Code != http.StatusOK || len(afterModules) != 1 || afterModules[0].Generation != module.Generation || afterModules[0].InventoryRevision != module.InventoryRevision || len(afterModules[0].Packages) != 2 {
-		t.Fatalf("rejected package delete changed cache truth: status=%d modules=%+v", afterRecorder.Code, afterModules)
+	afterEntry, afterInventory := personalCacheV2EntryDetail(t, handler, user.APIKey, module.ID)
+	if afterEntry.Generation != detailedEntry.Generation || afterInventory.Revision != packageInventory.Revision || len(afterInventory.Packages) != 2 {
+		t.Fatalf("rejected legacy package delete changed cache truth: entry=%+v inventory=%+v", afterEntry, afterInventory)
 	}
 }
 
-func TestProjectDependencyCacheListsObservedPackagesForOtherLanguages(t *testing.T) {
+func TestProjectDependencyCacheKeepsOtherLanguagesOpaqueToPackageInventory(t *testing.T) {
 	handler, _, user := newAuthenticatedLifecycleHandler(t)
 	handler.PersonalCache = personalcache.NewManager(handler.Config.DataDir, personalcache.Options{ReservationBytes: 8, ReservationFiles: 1})
 
@@ -262,13 +294,11 @@ func TestProjectDependencyCacheListsObservedPackagesForOtherLanguages(t *testing
 		runtimeID string
 		path      string
 		contents  string
-		wantName  string
-		version   string
 	}{
-		{language: "node", runtimeID: "node:22", path: "node_modules/lodash/package.json", contents: `{"name":"lodash","version":"4.17.21"}`, wantName: "lodash", version: "4.17.21"},
-		{language: "go", runtimeID: "go:1.24", path: "go/pkg/mod/example.com/demo@v1.2.3/demo.go", contents: "package demo\n", wantName: "example.com/demo", version: "v1.2.3"},
-		{language: "rust", runtimeID: "rust:1.85", path: "cargo/registry/src/index.crates.io/serde-1.0.219/src/lib.rs", contents: "pub struct Demo;\n", wantName: "serde", version: "1.0.219"},
-		{language: "java", runtimeID: "java:21", path: "maven/com/example/demo/1.2.3/demo-1.2.3.pom", contents: "<project/>\n", wantName: "com.example:demo", version: "1.2.3"},
+		{language: "node", runtimeID: "node:22", path: "node_modules/lodash/package.json", contents: `{"name":"lodash","version":"4.17.21"}`},
+		{language: "go", runtimeID: "go:1.24", path: "go/pkg/mod/example.com/demo@v1.2.3/demo.go", contents: "package demo\n"},
+		{language: "rust", runtimeID: "rust:1.85", path: "cargo/registry/src/index.crates.io/serde-1.0.219/src/lib.rs", contents: "pub struct Demo;\n"},
+		{language: "java", runtimeID: "java:21", path: "maven/com/example/demo/1.2.3/demo-1.2.3.pom", contents: "<project/>\n"},
 	}
 	for _, test := range tests {
 		workspace := filepath.Join(handler.Config.DataDir, "users", user.ID, "workspaces", "project-"+test.language)
@@ -277,7 +307,8 @@ func TestProjectDependencyCacheListsObservedPackagesForOtherLanguages(t *testing
 		}
 		request := personalcache.Request{
 			UserID: user.ID, WorkspaceID: lsp.StableWorkspaceIdentity(user.ID, "", "", "", "project-"+test.language), WorkspaceName: "Project " + test.language,
-			RuntimeID: test.runtimeID, Language: test.language, WorkspaceRoot: workspace,
+			RuntimeID: test.runtimeID, RuntimeFingerprint: personalCacheRuntimeFingerprint(test.runtimeID, "test:"+test.runtimeID),
+			Language: test.language, WorkspaceRoot: workspace,
 		}
 		lease, err := handler.PersonalCache.Prepare(context.Background(), request)
 		if err != nil {
@@ -296,27 +327,21 @@ func TestProjectDependencyCacheListsObservedPackagesForOtherLanguages(t *testing
 		}
 	}
 
-	recorder := serveAuthenticatedAction(t, handler, user.APIKey, `{"action":"listCacheModules"}`)
-	var listed model.Response
-	if err := json.Unmarshal(recorder.Body.Bytes(), &listed); err != nil {
-		t.Fatal(err)
-	}
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("list status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-	byLanguage := make(map[string]model.CacheModule)
-	for _, module := range cacheModules(listed) {
-		if module.Kind == "project-dependency" {
+	listed := personalCacheV2Inventory(t, handler, user.APIKey)
+	byLanguage := make(map[string]cachev2.Entry)
+	for _, module := range listed.Entries {
+		if module.Category == cachev2.CategoryDependencies {
 			byLanguage[module.Language] = module
 		}
 	}
 	for _, test := range tests {
 		module, exists := byLanguage[test.language]
-		if !exists || module.InventoryStatus != "observed" || module.InventoryExact || module.InventoryRevision != "" || module.Generation == "" || len(module.Packages) != 1 {
-			t.Fatalf("%s observed module = %+v", test.language, module)
+		if !exists || module.PackageInventory == nil || module.PackageInventory.State != "unsupported" || module.Generation == "" {
+			t.Fatalf("%s lazy module summary = entry:%+v inventory:%+v", test.language, module, module.PackageInventory)
 		}
-		if module.Packages[0].Name != test.wantName || module.Packages[0].Version != test.version {
-			t.Fatalf("%s packages = %+v", test.language, module.Packages)
+		_, inventory := personalCacheV2EntryDetail(t, handler, user.APIKey, module.ID)
+		if inventory.State != "unsupported" || inventory.Exact || inventory.Revision != "" || len(inventory.Packages) != 0 {
+			t.Fatalf("%s package inventory leaked observational guesses: %+v", test.language, inventory)
 		}
 	}
 }
@@ -343,7 +368,8 @@ func TestSingleUserProjectDeletionRemovesDependencyNamespaces(t *testing.T) {
 	}
 	lease, err := handler.PersonalCache.Prepare(context.Background(), personalcache.Request{
 		UserID: "default", WorkspaceID: lsp.StableWorkspaceIdentity("default", "", "", "", "project"),
-		RuntimeID: "python:3.11", Language: "python", WorkspaceRoot: workspace,
+		RuntimeID: "python:3.11", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.11", "python:3.11-slim"),
+		Language: "python", WorkspaceRoot: workspace,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -355,8 +381,9 @@ func TestSingleUserProjectDeletionRemovesDependencyNamespaces(t *testing.T) {
 	}
 }
 
-func TestLegacyCacheCRUDUsesWholeNamespacesWithoutDeadMetadata(t *testing.T) {
+func TestLegacyCacheNamespacesAreNotImportedOrDeletedByCacheV2(t *testing.T) {
 	handler, _, user := newAuthenticatedLifecycleHandler(t)
+	handler.PersonalCache = personalcache.NewManager(handler.Config.DataDir, personalcache.Options{})
 	persist := filepath.Join(handler.Config.DataDir, "users", user.ID, "persist")
 	pythonRoot := filepath.Join(persist, "pip-packages")
 	for path, content := range map[string]string{
@@ -372,27 +399,20 @@ func TestLegacyCacheCRUDUsesWholeNamespacesWithoutDeadMetadata(t *testing.T) {
 		}
 	}
 
-	recorder := serveAuthenticatedAction(t, handler, user.APIKey, `{"action":"listCacheModules"}`)
-	var listed model.Response
-	if err := json.Unmarshal(recorder.Body.Bytes(), &listed); err != nil {
-		t.Fatal(err)
-	}
-	paths := map[string]model.CacheModule{}
-	for _, module := range cacheModules(listed) {
-		paths[module.Path] = module
-		if strings.HasPrefix(module.Path, "pip-packages/") || strings.HasPrefix(module.Path, "go/") {
-			t.Fatalf("partial legacy cache entry leaked into CRUD: %+v", module)
-		}
-	}
-	if paths["pip-packages"].Kind != "legacy-cache" || paths["go"].Kind != "legacy-cache" {
-		t.Fatalf("coherent legacy namespaces missing: %+v", paths)
+	listed := personalCacheV2Inventory(t, handler, user.APIKey)
+	if len(listed.Entries) != 0 {
+		t.Fatalf("legacy cache namespaces leaked into cache-v2: %+v", listed.Entries)
 	}
 
-	recorder = serveAuthenticatedAction(t, handler, user.APIKey, `{"action":"deleteCacheModule","cachePath":"pip-packages"}`)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("delete status=%d body=%s", recorder.Code, recorder.Body.String())
+	recorder := serveAuthenticatedAction(t, handler, user.APIKey, `{"action":"listCacheModules"}`)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "Unknown action") {
+		t.Fatalf("legacy list action remained available: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if _, err := os.Stat(pythonRoot); !os.IsNotExist(err) {
-		t.Fatalf("Python namespace or dist-info survived delete: %v", err)
+	recorder = serveAuthenticatedAction(t, handler, user.APIKey, `{"action":"deleteCacheModule","cachePath":"pip-packages"}`)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "Unknown action") {
+		t.Fatalf("legacy delete action remained available: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := os.Stat(pythonRoot); err != nil {
+		t.Fatalf("deprecated cache action changed legacy data: %v", err)
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"bobocloud-server/internal/cachev2"
 )
 
 // recoverDependencyTransactions handles an unclean exit between inventory
@@ -22,7 +24,13 @@ func recoverDependencyTransactions(managerRoot string) {
 		if !user.IsDir() || user.Type()&os.ModeSymlink != 0 {
 			continue
 		}
-		persistRoot := filepath.Join(managerRoot, user.Name(), "persist")
+		layout, _, layoutErr := cachev2.EnsureUserLayout(filepath.Dir(managerRoot), user.Name())
+		if layoutErr != nil {
+			slog.Warn("Skipped invalid personal cache-v2 namespace during recovery", "user_id", user.Name(), "error", layoutErr)
+			continue
+		}
+		recoverCacheV2DeletionTransactions(layout)
+		persistRoot := layout.Root
 		for _, internal := range []string{stagingDir, retiredDir} {
 			recoverDependencyTransactionDirectory(managerRoot, persistRoot, user.Name(), internal)
 		}
@@ -66,7 +74,7 @@ func recoverableDependencyTarget(persistRoot, userID, candidate string) (string,
 		return "", false
 	}
 	var meta metadata
-	if json.Unmarshal(data, &meta) != nil || meta.Schema != 1 || meta.UserID != userID || strings.TrimSpace(meta.WorkspaceID) == "" || strings.TrimSpace(meta.RuntimeID) == "" || strings.TrimSpace(meta.Language) == "" {
+	if json.Unmarshal(data, &meta) != nil || meta.Schema != cacheSchema || meta.UserID != userID || strings.TrimSpace(meta.WorkspaceID) == "" || strings.TrimSpace(meta.RuntimeID) == "" || strings.TrimSpace(meta.Language) == "" {
 		return "", false
 	}
 	if len(meta.Digest) != 32 {

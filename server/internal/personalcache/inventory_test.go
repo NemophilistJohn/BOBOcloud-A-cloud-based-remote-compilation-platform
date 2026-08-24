@@ -74,7 +74,8 @@ func inventoryTestRequest(t *testing.T, manager *Manager) (Request, string) {
 	}
 	return Request{
 		UserID: "user-a", WorkspaceID: "workspace-a", WorkspaceName: "Workspace A",
-		RuntimeID: "python:3.10", Language: "python", WorkspaceRoot: workspace, QuotaBytes: 16 << 20,
+		RuntimeID: "python:3.10", RuntimeFingerprint: trustedTestRuntimeFingerprint,
+		Language: "python", WorkspaceRoot: workspace, QuotaBytes: 16 << 20,
 	}, workspace
 }
 

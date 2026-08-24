@@ -12,7 +12,8 @@ func TestAcquireEntryInspectionReadRetainsGenerationWithoutTouchingLRU(t *testin
 	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8, ReservationFiles: 1})
 	request := Request{
 		UserID: "u1", WorkspaceID: "project", WorkspaceName: "Project",
-		RuntimeID: "node:22", Language: "node", WorkspaceRoot: t.TempDir(),
+		RuntimeID: "node:22", RuntimeFingerprint: trustedTestRuntimeFingerprint,
+		Language: "node", WorkspaceRoot: t.TempDir(),
 	}
 	published, err := manager.Prepare(context.Background(), request)
 	if err != nil {

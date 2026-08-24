@@ -119,6 +119,7 @@ const EXPECTED_IPC = new Map([
   ['terminal:start', 'handle'],
   ['terminal:write', 'handle'],
   ['terminal:resize', 'handle'],
+  ['terminal:package-intent-decision', 'handle'],
   ['terminal:stop', 'handle'],
   ['terminal:status', 'handle'],
   ['package-center:apply-local-changes', 'handle'],

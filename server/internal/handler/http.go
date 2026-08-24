@@ -331,14 +331,10 @@ func (h *HTTPHandler) routeRequest(w http.ResponseWriter, r *http.Request, req *
 		h.handleDeleteProject(w, r, req)
 	case "getStorageInfo":
 		h.handleGetStorageInfo(w, r)
+	case "getCacheInventory", "getCacheEntry", "deleteCacheEntry", "clearCacheScope":
+		h.handleCacheV2(w, r, req)
 	case "getPerformanceMetrics":
 		h.handlePerformanceMetrics(w, r)
-	case "listCacheModules":
-		h.handleListCacheModules(w, r)
-	case "deleteCacheModule":
-		h.handleDeleteCacheModule(w, r, req)
-	case "deleteCachePackage":
-		h.handleDeleteCachePackage(w, r, req)
 
 	// ── 账户系统（登录态）──
 	case "whoami":
@@ -1389,7 +1385,7 @@ func (h *HTTPHandler) handleListProjects(w http.ResponseWriter, r *http.Request)
 	}
 	persistBytes := int64(0)
 	if h.authEnabled {
-		persistBytes = h.dirSize(filepath.Join(h.Config.DataDir, "users", userID, "persist"))
+		persistBytes = h.dirSize(filepath.Join(h.Config.DataDir, "users", userID, "cache-v2"))
 	}
 
 	// 计算所有项目大小之和
@@ -1519,7 +1515,7 @@ func (h *HTTPHandler) handleGetStorageInfo(w http.ResponseWriter, r *http.Reques
 	}
 	persistBytes := int64(0)
 	if h.authEnabled {
-		persistBytes = h.dirSize(filepath.Join(h.Config.DataDir, "users", userID, "persist"))
+		persistBytes = h.dirSize(filepath.Join(h.Config.DataDir, "users", userID, "cache-v2"))
 	}
 
 	writeJSON(w, http.StatusOK, model.Response{

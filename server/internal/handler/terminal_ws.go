@@ -79,21 +79,25 @@ type terminalWorkspaceRequest struct {
 }
 
 type terminalStartMessage struct {
-	Protocol      int                      `json:"protocol,omitempty"`
-	Type          string                   `json:"type"`
-	Token         string                   `json:"token,omitempty"`
-	RuntimeID     string                   `json:"runtimeId,omitempty"`
-	Workspace     terminalWorkspaceRequest `json:"workspace"`
-	SetupCommands []string                 `json:"setupCommands,omitempty"`
-	Cols          int                      `json:"cols,omitempty"`
-	Rows          int                      `json:"rows,omitempty"`
+	Protocol       int                      `json:"protocol,omitempty"`
+	Type           string                   `json:"type"`
+	Token          string                   `json:"token,omitempty"`
+	RuntimeID      string                   `json:"runtimeId,omitempty"`
+	Workspace      terminalWorkspaceRequest `json:"workspace"`
+	SetupCommands  []string                 `json:"setupCommands,omitempty"`
+	PackageIntents bool                     `json:"packageIntents,omitempty"`
+	Cols           int                      `json:"cols,omitempty"`
+	Rows           int                      `json:"rows,omitempty"`
 }
 
 type terminalClientMessage struct {
-	Type string `json:"type"`
-	Data string `json:"data,omitempty"`
-	Cols int    `json:"cols,omitempty"`
-	Rows int    `json:"rows,omitempty"`
+	Type     string `json:"type"`
+	Data     string `json:"data,omitempty"`
+	Cols     int    `json:"cols,omitempty"`
+	Rows     int    `json:"rows,omitempty"`
+	IntentID string `json:"intentId,omitempty"`
+	Accepted bool   `json:"accepted,omitempty"`
+	Code     string `json:"code,omitempty"`
 }
 
 type terminalLimits struct {
@@ -420,17 +424,21 @@ func terminalPTYAvailable(ctx context.Context, containerID string) bool {
 	return exec.CommandContext(checkCtx, "docker", "exec", containerID, "sh", "-c", "command -v script >/dev/null 2>&1").Run() == nil
 }
 
-func terminalShellCommand(ctx context.Context, containerID, workspaceDir string, cols, rows int, usePTY bool) *exec.Cmd {
-	command := "exec sh -i"
+func terminalShellCommand(ctx context.Context, containerID, workspaceDir string, cols, rows int, usePTY, packageIntents bool) *exec.Cmd {
+	commandPrefix := ""
+	if packageIntents {
+		commandPrefix = "export PATH=\"" + terminalPackageShimRoot + "/bin:$PATH\"; "
+	}
+	command := commandPrefix + "exec sh -i"
 	if usePTY {
 		// All values here are static server-owned strings. Runtime identity and
 		// workspace paths were resolved before this point and never enter shell
 		// text. script provides a pragmatic in-container PTY for common images;
 		// stty must run inside that same PTY so carriage-return progress output
 		// uses the xterm dimensions supplied during the handshake.
-		command = "if command -v bash >/dev/null 2>&1; then exec script -qefc 'stty cols \"$COLUMNS\" rows \"$LINES\" 2>/dev/null || true; exec bash --noprofile --norc -i' /dev/null; else exec script -qefc 'stty cols \"$COLUMNS\" rows \"$LINES\" 2>/dev/null || true; exec sh -i' /dev/null; fi"
+		command = commandPrefix + "if command -v bash >/dev/null 2>&1; then exec script -qefc 'stty cols \"$COLUMNS\" rows \"$LINES\" 2>/dev/null || true; exec bash --noprofile --norc -i' /dev/null; else exec script -qefc 'stty cols \"$COLUMNS\" rows \"$LINES\" 2>/dev/null || true; exec sh -i' /dev/null; fi"
 	} else {
-		command = "if command -v bash >/dev/null 2>&1; then exec bash --noprofile --norc -i; else exec sh -i; fi"
+		command = commandPrefix + "if command -v bash >/dev/null 2>&1; then exec bash --noprofile --norc -i; else exec sh -i; fi"
 	}
 	args := []string{
 		"exec", "-i",
@@ -614,6 +622,19 @@ func terminalExitCode(err error) int {
 	return 1
 }
 
+func terminalExitPayload(reason string, exitCode int, duration time.Duration, cleanupConfirmed bool, pendingIntentID string) map[string]any {
+	return map[string]any{
+		"type": "terminal.exit", "reason": reason, "exitCode": exitCode,
+		"durationMs": duration.Milliseconds(), "cleanupConfirmed": cleanupConfirmed,
+		"packageIntentPending": pendingIntentID != "", "packageIntentId": pendingIntentID,
+		// A terminal package intent is only a request. The client may report a
+		// dependency change after cleanup is confirmed and Package Center's
+		// manifest-CAS transaction actually publishes a generation.
+		"dependenciesChanged": false, "environmentChanged": false,
+		"generation": "", "dependencyDigest": "",
+	}
+}
+
 func normalizeTerminalInput(data string, usePTY bool) string {
 	if usePTY {
 		return data
@@ -627,7 +648,7 @@ func clearTerminalHandshakeDeadline(conn *websocket.Conn) error {
 	return conn.SetReadDeadline(time.Time{})
 }
 
-func terminalReadyPayload(sessionID string, runtime model.RuntimeDef, workspace map[string]string, limits terminalLimits, usePTY bool) map[string]any {
+func terminalReadyPayload(sessionID string, runtime model.RuntimeDef, workspace map[string]string, limits terminalLimits, usePTY, packageIntents bool) map[string]any {
 	return map[string]any{
 		"type":      "terminal.ready",
 		"protocol":  terminalProtocolVersion,
@@ -647,7 +668,7 @@ func terminalReadyPayload(sessionID string, runtime model.RuntimeDef, workspace 
 		},
 		"capabilities": map[string]bool{
 			"stdin": true, "cancel": true, "tty": usePTY,
-			"resize": false, "isolatedWorkspace": true,
+			"resize": false, "isolatedWorkspace": true, "packageIntents": packageIntents,
 		},
 		"limits": map[string]any{
 			"maxInputBytes":     terminalMaxInputBytes,
@@ -812,6 +833,9 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 		_ = writer.control(map[string]any{"type": "terminal.error", "code": "workspace_denied", "message": err.Error()})
 		return
 	}
+	packagePolicy := newTerminalPackagePolicy(h.Config)
+	packageIntentsEnabled := terminalPackageIntentEligible(start.PackageIntents, workspace.teamID, runtime.Language, h.PersonalCache != nil, packagePolicy)
+	packageFrameNonce := ""
 	pendingResourceRelease := combineTerminalResourceReleases()
 	if h.Lifecycle != nil {
 		// Team workspaces intentionally use an empty generic key. The
@@ -838,6 +862,7 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 	var persistOperation *personalcache.Operation
 	var terminalDependencyEnv map[string]string
 	if workspace.teamID == "" && h.PersonalCache != nil && projectLockDependencyLanguage(runtime.Language) {
+		terminalDependencyEnv = personalcache.TerminalDependencyDockerEnvironment(runtime.Language, false)
 		workspaceID := lsp.StableWorkspaceIdentity(user.ID, "", "", "", workspace.activityKey)
 		personalLease, err = h.PersonalCache.PrepareReadOnly(ctx, personalcache.Request{
 			UserID: user.ID, WorkspaceID: workspaceID, WorkspaceName: start.Workspace.FolderName,
@@ -871,6 +896,8 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 	var containerID string
 	if personalLease != nil {
 		containerID, err = h.DockerPool.AcquireForUserWithContext(ctx, user.ID, runtime.DockerImage, personalLease.ContainerKey+":terminal", personalLease.DockerMounts, terminalDependencyEnv, nil)
+	} else if len(terminalDependencyEnv) > 0 {
+		containerID, err = h.DockerPool.AcquireForUserWithContext(ctx, user.ID, runtime.DockerImage, "terminal-ephemeral/"+auth.GenerateToken(), nil, terminalDependencyEnv, nil)
 	} else {
 		containerID, err = h.DockerPool.AcquireForUser(ctx, user.ID, runtime.DockerImage, nil)
 	}
@@ -901,12 +928,20 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer os.RemoveAll(tempDir)
+	if packageIntentsEnabled {
+		packageFrameNonce = auth.GenerateToken()
+		if shimErr := installTerminalPackageShim(ctx, containerID, packageFrameNonce); shimErr != nil {
+			packageIntentsEnabled = false
+			packageFrameNonce = ""
+			slog.Warn("Terminal package intent shim is unavailable; installs remain session-local", "user_id", user.ID, "runtime", runtimeID, "error", shimErr)
+		}
+	}
 
 	usePTY := terminalPTYAvailable(ctx, containerID)
-	// AcquireForUser preserves the same user-scoped /persist mounts and package
-	// manager environment used by the legacy HTTP terminal (PIP_TARGET, npm,
-	// Go, Cargo, and Maven caches). Only /workspace is reset for this snapshot.
-	shell := terminalShellCommand(ctx, containerID, terminalWorkspaceDir, start.Cols, start.Rows, usePTY)
+	// The pip/pip3 shim emits a nonce-bound structured intent. It never executes
+	// pip and therefore cannot mutate a read-only generation or bypass Package
+	// Center's manifest CAS and exact-generation transaction.
+	shell := terminalShellCommand(ctx, containerID, terminalWorkspaceDir, start.Cols, start.Rows, usePTY, packageIntentsEnabled)
 	stdin, err := shell.StdinPipe()
 	if err != nil {
 		_ = writer.control(map[string]any{"type": "terminal.error", "code": "shell_start_failed", "message": "unable to create terminal input"})
@@ -936,7 +971,7 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 	defer inputQueue.Stop()
 
 	sessionID := auth.GenerateToken()
-	if err := writer.control(terminalReadyPayload(sessionID, *runtime, workspace.publicFields, limits, usePTY)); err != nil {
+	if err := writer.control(terminalReadyPayload(sessionID, *runtime, workspace.publicFields, limits, usePTY, packageIntentsEnabled)); err != nil {
 		cancel()
 		inputQueue.Stop()
 		stopTerminalShellBeforeStreaming(shell, stdin, containerID)
@@ -947,14 +982,68 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 	type shellResult struct{ err error }
 	shellDone := make(chan shellResult, 1)
 	var outputWG sync.WaitGroup
+	var packageIntentState terminalPackageIntentState
+	handlePackageFrame := func(encoded []byte) error {
+		intent, parseErr := packagePolicy.parseFrame(encoded, packageFrameNonce)
+		if parseErr != nil {
+			code := terminalPackageErrorCode(parseErr)
+			slog.Info("Terminal package intent rejected", "session_id", sessionID, "user_id", user.ID, "runtime", runtimeID, "code", code)
+			return writer.control(map[string]any{
+				"type": "terminal.packageIntentRejected", "schema": terminalPackageIntentSchema,
+				"sessionId": sessionID, "code": code,
+			})
+		}
+		intent.SessionID = sessionID
+		intent.RuntimeID = runtime.RuntimeID
+		intent.Workspace = make(map[string]string, len(workspace.publicFields))
+		for key, value := range workspace.publicFields {
+			intent.Workspace[key] = value
+		}
+		if pendingIntentID, offered := packageIntentState.offer(intent, time.Now()); !offered {
+			slog.Info("Terminal package intent rejected", "session_id", sessionID, "user_id", user.ID, "runtime", runtimeID, "code", "package_intent_pending")
+			return writer.control(map[string]any{
+				"type": "terminal.packageIntentRejected", "schema": terminalPackageIntentSchema,
+				"sessionId": sessionID, "intentId": pendingIntentID, "code": "package_intent_pending",
+			})
+		}
+		return writer.control(intent)
+	}
 	streamOutput := func(name string, reader io.Reader) {
 		defer outputWG.Done()
+		var packageDecoder *terminalPackageFrameDecoder
+		if name == "stdout" && packageIntentsEnabled {
+			packageDecoder = &terminalPackageFrameDecoder{}
+		}
+		defer func() {
+			if packageDecoder != nil {
+				if visible := packageDecoder.Flush(); len(visible) > 0 {
+					_ = writer.output(name, visible)
+				}
+			}
+		}()
 		buffer := make([]byte, terminalOutputChunkBytes)
 		for {
 			n, readErr := reader.Read(buffer)
 			if n > 0 {
 				clock.touch()
-				if writeErr := writer.output(name, buffer[:n]); writeErr != nil {
+				visible := buffer[:n]
+				var frames [][]byte
+				if packageDecoder != nil {
+					visible, frames = packageDecoder.Push(visible)
+				}
+				for _, frame := range frames {
+					if frameErr := handlePackageFrame(frame); frameErr != nil {
+						cancel()
+						return
+					}
+				}
+				if len(visible) == 0 {
+					if readErr != nil {
+						return
+					}
+					continue
+				}
+				if writeErr := writer.output(name, visible); writeErr != nil {
 					if errors.Is(writeErr, errTerminalBandwidth) {
 						_ = writer.control(map[string]any{"type": "terminal.error", "code": "bandwidth_limit", "message": "terminal output exceeded the per-minute limit"})
 					}
@@ -1016,6 +1105,30 @@ sessionLoop:
 				// a misleading stty command in a separate docker exec session.
 				_ = writer.control(map[string]any{"type": "terminal.resize", "applied": false, "cols": terminalColumns(message.Cols), "rows": terminalRows(message.Rows)})
 				recordTerminalClientActivity(clock, message.Type)
+			case "terminal.packageIntentDecision":
+				decisionID := strings.TrimSpace(message.IntentID)
+				if !validTerminalPackageIntentID(decisionID) {
+					_ = writer.control(map[string]any{
+						"type": "terminal.packageIntentRejected", "schema": terminalPackageIntentSchema,
+						"sessionId": sessionID, "code": "invalid_package_intent",
+					})
+					continue
+				}
+				code, decided := packageIntentState.decide(decisionID, message.Accepted, time.Now())
+				if !decided {
+					_ = writer.control(map[string]any{
+						"type": "terminal.packageIntentRejected", "schema": terminalPackageIntentSchema,
+						"sessionId": sessionID, "intentId": decisionID, "code": code,
+					})
+					continue
+				}
+				_ = writer.control(map[string]any{
+					"type": "terminal.packageIntentDecision", "schema": terminalPackageIntentSchema,
+					"sessionId": sessionID, "intentId": decisionID, "accepted": message.Accepted,
+				})
+				if !message.Accepted {
+					slog.Info("Terminal package intent declined by client", "session_id", sessionID, "user_id", user.ID, "runtime", runtimeID, "code", cleanTerminalPackageDecisionCode(message.Code))
+				}
 			case "terminal.ping":
 				_ = writer.control(map[string]any{"type": "terminal.pong"})
 				recordTerminalClientActivity(clock, message.Type)
@@ -1044,6 +1157,13 @@ sessionLoop:
 			gotShellResult = true
 			break sessionLoop
 		case <-idleTicker.C:
+			if expiredIntentID := packageIntentState.expire(time.Now()); expiredIntentID != "" {
+				slog.Info("Terminal package intent expired", "session_id", sessionID, "user_id", user.ID, "runtime", runtimeID)
+				_ = writer.control(map[string]any{
+					"type": "terminal.packageIntentRejected", "schema": terminalPackageIntentSchema,
+					"sessionId": sessionID, "intentId": expiredIntentID, "code": "package_intent_timeout",
+				})
+			}
 			if clock.idleFor() >= limits.Idle {
 				reason = "idle_timeout"
 				forceContainerStop = true
@@ -1107,9 +1227,7 @@ sessionLoop:
 		reason = "cleanup_pending"
 	}
 	exitCode := terminalExitCode(result.err)
-	_ = writer.control(map[string]any{
-		"type": "terminal.exit", "reason": reason, "exitCode": exitCode,
-		"durationMs": time.Since(started).Milliseconds(), "cleanupConfirmed": cleanupConfirmed,
-	})
+	pendingIntentID := packageIntentState.acceptedIntentID()
+	_ = writer.control(terminalExitPayload(reason, exitCode, time.Since(started), cleanupConfirmed, pendingIntentID))
 	slog.Info("Terminal session ended", "session_id", sessionID, "user_id", user.ID, "runtime", runtimeID, "reason", reason, "exit_code", exitCode)
 }

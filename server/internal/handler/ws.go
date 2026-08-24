@@ -490,6 +490,64 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 			executionCtx = persistOperation.Context()
 		}
 	}
+	var personalToolchainLease *personalcache.ToolchainLease
+	if useDocker && personalLease != nil && personalLease.Writable() {
+		tool := ""
+		switch plugin.Language() {
+		case "python":
+			tool = "pip"
+		case "node":
+			tool = "npm"
+		}
+		if tool != "" {
+			personalToolchainLease, err = h.PersonalCache.PrepareToolchainCache(executionCtx, personalcache.ToolchainRequest{
+				UserID: sess.UserID, RuntimeID: rt.RuntimeID,
+				RuntimeFingerprint: resolvedRuntimeFingerprint(ctx, h.RuntimeMetadata, rt.RuntimeID, rt.DockerImage, rt.Version),
+				Language:           plugin.Language(), Tool: tool,
+				SourcePolicyDigest: packageSourcePolicyDigest("setup-commands", strings.Join(sess.SetupCommands, "\x00")),
+				QuotaBytes:         userQuotaBytes(h.UserStore, sess.UserID),
+			})
+			if err != nil {
+				fail("Failed to prepare tool download cache: " + err.Error())
+				return
+			}
+			if personalToolchainLease != nil {
+				defer personalToolchainLease.Release()
+			}
+		}
+	}
+	var personalBuildLease *personalcache.BuildLease
+	personalBuildRuntimeFingerprint := ""
+	personalBuildDependencyDigest := ""
+	if useDocker && preparedCache == nil && h.PersonalCache != nil && h.Config.PersonalBuildCacheEnabled {
+		switch plugin.Language() {
+		case "c", "cpp", "go", "rust", "java":
+			personalBuildRuntimeFingerprint = resolvedRuntimeFingerprint(ctx, h.RuntimeMetadata, rt.RuntimeID, rt.DockerImage, rt.Version)
+			if personalLease != nil {
+				personalBuildDependencyDigest = personalLease.Fingerprint.Digest
+			}
+			folderKey := strings.TrimSpace(sess.FolderKey)
+			if folderKey == "" {
+				folderKey = strings.TrimSpace(sess.FolderName)
+			}
+			targetID := strings.TrimSpace(buildTarget.ID)
+			if targetID == "" {
+				targetID = "native"
+			}
+			personalBuildLease, err = h.PersonalCache.PrepareBuild(ctx, personalcache.BuildRequest{
+				UserID: sess.UserID, WorkspaceID: lsp.StableWorkspaceIdentity(sess.UserID, "", "", "", folderKey), WorkspaceName: sess.FolderName,
+				RuntimeID: rt.RuntimeID, RuntimeFingerprint: personalBuildRuntimeFingerprint, Language: plugin.Language(),
+				DependencyDigest: personalBuildDependencyDigest, Target: targetID,
+			})
+			if err != nil {
+				fail("Failed to prepare project build cache: " + err.Error())
+				return
+			}
+			if personalBuildLease != nil {
+				defer personalBuildLease.Release()
+			}
+		}
+	}
 
 	var tempDir string
 	if preparedCache != nil {
@@ -520,6 +578,14 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 	if copyErr != nil {
 		fail(fmt.Sprintf("Failed to copy project: %v", copyErr))
 		return
+	}
+	if personalBuildLease != nil {
+		// Only the server-owned result mount may supply compiler output. Ignore a
+		// stale workspace copy before source discovery and fingerprinting.
+		if err := os.RemoveAll(filepath.Join(tempDir, ".bobocloud")); err != nil {
+			fail("Failed to prepare build result cache: " + err.Error())
+			return
+		}
 	}
 	output.WriteStatus("setup", fmt.Sprintf("Isolated workspace ready in %d ms", time.Since(copyStarted).Milliseconds()))
 
@@ -559,6 +625,18 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		fail("Failed to build run plan: " + err.Error())
 		return
 	}
+	fullBuildPlan := plan
+	if personalBuildLease != nil && plugin.Language() == "rust" {
+		for _, step := range plan.Steps {
+			if strings.HasPrefix(step.Stage, "compile:rust") && len(step.Cmd) > 0 && step.Cmd[0] == "cargo" {
+				if cacheErr := personalBuildLease.ConfigureCargoTarget(step.WorkDir); cacheErr != nil {
+					fail("Failed to attach the Cargo incremental cache: " + cacheErr.Error())
+					return
+				}
+				break
+			}
+		}
+	}
 	if preparedCache != nil {
 		env := preparedCache.LocalEnv
 		if useDocker {
@@ -566,6 +644,26 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		}
 		for i := range plan.Steps {
 			plan.Steps[i].Env = buildcache.MergeEnv(plan.Steps[i].Env, env)
+		}
+	}
+	buildResultFingerprint := ""
+	buildResultHit := false
+	if personalBuildLease != nil && h.Config.PersonalBuildResultReuse == config.PersonalBuildResultReuseCompileOnly && reusableCompilePlan(plan) {
+		buildResultFingerprint, err = executionBuildFingerprint(ctx, tempDir, personalBuildRuntimeFingerprint, personalBuildDependencyDigest, plan, projectFiles)
+		if err != nil {
+			fail("Failed to fingerprint build inputs: " + err.Error())
+			return
+		}
+		buildResultHit = personalBuildLease.ResultHit(buildResultFingerprint)
+		if h.Metrics != nil {
+			h.Metrics.Cache("build.result", buildResultHit)
+		}
+		if buildResultHit {
+			plan = compileCacheHitPlan(plan)
+			output.WriteStatus("cache", "Reusable build result hit; compilation skipped")
+		} else if invalidateErr := personalBuildLease.InvalidateResult(); invalidateErr != nil {
+			fail("Failed to invalidate stale build result: " + invalidateErr.Error())
+			return
 		}
 	}
 
@@ -580,8 +678,28 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		dr.SetMetrics(h.Metrics)
 		if preparedCache != nil {
 			dr.SetBuildCacheContext(preparedCache.ContainerKey, preparedCache.DockerMounts, preparedCache.DockerEnv)
-		} else if personalLease != nil {
-			dr.SetPersonalCacheContext(personalLease.ContainerKey, personalLease.DockerMounts, personalLease.DockerEnv, personalLease.Writable())
+		} else if personalLease != nil || personalToolchainLease != nil || personalBuildLease != nil {
+			cacheKeys := make([]string, 0, 3)
+			mounts := make(map[string]string)
+			environment := make(map[string]string)
+			writableDependency := false
+			if personalLease != nil {
+				cacheKeys = append(cacheKeys, personalLease.ContainerKey)
+				mounts = mergeCacheContext(mounts, personalLease.DockerMounts)
+				environment = mergeCacheContext(environment, personalLease.DockerEnv)
+				writableDependency = personalLease.Writable()
+			}
+			if personalToolchainLease != nil {
+				cacheKeys = append(cacheKeys, personalToolchainLease.ContainerKey)
+				mounts = mergeCacheContext(mounts, personalToolchainLease.DockerMounts)
+				environment = mergeCacheContext(environment, personalToolchainLease.DockerEnv)
+			}
+			if personalBuildLease != nil {
+				cacheKeys = append(cacheKeys, personalBuildLease.ContainerKey)
+				mounts = mergeCacheContext(mounts, personalBuildLease.DockerMounts)
+				environment = mergeCacheContext(environment, personalBuildLease.DockerEnv)
+			}
+			dr.SetPersonalCacheContext(strings.Join(cacheKeys, "+"), mounts, environment, writableDependency || personalToolchainLease != nil || personalBuildLease != nil)
 		}
 		result = dr.RunPlan(executionCtx, plan, tempDir, output, stdinReader)
 		if personalLease != nil && personalLease.Writable() && !dr.SetupPassed() {
@@ -607,6 +725,20 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 	if result == nil {
 		fail("Execution returned no result")
 		return
+	}
+	compileSucceeded := compileStageSucceeded(fullBuildPlan, result)
+	if personalBuildLease != nil && buildResultFingerprint != "" && !buildResultHit {
+		if compileSucceeded {
+			if commitErr := personalBuildLease.CommitResult(buildResultFingerprint); commitErr != nil {
+				output.WriteStderr("Build result cache could not be committed: "+commitErr.Error(), "cache")
+			}
+		} else {
+			_ = personalBuildLease.InvalidateResult()
+		}
+	} else if personalBuildLease != nil && compileSucceeded {
+		if commitErr := personalBuildLease.Commit(); commitErr != nil {
+			output.WriteStderr("Incremental build cache could not be committed: "+commitErr.Error(), "cache")
+		}
 	}
 	if personalCacheLeaseError(personalLease, ctx) != nil {
 		personalLease.Abort()

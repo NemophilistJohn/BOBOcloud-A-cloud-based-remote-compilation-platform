@@ -239,12 +239,11 @@ func main() {
 	dockerPool.SetResetStrategy(cfg.DockerContainerResetStrategy)
 	dockerPool.SetMetrics(performanceMetrics)
 	dockerPool.SetOutputRetentionLimit(cfg.RunOutputRetainedBytes)
-	dockerPool.SetPersonalDependencyScope(cfg.PersonalDependencyScope)
 	personalCache := personalcache.NewManager(cfg.DataDir, personalcache.Options{
-		ScopeMode:           cfg.PersonalDependencyScope,
 		ReservationBytes:    int64(cfg.PersonalPersistReservationMB) * 1_000_000,
 		MaxFiles:            cfg.PersonalPersistMaxFiles,
 		ReservationFiles:    cfg.PersonalPersistReservationFiles,
+		MaxGenerations:      cfg.PersonalCacheMaxGenerations,
 		ScanInterval:        cfg.PersonalPersistScanInterval(),
 		Retention:           cfg.PersonalPersistRetention(),
 		Metrics:             performanceMetrics,
@@ -351,7 +350,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	teamCache := buildcache.NewManager(filepath.Join(cfg.DataDir, "team-cache"), cfg.TeamCacheDefaultQuotaMB)
+	teamCache := buildcache.NewManager(teamCacheV2Root(cfg.DataDir), cfg.TeamCacheDefaultQuotaMB)
 	resourceLifecycle := lifecycle.NewManager()
 	dependencyViews := lsp.NewDefaultDependencyRegistry()
 	if cfg.LSPEnabled {
@@ -415,30 +414,9 @@ func main() {
 		"user_count", len(createdUsers),
 	)
 
-	// 异步预热常用镜像（按用户隔离热池：每用户热池容器挂载各自的 /persist 持久化卷）
-	// 放在用户预配之后，确保预热知道有哪些用户
-	popularImages := []string{
-		"python:3.11-slim",
-		"python:3.12-slim",
-		"openjdk:17-slim",
-		"gcc:13",
-		"golang:1.23",
-	}
-	// 预热目标用户：多人模式为所有预配用户；单机模式运行时统一归为 "default" 用户，
-	// 只预热 default，避免为不会被使用的用户白白创建容器。
-	preWarmUserIDs := make([]string, 0, len(createdUsers))
-	if multiUser {
-		for _, u := range createdUsers {
-			preWarmUserIDs = append(preWarmUserIDs, u.ID)
-		}
-	} else {
-		preWarmUserIDs = append(preWarmUserIDs, "default")
-	}
-	if cfg.PersonalDependencyScope == "legacy-user" {
-		dockerPool.PreWarmAllForUsers(popularImages, preWarmUserIDs)
-	} else {
-		slog.Info("Generic user hot-pool prewarming disabled for project-lock dependency mounts; exact-context idle reuse remains enabled")
-	}
+	// cache-v2 mounts are bound to an exact project/toolchain identity, so the
+	// old generic per-user prewarm path cannot construct a reusable container.
+	slog.Info("Generic user hot-pool prewarming disabled for cache-v2 project mounts; exact-context idle reuse remains enabled")
 
 	// Startup logs are retained by systemd/journald. Never put reusable
 	// credentials in them; administrators distribute API keys through the
@@ -785,6 +763,10 @@ func cleanupLoop(ctx context.Context, store storage.SessionStore, channels *sess
 	}
 }
 
+func teamCacheV2Root(dataDir string) string {
+	return filepath.Join(dataDir, "cache-v2", "teams")
+}
+
 func teamCacheCleanupLoop(cache *buildcache.Manager, store collab.Store, interval time.Duration) {
 	if cache == nil || store == nil {
 		return
@@ -911,21 +893,44 @@ func makeTerminalExecutor(pool *docker.Pool) handler.TerminalExecutor {
 		// 与 RunPlan 路径一致：由容器环境中的 PIP_TARGET 选择项目摘要目录。
 		command = runner.AutoPersistPip(command)
 
+		dependencyLease := personalcache.LeaseFromContext(ctx)
+		toolchainLeases := personalcache.ToolchainLeasesFromContext(ctx)
+		cacheKeys := make([]string, 0, 1+len(toolchainLeases))
+		cacheMounts := make(map[string]string)
+		cacheEnvironment := make(map[string]string)
+		if dependencyLease != nil {
+			cacheKeys = append(cacheKeys, dependencyLease.ContainerKey)
+			for host, target := range dependencyLease.DockerMounts {
+				cacheMounts[host] = target
+			}
+			for key, value := range dependencyLease.DockerEnv {
+				cacheEnvironment[key] = value
+			}
+		}
+		for _, toolchainLease := range toolchainLeases {
+			if toolchainLease == nil {
+				continue
+			}
+			cacheKeys = append(cacheKeys, toolchainLease.ContainerKey)
+			for host, target := range toolchainLease.DockerMounts {
+				cacheMounts[host] = target
+			}
+			for key, value := range toolchainLease.DockerEnv {
+				cacheEnvironment[key] = value
+			}
+		}
 		var containerID string
-		if lease := personalcache.LeaseFromContext(ctx); lease != nil {
-			containerID, err = pool.AcquireForUserWithContext(ctx, userID, rt.DockerImage, lease.ContainerKey, lease.DockerMounts, lease.DockerEnv, nil)
+		if len(cacheKeys) > 0 {
+			containerID, err = pool.AcquireForUserWithContext(ctx, userID, rt.DockerImage, strings.Join(cacheKeys, "+"), cacheMounts, cacheEnvironment, nil)
 		} else {
 			containerID, err = pool.AcquireForUser(ctx, userID, rt.DockerImage, nil)
 		}
 		if err != nil {
 			return "", "", 0, fmt.Errorf("failed to acquire container: %w", err)
 		}
-		writableDependencyLease := false
-		if lease := personalcache.LeaseFromContext(ctx); lease != nil {
-			writableDependencyLease = lease.Writable()
-		}
+		writableCacheLease := dependencyLease != nil && dependencyLease.Writable() || len(toolchainLeases) > 0
 		defer func() {
-			if writableDependencyLease || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
+			if writableCacheLease || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
 				if cleanupErr := pool.DiscardForUserAndWait(containerID, userID); cleanupErr != nil {
 					retainContainerResourcesUntilRemoved(ctx, pool, containerID, userID)
 					err = errors.Join(err, fmt.Errorf("destroy terminal container: %w", cleanupErr))

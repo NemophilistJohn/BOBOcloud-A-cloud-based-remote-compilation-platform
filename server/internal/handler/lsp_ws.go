@@ -244,7 +244,7 @@ func projectLockDependencyLanguage(languageID string) bool {
 }
 
 func (h *WSHandler) usesProjectLockDependencyStore(languageID string) bool {
-	return h != nil && h.PersonalCache != nil && h.PersonalCache.ScopeMode() == "project-lock" && projectLockDependencyLanguage(languageID)
+	return h != nil && h.PersonalCache != nil && projectLockDependencyLanguage(languageID)
 }
 
 func (h *WSHandler) resolveAnalysisDependencies(userID, teamID, runtimeID, languageID, remoteRoot, workspaceID, sharedHost, snapshotRoot, generation string, project personalProjectDependencyView) (lsp.AnalysisDependencyRequest, lsp.AnalysisDependencyView, bool) {
@@ -252,7 +252,7 @@ func (h *WSHandler) resolveAnalysisDependencies(userID, teamID, runtimeID, langu
 	if teamID != "" {
 		ownerKind, ownerID = "team", teamID
 	}
-	projectScoped := teamID == "" && h.PersonalCache != nil && h.PersonalCache.ScopeMode() == "project-lock" && projectLockDependencyLanguage(languageID)
+	projectScoped := teamID == "" && h.PersonalCache != nil && projectLockDependencyLanguage(languageID)
 	if projectScoped {
 		// Project-lock is the source of truth for personal dependencies. The old
 		// personal snapshot store remains CRUD-visible, but must never repopulate
@@ -267,9 +267,6 @@ func (h *WSHandler) resolveAnalysisDependencies(userID, teamID, runtimeID, langu
 	if h.Config != nil {
 		userBase := filepath.Join(h.Config.DataDir, "users")
 		if userRoot, err := trustedDependencyChild(userBase, userID); err == nil {
-			if !projectScoped {
-				request.Paths.UserPersistRoot = filepath.Join(userRoot, "persist")
-			}
 			request.Paths.AllowedRoots = appendExistingDependencyRoot(request.Paths.AllowedRoots, userRoot)
 		}
 	}
@@ -296,7 +293,7 @@ func (h *WSHandler) resolveAnalysisDependencies(userID, teamID, runtimeID, langu
 }
 
 func (h *WSHandler) resolvePersonalProjectDependencies(userID, workspaceID, workspaceName, runtimeID, runtimeImage, languageID, remoteRoot string, setupCommands []string) personalProjectDependencyView {
-	if h == nil || h.PersonalCache == nil || h.PersonalCache.ScopeMode() != "project-lock" || runtimeID == "" || runtimeID == "local" || !projectLockDependencyLanguage(languageID) {
+	if h == nil || h.PersonalCache == nil || runtimeID == "" || runtimeID == "local" || !projectLockDependencyLanguage(languageID) {
 		return personalProjectDependencyView{}
 	}
 	language := canonicalRuntimeLanguage(languageID)
@@ -314,7 +311,7 @@ func (h *WSHandler) resolvePersonalProjectDependencies(userID, workspaceID, work
 func acquirePersonalProjectDependencyView(cache *personalcache.Manager, request personalcache.Request) personalProjectDependencyView {
 	language := canonicalRuntimeLanguage(request.Language)
 	request.Language = language
-	if cache == nil || cache.ScopeMode() != "project-lock" || request.RuntimeID == "" || request.RuntimeID == "local" || !projectLockDependencyLanguage(language) {
+	if cache == nil || request.RuntimeID == "" || request.RuntimeID == "local" || !projectLockDependencyLanguage(language) {
 		return personalProjectDependencyView{}
 	}
 	reader, entry, exists, err := cache.AcquireRead(request)

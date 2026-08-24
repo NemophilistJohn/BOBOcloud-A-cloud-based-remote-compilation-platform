@@ -61,6 +61,10 @@ async function createTerminalServer() {
   const messages = [];
   const sockets = new Set();
   let activeSocket = null;
+  let activeSessionId = '';
+  let activeIntentId = '';
+  let activeRuntimeId = '';
+  let activeWorkspace = null;
   let sessionCounter = 0;
   const server = net.createServer((socket) => {
     sockets.add(socket);
@@ -89,20 +93,33 @@ async function createTerminalServer() {
         let message;
         try { message = JSON.parse(text); } catch (_) { return; }
         messages.push(message);
+        if (message.type === 'terminal.packageIntentDecision') {
+          if (message.accepted !== true && message.intentId === activeIntentId) activeIntentId = '';
+          return;
+        }
         if (message.type === 'terminal.close') {
           setTimeout(() => {
             if (!socket.destroyed) {
               socket.write(serverFrame(JSON.stringify({
-                type: 'terminal.exit', reason: 'closed', exitCode: 0
+                type: 'terminal.exit', reason: 'closed', exitCode: 0,
+                cleanupConfirmed: true,
+                packageIntentPending: message.reason === 'package-intent' && Boolean(activeIntentId),
+                packageIntentId: message.reason === 'package-intent' ? activeIntentId : '',
+                dependenciesChanged: false,
+                environmentChanged: false
               })));
+              if (message.reason === 'package-intent') activeIntentId = '';
             }
           }, 30);
           return;
         }
         if (message.type !== 'terminal.start') return;
+        activeRuntimeId = message.runtimeId;
+        activeWorkspace = message.workspace;
+        activeSessionId = 'terminal-ui-test-' + (++sessionCounter);
         socket.write(serverFrame(JSON.stringify({
           type: 'terminal.ready',
-          sessionId: 'terminal-ui-test-' + (++sessionCounter),
+          sessionId: activeSessionId,
           runtimeId: message.runtimeId,
           snapshot: true,
           environment: {
@@ -113,7 +130,7 @@ async function createTerminalServer() {
             dockerImage: 'python:3.12-slim',
             workspaceKind: message.workspace && message.workspace.kind || 'personal'
           },
-          capabilities: { tty: true, resize: false, isolatedWorkspace: true }
+          capabilities: { tty: true, resize: false, isolatedWorkspace: true, packageIntents: message.packageIntents === true }
         })));
         socket.write(serverFrame(JSON.stringify({
           type: 'terminal.output',
@@ -132,6 +149,20 @@ async function createTerminalServer() {
   return {
     port: address.port,
     messages,
+    sendPackageIntent(intentId = 'intent-ui-1', workspace) {
+      activeIntentId = intentId;
+      if (activeSocket && !activeSocket.destroyed) {
+        const normalizedWorkspace = workspace || (activeWorkspace && activeWorkspace.kind === 'personal'
+          ? { kind: 'personal', folderKey: activeWorkspace.folderKey }
+          : activeWorkspace);
+        activeSocket.write(serverFrame(JSON.stringify({
+          type: 'terminal.packageIntent', schema: 1, intentId, sessionId: activeSessionId,
+          runtimeId: activeRuntimeId, workspace: normalizedWorkspace,
+          ecosystem: 'python', manager: 'pip', operation: 'install', packages: [{ name: 'numpy', version: '2.3.1' }],
+          sourceId: 'pypi-official', requiresTerminalClose: true
+        })));
+      }
+    },
     exitActive(reason = 'process_exited') {
       if (activeSocket && !activeSocket.destroyed) {
         activeSocket.write(serverFrame(JSON.stringify({ type: 'terminal.exit', reason, exitCode: 0 })));
@@ -178,7 +209,7 @@ test('cloud terminal streams through the main bridge and confirms only multi-lin
     const page = await app.firstWindow();
     const pageErrors = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
-    await page.waitForFunction(() => document.documentElement.dataset.boboReady === 'true', null, { timeout: 20000 });
+    await page.waitForFunction(() => document.documentElement && document.documentElement.dataset.boboReady === 'true', null, { timeout: 20000 });
 
     await page.evaluate(async ({ workspacePath, wsPort }) => {
       const opened = await window.api.pickWorkspace(workspacePath);
@@ -214,6 +245,7 @@ test('cloud terminal streams through the main bridge and confirms only multi-lin
     const terminalState = await page.evaluate(() => window.BOBO.terminal.getState());
     expect(start.runtimeId).toBe('python:3.12');
     expect(start.setupCommands).toEqual(['pip install numpy==2.1.0']);
+    expect(start.packageIntents).toBe(true);
     expect(start.workspace.kind).toBe('personal');
     expect(start.workspace.folderName).toBe('workspace');
     expect(start.workspace).not.toHaveProperty('workspaceRoot');
@@ -266,42 +298,110 @@ test('cloud terminal streams through the main bridge and confirms only multi-lin
     expect(server.messages.filter((message) => message.type === 'terminal.close')).toHaveLength(closesBeforeTabSwitch);
 
     await page.evaluate(() => {
-      window.__terminalLspRestartCount = 0;
-      window.__terminalLspRefreshFallbackCount = 0;
-      window.BOBO.lsp.restartAnalysis = async () => { window.__terminalLspRestartCount += 1; return true; };
-      window.BOBO.lsp.dependenciesChanged = async () => { window.__terminalLspRefreshFallbackCount += 1; return true; };
+      window.__terminalDependencyRefreshCount = 0;
+      window.__terminalEnvironmentChangeCount = 0;
+      window.__terminalCacheChangeCount = 0;
+      window.__terminalManagedPackageCalls = [];
+      window.__terminalManagedPackageResult = true;
+      window.__terminalDeferManagedPackage = false;
+      window.__terminalResolveManagedPackage = null;
+      window.BOBO.lsp.dependenciesChanged = async () => { window.__terminalDependencyRefreshCount += 1; return true; };
+      window.BOBO.packageCenter.applyManagedPackageChanges = async (changes, options) => {
+        window.__terminalManagedPackageCalls.push({ changes, options });
+        if (window.__terminalDeferManagedPackage) {
+          return new Promise(resolve => { window.__terminalResolveManagedPackage = resolve; });
+        }
+        return window.__terminalManagedPackageResult;
+      };
+      window.BOBO.packageCenter.getState = () => ({ recovery: '' });
+      window.addEventListener('bobo:environment-changed', () => { window.__terminalEnvironmentChangeCount += 1; });
+      window.addEventListener('bobo:cache-changed', () => { window.__terminalCacheChangeCount += 1; });
     });
     await page.locator('#panel-close').click();
     await expect.poll(() => server.messages.some((message) => message.type === 'terminal.close' && message.reason === 'panel-close')).toBe(true);
     await expect(page.locator('#bottom-panel')).toBeHidden();
     await expect.poll(() => page.evaluate(() => window.BOBO.terminal.getState().phase)).toBe('idle');
+    await expect.poll(() => page.evaluate(() => window.__terminalDependencyRefreshCount)).toBe(0);
     expect(await page.evaluate(() => ({
-      restarts: window.__terminalLspRestartCount,
-      fallbacks: window.__terminalLspRefreshFallbackCount
-    }))).toEqual({ restarts: 1, fallbacks: 0 });
+      environment: window.__terminalEnvironmentChangeCount,
+      cache: window.__terminalCacheChangeCount
+    }))).toEqual({ environment: 0, cache: 0 });
 
     await page.evaluate(() => window.BOBO.workbench.setPanelVisible(true));
     await page.locator('#panel-tabs [data-panel="terminal"]').click();
     await expect.poll(() => server.messages.filter((message) => message.type === 'terminal.start').length).toBe(2);
     await page.waitForFunction(() => window.BOBO.terminal.getState().connected === true, null, { timeout: 10000 });
 
-    server.exitActive();
-    await expect.poll(() => page.evaluate(() => window.BOBO.terminal.getState().phase)).toBe('idle');
-    await expect.poll(() => page.evaluate(() => window.__terminalLspRestartCount)).toBe(2);
-
-    await page.locator('#panel-tabs [data-panel="terminal"]').click();
+    server.sendPackageIntent();
+    await expect.poll(() => server.messages.some((message) =>
+      message.type === 'terminal.packageIntentDecision' && message.intentId === 'intent-ui-1' && message.accepted === true
+    )).toBe(true);
+    await expect.poll(() => server.messages.some((message) => message.type === 'terminal.close' && message.reason === 'package-intent')).toBe(true);
+    await expect.poll(() => page.evaluate(() => window.__terminalManagedPackageCalls.length)).toBe(1);
+    expect(await page.evaluate(() => window.__terminalManagedPackageCalls[0])).toMatchObject({
+      changes: [{ operation: 'install', name: 'numpy', version: '2.3.1', scope: 'runtime' }],
+      options: { source: 'terminal', sourceId: 'pypi-official', runtimeId: 'python:3.12', removalConfirmed: true }
+    });
     await expect.poll(() => server.messages.filter((message) => message.type === 'terminal.start').length).toBe(3);
     await page.waitForFunction(() => window.BOBO.terminal.getState().connected === true, null, { timeout: 10000 });
 
+    await page.evaluate(() => { window.__terminalManagedPackageResult = false; });
+    server.sendPackageIntent('intent-ui-failed');
+    await expect.poll(() => page.evaluate(() => window.__terminalManagedPackageCalls.length)).toBe(2);
+    await expect.poll(() => server.messages.filter((message) => message.type === 'terminal.start').length).toBe(4);
+    await page.waitForFunction(() => window.BOBO.terminal.getState().connected === true, null, { timeout: 10000 });
+    expect(await page.evaluate(() => ({
+      lsp: window.__terminalDependencyRefreshCount,
+      environment: window.__terminalEnvironmentChangeCount,
+      cache: window.__terminalCacheChangeCount,
+      recovery: window.BOBO.packageCenter.getState().recovery
+    }))).toEqual({ lsp: 0, environment: 0, cache: 0, recovery: '' });
+
     await page.evaluate(() => {
-      window.BOBO.lsp.restartAnalysis = async () => {
-        window.__terminalLspRestartCount += 1;
-        throw new Error('restart unavailable');
-      };
+      window.__terminalManagedPackageResult = true;
+      window.__terminalDeferManagedPackage = true;
     });
+    server.sendPackageIntent('intent-ui-close');
+    server.sendPackageIntent('intent-ui-close');
+    await expect.poll(() => page.evaluate(() => window.__terminalManagedPackageCalls.length)).toBe(3);
+    await page.locator('#panel-close').click();
+    await expect(page.locator('#bottom-panel')).toBeHidden();
+    await page.evaluate(() => {
+      window.__terminalDeferManagedPackage = false;
+      window.__terminalResolveManagedPackage(true);
+      window.__terminalResolveManagedPackage = null;
+    });
+    await expect.poll(() => page.evaluate(() => window.BOBO.terminal.getState().packageIntentId)).toBe('');
+    await page.waitForTimeout(200);
+    expect(await page.evaluate(() => window.__terminalManagedPackageCalls.length)).toBe(3);
+    expect(server.messages.filter((message) => message.type === 'terminal.start')).toHaveLength(4);
+    expect(await page.evaluate(() => window.BOBO.terminal.getState().phase)).toBe('idle');
+
+    await page.evaluate(() => window.BOBO.workbench.setPanelVisible(true));
+    await page.locator('#panel-tabs [data-panel="terminal"]').click();
+    await expect.poll(() => server.messages.filter((message) => message.type === 'terminal.start').length).toBe(5);
+    await page.waitForFunction(() => window.BOBO.terminal.getState().connected === true, null, { timeout: 10000 });
+
+    const closesBeforeMismatchedIntent = server.messages.filter((message) => message.type === 'terminal.close').length;
+    server.sendPackageIntent('intent-ui-wrong-workspace', { kind: 'personal', folderKey: 'another-project' });
+    await expect.poll(() => server.messages.some((message) =>
+      message.type === 'terminal.packageIntentDecision' && message.intentId === 'intent-ui-wrong-workspace' &&
+      message.accepted === false && message.code === 'client_workspace_mismatch'
+    )).toBe(true);
+    expect(server.messages.filter((message) => message.type === 'terminal.close')).toHaveLength(closesBeforeMismatchedIntent);
+
+    server.exitActive();
+    await expect.poll(() => page.evaluate(() => window.BOBO.terminal.getState().phase)).toBe('idle');
+    await page.waitForTimeout(150);
+    expect(await page.evaluate(() => window.__terminalDependencyRefreshCount)).toBe(0);
+
+    await page.locator('#panel-tabs [data-panel="terminal"]').click();
+    await expect.poll(() => server.messages.filter((message) => message.type === 'terminal.start').length).toBe(6);
+    await page.waitForFunction(() => window.BOBO.terminal.getState().connected === true, null, { timeout: 10000 });
+
     await page.evaluate(() => window.BOBO.workspace.closeWorkspace({ approved: true, reason: 'test-close' }));
     await expect.poll(() => server.messages.some((message) => message.type === 'terminal.close' && message.reason === 'workspace-leave')).toBe(true);
-    await expect.poll(() => page.evaluate(() => window.__terminalLspRefreshFallbackCount)).toBe(1);
+    await expect.poll(() => page.evaluate(() => window.__terminalDependencyRefreshCount)).toBe(0);
     expect(pageErrors).toEqual([]);
   } finally {
     await closeFixture(fixture);

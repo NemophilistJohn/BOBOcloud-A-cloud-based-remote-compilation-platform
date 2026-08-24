@@ -33,6 +33,19 @@ function cleanRendererWorkspace(value) {
   return { kind: 'personal', folderName, folderKey };
 }
 
+function cleanPackageIntentDecision(value) {
+  const decision = plainObject(value) ? value : {};
+  const intentId = String(decision.intentId || '').trim();
+  const code = String(decision.code || '').trim();
+  if (!intentId || intentId.length > 256 || !/^[A-Za-z0-9_-]+$/.test(intentId)) {
+    throw new Error('Terminal package intent identity is invalid');
+  }
+  if (code.length > 256 || (code && !/^[A-Za-z0-9_.-]+$/.test(code))) {
+    throw new Error('Terminal package intent decision code is invalid');
+  }
+  return { intentId, accepted: decision.accepted === true, code };
+}
+
 function createTerminalController(options) {
   const ipcMain = options.ipcMain;
   const getWindow = options.getWindow;
@@ -100,6 +113,12 @@ function createTerminalController(options) {
           send('output', { sessionId: payload.sessionId, data: String(payload.data || '') });
           return;
         }
+        if (channel === 'package-intent' || channel === 'package-intent-rejected') {
+          const packageEvent = Object.assign({}, payload || {});
+          delete packageEvent.contextToken;
+          send(channel, packageEvent);
+          return;
+        }
         const status = Object.assign({}, payload || {});
         delete status.contextToken;
         send('status', { status });
@@ -137,6 +156,7 @@ function createTerminalController(options) {
         runtimeId,
         workspace,
         setupCommands,
+        packageIntents: value.packageIntents === true,
         cols: boundedInteger(value.cols, 120),
         rows: boundedInteger(value.rows, 32),
         localContext: context,
@@ -192,6 +212,11 @@ function createTerminalController(options) {
       if (!cols || !rows) throw new Error('Terminal size is invalid');
       return active.resize(cols, rows);
     });
+    ipcMain.handle('terminal:package-intent-decision', async (event, payload) => {
+      const active = assertLiveSession(event);
+      const decision = cleanPackageIntentDecision(payload);
+      return active.decidePackageIntent(decision.intentId, decision.accepted, decision.code);
+    });
     ipcMain.handle('terminal:stop', async (event, reason) => {
       assertSender(event);
       return stop(reason);
@@ -222,4 +247,4 @@ function createTerminalController(options) {
   };
 }
 
-module.exports = { createTerminalController, cleanRendererWorkspace, boundedInteger };
+module.exports = { createTerminalController, cleanRendererWorkspace, cleanPackageIntentDecision, boundedInteger };

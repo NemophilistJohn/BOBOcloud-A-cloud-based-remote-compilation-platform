@@ -12,26 +12,24 @@ import (
 )
 
 const (
-	pythonRuntimePackagesContainer = AnalysisDependenciesRoot + "/python/runtime-site-packages"
-	pythonLegacyPackagesContainer  = AnalysisDependenciesRoot + "/python/legacy-site-packages"
-	pythonExtraPackagesRoot        = AnalysisDependenciesRoot + "/python/extra"
-	pythonAnalyzerInterpreter      = "/usr/local/bin/bobocloud-python"
-	nodeModulesContainer           = DockerWorkspaceRoot + "/node_modules"
-	typescriptServerContainer      = "/opt/node-lsp/node_modules/typescript/lib/tsserver.js"
-	goModulesContainer             = AnalysisDependenciesRoot + "/go/pkg/mod"
-	goModuleProxyContainer         = AnalysisDependenciesRoot + "/go/proxy"
-	rustCargoContainer             = "/analysis-cache/cargo-home"
-	rustRegistrySrcContainer       = rustCargoContainer + "/registry/src"
-	rustRegistryIndexContainer     = rustCargoContainer + "/registry/index"
-	rustGitCheckoutsContainer      = rustCargoContainer + "/git/checkouts"
-	rustGitDBContainer             = rustCargoContainer + "/git/db"
-	javaMavenSourceContainer       = AnalysisDependenciesRoot + "/java/maven-repository"
-	javaMavenWritableContainer     = "/analysis-cache/maven/repository"
-	javaMavenSettingsContainer     = "/analysis-cache/maven/settings.xml"
-	javaGradleReadOnlyRoot         = "/analysis-cache/gradle/read-only-dependencies"
-	javaGradleModulesContainer     = javaGradleReadOnlyRoot + "/modules-2"
-	nativeSysrootContainer         = AnalysisDependenciesRoot + "/native/sysroot"
-	nativeIncludesContainer        = AnalysisDependenciesRoot + "/native/include"
+	pythonExtraPackagesRoot    = AnalysisDependenciesRoot + "/python/extra"
+	pythonAnalyzerInterpreter  = "/usr/local/bin/bobocloud-python"
+	nodeModulesContainer       = DockerWorkspaceRoot + "/node_modules"
+	typescriptServerContainer  = "/opt/node-lsp/node_modules/typescript/lib/tsserver.js"
+	goModulesContainer         = AnalysisDependenciesRoot + "/go/pkg/mod"
+	goModuleProxyContainer     = AnalysisDependenciesRoot + "/go/proxy"
+	rustCargoContainer         = "/analysis-cache/cargo-home"
+	rustRegistrySrcContainer   = rustCargoContainer + "/registry/src"
+	rustRegistryIndexContainer = rustCargoContainer + "/registry/index"
+	rustGitCheckoutsContainer  = rustCargoContainer + "/git/checkouts"
+	rustGitDBContainer         = rustCargoContainer + "/git/db"
+	javaMavenSourceContainer   = AnalysisDependenciesRoot + "/java/maven-repository"
+	javaMavenWritableContainer = "/analysis-cache/maven/repository"
+	javaMavenSettingsContainer = "/analysis-cache/maven/settings.xml"
+	javaGradleReadOnlyRoot     = "/analysis-cache/gradle/read-only-dependencies"
+	javaGradleModulesContainer = javaGradleReadOnlyRoot + "/modules-2"
+	nativeSysrootContainer     = AnalysisDependenciesRoot + "/native/sysroot"
+	nativeIncludesContainer    = AnalysisDependenciesRoot + "/native/include"
 )
 
 const localAnalysisCachePlaceholder = "{{analysisCache}}"
@@ -120,11 +118,7 @@ func preferredCacheRoot(ctx DependencyAdapterContext, relative string) string {
 	if ctx.OwnerKind == "team" && ctx.Paths.SharedCacheRoot != "" {
 		team = filepath.Join(ctx.Paths.SharedCacheRoot, filepath.FromSlash(relative))
 	}
-	personal := ""
-	if ctx.Paths.UserPersistRoot != "" {
-		personal = filepath.Join(ctx.Paths.UserPersistRoot, filepath.FromSlash(relative))
-	}
-	return existingDirectory(team, personal)
+	return existingDirectory(team)
 }
 
 func localFileRepository(directory string) string {
@@ -272,32 +266,10 @@ func (pythonDependencyAdapter) Name() string        { return "python" }
 func (pythonDependencyAdapter) Languages() []string { return []string{"python"} }
 
 func (pythonDependencyAdapter) Resolve(ctx DependencyAdapterContext) (DependencyAdapterResult, error) {
-	mounts := make([]DependencyMountSpec, 0, 3)
+	mounts := make([]DependencyMountSpec, 0, 2)
 	seen := make(map[string]bool)
-	if ctx.Paths.UserPersistRoot != "" {
-		packages := filepath.Join(ctx.Paths.UserPersistRoot, "pip-packages")
-		runtimePart := runtimePathPart(ctx.RuntimeID)
-		hasRuntimePackages := false
-		if runtimePart != "" && ctx.RuntimeID != "local" {
-			specific := existingDirectory(filepath.Join(packages, "runtimes", runtimePart), filepath.Join(packages, runtimePart))
-			if specific != "" {
-				mounts = appendExistingMount(mounts, seen, DependencyRolePythonPackages, specific, pythonRuntimePackagesContainer, false)
-				hasRuntimePackages = true
-			}
-		}
-		for index, extra := range extraDependencyPaths(ctx, DependencyRolePythonPackages) {
-			mounts = appendExistingMount(mounts, seen, DependencyRolePythonPackages, extra, fmt.Sprintf("%s/%02d", pythonExtraPackagesRoot, index), false)
-		}
-		// A scoped tree is built by the exact execution runtime. Do not add the
-		// flat compatibility tree after it: native extensions there may target a
-		// different Python ABI, and its legacy marker would suppress ready status.
-		if !hasRuntimePackages {
-			mounts = appendExistingMount(mounts, seen, DependencyRolePythonPackages, packages, pythonLegacyPackagesContainer, true)
-		}
-	} else {
-		for index, extra := range extraDependencyPaths(ctx, DependencyRolePythonPackages) {
-			mounts = appendExistingMount(mounts, seen, DependencyRolePythonPackages, extra, fmt.Sprintf("%s/%02d", pythonExtraPackagesRoot, index), false)
-		}
+	for index, extra := range extraDependencyPaths(ctx, DependencyRolePythonPackages) {
+		mounts = appendExistingMount(mounts, seen, DependencyRolePythonPackages, extra, fmt.Sprintf("%s/%02d", pythonExtraPackagesRoot, index), false)
 	}
 	if len(mounts) == 0 {
 		return DependencyAdapterResult{}, nil
@@ -351,28 +323,16 @@ func (nodeDependencyAdapter) Resolve(ctx DependencyAdapterContext) (DependencyAd
 		candidates = append(candidates, snapshot)
 	}
 	candidates = append(candidates, extraDependencyPaths(ctx, DependencyRoleNodeModules)...)
-	legacy := false
 	if ctx.Paths.WorkspaceRoot != "" {
 		candidates = append(candidates, filepath.Join(ctx.Paths.WorkspaceRoot, "node_modules"))
-	}
-	if ctx.Paths.UserPersistRoot != "" {
-		global := filepath.Join(ctx.Paths.UserPersistRoot, "npm-global")
-		runtimePart := runtimePathPart(ctx.RuntimeID)
-		if runtimePart != "" && ctx.RuntimeID != "local" {
-			candidates = append(candidates, filepath.Join(global, "runtimes", runtimePart, "lib", "node_modules"))
-		}
-		candidates = append(candidates, filepath.Join(global, "lib", "node_modules"))
 	}
 	modules := existingDirectory(candidates...)
 	if modules == "" {
 		return DependencyAdapterResult{}, nil
 	}
-	if ctx.Paths.UserPersistRoot != "" && filepath.Clean(modules) == filepath.Clean(filepath.Join(ctx.Paths.UserPersistRoot, "npm-global", "lib", "node_modules")) {
-		legacy = true
-	}
 	managed := snapshot != "" && filepath.Clean(modules) == filepath.Clean(snapshot)
 	return DependencyAdapterResult{
-		Mounts:           []DependencyMountSpec{{Role: DependencyRoleNodeModules, HostPath: modules, ContainerPath: nodeModulesContainer, Legacy: legacy, Managed: managed}},
+		Mounts:           []DependencyMountSpec{{Role: DependencyRoleNodeModules, HostPath: modules, ContainerPath: nodeModulesContainer, Managed: managed}},
 		LocalEnvironment: map[string]string{"NODE_PATH": modules}, DockerEnvironment: map[string]string{"NODE_PATH": nodeModulesContainer},
 	}, nil
 }

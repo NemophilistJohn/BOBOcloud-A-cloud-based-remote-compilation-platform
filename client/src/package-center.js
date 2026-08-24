@@ -23,8 +23,10 @@
   var manifestSelectionTouched = false;
   var refreshSequence = 0;
   var searchTimer = null;
+  var searchRequestController = null;
   var activityUnsubscribe = null;
   var PACKAGE_QUERY_TIMEOUT_MS = 15000;
+  var PACKAGE_QUERY_GRACE_MS = 7000;
   var PACKAGE_PLAN_TIMEOUT_MS = 30000;
   var PACKAGE_APPLY_GRACE_MS = 30000;
   var PACKAGE_APPLY_RESPONSE_GRACE_MS = 5000;
@@ -52,6 +54,15 @@
     if (BOBO.i18n && typeof BOBO.i18n.t === 'function') return BOBO.i18n.t(source, replacements);
     return String(source).replace(/\{([^}]+)\}/g, function(match, key) {
       return replacements && replacements[key] !== undefined ? replacements[key] : match;
+    });
+  }
+
+  function invalidateCacheInventory(reason, response) {
+    if (!BOBO.cacheStore || typeof BOBO.cacheStore.invalidate !== 'function') return;
+    var data = response && (response.data || response.Data) || {};
+    BOBO.cacheStore.invalidate({
+      reason: reason,
+      revision: String(data.cacheRevision || data.revision || response && (response.cacheRevision || response.revision) || '')
     });
   }
 
@@ -86,8 +97,8 @@
     package_plan_runtime_changed: 'The project changed after the library plan was created.',
     package_plan_workspace_changed: 'The project changed after the library plan was created.',
     package_manifest_set_changed: 'The project changed after the library plan was created.',
-    package_manifest_change_invalid: 'No safe library change plan is available.',
-    package_declaration_conflict: 'No safe library change plan is available.',
+    package_manifest_change_invalid: 'The selected library change conflicts with the project dependency file.',
+    package_declaration_conflict: 'This library is managed by another project dependency file.',
     package_plan_invalid: 'The server returned an invalid library plan.',
     package_plan_reconciliation_required: 'The library installation status is still uncertain.',
     package_service_unavailable: 'Library management is unavailable on this server.',
@@ -142,6 +153,27 @@
     var seconds = Number(operationTimeoutSeconds);
     if (!Number.isFinite(seconds) || seconds <= 0) return PACKAGE_APPLY_TIMEOUT_MS;
     return Math.ceil(seconds * 1000);
+  }
+
+  function packageQueryTimeoutMs(catalogTimeoutSeconds) {
+    var seconds = Number(catalogTimeoutSeconds);
+    if (!Number.isFinite(seconds) || seconds <= 0) return PACKAGE_QUERY_TIMEOUT_MS;
+    return Math.max(PACKAGE_QUERY_TIMEOUT_MS, Math.ceil(seconds * 1000) + PACKAGE_QUERY_GRACE_MS);
+  }
+
+  function cancelPackageSearchRequest() {
+    if (searchRequestController) searchRequestController.abort();
+    searchRequestController = null;
+  }
+
+  function beginPackageSearchRequest() {
+    cancelPackageSearchRequest();
+    searchRequestController = typeof global.AbortController === 'function' ? new global.AbortController() : null;
+    return searchRequestController;
+  }
+
+  function finishPackageSearchRequest(controller) {
+    if (searchRequestController === controller) searchRequestController = null;
   }
 
   function packageApplyTimeoutMs(operationTimeoutSeconds) {
@@ -231,6 +263,40 @@
     return activeLanguage === 'python' ? value.replace(/[-_.]+/g, '-') : value;
   }
 
+  function inventoryBinding(raw) {
+    var inventory = raw && raw.inventory || {};
+    var exact = inventory.exact === true || inventory.trust === 'exact' || raw && raw.inventoryExact === true;
+    var cacheEntryId = String(inventory.cacheEntryId || inventory.cacheId || '');
+    var generation = String(inventory.generation || inventory.currentGeneration || '');
+    var dependencyDigest = String(inventory.dependencyDigest || '');
+    return {
+      exact: exact,
+      authoritative: exact && Boolean(cacheEntryId && generation && dependencyDigest),
+      cacheEntryId: cacheEntryId,
+      generation: generation,
+      dependencyDigest: dependencyDigest
+    };
+  }
+
+  function packageContextMatchesRequest(raw, request) {
+    raw = raw || {};
+    request = request || {};
+    var runtime = typeof raw.runtime === 'string' ? raw.runtime : raw.runtime && raw.runtime.id;
+    if (request.runtime && String(runtime || '') !== String(request.runtime)) return false;
+    var language = typeof raw.language === 'string' ? raw.language : raw.language && raw.language.id;
+    if (request.language && language && String(language).toLowerCase() !== String(request.language).toLowerCase()) return false;
+
+    var workspace = raw.workspace || {};
+    if (request.projectId) {
+      return workspace.kind === 'team' && String(workspace.teamId || '') === String(request.teamId || '') &&
+        String(workspace.projectId || '') === String(request.projectId) && String(workspace.branch || '') === String(request.branch || '');
+    }
+    if (request.folderKey) {
+      return workspace.kind === 'personal' && String(workspace.key || workspace.folderKey || '') === String(request.folderKey);
+    }
+    return false;
+  }
+
   function extractData(response) {
     if (!response) throw new Error(t('The library service did not return a response.'));
     if (response.success === false) {
@@ -255,6 +321,8 @@
     var packages = raw && raw.packages || {};
     var installed = Array.isArray(packages.installed) ? packages.installed : (Array.isArray(raw && raw.installed) ? raw.installed : []);
     var declared = Array.isArray(packages.declared) ? packages.declared : (Array.isArray(raw && raw.declared) ? raw.declared : []);
+    var binding = inventoryBinding(raw);
+    var inventoryExact = binding.authoritative;
     var manifests = Array.isArray(raw && raw.manifests) ? raw.manifests : [];
     var rawLanguage = typeof (raw && raw.language) === 'string' ? raw.language : raw && raw.language && raw.language.id;
     var hasManifestMetadata = manifests.length > 0;
@@ -278,22 +346,20 @@
       if (hasManifestMetadata && !sources.some(function(source) { return managedManifests.has(source); })) return;
       declaredByName[packageKey(item.name, rawLanguage)] = item;
     });
-    function declaredVersion(item) {
-      if (!item) return '';
-      if (item.version) return String(item.version);
-      var exact = String(item.constraint || '').match(/^\s*==\s*([^,;\s]+)\s*$/);
-      return exact ? exact[1] : '';
-    }
-    var seen = Object.create(null);
-    var result = installed.map(function(item) {
+    // Only an exact, identity-bound server inventory may assert presence. A
+    // catalog result, manifest declaration, or unbound inspection is never an
+    // Installed fact for the current project environment.
+    if (!inventoryExact) return [];
+    return installed.map(function(item) {
       item = item || {};
       var key = packageKey(item.name, rawLanguage);
       var declaration = declaredByName[key] || null;
-      var inventoryState = missingByName[key] ? 'mismatch' : (unknownByName[key] ? 'unknown' : 'ready');
-      seen[key] = true;
+      var inventoryState = missingByName[key] ? 'mismatch' : (unknownByName[key] || !inventoryExact ? 'unknown' : 'ready');
       return Object.assign({}, item, {
         name: String(item.name || item.module || ''),
-        version: String(item.version || declaredVersion(declaration)),
+        // Installed presence and version are inventory facts. A manifest
+        // constraint must never be promoted into an installed version.
+        version: String(item.version || ''),
         constraint: String(declaration && declaration.constraint || ''),
         direct: Boolean(declaration) || item.direct === true || item.relationship === 'direct',
         declaration: declaration,
@@ -302,22 +368,6 @@
         inventoryState: inventoryState
       });
     }).filter(function(item) { return Boolean(item.name); });
-    Object.keys(declaredByName).forEach(function(key) {
-      if (seen[key]) return;
-      var declaration = declaredByName[key];
-      result.push({
-        name: String(declaration.name || ''),
-        version: declaredVersion(declaration),
-        constraint: String(declaration.constraint || ''),
-        direct: true,
-        declaration: declaration,
-        scope: String(declaration.scope || 'runtime'),
-        inventoryPresent: false,
-        inventoryState: missingByName[key] ? 'missing' : 'unknown',
-        trust: String(declaration.trust || '')
-      });
-    });
-    return result;
   }
 
   function capabilityReasonLabel(reason) {
@@ -339,11 +389,20 @@
     if (!sources.length && raw.source) sources.push(normalizeSource(raw.source, 0));
     var manifests = Array.isArray(raw.manifests) ? raw.manifests : (environmentSnapshot.manifests || []);
     var inventory = raw.inventory || {};
+    var binding = inventoryBinding(raw);
     var language = raw.language || environmentSnapshot.language || {};
     var runtime = raw.runtime || environmentSnapshot.runtime || {};
     var workspace = raw.workspace || environmentSnapshot.workspace || {};
     var planCapability = raw.canPlanChanges || raw.capabilities && raw.capabilities.canPlanChanges || {};
     var supported = raw.supported !== false && planCapability.supported !== false;
+    var installedPackages = normalizeInstalledPackages(raw);
+    var installedKeys = new Set(installedPackages.map(function(item) { return packageKey(item.name, language && language.id); }));
+    var missingPackages = Array.isArray(raw.packages && raw.packages.missing)
+      ? raw.packages.missing
+      : (environmentSnapshot.packages && environmentSnapshot.packages.missing || []);
+    missingPackages = missingPackages.filter(function(item) {
+      return item && item.name && !installedKeys.has(packageKey(item.name, language && language.id));
+    });
     if (!S.workspaceRoot || !S.selectedRuntime) supported = false;
     return {
       schema: String(raw.schema || 'package-center-context/v1'),
@@ -359,10 +418,14 @@
       manifests: manifests.filter(Boolean),
       defaultManifestPath: String(raw.defaultManifestPath || raw.manifestPath || ''),
       packages: raw.packages || {},
-      installed: normalizeInstalledPackages(raw),
-      missing: Array.isArray(raw.packages && raw.packages.missing) ? raw.packages.missing : (environmentSnapshot.packages && environmentSnapshot.packages.missing || []),
+      installed: installedPackages,
+      missing: missingPackages,
       inventory: inventory,
-      inventoryExact: inventory.exact === true || inventory.trust === 'exact' || raw.inventoryExact === true,
+      inventoryExact: binding.authoritative,
+      inventoryGeneration: binding.generation,
+      inventoryDependencyDigest: binding.dependencyDigest,
+      inventoryCacheEntryId: binding.cacheEntryId,
+      catalogTimeoutSeconds: Number(raw.catalogTimeoutSeconds) > 0 ? Number(raw.catalogTimeoutSeconds) : 8,
       operationTimeoutSeconds: Number(raw.operationTimeoutSeconds) > 0 ? Number(raw.operationTimeoutSeconds) : 600,
       capabilities: raw.capabilities || {}
     };
@@ -476,7 +539,18 @@
     var installed = (installedPackages || []).find(function(candidate) {
       return packageKey(candidate && candidate.name) === packageKey(item.name);
     });
-    if (!installed) return item;
+    if (!installed) {
+      return Object.assign({}, item, {
+        // Catalog search metadata cannot assert project installation state.
+        installedVersion: '',
+        direct: false,
+        projectCached: false,
+        inventoryPresent: false,
+        inventoryState: '',
+        declaration: null,
+        constraint: ''
+      });
+    }
     return Object.assign({}, item, {
       installedVersion: String(installed.version || ''),
       direct: installed.direct === true,
@@ -515,6 +589,60 @@
 
   function removeChange(changes, name) {
     return (Array.isArray(changes) ? changes : []).filter(function(item) { return packageKey(item.name) !== packageKey(name); });
+  }
+
+  function exactDeclaredPackageVersion(item) {
+    if (!item) return '';
+    if (item.version) return String(item.version).trim();
+    var match = String(item.constraint || '').match(/^\s*==\s*([^,;\s]+)\s*$/);
+    return match ? match[1] : '';
+  }
+
+  function managedPackageDeclarations(value) {
+    value = value || {};
+    var paths = new Set((Array.isArray(value.manifests) ? value.manifests : []).filter(function(item) {
+      return item && item.kind !== 'source-imports' && item.path;
+    }).map(function(item) { return String(item.path).replace(/\\/g, '/').toLowerCase(); }));
+    var declared = value.packages && Array.isArray(value.packages.declared) ? value.packages.declared : [];
+    if (!paths.size) return [];
+    return declared.filter(function(item) {
+      return item && String(item.source || '').split(/,\s*/).some(function(source) {
+        return paths.has(source.trim().replace(/\\/g, '/').toLowerCase());
+      });
+    });
+  }
+
+  function managedPackageDeclaration(value, name) {
+    return managedPackageDeclarations(value).find(function(item) {
+      return packageKey(item && item.name) === packageKey(name);
+    }) || null;
+  }
+
+  function normalizeManagedPackageChanges(changes, installedPackages, declaredPackages) {
+    var installed = Array.isArray(installedPackages) ? installedPackages : [];
+    var declared = Array.isArray(declaredPackages) ? declaredPackages : [];
+    return (Array.isArray(changes) ? changes : []).reduce(function(next, source) {
+      source = source && typeof source === 'object' ? source : {};
+      var name = String(source.name || '').trim();
+      if (!name || name.length > 256 || /[\0\r\n]/.test(name)) return next;
+      var operation = String(source.operation || 'install').toLowerCase();
+      var present = installed.find(function(item) { return packageKey(item.name) === packageKey(name); });
+      var declaration = declared.find(function(item) { return packageKey(item && item.name) === packageKey(name); });
+      if (operation === 'install') operation = ((present && present.direct === true) || Boolean(declaration)) ? 'update' : 'add';
+      if (operation !== 'add' && operation !== 'update' && operation !== 'remove') return next;
+      var version = String(source.version || '').trim();
+      if (!version && operation === 'update' && declaration) version = exactDeclaredPackageVersion(declaration);
+      var normalized = {
+        operation: operation,
+        name: name,
+        version: operation === 'remove' ? '' : version,
+        scope: String(source.scope || present && present.scope || declaration && declaration.scope || 'runtime')
+      };
+      if (Array.isArray(source.features) && source.features.length) {
+        normalized.features = source.features.map(function(feature) { return String(feature || '').trim(); }).filter(Boolean);
+      }
+      return upsertChange(next, normalized);
+    }, []);
   }
 
   function currentRequestContext(extra) {
@@ -659,6 +787,10 @@
 
   function setActiveView(name, options) {
     activeView = name === 'packages' ? 'packages' : 'overview';
+    if (activeView !== 'packages') {
+      refreshSequence += 1;
+      cancelPackageSearchRequest();
+    }
     var overview = byId('environment-overview-view');
     var packages = byId('package-center-view');
     var overviewTab = byId('environment-tab-overview');
@@ -684,6 +816,10 @@
 
   function setActiveMode(name) {
     activeMode = name === 'installed' ? 'installed' : 'discover';
+    if (activeMode !== 'discover') {
+      refreshSequence += 1;
+      cancelPackageSearchRequest();
+    }
     ['discover', 'installed'].forEach(function(value) {
       var button = byId('package-mode-' + value);
       if (button) {
@@ -877,18 +1013,21 @@
       });
       actions.appendChild(remove);
     } else {
+      var declaration = managedPackageDeclaration(context, item.name);
+      var declaredVersion = exactDeclaredPackageVersion(declaration);
+      var direct = item.direct || Boolean(declaration);
       var sameInstalled = item.direct && item.inventoryPresent !== false && String(item.installedVersion || '') === String(item.version || '');
-      var repairRequired = sameInstalled && item.inventoryState === 'missing';
+      var repairRequired = Boolean(declaration && context && context.inventoryExact !== true);
       var actionTitle = repairRequired
         ? 'Repair {name}'
-        : (item.installedVersion && !item.direct ? 'Pin {name} as a direct dependency' : (item.direct ? 'Update {name}' : 'Install {name}'));
-      var actionIcon = repairRequired || item.direct ? ICON_UPDATE : ICON_INSTALL;
+        : (item.installedVersion && !direct ? 'Pin {name} as a direct dependency' : (direct ? 'Update {name}' : 'Install {name}'));
+      var actionIcon = repairRequired || direct ? ICON_UPDATE : ICON_INSTALL;
       var add = iconButton(actionIcon, sameInstalled && !repairRequired ? 'Already installed' : actionTitle, 'package-install', { name: item.name });
-      add.dataset.operation = repairRequired ? 'repair' : (item.direct ? 'update' : 'install');
+      add.dataset.operation = repairRequired ? 'repair' : (direct ? 'update' : 'install');
       add.disabled = !context || context.supported !== true || item.compatibility === 'incompatible' || (sameInstalled && !repairRequired) || Boolean(busyOperation) || Boolean(recoveryPending);
       add.addEventListener('click', function(event) {
         event.stopPropagation();
-        runPackageAction(item, { operation: item.direct ? 'update' : 'add' });
+        runPackageAction(item, { operation: 'install', version: repairRequired ? declaredVersion : '' });
       });
       actions.appendChild(add);
     }
@@ -965,12 +1104,19 @@
     if (options.loading !== false) setCenterState('loading', t('Loading library environment...'));
     try {
       var environmentSnapshot = BOBO.environmentCenter && BOBO.environmentCenter.getSnapshot ? BOBO.environmentCenter.getSnapshot() : null;
-      var response = await BOBO.sendToServer('getPackageCenterContext', currentRequestContext(), {
+      var requestIdentity = captureOperationContext();
+      var requestPayload = currentRequestContext();
+      var response = await BOBO.sendToServer('getPackageCenterContext', requestPayload, {
         quiet: true,
         timeoutMs: PACKAGE_QUERY_TIMEOUT_MS
       });
       if (sequence !== refreshSequence) return null;
-      context = normalizeContext(extractData(response), environmentSnapshot);
+      if (!operationContextMatches(requestIdentity)) return null;
+      var responseData = extractData(response);
+      if (!packageContextMatchesRequest(responseData, requestPayload)) {
+        throw new Error(t('The project changed before the library plan could be created.'));
+      }
+      context = normalizeContext(responseData, environmentSnapshot);
       renderContext();
       if (options.search !== false && activeMode === 'discover') scheduleSearch(0);
       return context;
@@ -999,10 +1145,12 @@
       return [];
     }
     setCenterState('loading', query ? t('Searching libraries...') : t('Loading compatible libraries...'));
+    var requestController = beginPackageSearchRequest();
     try {
       var response = await BOBO.sendToServer('searchPackageCatalog', currentRequestContext({ query: query, cursor: options.append ? cursor : '' }), {
         quiet: true,
-        timeoutMs: PACKAGE_QUERY_TIMEOUT_MS
+        timeoutMs: packageQueryTimeoutMs(context && context.catalogTimeoutSeconds),
+        signal: requestController ? requestController.signal : undefined
       });
       if (sequence !== refreshSequence) return [];
       var normalized = normalizeResults(extractData(response));
@@ -1020,6 +1168,8 @@
       setCenterState('error', localizedPackageError(error, 'Library search failed.'));
       renderBrowser();
       return [];
+    } finally {
+      finishPackageSearchRequest(requestController);
     }
   }
 
@@ -1028,10 +1178,10 @@
     searchTimer = setTimeout(function() { searchTimer = null; searchPackages(); }, Math.max(0, Number(delay == null ? 260 : delay)));
   }
 
-  async function fetchPackageDetails(name, seed) {
-    var response = await BOBO.sendToServer('getPackageCatalogItem', currentRequestContext({ packageName: name }), {
+  async function fetchPackageDetails(name, seed, requestOverrides) {
+    var response = await BOBO.sendToServer('getPackageCatalogItem', currentRequestContext(Object.assign({ packageName: name }, requestOverrides || {})), {
       quiet: true,
-      timeoutMs: PACKAGE_QUERY_TIMEOUT_MS
+      timeoutMs: packageQueryTimeoutMs(context && context.catalogTimeoutSeconds)
     });
     return mergeInstalledState(normalizeResult(Object.assign({}, seed && seed.raw || seed || {}, extractData(response))), context && context.installed || []);
   }
@@ -1046,7 +1196,11 @@
     if (busyOperation || !item || !item.name || !context || context.supported !== true) return false;
     if (recoveryPending && !await retryRecovery()) return false;
 
-    var operation = String(options.operation || (item.direct ? 'update' : 'add'));
+    var operation = String(options.operation || 'install').toLowerCase();
+    var declarations = managedPackageDeclarations(context);
+    var declaration = declarations.find(function(candidate) {
+      return packageKey(candidate && candidate.name) === packageKey(item.name);
+    });
     var operationContext = captureOperationContext();
     if (operation === 'remove' && BOBO.confirm) {
       var confirmed = await BOBO.confirm({
@@ -1060,6 +1214,9 @@
 
     var resolvedItem = normalizeResult(item && item.raw ? item.raw : item);
     var version = String(options.version || '');
+    if (!version && operation === 'install' && context.inventoryExact !== true && declaration) {
+      version = exactDeclaredPackageVersion(declaration);
+    }
     if (operation !== 'remove' && !version) {
       busyOperation = { context: operationContext, stage: 'catalog' };
       var runtimeLabel = runtimeDisplayLabel(context.runtime, context.language) || S.selectedRuntime || t('No runtime selected');
@@ -1085,13 +1242,18 @@
       setOperation('error', t('The project changed before the library operation could start.'));
       return false;
     }
-    setPendingChanges([{
-      operation: operation,
+    var normalized = normalizeManagedPackageChanges([{
+      operation: operation === 'add' ? 'install' : operation,
       name: resolvedItem.name || item.name,
       version: operation === 'remove' ? String(item.installedVersion || item.version || '') : version,
       scope: String(options.scope || item.scope || item.raw && item.raw.scope || 'runtime'),
       features: []
-    }]);
+    }], context.installed, declarations);
+    if (normalized.length !== 1) {
+      setOperation('error', t('The requested library change is invalid.'));
+      return false;
+    }
+    setPendingChanges(normalized);
     var applied = await applyPending({ removalConfirmed: operation === 'remove' });
     if (!applied && !recoveryPending) setPendingChanges([]);
     if (applied && !recoveryPending) {
@@ -1103,6 +1265,8 @@
   function renderDetails(item) {
     item = item || {};
     var installed = context && context.installed.find(function(candidate) { return packageKey(candidate.name) === packageKey(item.name); });
+    var declaration = managedPackageDeclaration(context, item.name);
+    var declaredVersion = exactDeclaredPackageVersion(declaration);
     if (byId('package-detail-name')) byId('package-detail-name').textContent = item.name || '--';
     if (byId('package-detail-summary')) byId('package-detail-summary').textContent = item.summary || t('Loading library details...');
     if (byId('package-detail-catalog')) {
@@ -1132,7 +1296,9 @@
         versionSelect.appendChild(option);
       });
       versionSelect.dataset.packageKey = detailPackageKey;
-      var preferred = installed && installed.inventoryPresent === false && installed.version ? installed.version : item.version;
+      var preferred = context && context.inventoryExact !== true && declaredVersion
+        ? declaredVersion
+        : (installed && installed.inventoryPresent === false && installed.version ? installed.version : item.version);
       versionSelect.value = preferredPackageVersion(versions, preferred, previous);
       versionSelect.disabled = !versionSelect.value || Boolean(busyOperation);
     }
@@ -1147,12 +1313,12 @@
         option.textContent = value === 'dev' ? t('Development') : (value === 'runtime' ? t('Runtime') : String(scope.label || value));
         scopeSelect.appendChild(option);
       });
-      scopeSelect.value = installed && installed.scope || 'runtime';
+      scopeSelect.value = installed && installed.scope || declaration && declaration.scope || 'runtime';
     }
-    renderDetailSelectionState(item, installed);
+    renderDetailSelectionState(item, installed, declaration);
   }
 
-  function renderDetailSelectionState(item, installed) {
+  function renderDetailSelectionState(item, installed, declaration) {
     item = item || {};
     var versionSelect = byId('package-version-select');
     var selectedOption = versionSelect && versionSelect.selectedIndex >= 0 ? versionSelect.options[versionSelect.selectedIndex] : null;
@@ -1163,13 +1329,15 @@
     var action = byId('package-stage-change');
     if (action) {
       var selectedVersion = selectedOption && selectedOption.value || '';
-      var sameInstalled = installed && installed.direct && String(installed.version || '') === String(selectedVersion) && String(installed.scope || 'runtime') === String((byId('package-scope-select') || {}).value || 'runtime');
-      var repair = sameInstalled && installed.inventoryState === 'missing';
+      var selectedScope = String((byId('package-scope-select') || {}).value || 'runtime');
+      var sameInstalled = installed && installed.direct && String(installed.version || '') === String(selectedVersion) && String(installed.scope || 'runtime') === selectedScope;
+      var sameDeclared = declaration && exactDeclaredPackageVersion(declaration) === String(selectedVersion) && String(declaration.scope || 'runtime') === selectedScope;
+      var repair = Boolean(sameDeclared && context && context.inventoryExact !== true);
       var needsInventory = sameInstalled && installed.inventoryState === 'unknown';
       action.disabled = !context || context.supported !== true || !selectedOption || selectedOption.disabled || normalizeCompatibility(compatibility) === 'incompatible' || (sameInstalled && !repair) || Boolean(busyOperation) || Boolean(recoveryPending);
-      action.innerHTML = (repair || installed && installed.direct ? ICON_UPDATE : ICON_INSTALL) + '<span></span>';
+      action.innerHTML = (repair || installed && installed.direct || declaration ? ICON_UPDATE : ICON_INSTALL) + '<span></span>';
       var copy = action.querySelector('span');
-      if (copy) copy.textContent = repair ? t('Repair installation') : (needsInventory ? t('Inventory verification required') : (sameInstalled ? t('Already installed') : (installed && installed.direct ? t('Update') : (installed ? t('Pin as direct dependency') : t('Install')))));
+      if (copy) copy.textContent = repair ? t('Repair installation') : (needsInventory ? t('Inventory verification required') : (sameInstalled ? t('Already installed') : (installed && installed.direct || declaration ? t('Update') : (installed ? t('Pin as direct dependency') : t('Install')))));
     }
   }
 
@@ -1207,7 +1375,7 @@
       return false;
     }
     return runPackageAction(selectedPackage, {
-      operation: installed && installed.direct ? 'update' : 'add',
+      operation: 'install',
       version: version,
       scope: scope
     });
@@ -1218,11 +1386,15 @@
     renderManifests();
   }
 
-  async function requestPlan(operationContext) {
+  async function requestPlan(operationContext, options) {
+    options = options || {};
     if (!pendingChanges.length) throw new Error(t('There are no pending library changes.'));
     if (!operationContextMatches(pendingContext)) throw new Error(t('Project context changed; discard these pending changes.'));
     if (!operationContextMatches(operationContext)) throw new Error(t('The project changed before the library plan could be created.'));
-    var response = await BOBO.sendToServer('planProjectPackageChanges', currentRequestContext({ changes: pendingChanges.map(function(change) { return Object.assign({}, change); }) }), {
+    var response = await BOBO.sendToServer('planProjectPackageChanges', currentRequestContext({
+      changes: pendingChanges.map(function(change) { return Object.assign({}, change); }),
+      sourceId: String(options.sourceId || context && context.selectedSourceId || '')
+    }), {
       quiet: true,
       timeoutMs: PACKAGE_PLAN_TIMEOUT_MS
     });
@@ -1490,7 +1662,9 @@
     await refreshConfiguredLanguageService();
     if (BOBO.environmentCenter && BOBO.environmentCenter.scheduleRefresh) BOBO.environmentCenter.scheduleRefresh('package-change', 0);
     var refreshed = await refreshContext({ loading: false, search: false, force: true });
-    if (!refreshed || refreshed.supported !== true) throw new Error(refreshed && refreshed.reason || t('The analysis service could not verify the updated libraries.'));
+    if (!refreshed || refreshed.supported !== true || refreshed.inventoryExact !== true) {
+      throw new Error(refreshed && refreshed.reason || t('The analysis service could not verify the updated libraries.'));
+    }
     return refreshed;
   }
 
@@ -1540,6 +1714,7 @@
           throw applyError;
         }
         validateServerApplyResult(recoveredResponse, recovery.planId);
+        invalidateCacheInventory('package-recovery-applied', recoveredResponse);
         var recoveredEditorConflicts = await collectEditorConflicts(recovery.transaction.publishedFiles, recovery.editorSnapshots, recovery.operationContext.workspaceRoot);
         var recoveredCommit;
         try {
@@ -1664,7 +1839,7 @@
       editorSnapshots = await captureEditorSnapshots(operationContext.workspaceRoot);
 
       setOperation('loading', t('Planning library changes...'));
-      plan = await requestPlan(operationContext);
+      plan = await requestPlan(operationContext, options);
       localChanges = Array.isArray(plan.localChanges) ? plan.localChanges : [];
       planId = String(plan.planId || plan.id || '');
       if (!operationContextMatches(operationContext)) throw new Error(t('The project changed after the library plan was created.'));
@@ -1716,7 +1891,8 @@
       setOperation('loading', t('Resolving and installing libraries...'));
       applyPayload = currentRequestContext({
         packagePlanId: planId,
-        revision: plan.revision || context.revision || ''
+        revision: plan.revision || context.revision || '',
+        sourceId: String(options.sourceId || context && context.selectedSourceId || '')
       });
       var applyResponse = await applyServerPlan(applyPayload, {
         operationTimeoutSeconds: context.operationTimeoutSeconds,
@@ -1734,6 +1910,7 @@
         throw verificationError;
       }
       serverApplied = true;
+      invalidateCacheInventory('package-plan-applied', applyResponse);
 
       setOperation('loading', t('Finalizing dependency files...'));
       var editorConflicts = await collectEditorConflicts(transaction.publishedFiles, publishedEditorSnapshots, operationContext.workspaceRoot);
@@ -1842,6 +2019,62 @@
     }
   }
 
+  async function applyManagedPackageChanges(changes, options) {
+    options = options || {};
+    if (busyOperation) throw new Error(t('Wait for the library operation to finish before changing projects.'));
+    if (pendingChanges.length) throw new Error(t('Apply or discard the pending Package Center changes first.'));
+    if (recoveryPending && !await retryRecovery()) throw new Error(t('Complete dependency file recovery before changing projects.'));
+
+    var refreshed = await refreshContext({ loading: options.loading !== false, search: false, force: true });
+    if (!refreshed || refreshed.supported !== true) {
+      throw new Error(refreshed && refreshed.reason || t('Library management is unavailable on this server.'));
+    }
+    if (busyOperation) throw new Error(t('Wait for the library operation to finish before changing projects.'));
+    if (pendingChanges.length) throw new Error(t('Apply or discard the pending Package Center changes first.'));
+    var operationContext = captureOperationContext();
+    if (options.runtimeId && String(options.runtimeId) !== operationContext.runtime) {
+      throw new Error(t('The project changed before the library plan could be created.'));
+    }
+    var normalized = normalizeManagedPackageChanges(changes, refreshed.installed, managedPackageDeclarations(refreshed));
+    if (!normalized.length) throw new Error(t('The requested library change is invalid.'));
+
+    var marker = { context: operationContext, stage: 'catalog' };
+    busyOperation = marker;
+    setOperation('loading', t('Resolving terminal library command...'));
+    try {
+      for (var index = 0; index < normalized.length; index += 1) {
+        var change = normalized[index];
+        if (change.operation === 'remove' || change.version) continue;
+        var detail = await fetchPackageDetails(change.name, { name: change.name }, {
+          sourceId: String(options.sourceId || refreshed.selectedSourceId || '')
+        });
+        if (!operationContextMatches(operationContext)) throw new Error(t('The project changed before a compatible library version was selected.'));
+        change.version = automaticPackageVersion(detail);
+        if (!change.version) {
+          throw new Error(t('No compatible stable version is available for {runtime}.', {
+            runtime: runtimeDisplayLabel(refreshed.runtime, refreshed.language) || operationContext.runtime
+          }));
+        }
+      }
+    } catch (error) {
+      setOperation('error', localizedPackageError(error, 'Library update failed.'));
+      throw error;
+    } finally {
+      if (busyOperation === marker) busyOperation = null;
+      renderDock();
+      flushDeferredContextReset();
+    }
+    if (!operationContextMatches(operationContext)) throw new Error(t('The project changed before dependency files were updated.'));
+
+    setPendingChanges(normalized);
+    var applied = await applyPending({
+      removalConfirmed: options.removalConfirmed === true,
+      sourceId: String(options.sourceId || refreshed.selectedSourceId || '')
+    });
+    if (!applied && options.discardOnFailure === true && !recoveryPending) setPendingChanges([]);
+    return applied === true;
+  }
+
   async function clearPending(options) {
     options = options || {};
     if (!pendingChanges.length) return true;
@@ -1884,6 +2117,7 @@
       detachSyncRecovery();
     }
     refreshSequence += 1;
+    cancelPackageSearchRequest();
     context = null;
     results = [];
     cursor = '';
@@ -1937,6 +2171,8 @@
     var input = byId('package-search-input');
     if (input) input.addEventListener('input', function() {
       if (byId('package-search-clear')) byId('package-search-clear').hidden = !input.value;
+      refreshSequence += 1;
+      cancelPackageSearchRequest();
       scheduleSearch(280);
       renderSuggestions();
     });
@@ -1986,6 +2222,7 @@
     bindTabKeyboard(['environment-tab-overview', 'environment-tab-packages']);
     bindTabKeyboard(['package-mode-discover', 'package-mode-installed']);
     global.addEventListener('bobo:workspace-changed', function() { resetForContextChange({ hard: true }); });
+    global.addEventListener('bobo:environment-changed', function() { resetForContextChange({ hard: true }); });
     global.addEventListener('bobo:language-changed', function() {
       if (activeView === 'packages') {
         renderContext();
@@ -2017,13 +2254,18 @@
     refresh: refreshContext,
     search: searchPackages,
     apply: applyPending,
+    applyManagedPackageChanges: applyManagedPackageChanges,
     clearPending: clearPending,
     retryRecovery: retryRecovery,
     beforeWorkspaceLeave: beforeWorkspaceLeave,
     getState: function() {
       return { activeView: activeView, activeMode: activeMode, activePane: activePane, context: context, results: results.slice(), pendingChanges: pendingChanges.slice(), plan: currentPlan, busy: Boolean(busyOperation), recovery: recoveryPending && recoveryPending.kind || '' };
     },
-    dispose: function() { if (typeof activityUnsubscribe === 'function') activityUnsubscribe(); }
+    dispose: function() {
+      cancelPackageSearchRequest();
+      if (searchTimer) { clearTimeout(searchTimer); searchTimer = null; }
+      if (typeof activityUnsubscribe === 'function') activityUnsubscribe();
+    }
   };
 
   if (typeof module !== 'undefined' && module.exports) {
@@ -2039,6 +2281,12 @@
       mergeInstalledState: mergeInstalledState,
       upsertChange: upsertChange,
       removeChange: removeChange,
+      normalizeManagedPackageChanges: normalizeManagedPackageChanges,
+      exactDeclaredPackageVersion: exactDeclaredPackageVersion,
+      managedPackageDeclarations: managedPackageDeclarations,
+      managedPackageDeclaration: managedPackageDeclaration,
+      inventoryBinding: inventoryBinding,
+      packageContextMatchesRequest: packageContextMatchesRequest,
       packageKey: packageKey,
       localizedPackageError: localizedPackageError,
       applyServerPlan: applyServerPlan,
@@ -2053,8 +2301,10 @@
       collectEditorConflicts: collectEditorConflicts,
       refreshConfiguredLanguageService: refreshConfiguredLanguageService,
       packageOperationTimeoutMs: packageOperationTimeoutMs,
+      packageQueryTimeoutMs: packageQueryTimeoutMs,
       packageApplyTimeoutMs: packageApplyTimeoutMs,
       PACKAGE_QUERY_TIMEOUT_MS: PACKAGE_QUERY_TIMEOUT_MS,
+      PACKAGE_QUERY_GRACE_MS: PACKAGE_QUERY_GRACE_MS,
       PACKAGE_PLAN_TIMEOUT_MS: PACKAGE_PLAN_TIMEOUT_MS,
       PACKAGE_APPLY_TIMEOUT_MS: PACKAGE_APPLY_TIMEOUT_MS,
       PACKAGE_APPLY_GRACE_MS: PACKAGE_APPLY_GRACE_MS,

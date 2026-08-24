@@ -39,20 +39,24 @@ func (GoPlugin) Plan(req *PlanRequest) (*Plan, error) {
 	}
 
 	entryDir := DirOf(req.EntryRelPath)
-
-	// go run 编译+运行一步完成，超时取 编译+运行 之和
-	stepTimeout := req.Timeouts.CompileSec + req.Timeouts.RunSec
+	output := filepath.ToSlash(filepath.Join(req.ProjectRoot, filepath.FromSlash(target.OutputPath)))
+	if strings.TrimSpace(req.ProjectRoot) == "" {
+		output = target.OutputPath
+	}
+	buildCmd := []string{"go", "build"}
+	buildCmd = append(buildCmd, req.CompileArgs...)
+	buildCmd = append(buildCmd, "-o", output)
+	runCmd := append([]string{output}, req.RunArgs...)
 
 	if modDir, ok := FindUpward(req.ProjectFiles, entryDir, "go.mod"); ok {
-		runCmd := []string{"go", "run"}
-		runCmd = append(runCmd, req.CompileArgs...)
-		runCmd = append(runCmd, ".")
-		runCmd = append(runCmd, req.RunArgs...)
-		note := fmt.Sprintf("Go module mode (go.mod at %s): go run . in %s",
+		buildCmd = append(buildCmd, ".")
+		note := fmt.Sprintf("Go module mode (go.mod at %s): build and run package in %s",
 			displayDir(modDir), displayDir(entryDir))
 		return &Plan{
 			Steps: []Step{
-				{Stage: "run:go", Cmd: runCmd, WorkDir: entryDir, TimeoutSec: stepTimeout},
+				{Stage: "setup", Cmd: []string{"mkdir", "-p", ".bobocloud", "artifacts"}, TimeoutSec: 10},
+				{Stage: "compile:go", Cmd: buildCmd, WorkDir: entryDir, TimeoutSec: req.Timeouts.CompileSec},
+				{Stage: "run:go", Cmd: runCmd, WorkDir: entryDir, TimeoutSec: req.Timeouts.RunSec},
 			},
 			Note: note,
 		}, nil
@@ -73,16 +77,15 @@ func (GoPlugin) Plan(req *PlanRequest) (*Plan, error) {
 		return nil, ErrNoSources("go")
 	}
 
-	runCmd := []string{"go", "run"}
-	runCmd = append(runCmd, req.CompileArgs...)
-	runCmd = append(runCmd, files...)
-	runCmd = append(runCmd, req.RunArgs...)
+	buildCmd = append(buildCmd, files...)
 
-	note := fmt.Sprintf("Go single-package mode (no go.mod): %d file(s) in %s",
+	note := fmt.Sprintf("Go single-package mode (no go.mod): building %d file(s) in %s",
 		len(files), displayDir(entryDir))
 	return &Plan{
 		Steps: []Step{
-			{Stage: "run:go", Cmd: runCmd, WorkDir: entryDir, TimeoutSec: stepTimeout},
+			{Stage: "setup", Cmd: []string{"mkdir", "-p", ".bobocloud", "artifacts"}, TimeoutSec: 10},
+			{Stage: "compile:go", Cmd: buildCmd, WorkDir: entryDir, TimeoutSec: req.Timeouts.CompileSec},
+			{Stage: "run:go", Cmd: runCmd, WorkDir: entryDir, TimeoutSec: req.Timeouts.RunSec},
 		},
 		Note: note,
 	}, nil

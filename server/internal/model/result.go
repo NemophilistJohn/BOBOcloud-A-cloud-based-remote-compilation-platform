@@ -14,6 +14,7 @@ type RunResult struct {
 	Cancelled       bool
 	StdoutTruncated bool
 	StderrTruncated bool
+	CompletedStage  string
 }
 
 // FileSig 是文件快照签名（大小 + 修改时间纳秒）

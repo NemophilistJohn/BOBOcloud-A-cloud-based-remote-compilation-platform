@@ -60,6 +60,8 @@ async function stopWithServerExit(transport, socket, reason = 'test') {
   socket.fire('message', JSON.stringify({ type: 'terminal.exit', reason: 'closed', exitCode: 0 }));
   const result = await pending;
   assert.equal(result.confirmed, true);
+  assert.equal(result.dependenciesChanged, false);
+  assert.equal(result.environmentChanged, false);
   return result;
 }
 
@@ -149,6 +151,62 @@ test('rejects Local runtime and stale input without opening a general command ch
     /Docker runtime/
   );
   assert.throws(() => transport.write('echo unsafe'), /offline/);
+});
+
+test('negotiates managed package intents and preserves the cleanup gate on exit', async () => {
+  const events = [];
+  let socket;
+  const transport = new TerminalTransport({
+    webSocketFactory: () => (socket = new MockSocket()),
+    getCredential: () => 'token',
+    emit: (channel, payload) => events.push({ channel, payload }),
+    pingIntervalMs: 0
+  });
+  const starting = transport.start({
+    serverHost: 'cloud.example', runtimeId: 'python:3.12', packageIntents: true,
+    workspace: { kind: 'personal', folderName: 'demo', folderKey: 'demo-key' }
+  });
+  socket.open();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(socket.sent[0].packageIntents, true);
+  socket.fire('message', JSON.stringify({
+    type: 'terminal.ready', sessionId: 'term-intent', runtimeId: 'python:3.12',
+    capabilities: { packageIntents: true }
+  }));
+  await starting;
+
+  socket.fire('message', JSON.stringify({
+    type: 'terminal.packageIntent', schema: 1, intentId: 'intent-1', sessionId: 'term-intent',
+    runtimeId: 'python:3.12', workspace: { kind: 'personal', folderName: 'demo', folderKey: 'demo-key' },
+    ecosystem: 'python', manager: 'pip', operation: 'install', packages: [{ name: 'numpy', version: '2.3.1' }],
+    sourceId: 'pypi-official', requiresTerminalClose: true
+  }));
+  const accepted = events.find((event) => event.channel === 'package-intent');
+  assert.equal(accepted.payload.intentId, 'intent-1');
+  assert.deepEqual(accepted.payload.packages, [{ name: 'numpy', version: '2.3.1' }]);
+
+  assert.deepEqual(transport.decidePackageIntent('intent-1', true, 'managed'), { accepted: true, intentId: 'intent-1' });
+  assert.deepEqual(socket.sent.at(-1), {
+    type: 'terminal.packageIntentDecision', intentId: 'intent-1', accepted: true, code: 'managed'
+  });
+  assert.throws(() => transport.decidePackageIntent('../intent', false, 'invalid'), /identity is invalid/);
+
+  socket.fire('message', JSON.stringify({ type: 'terminal.packageIntentRejected', schema: 1, intentId: 'intent-1', code: 'unsupported_requirement' }));
+  const rejected = events.find((event) => event.channel === 'package-intent-rejected');
+  assert.equal(rejected.payload.code, 'unsupported_requirement');
+  assert.equal(rejected.payload.intentId, 'intent-1');
+
+  const stopping = transport.stop('package-intent');
+  socket.fire('message', JSON.stringify({
+    type: 'terminal.exit', reason: 'closed', cleanupConfirmed: true,
+    packageIntentPending: true, packageIntentId: 'intent-1',
+    dependenciesChanged: false, environmentChanged: false
+  }));
+  const closed = await stopping;
+  assert.equal(closed.cleanupConfirmed, true);
+  assert.equal(closed.packageIntentPending, true);
+  assert.equal(closed.packageIntentId, 'intent-1');
+  assert.equal(closed.dependenciesChanged, false);
 });
 
 test('uses the server byte limit for multibyte terminal input', async () => {
@@ -275,11 +333,25 @@ test('terminal.exit can report that server cleanup is still pending', async () =
 
   const stopping = transport.stop('panel-close');
   socket.fire('message', JSON.stringify({
-    type: 'terminal.exit', reason: 'cleanup_pending', exitCode: 1, cleanupConfirmed: false
+    type: 'terminal.exit', reason: 'cleanup_pending', exitCode: 1, cleanupConfirmed: false,
+    environmentMutation: {
+      dependenciesChanged: true,
+      environmentChanged: true,
+      cacheRevision: 'revision-4',
+      generation: 'generation-4',
+      dependencyDigest: 'digest-4',
+      cacheEntryId: 'cache-entry-4'
+    }
   }));
   const result = await stopping;
   assert.equal(result.confirmed, false);
   assert.equal(result.reason, 'cleanup_pending');
+  assert.equal(result.dependenciesChanged, true);
+  assert.equal(result.environmentChanged, true);
+  assert.equal(result.cacheRevision, 'revision-4');
+  assert.equal(result.generation, 'generation-4');
+  assert.equal(result.dependencyDigest, 'digest-4');
+  assert.equal(result.cacheEntryId, 'cache-entry-4');
 });
 
 test('EventEmitter WebSockets verify a pinned peer before terminal credentials are sent', async () => {

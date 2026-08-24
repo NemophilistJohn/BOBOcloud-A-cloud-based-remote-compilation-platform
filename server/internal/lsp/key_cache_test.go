@@ -109,11 +109,18 @@ func TestDependencyLockHashSkipsGeneratedTreesAndIsBounded(t *testing.T) {
 func TestAnalysisCacheActiveProtectionAndClearBoundary(t *testing.T) {
 	parent := t.TempDir()
 	root := filepath.Join(parent, "lsp-cache")
-	buildSentinel := filepath.Join(parent, "team-cache", "sentinel")
+	buildSentinel := filepath.Join(parent, "cache-v2", "teams", "sentinel")
+	dapSentinel := filepath.Join(parent, "dap-cache", "sentinel")
 	if err := os.MkdirAll(filepath.Dir(buildSentinel), 0755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(buildSentinel, []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dapSentinel), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dapSentinel, []byte("keep"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	manager := NewCacheManager(root, 1, 7)
@@ -136,6 +143,9 @@ func TestAnalysisCacheActiveProtectionAndClearBoundary(t *testing.T) {
 	}
 	if _, err := os.Stat(buildSentinel); err != nil {
 		t.Fatalf("analysis clear crossed into build cache: %v", err)
+	}
+	if _, err := os.Stat(dapSentinel); err != nil {
+		t.Fatalf("analysis clear crossed into DAP cache: %v", err)
 	}
 }
 

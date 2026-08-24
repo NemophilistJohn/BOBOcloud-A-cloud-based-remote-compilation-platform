@@ -20,7 +20,9 @@ type ProjectEnvironment struct {
 
 type ProjectEnvironmentDependencyCache struct {
 	Scope              string `json:"scope"`
+	CacheID            string `json:"cacheId,omitempty"`
 	Digest             string `json:"digest,omitempty"`
+	Generation         string `json:"generation,omitempty"`
 	Source             string `json:"source,omitempty"`
 	Status             string `json:"status"`
 	SizeBytes          int64  `json:"sizeBytes,omitempty"`

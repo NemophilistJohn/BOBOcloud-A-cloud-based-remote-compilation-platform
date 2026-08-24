@@ -45,10 +45,13 @@ contextBridge.exposeInMainWorld('api', {
   terminalStart: (payload) => ipcRenderer.invoke('terminal:start', payload),
   terminalWrite: (data) => ipcRenderer.invoke('terminal:write', data),
   terminalResize: (payload) => ipcRenderer.invoke('terminal:resize', payload),
+  terminalPackageIntentDecision: (payload) => ipcRenderer.invoke('terminal:package-intent-decision', payload),
   terminalStop: (reason) => ipcRenderer.invoke('terminal:stop', reason),
   terminalStatus: () => ipcRenderer.invoke('terminal:status'),
   onTerminalOutput: (cb) => subscribePayload('terminal:output', cb),
   onTerminalStatus: (cb) => subscribePayload('terminal:status', cb),
+  onTerminalPackageIntent: (cb) => subscribePayload('terminal:package-intent', cb),
+  onTerminalPackageIntentRejected: (cb) => subscribePayload('terminal:package-intent-rejected', cb),
   // Incremental file events (lightweight, no full tree rebuild)
   onFileEvent: (cb) => {
     const listener = (_e, data) => cb(data);

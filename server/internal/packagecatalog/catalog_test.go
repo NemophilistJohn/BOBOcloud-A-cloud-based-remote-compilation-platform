@@ -136,26 +136,41 @@ func TestCatalogReservesTotalDeadlineForEquivalentFallback(t *testing.T) {
 	}
 }
 
-func TestCatalogRejectsStaleMirrorRevisionBeforeUsingItsVersions(t *testing.T) {
+func TestCatalogAcceptsLaggingMirrorAfterOfficialExactVersionValidation(t *testing.T) {
 	var requests []string
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		requests = append(requests, request.URL.String())
-		switch request.URL.String() {
-		case "https://tuna.example/simple/numpy/":
+		if request.URL.String() == "https://tuna.example/simple/numpy/" {
 			return catalogResponse(request, simpleProject("16")), nil
-		case "https://pypi.example/simple/numpy/":
-			return catalogResponse(request, simpleProject("17")), nil
-		default:
-			return catalogResponse(request, versionProject("17")), nil
 		}
+		return catalogResponse(request, versionProject("17")), nil
 	})}
 	catalog := NewWithClient(testSources(), client, 1<<20)
 	item, err := catalog.Item(context.Background(), ItemRequest{Name: "numpy", SourceID: "pypi-tuna", RuntimeVersion: "3.10"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.CatalogAuthority != "pypi.example" || strings.Join(requests, ",") != "https://tuna.example/simple/numpy/,https://pypi.example/pypi/numpy/2.1.0/json,https://pypi.example/simple/numpy/" {
-		t.Fatalf("stale fallback item=%+v requests=%v", item, requests)
+	if item.CatalogAuthority != "tuna.example" || strings.Join(requests, ",") != "https://tuna.example/simple/numpy/,https://pypi.example/pypi/numpy/2.1.0/json" {
+		t.Fatalf("lagging mirror item=%+v requests=%v", item, requests)
+	}
+}
+
+func TestCatalogDiscoveryDoesNotBlockOnSlowOptionalOfficialEnrichment(t *testing.T) {
+	client := &http.Client{Timeout: 300 * time.Millisecond, Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() == "https://tuna.example/simple/numpy/" {
+			return catalogResponse(request, simpleProject("16")), nil
+		}
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})}
+	catalog := NewWithClient(testSources(), client, 1<<20)
+	started := time.Now()
+	item, err := catalog.Item(context.Background(), ItemRequest{Name: "numpy", SourceID: "pypi-tuna", RuntimeVersion: "3.10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.CatalogAuthority != "tuna.example" || item.RecommendedVersion != "2.1.0" || time.Since(started) >= client.Timeout {
+		t.Fatalf("optional enrichment blocked discovery: item=%+v elapsed=%s", item, time.Since(started))
 	}
 }
 
@@ -251,8 +266,6 @@ func TestCatalogRecommendsLatestStableReleaseCompatibleWithExactPythonRuntime(t 
 			return catalogResponse(request, simple), nil
 		case "https://pypi.example/pypi/numpy/2.5.2/json":
 			return catalogResponse(request, versionProjectFor("90", "2.5.2", ">=3.12")), nil
-		case "https://pypi.example/pypi/numpy/2.2.6/json":
-			return catalogResponse(request, versionProjectFor("90", "2.2.6", ">=3.10")), nil
 		default:
 			t.Fatalf("unexpected request %s", request.URL)
 			return nil, nil
@@ -265,7 +278,7 @@ func TestCatalogRecommendsLatestStableReleaseCompatibleWithExactPythonRuntime(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.LatestVersion != "2.5.2" || item.RecommendedVersion != "2.2.6" || len(requests) != 3 {
+	if item.LatestVersion != "2.5.2" || item.RecommendedVersion != "2.2.6" || len(requests) != 2 {
 		t.Fatalf("runtime recommendation item=%+v requests=%v", item, requests)
 	}
 	if item.Compatibility != "metadata-compatible" || item.CompatibilityReason != "Requires-Python >=3.10" || item.RequiresLanguage != ">=3.10" {
@@ -316,7 +329,7 @@ func TestPEP440OrderingAndSpecifierCompatibility(t *testing.T) {
 	}
 }
 
-func TestExactVersionMetadataCacheIsBoundedBySerialValidation(t *testing.T) {
+func TestExactVersionMetadataCacheIsClonedAndSeparateFromDiscoveryEnrichment(t *testing.T) {
 	requests := 0
 	serial := "17"
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {

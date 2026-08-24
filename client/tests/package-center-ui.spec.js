@@ -52,7 +52,7 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
     await page.setViewportSize({ width: 1024, height: 720 });
-    await page.waitForFunction(() => document.documentElement.dataset.boboReady === 'true', null, { timeout: 20000 });
+    await page.waitForFunction(() => document.documentElement && document.documentElement.dataset.boboReady === 'true', null, { timeout: 20000 });
 
     await page.evaluate(async ({ workspacePath, hashes, contents }) => {
       const selected = await window.api.pickWorkspace(workspacePath);
@@ -72,6 +72,8 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
         lspRefreshResult: true,
         transportLossOnce: true,
         unavailableOnce: true,
+        cacheMissingMode: false,
+        rejectPlanRequests: false,
         switchIdentityOnApply: false,
         failSyncAt: 0,
         confirmResult: true,
@@ -81,6 +83,8 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
         commitCount: 0,
         rollbackCount: 0,
         lspRefreshCount: 0,
+        environmentRefreshes: [],
+        cacheInvalidations: [],
         hashes,
         contents
       };
@@ -100,6 +104,12 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
         return window.__packageFixture.lspRefreshResult;
       };
       window.BOBO.lsp.getMode = () => 'standard';
+      window.BOBO.environmentCenter.scheduleRefresh = (reason, delay) => {
+        window.__packageFixture.environmentRefreshes.push({ reason, delay });
+      };
+      window.BOBO.cacheStore.invalidate = detail => {
+        window.__packageFixture.cacheInvalidations.push(detail);
+      };
       const nativeApi = window.api;
       window.BOBO.packageCenterLocalApi = {
         readFile: filePath => nativeApi.readFile(filePath),
@@ -128,10 +138,11 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
         fixture.calls.push({ action, data });
         if (action === 'getProjectEnvironment') return { success: false, error: 'not part of package fixture' };
         if (action === 'getPackageCenterContext') {
+          const cacheMissing = fixture.cacheMissingMode;
           return { success: true, data: {
             schema: 'project-package-center/v1',
-            revision: fixture.applied ? 'environment-2' : 'environment-1',
-            workspace: { kind: 'personal', name: 'package-center-workspace' },
+            revision: cacheMissing ? 'environment-cache-missing' : (fixture.applied ? 'environment-2' : 'environment-1'),
+            workspace: { kind: 'personal', id: 'alice\u0000' + data.folderKey, key: data.folderKey, name: 'package-center-workspace' },
             language: { id: 'python', displayName: 'Python' },
             runtime: { id: 'python:3.11', displayName: 'Python 3.11', version: '3.11', interpreterVersion: '3.11.13' },
             sources: [
@@ -146,22 +157,36 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
               { path: 'requirements-b.txt', manager: 'pip', kind: 'requirements', language: 'python' }
             ],
             packages: {
-              declared: [
+              declared: cacheMissing ? [
+                { name: 'brokenlib', constraint: '==1.0.0', source: 'requirements-a.txt' }
+              ] : [
                 { name: 'requests', constraint: '==2.31.0', source: 'requirements-a.txt' },
                 { name: 'brokenlib', constraint: '==1.0.0', source: 'requirements-a.txt' }
               ],
-              installed: [
+              installed: cacheMissing ? [] : [
                 { name: 'requests', version: '2.31.0', relationship: 'direct', trust: 'exact' },
                 { name: 'urllib3', version: '2.5.0', relationship: 'transitive', trust: 'exact' },
                 ...(fixture.applied ? [{ name: 'numpy', version: '2.3.1', relationship: 'direct', trust: 'exact' }] : [])
               ],
-              missing: [
+              missing: cacheMissing ? [] : [
                 { name: 'numpy', reason: 'Import could not be resolved' },
                 { name: 'brokenlib', constraint: '==1.0.0', source: 'requirements-a.txt', reason: 'Missing from exact inventory' }
               ],
-              unknown: []
+              unknown: cacheMissing ? [
+                { name: 'brokenlib', constraint: '==1.0.0', source: 'requirements-a.txt', reason: 'Project dependency cache is missing' }
+              ] : []
             },
-            inventory: { status: 'ready', exact: true },
+            inventory: cacheMissing ? {
+              status: 'missing',
+              exact: false,
+              dependencyDigest: 'dependency-digest-cache-missing'
+            } : {
+              status: 'ready',
+              exact: true,
+              cacheEntryId: fixture.applied ? 'cache-environment-2' : 'cache-environment-1',
+              generation: fixture.applied ? 'generation-2' : 'generation-1',
+              dependencyDigest: fixture.applied ? 'dependency-digest-2' : 'dependency-digest-1'
+            },
             canPlanChanges: { supported: !fixture.unsupported, reason: fixture.unsupported ? 'Fixture policy blocks changes' : '' }
           } };
         }
@@ -201,6 +226,13 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
           } };
         }
         if (action === 'planProjectPackageChanges') {
+          if (fixture.rejectPlanRequests) {
+            return {
+              success: false,
+              errorCode: 'package_manifest_change_invalid',
+              error: 'Fixture plan captured before execution'
+            };
+          }
           const initialInstall = !fixture.applied;
           const packageName = data.changes[0] && data.changes[0].name || 'package';
           const oldContent = initialInstall ? fixture.contents.initial : fixture.contents.applied;
@@ -266,15 +298,56 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
     await expect(page.locator('#package-center-review')).toHaveCount(0);
     await expect(page.locator('#package-apply-changes')).toHaveCount(0);
 
+    await page.evaluate(async () => {
+      window.__packageFixture.cacheMissingMode = true;
+      window.__packageFixture.rejectPlanRequests = true;
+      await window.BOBO.packageCenter.refresh({ force: true, search: false });
+    });
+    await page.locator('#package-search-input').fill('brokenlib');
+    const declaredResult = page.locator('#package-results-list .package-row[data-package-name="brokenlib"]');
+    await expect(declaredResult).toBeVisible();
+    let plansBeforeContractCheck = await page.evaluate(() => window.__packageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').length);
+    await declaredResult.locator('.package-install').click();
+    await expect.poll(() => page.evaluate(() => window.__packageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').length)).toBe(plansBeforeContractCheck + 1);
+    let capturedPlanChange = await page.evaluate(() => window.__packageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').at(-1).data.changes[0]);
+    expect(capturedPlanChange).toMatchObject({ operation: 'update', name: 'brokenlib', version: '1.0.0', scope: 'runtime' });
+
+    await declaredResult.locator('.package-row-main').click();
+    await expect(page.locator('#package-center-detail')).toBeVisible();
+    await expect(page.locator('#package-version-select')).toHaveValue('1.0.0');
+    plansBeforeContractCheck += 1;
+    await page.locator('#package-stage-change').click();
+    await expect.poll(() => page.evaluate(() => window.__packageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').length)).toBe(plansBeforeContractCheck + 1);
+    capturedPlanChange = await page.evaluate(() => window.__packageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').at(-1).data.changes[0]);
+    expect(capturedPlanChange).toMatchObject({ operation: 'update', name: 'brokenlib', version: '1.0.0', scope: 'runtime' });
+
+    await page.locator('#package-detail-back').click();
+    await page.locator('#package-search-input').fill('freshlib');
+    const undeclaredResult = page.locator('#package-results-list .package-row[data-package-name="freshlib"]');
+    await expect(undeclaredResult).toBeVisible();
+    plansBeforeContractCheck += 1;
+    await undeclaredResult.locator('.package-install').click();
+    await expect.poll(() => page.evaluate(() => window.__packageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').length)).toBe(plansBeforeContractCheck + 1);
+    capturedPlanChange = await page.evaluate(() => window.__packageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').at(-1).data.changes[0]);
+    expect(capturedPlanChange).toMatchObject({ operation: 'add', name: 'freshlib', version: '2.3.1', scope: 'runtime' });
+
+    await page.evaluate(async () => {
+      window.__packageFixture.cacheMissingMode = false;
+      window.__packageFixture.rejectPlanRequests = false;
+      document.getElementById('package-search-input').value = '';
+      await window.BOBO.packageCenter.refresh({ force: true, search: true });
+    });
+    await expect(page.locator('#package-center-state')).toHaveText('Enter an exact package name to search.');
+
     await page.locator('#package-mode-installed').click();
     const declaredMissingRow = page.locator('#package-results-list .package-row[data-package-name="brokenlib"]');
-    await expect(declaredMissingRow).toBeVisible();
-    await expect(declaredMissingRow.locator('.package-row-summary')).toHaveText('Declared dependency');
-    await expect(declaredMissingRow.locator('.package-row-meta')).toContainText('Missing from project cache');
-    await expect(declaredMissingRow.locator('.package-repair')).toHaveAttribute('aria-label', 'Repair brokenlib');
-    await expect(declaredMissingRow.locator('.package-remove')).toBeEnabled();
+    await expect(declaredMissingRow).toHaveCount(0);
+    await expect(page.locator('#package-results-list .package-row')).toHaveCount(2);
     await page.locator('#package-mode-discover').click();
 
+    const declaredMissingSuggestion = page.locator('#package-suggestions-list .package-row[data-package-name="brokenlib"]');
+    await expect(declaredMissingSuggestion).toBeVisible();
+    await expect(declaredMissingSuggestion.locator('.package-row-summary')).toHaveText('Missing from exact inventory');
     await expect(page.locator('#package-suggestions-list .package-row[data-package-name="numpy"]')).toBeVisible();
     await page.locator('#package-suggestions-list .package-row[data-package-name="numpy"] .package-row-action').click();
     await expect(page.locator('#package-search-input')).toHaveValue('numpy');
@@ -308,9 +381,12 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
     await numpyRow.locator('.package-install').click();
     await expect(page.locator('#package-operation-status')).toContainText('still uncertain');
     expect(await page.evaluate(() => window.__packageFixture.calls.filter(call => call.action === 'getPackageCatalogItem').length)).toBe(detailsBeforeInstall + 2);
-    const firstPlan = await page.evaluate(() => window.__packageFixture.calls.find(call => call.action === 'planProjectPackageChanges'));
+    const firstPlan = await page.evaluate(() => window.__packageFixture.calls.find(call =>
+      call.action === 'planProjectPackageChanges' && call.data.changes[0] && call.data.changes[0].name === 'numpy'
+    ));
     expect(firstPlan.data.manifestPath).toBe('requirements-a.txt');
-    expect(firstPlan.data.changes).toEqual([{ operation: 'add', name: 'numpy', version: '2.3.1', scope: 'runtime', features: [] }]);
+    expect(firstPlan.data.changes).toHaveLength(1);
+    expect(firstPlan.data.changes[0]).toMatchObject({ operation: 'add', name: 'numpy', version: '2.3.1', scope: 'runtime' });
     expect(await page.evaluate(() => window.__packageFixture.confirmation)).toBeNull();
     expect(await page.evaluate(() => ({
       rollbackCount: window.__packageFixture.rollbackCount,
@@ -328,6 +404,7 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
     await page.evaluate(() => {
       window.__packageFixture.failRefresh = false;
       window.__packageFixture.lspRefreshResult = true;
+      window.__packageFixture.contextCallsBeforeVerifiedRefresh = window.__packageFixture.calls.filter(call => call.action === 'getPackageCenterContext').length;
     });
     await page.locator('#package-operation-retry').click();
     await expect(page.locator('#package-operation-status')).toContainText('Language service refreshed');
@@ -335,9 +412,21 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
       syncCount: window.__packageFixture.syncCount,
       applyCount: window.__packageFixture.calls.filter(call => call.action === 'applyProjectPackageChanges').length,
       lspRefreshed: window.__packageFixture.lspRefreshed,
+      environmentRefreshes: window.__packageFixture.environmentRefreshes,
+      cacheInvalidations: window.__packageFixture.cacheInvalidations,
+      verifiedContextRefreshes: window.__packageFixture.calls.filter(call => call.action === 'getPackageCenterContext').length - window.__packageFixture.contextCallsBeforeVerifiedRefresh,
       confirmation: window.__packageFixture.confirmation,
       recovery: window.BOBO.packageCenter.getState().recovery
-    }))).toEqual({ syncCount: 1, applyCount: 3, lspRefreshed: true, confirmation: null, recovery: '' });
+    }))).toEqual({
+      syncCount: 1,
+      applyCount: 3,
+      lspRefreshed: true,
+      environmentRefreshes: [{ reason: 'package-change', delay: 0 }],
+      cacheInvalidations: [{ reason: 'package-recovery-applied', revision: '' }],
+      verifiedContextRefreshes: 1,
+      confirmation: null,
+      recovery: ''
+    });
     await page.screenshot({ path: path.join(process.cwd(), 'test-results', 'package-center-one-click-wide.png'), fullPage: false });
 
     await page.evaluate(async () => {
@@ -365,6 +454,11 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
       await window.BOBO.i18n.setLocale('en');
       window.__packageFixture.failApply = true;
       window.__packageFixture.failSyncAt = window.__packageFixture.syncCount + 2;
+      window.__packageFixture.refreshCountsBeforeFailedApply = {
+        lsp: window.__packageFixture.lspRefreshCount,
+        environment: window.__packageFixture.environmentRefreshes.length,
+        cache: window.__packageFixture.cacheInvalidations.length
+      };
     });
     await page.locator('#package-stage-change').click();
     await expect(page.locator('#package-operation-status')).toContainText('Library update failed.');
@@ -373,8 +467,20 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
     expect(await page.evaluate(() => ({
       rollbackCount: window.__packageFixture.rollbackCount,
       recovery: window.BOBO.packageCenter.getState().recovery,
-      plannedVersion: window.__packageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').at(-1).data.changes[0].version
-    }))).toEqual({ rollbackCount: 1, recovery: 'sync', plannedVersion: '2.2.0' });
+      plannedVersion: window.__packageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').at(-1).data.changes[0].version,
+      refreshCounts: {
+        lsp: window.__packageFixture.lspRefreshCount,
+        environment: window.__packageFixture.environmentRefreshes.length,
+        cache: window.__packageFixture.cacheInvalidations.length
+      },
+      installedPandas: window.BOBO.packageCenter.getState().context.installed.some(item => item.name === 'pandas')
+    }))).toEqual({
+      rollbackCount: 1,
+      recovery: 'sync',
+      plannedVersion: '2.2.0',
+      refreshCounts: await page.evaluate(() => window.__packageFixture.refreshCountsBeforeFailedApply),
+      installedPandas: false
+    });
 
     const resizer = page.locator('#sidebar-resizer');
     await resizer.focus();

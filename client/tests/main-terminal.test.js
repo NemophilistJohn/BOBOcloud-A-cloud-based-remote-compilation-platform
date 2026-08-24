@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createTerminalController } = require('../main/terminal');
+const { createTerminalController, cleanPackageIntentDecision } = require('../main/terminal');
 
 class FakeTransport {
   constructor(options) {
@@ -11,6 +11,7 @@ class FakeTransport {
     this.config = null;
     this.writes = [];
     this.resizes = [];
+    this.packageIntentDecisions = [];
   }
   async start(config) {
     this.config = config;
@@ -21,6 +22,10 @@ class FakeTransport {
   snapshot() { return { state: this.state, sessionId: this.state === 'ready' ? 'term-1' : '', contextToken: this.config && this.config.localContext }; }
   write(data) { this.writes.push(data); return { accepted: true }; }
   resize(cols, rows) { this.resizes.push({ cols, rows }); return { accepted: true }; }
+  decidePackageIntent(intentId, accepted, code) {
+    this.packageIntentDecisions.push({ intentId, accepted, code });
+    return { accepted: true, intentId };
+  }
   stop() { this.state = 'idle'; this.options.emit('status', { state: 'idle', sessionId: '', contextToken: this.config && this.config.localContext }); return { state: 'idle' }; }
   async dispose() { this.stop(); }
 }
@@ -54,7 +59,7 @@ test('terminal main controller keeps credentials in main and binds the session t
   const harness = createHarness();
   const start = harness.handlers.get('terminal:start');
   const result = await start(harness.event, {
-    runtimeId: 'python:3.12', cols: 110, rows: 30,
+    runtimeId: 'python:3.12', cols: 110, rows: 30, packageIntents: true,
     workspace: { kind: 'personal', folderName: 'demo', folderKey: 'demo-key' },
     setupCommands: ['pip install numpy==2.1.0'],
     context: { workspaceRoot: 'C:/work/demo', workspaceIdentity: 7, workspaceGeneration: 4, authEpoch: 2 }
@@ -66,16 +71,41 @@ test('terminal main controller keeps credentials in main and binds the session t
   assert.equal(harness.transport.config.serverHost, 'http://cloud.example:3101');
   assert.deepEqual(harness.transport.config.workspace, { kind: 'personal', folderName: 'demo', folderKey: 'demo-key' });
   assert.deepEqual(harness.transport.config.setupCommands, ['pip install numpy==2.1.0']);
+  assert.equal(harness.transport.config.packageIntents, true);
   assert.doesNotMatch(JSON.stringify(result), /stored-token|fallback-key/);
   assert.equal(harness.sent.at(-1).channel, 'terminal:status');
   assert.doesNotMatch(JSON.stringify(harness.sent.at(-1).payload), /stored-token|fallback-key/);
 
+  harness.transport.options.emit('package-intent', {
+    schema: 1, intentId: 'intent-1', sessionId: 'term-1', runtimeId: 'python:3.12',
+    packages: [{ name: 'numpy' }], contextToken: harness.transport.config.localContext
+  });
+  assert.equal(harness.sent.at(-1).channel, 'terminal:package-intent');
+  assert.equal(harness.sent.at(-1).payload.intentId, 'intent-1');
+  assert.deepEqual(harness.sent.at(-1).payload.context, {
+    workspaceRoot: 'C:/work/demo', workspaceIdentity: 7, workspaceGeneration: 4, authEpoch: 2
+  });
+
   const write = harness.handlers.get('terminal:write');
   await write(harness.event, 'echo hello\r');
   assert.deepEqual(harness.transport.writes, ['echo hello\r']);
+
+  const decide = harness.handlers.get('terminal:package-intent-decision');
+  assert.deepEqual(await decide(harness.event, { intentId: 'intent-1', accepted: true, code: 'managed' }), {
+    accepted: true, intentId: 'intent-1'
+  });
+  assert.deepEqual(harness.transport.packageIntentDecisions, [{ intentId: 'intent-1', accepted: true, code: 'managed' }]);
   harness.moveWorkspace();
   await assert.rejects(write(harness.event, 'echo old\r'), /workspace changed/);
   assert.deepEqual(harness.transport.writes, ['echo hello\r']);
+});
+
+test('terminal package intent decisions reject malformed renderer identities', () => {
+  assert.deepEqual(cleanPackageIntentDecision({ intentId: 'intent_123', accepted: true, code: 'managed' }), {
+    intentId: 'intent_123', accepted: true, code: 'managed'
+  });
+  assert.throws(() => cleanPackageIntentDecision({ intentId: '../intent', accepted: false }), /identity is invalid/);
+  assert.throws(() => cleanPackageIntentDecision({ intentId: 'intent', code: 'bad code' }), /code is invalid/);
 });
 
 test('terminal main controller rejects stale start contexts, Local runtime, and foreign renderers', async () => {

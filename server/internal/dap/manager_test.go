@@ -308,7 +308,7 @@ func TestManagerForwardsDependencyMountAndStopsOnePersonalWorkspace(t *testing.T
 	}
 }
 
-func TestDAPSessionStopsWhenPersonalPersistQuotaIsExceeded(t *testing.T) {
+func TestDAPSessionStopsWhenPersonalCacheV2QuotaIsExceeded(t *testing.T) {
 	dataDir := t.TempDir()
 	cache := personalcache.NewManager(dataDir, personalcache.Options{ReservationBytes: 8, ScanInterval: 5 * time.Millisecond})
 	operation, err := cache.BeginOperation(context.Background(), "user-a", 256)
@@ -325,7 +325,7 @@ func TestDAPSessionStopsWhenPersonalPersistQuotaIsExceeded(t *testing.T) {
 		operation.Release()
 		t.Fatal(err)
 	}
-	payload := filepath.Join(dataDir, "users", "user-a", "persist", "pip-cache", "payload")
+	payload := filepath.Join(dataDir, "users", "user-a", "cache-v2", "transactions", "dap-quota-test", "payload")
 	if err := os.MkdirAll(filepath.Dir(payload), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestDAPSessionStopsWhenPersonalPersistQuotaIsExceeded(t *testing.T) {
 	}
 }
 
-func TestDAPOperationProtectsWritableSharedCachesFromLRU(t *testing.T) {
+func TestPersonalCacheLRUDoesNotCrossIntoDAPCache(t *testing.T) {
 	dataDir := t.TempDir()
 	cache := personalcache.NewManager(dataDir, personalcache.Options{ReservationBytes: 8})
 	operation, err := cache.BeginOperation(context.Background(), "user-a", 1<<20)
@@ -359,7 +359,7 @@ func TestDAPOperationProtectsWritableSharedCachesFromLRU(t *testing.T) {
 		operation.Release()
 		t.Fatal(err)
 	}
-	payload := filepath.Join(dataDir, "users", "user-a", "persist", "pip-cache", "payload")
+	payload := filepath.Join(dataDir, "dap-cache", "users", "user-a", "pip", "payload")
 	if err := os.MkdirAll(filepath.Dir(payload), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestDAPOperationProtectsWritableSharedCachesFromLRU(t *testing.T) {
 	}
 	cache.Enforce("user-a", 32)
 	if _, err := os.Stat(payload); err != nil {
-		t.Fatalf("active DAP cache was evicted: %v", err)
+		t.Fatalf("personal cache LRU crossed into active DAP cache: %v", err)
 	}
 	session.Stop()
 	select {
@@ -377,7 +377,7 @@ func TestDAPOperationProtectsWritableSharedCachesFromLRU(t *testing.T) {
 		t.Fatal("DAP resources did not release")
 	}
 	cache.Enforce("user-a", 32)
-	if _, err := os.Stat(payload); !os.IsNotExist(err) {
-		t.Fatalf("idle shared cache was not eligible for LRU cleanup: %v", err)
+	if _, err := os.Stat(payload); err != nil {
+		t.Fatalf("personal cache LRU crossed into idle DAP cache: %v", err)
 	}
 }

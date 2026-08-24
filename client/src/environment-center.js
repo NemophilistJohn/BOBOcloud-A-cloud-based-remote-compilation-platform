@@ -839,6 +839,10 @@
       localManifestWorkspace = '';
       scheduleRefresh('workspace', 0);
     });
+    global.addEventListener('bobo:environment-changed', function() {
+      snapshot = null;
+      scheduleRefresh('environment-change', 0);
+    });
     global.addEventListener('bobo:language-changed', function() {
       if (snapshot) render(snapshot);
     });

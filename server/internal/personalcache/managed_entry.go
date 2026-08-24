@@ -7,12 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"bobocloud-server/internal/cachev2"
 )
 
 // InspectEntryPackageInventory reads an exact cache selector for management
 // views. It never grants mutation authority over packages inside that digest.
 func (m *Manager) InspectEntryPackageInventory(userID, relative string) (Entry, InventoryInspection, bool, error) {
-	if m == nil || m.options.ScopeMode != "project-lock" {
+	if m == nil {
 		return Entry{}, InventoryInspection{State: "unavailable", Detail: "Project dependency cache inspection is unavailable"}, false, nil
 	}
 	gate := m.userGate(userID)
@@ -34,7 +36,11 @@ func (m *Manager) resolveManagedEntryLocked(userID, relative string, quotaBytes 
 	if strings.TrimSpace(userID) == "" {
 		return Request{}, resolvedCacheRequest{}, Entry{}, fmt.Errorf("user id is required")
 	}
-	persistRoot := filepath.Join(m.root, userID, "persist")
+	layout, err := m.ensureUserLayout(userID)
+	if err != nil {
+		return Request{}, resolvedCacheRequest{}, Entry{}, err
+	}
+	persistRoot := layout.Root
 	managedRoot := filepath.Join(persistRoot, dependenciesDir)
 	target := filepath.Clean(filepath.Join(persistRoot, filepath.FromSlash(relative)))
 	if target == managedRoot || !strings.HasPrefix(target, managedRoot+string(filepath.Separator)) {
@@ -68,10 +74,17 @@ func (m *Manager) resolveManagedEntryLocked(userID, relative string, quotaBytes 
 	m.mu.Lock()
 	active, writing := m.active[resolved.key] > 0, m.writers[resolved.key] > 0
 	m.mu.Unlock()
+	id, err := cachev2.ReadPersistentCacheID(target)
+	if err != nil {
+		return Request{}, resolvedCacheRequest{}, Entry{}, err
+	}
+	binding, bound := readCurrentBinding(persistRoot, request)
+	current := bound && binding.CacheID == id && binding.Digest == meta.Digest
 	entry := Entry{
-		Path: filepath.ToSlash(resolved.relative), WorkspaceID: meta.WorkspaceID, WorkspaceName: meta.WorkspaceName,
+		ID: id.String(), Category: "dependency", Path: filepath.ToSlash(resolved.relative), WorkspaceID: meta.WorkspaceID, WorkspaceName: meta.WorkspaceName,
 		RuntimeID: meta.RuntimeID, Language: meta.Language, Digest: meta.Digest, DigestSource: meta.DigestSource,
-		LastUsed: meta.LastUsed, Active: active, Writing: writing, Generation: readGeneration(target), HostPath: target,
+		LastUsed: meta.LastUsed, CreatedAt: meta.CreatedAt, Current: current, Superseded: !current,
+		Active: active, Writing: writing, Generation: readGeneration(target), HostPath: target,
 		key: resolved.key, absPath: target,
 	}
 	return request, resolved, entry, nil

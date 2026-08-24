@@ -177,6 +177,9 @@ func ExecutePlanWithMetrics(ctx context.Context, plan *Plan, executor StepExecut
 		}
 		started := time.Now()
 		result = executor.ExecStep(ctx, step, output)
+		if result != nil {
+			result.CompletedStage = step.Stage
+		}
 		if registry != nil {
 			registry.Observe(metricStage(step.Stage), time.Since(started))
 		}

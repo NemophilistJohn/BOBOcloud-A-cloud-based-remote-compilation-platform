@@ -218,18 +218,22 @@ func TestGoPlugin_ModuleMode(t *testing.T) {
 		EntryRelPath: "main.go",
 		ProjectFiles: files,
 		HostWorkDir:  hostDir,
+		ProjectRoot:  "/workspace",
 		RunArgs:      []string{"-v"},
 		Timeouts:     testTimeouts(),
 	})
 	if err != nil {
 		t.Fatalf("Plan failed: %v", err)
 	}
-	if len(plan.Steps) != 1 {
-		t.Fatalf("module mode should be single go run step: %v", stepCmds(plan))
+	if len(plan.Steps) != 3 {
+		t.Fatalf("module mode should separate setup, compile, and run: %v", stepCmds(plan))
 	}
-	cmd := strings.Join(plan.Steps[0].Cmd, " ")
-	if cmd != "go run . -v" {
-		t.Errorf("unexpected module mode cmd: %s", cmd)
+	compile := strings.Join(plan.Steps[1].Cmd, " ")
+	if compile != "go build -o /workspace/.bobocloud/output ." {
+		t.Errorf("unexpected module compile command: %s", compile)
+	}
+	if run := strings.Join(plan.Steps[2].Cmd, " "); run != "/workspace/.bobocloud/output -v" {
+		t.Errorf("unexpected module run command: %s", run)
 	}
 	if !strings.Contains(plan.Note, "module") {
 		t.Errorf("note should mention module mode: %s", plan.Note)
@@ -247,12 +251,16 @@ func TestGoPlugin_NoModule_MultiFile(t *testing.T) {
 		EntryRelPath: "main.go",
 		ProjectFiles: files,
 		HostWorkDir:  hostDir,
+		ProjectRoot:  "/workspace",
 		Timeouts:     testTimeouts(),
 	})
 	if err != nil {
 		t.Fatalf("Plan failed: %v", err)
 	}
-	cmd := strings.Join(plan.Steps[0].Cmd, " ")
+	if len(plan.Steps) != 3 || plan.Steps[1].Stage != "compile:go" || plan.Steps[2].Stage != "run:go" {
+		t.Fatalf("single-package Go plan = %#v", plan.Steps)
+	}
+	cmd := strings.Join(plan.Steps[1].Cmd, " ")
 	if !strings.Contains(cmd, "main.go") || !strings.Contains(cmd, "helper.go") {
 		t.Errorf("should include all same-dir go files: %s", cmd)
 	}

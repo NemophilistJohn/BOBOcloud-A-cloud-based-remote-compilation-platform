@@ -105,13 +105,14 @@ func TestProjectDisplayNameFallsBackToPersonalCacheMetadata(t *testing.T) {
 		ReservationBytes: 8,
 	})
 	lease, err := handler.PersonalCache.Prepare(t.Context(), personalcache.Request{
-		UserID:        "default",
-		WorkspaceID:   lsp.StableWorkspaceIdentity("default", "", "", "", "pqwvdum"),
-		WorkspaceName: "tryjava",
-		RuntimeID:     "python:3.10",
-		Language:      "python",
-		WorkspaceRoot: workspace,
-		QuotaBytes:    1 << 20,
+		UserID:             "default",
+		WorkspaceID:        lsp.StableWorkspaceIdentity("default", "", "", "", "pqwvdum"),
+		WorkspaceName:      "tryjava",
+		RuntimeID:          "python:3.10",
+		RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.10", "python:3.10-slim"),
+		Language:           "python",
+		WorkspaceRoot:      workspace,
+		QuotaBytes:         1 << 20,
 	})
 	if err != nil {
 		t.Fatal(err)

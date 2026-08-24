@@ -83,6 +83,31 @@ test('request timeouts abort fetch and return a stable transport error', async (
   assert.equal(result.errorCode, 'transport_timeout');
 });
 
+test('caller cancellation aborts a superseded request without reporting a timeout', async () => {
+  const controller = new AbortController();
+  let observedSignal = null;
+  const BOBO = loadServerComm(null, {
+    fetch(_url, init) {
+      observedSignal = init.signal;
+      return new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        }, { once: true });
+      });
+    }
+  });
+
+  const request = BOBO.sendToServer('searchPackageCatalog', {}, { quiet: true, timeoutMs: 5000, signal: controller.signal });
+  controller.abort();
+  const result = await request;
+  assert.equal(observedSignal.aborted, true);
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'The server request was cancelled.');
+  assert.equal(result.errorCode, 'transport_cancelled');
+});
+
 test('quiet HTTP failures expose integer Retry-After seconds', async () => {
   const BOBO = loadServerComm({
     ok: false,

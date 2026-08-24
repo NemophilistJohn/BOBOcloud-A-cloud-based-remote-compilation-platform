@@ -10,7 +10,13 @@ import (
 	"time"
 )
 
-const minimumPackagePlanResultBytes int64 = 4 << 10
+const (
+	minimumPackagePlanResultBytes       int64 = 4 << 10
+	defaultPersonalCacheMaxGenerations        = 2
+	maximumPersonalCacheMaxGenerations        = 32
+	PersonalBuildResultReuseCompileOnly       = "compile-only"
+	PersonalBuildResultReuseOff               = "off"
+)
 
 // UserConfig 是配置文件中预设用户的定义
 type UserConfig struct {
@@ -84,9 +90,11 @@ type Config struct {
 	PerformanceMetricsWindow  int  `json:"performance_metrics_window"`
 	RunOutputRetainedBytes    int  `json:"run_output_retained_bytes"`
 
-	// 个人持久化依赖。project-lock 按项目/运行时/语言/清单摘要隔离；
-	// legacy-user 仅用于紧急兼容回退。
-	PersonalDependencyScope           string `json:"personal_dependency_scope"`
+	// Personal cache-v2 stores immutable dependency generations separately from
+	// mutable incremental build state and reusable compile results.
+	PersonalCacheMaxGenerations       int    `json:"personal_cache_max_generations"`
+	PersonalBuildCacheEnabled         bool   `json:"personal_build_cache_enabled"`
+	PersonalBuildResultReuse          string `json:"personal_build_result_reuse"`
 	PersonalPersistReservationMB      int    `json:"personal_persist_reservation_mb"`
 	PersonalPersistMaxFiles           int64  `json:"personal_persist_max_files"`
 	PersonalPersistReservationFiles   int64  `json:"personal_persist_reservation_files"`
@@ -225,7 +233,9 @@ func Default() *Config {
 		PerformanceMetricsEnabled:         true,
 		PerformanceMetricsWindow:          512,
 		RunOutputRetainedBytes:            256 << 10,
-		PersonalDependencyScope:           "project-lock",
+		PersonalCacheMaxGenerations:       defaultPersonalCacheMaxGenerations,
+		PersonalBuildCacheEnabled:         true,
+		PersonalBuildResultReuse:          PersonalBuildResultReuseCompileOnly,
 		PersonalPersistReservationMB:      256,
 		PersonalPersistMaxFiles:           250_000,
 		PersonalPersistReservationFiles:   10_000,
@@ -346,15 +356,25 @@ func Load(path string) (*Config, error) {
 	if path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			if os.IsNotExist(err) {
-				// 文件不存在时使用默认值
-				return cfg, nil
+			if !os.IsNotExist(err) {
+				return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
 			}
-			return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
+		} else {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(data, &fields); err != nil {
+				return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
+			}
+			if _, retired := fields["personal_dependency_scope"]; retired {
+				return nil, fmt.Errorf("personal_dependency_scope was removed with cache-v2; remove the retired field")
+			}
+			if err := json.Unmarshal(data, cfg); err != nil {
+				return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
+			}
 		}
-		if err := json.Unmarshal(data, cfg); err != nil {
-			return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
-		}
+	}
+
+	if err := applyPersonalCacheV2EnvOverrides(cfg); err != nil {
+		return nil, err
 	}
 
 	// 环境变量覆盖
@@ -394,11 +414,15 @@ func Load(path string) (*Config, error) {
 	if cfg.RunOutputRetainedBytes <= 0 {
 		cfg.RunOutputRetainedBytes = 256 << 10
 	}
-	if cfg.PersonalDependencyScope == "" {
-		cfg.PersonalDependencyScope = "project-lock"
+	if cfg.PersonalCacheMaxGenerations < 1 || cfg.PersonalCacheMaxGenerations > maximumPersonalCacheMaxGenerations {
+		return nil, fmt.Errorf("personal_cache_max_generations must be between 1 and %d", maximumPersonalCacheMaxGenerations)
 	}
-	if cfg.PersonalDependencyScope != "project-lock" && cfg.PersonalDependencyScope != "legacy-user" {
-		return nil, fmt.Errorf("personal_dependency_scope must be project-lock or legacy-user")
+	cfg.PersonalBuildResultReuse = strings.ToLower(strings.TrimSpace(cfg.PersonalBuildResultReuse))
+	if cfg.PersonalBuildResultReuse == "" {
+		cfg.PersonalBuildResultReuse = PersonalBuildResultReuseCompileOnly
+	}
+	if cfg.PersonalBuildResultReuse != PersonalBuildResultReuseCompileOnly && cfg.PersonalBuildResultReuse != PersonalBuildResultReuseOff {
+		return nil, fmt.Errorf("personal_build_result_reuse must be compile-only or off")
 	}
 	if cfg.PersonalPersistReservationMB <= 0 {
 		cfg.PersonalPersistReservationMB = 256
@@ -598,6 +622,30 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+func applyPersonalCacheV2EnvOverrides(cfg *Config) error {
+	if strings.TrimSpace(os.Getenv("BOBOCLOUD_PERSONAL_DEPENDENCY_SCOPE")) != "" {
+		return fmt.Errorf("BOBOCLOUD_PERSONAL_DEPENDENCY_SCOPE was removed with cache-v2")
+	}
+	if value := strings.TrimSpace(os.Getenv("BOBOCLOUD_PERSONAL_CACHE_MAX_GENERATIONS")); value != "" {
+		generations, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("BOBOCLOUD_PERSONAL_CACHE_MAX_GENERATIONS must be an integer: %w", err)
+		}
+		cfg.PersonalCacheMaxGenerations = generations
+	}
+	if value := strings.TrimSpace(os.Getenv("BOBOCLOUD_PERSONAL_BUILD_CACHE_ENABLED")); value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("BOBOCLOUD_PERSONAL_BUILD_CACHE_ENABLED must be a boolean: %w", err)
+		}
+		cfg.PersonalBuildCacheEnabled = enabled
+	}
+	if value := strings.TrimSpace(os.Getenv("BOBOCLOUD_PERSONAL_BUILD_RESULT_REUSE")); value != "" {
+		cfg.PersonalBuildResultReuse = value
+	}
+	return nil
+}
+
 // applyEnvOverrides 用环境变量覆盖配置值。
 func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("BOBOCLOUD_DATA_DIR"); v != "" {
@@ -684,9 +732,6 @@ func applyEnvOverrides(cfg *Config) {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.RunOutputRetainedBytes = n
 		}
-	}
-	if v := os.Getenv("BOBOCLOUD_PERSONAL_DEPENDENCY_SCOPE"); v != "" {
-		cfg.PersonalDependencyScope = v
 	}
 	if v := os.Getenv("BOBOCLOUD_PERSONAL_PERSIST_RESERVATION_MB"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

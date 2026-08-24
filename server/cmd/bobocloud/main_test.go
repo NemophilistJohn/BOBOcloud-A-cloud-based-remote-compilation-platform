@@ -24,6 +24,18 @@ func (d *testUserContainerDestroyer) DestroyUserContainers(string) error {
 	return d.err
 }
 
+func TestTeamCacheV2RootDoesNotReadLegacyStore(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	got := teamCacheV2Root(dataDir)
+	want := filepath.Join(dataDir, "cache-v2", "teams")
+	if got != want {
+		t.Fatalf("team cache root = %q, want %q", got, want)
+	}
+	if got == filepath.Join(dataDir, "team-cache") {
+		t.Fatal("cache-v2 team manager still targets the retired team-cache root")
+	}
+}
+
 func TestRemoveUserDataWaitsForConfirmedContainerRemoval(t *testing.T) {
 	userDir := filepath.Join(t.TempDir(), "users", "alice")
 	if err := os.MkdirAll(userDir, 0700); err != nil {

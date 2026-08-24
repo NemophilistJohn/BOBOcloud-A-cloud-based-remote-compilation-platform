@@ -46,6 +46,7 @@ type serverFeatureCapabilities struct {
 	Terminal           bool                    `json:"terminal"`
 	ProjectEnvironment bool                    `json:"projectEnvironment"`
 	PackageCenter      bool                    `json:"packageCenter"`
+	CacheV2            bool                    `json:"cacheV2"`
 	Collaboration      bool                    `json:"collaboration"`
 	LSP                serverServiceCapability `json:"lsp"`
 	DAP                serverServiceCapability `json:"dap"`
@@ -123,7 +124,8 @@ func (h *HTTPHandler) serverCapabilities() serverCapabilityDescriptor {
 	descriptor.Capabilities.Tasks = descriptor.Capabilities.Run
 	descriptor.Capabilities.Terminal = h.Terminal != nil
 	descriptor.Capabilities.ProjectEnvironment = h.DependencyViews != nil
-	descriptor.Capabilities.PackageCenter = cfg.PackageCenterEnabled && h.PackageCatalog != nil && h.PersonalCache != nil && h.PersonalCache.ScopeMode() == "project-lock" && h.EnvironmentSetup != nil
+	descriptor.Capabilities.PackageCenter = cfg.PackageCenterEnabled && h.PackageCatalog != nil && h.PersonalCache != nil && h.EnvironmentSetup != nil
+	descriptor.Capabilities.CacheV2 = h.PersonalCache != nil
 	descriptor.Capabilities.Collaboration = h.Collaboration != nil
 	descriptor.Limits.RunMaxConcurrent = cfg.DockerMaxContainers
 	descriptor.Limits.PackageOperationTimeoutSeconds = cfg.PackageOperationTimeoutSeconds

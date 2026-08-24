@@ -80,6 +80,42 @@ function cleanTerminalEnvironment(value, fallbackRuntimeId) {
   };
 }
 
+function cleanPackageIntent(value, activeSessionId) {
+  const source = value && typeof value === 'object' ? value : {};
+  if (Number(source.schema) !== 1) throw terminalError('invalid_package_intent', 'Terminal package intent schema is unsupported');
+  const intentId = cleanEnvironmentField(source.intentId || source.intent_id);
+  const sessionId = cleanEnvironmentField(source.sessionId || source.session_id);
+  const runtimeId = cleanEnvironmentField(source.runtimeId || source.runtime_id);
+  if (!intentId || !sessionId || sessionId !== String(activeSessionId || '') || !runtimeId) {
+    throw terminalError('invalid_package_intent', 'Terminal package intent identity is invalid');
+  }
+  const rawPackages = Array.isArray(source.packages) ? source.packages : [];
+  if (rawPackages.length < 1 || rawPackages.length > 64) throw terminalError('invalid_package_intent', 'Terminal package intent has invalid packages');
+  const packages = rawPackages.map((entry) => {
+    const item = entry && typeof entry === 'object' ? entry : {};
+    const name = cleanEnvironmentField(item.name);
+    const version = cleanEnvironmentField(item.version);
+    if (!name || /[\0\r\n]/.test(name)) throw terminalError('invalid_package_intent', 'Terminal package intent has an invalid package');
+    const result = { name };
+    if (version) result.version = version;
+    if (Array.isArray(item.features)) result.features = item.features.slice(0, 64).map(cleanEnvironmentField).filter(Boolean);
+    return result;
+  });
+  return {
+    schema: 1,
+    intentId,
+    sessionId,
+    runtimeId,
+    workspace: cleanWorkspace(source.workspace),
+    ecosystem: cleanEnvironmentField(source.ecosystem),
+    manager: cleanEnvironmentField(source.manager),
+    operation: source.operation === 'remove' ? 'remove' : 'install',
+    packages,
+    sourceId: cleanEnvironmentField(source.sourceId || source.source_id),
+    requiresTerminalClose: source.requiresTerminalClose === true || source.requires_terminal_close === true
+  };
+}
+
 function socketText(event) {
   const raw = event && event.data !== undefined ? event.data : event;
   if (typeof raw === 'string') return raw;
@@ -262,7 +298,7 @@ class TerminalTransport {
             closeWithError(terminalError('start_cancelled', 'Cloud terminal start was cancelled'));
             return;
           }
-          socket.send(JSON.stringify({
+          const startMessage = {
             type: 'terminal.start',
             protocol: 1,
             token: String(token || ''),
@@ -271,7 +307,9 @@ class TerminalTransport {
             setupCommands,
             cols,
             rows
-          }));
+          };
+          if (config.packageIntents === true) startMessage.packageIntents = true;
+          socket.send(JSON.stringify(startMessage));
         } catch (error) {
           closeWithError(error);
         }
@@ -319,6 +357,34 @@ class TerminalTransport {
           }
           return;
         }
+        if (message.type === 'terminal.packageIntent') {
+          if (this.state !== 'ready') return;
+          try {
+            this.emit('package-intent', Object.assign(cleanPackageIntent(message, this.sessionId), {
+              contextToken: this.contextToken && Object.assign({}, this.contextToken)
+            }));
+          } catch (error) {
+            this.emit('package-intent-rejected', {
+              schema: 1,
+              intentId: cleanEnvironmentField(message.intentId || message.intent_id),
+              sessionId: this.sessionId,
+              code: error.code || 'invalid_package_intent',
+              contextToken: this.contextToken && Object.assign({}, this.contextToken)
+            });
+          }
+          return;
+        }
+        if (message.type === 'terminal.packageIntentRejected') {
+          if (this.state !== 'ready') return;
+          this.emit('package-intent-rejected', {
+            schema: 1,
+            intentId: cleanEnvironmentField(message.intentId || message.intent_id),
+            sessionId: cleanEnvironmentField(message.sessionId || message.session_id || this.sessionId),
+            code: cleanEnvironmentField(message.code || 'package_intent_rejected'),
+            contextToken: this.contextToken && Object.assign({}, this.contextToken)
+          });
+          return;
+        }
         if (message.type === 'terminal.error') {
           const error = terminalError(message.code || 'terminal_error', message.message || message.data);
           if (this.state === 'connecting') closeWithError(error);
@@ -328,10 +394,22 @@ class TerminalTransport {
           return;
         }
         if (message.type === 'terminal.exit') {
+          const mutation = message.environmentMutation && typeof message.environmentMutation === 'object'
+            ? message.environmentMutation
+            : message;
           this._finishClosed({
             reason: String(message.reason || 'exit'),
             exitCode: Number.isInteger(message.exitCode) ? message.exitCode : null,
-            confirmed: message.cleanupConfirmed !== false
+            confirmed: message.cleanupConfirmed !== false,
+            cleanupConfirmed: message.cleanupConfirmed === true,
+            packageIntentPending: message.packageIntentPending === true || message.package_intent_pending === true,
+            packageIntentId: String(message.packageIntentId || message.package_intent_id || '').slice(0, 256),
+            dependenciesChanged: mutation.dependenciesChanged === true || mutation.dependencies_changed === true,
+            environmentChanged: mutation.environmentChanged === true || mutation.environment_changed === true,
+            cacheRevision: String(mutation.cacheRevision || mutation.cache_revision || '').slice(0, 256),
+            generation: String(mutation.generation || '').slice(0, 256),
+            dependencyDigest: String(mutation.dependencyDigest || mutation.dependency_digest || '').slice(0, 256),
+            cacheEntryId: String(mutation.cacheEntryId || mutation.cache_entry_id || '').slice(0, 256)
           });
         }
       };
@@ -425,6 +503,22 @@ class TerminalTransport {
     return { accepted: true };
   }
 
+  decidePackageIntent(intentId, accepted, code) {
+    if (this.state !== 'ready') throw terminalError('terminal_offline', 'Cloud terminal is offline');
+    const id = cleanEnvironmentField(intentId);
+    const reason = cleanEnvironmentField(code);
+    if (!id || !/^[A-Za-z0-9_-]+$/.test(id)) {
+      throw terminalError('invalid_package_intent', 'Terminal package intent identity is invalid');
+    }
+    this._sendControl({
+      type: 'terminal.packageIntentDecision',
+      intentId: id,
+      accepted: accepted === true,
+      code: reason
+    });
+    return { accepted: true, intentId: id };
+  }
+
   async stop(reason, options = {}) {
     if (this.state === 'closing' && this.closePromise) return this.closePromise;
     const socket = this.socket;
@@ -473,6 +567,7 @@ module.exports = {
   TerminalTransport,
   normalizeTerminalUrl,
   cleanWorkspace,
+  cleanPackageIntent,
   boundedDimension,
   cleanSetupCommands,
   MAX_STDIN_CHARS,

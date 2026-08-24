@@ -23,6 +23,9 @@ test-results/
 server/release/
 coverage/
 .cache/
+.gocache/
+.gocache-*/
+.tmp-gocache-*/
 __pycache__/
 *.py[cod]
 

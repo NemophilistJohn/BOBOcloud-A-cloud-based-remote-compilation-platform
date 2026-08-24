@@ -25,8 +25,8 @@ import (
 // ============================================================
 
 // hotPoolKey 以「镜像 + 用户」为键，使热池按用户隔离。
-// 每个用户的热池容器在创建时即挂载各自的 /persist 持久化卷，
-// 保证 L1 命中时与 L3/L4 新建容器具备一致的持久化能力。
+// 每个用户的热池容器在创建时即挂载各自的 cache-v2 工具下载缓存，
+// 保证 L1 命中时与 L3/L4 新建容器具备一致的缓存能力。
 type hotPoolKey struct {
 	image  string
 	userID string
@@ -87,14 +87,13 @@ type Pool struct {
 	userDataDir     string // {DataDir}/users/{userID} 根路径
 
 	// 安全加固（G1）
-	hardening               bool // 丢弃 capabilities / 禁提权 / 限制进程数 / init
-	readOnlyRootfs          bool // 只读根文件系统（配合 tmpfs）
-	metrics                 *metrics.Registry
-	outputRetainedBytes     int
-	personalDependencyScope string
-	resetStrategy           string
-	runDockerCommand        func(context.Context, ...string) ([]byte, error)
-	waitDockerRetry         func(time.Duration)
+	hardening           bool // 丢弃 capabilities / 禁提权 / 限制进程数 / init
+	readOnlyRootfs      bool // 只读根文件系统（配合 tmpfs）
+	metrics             *metrics.Registry
+	outputRetainedBytes int
+	resetStrategy       string
+	runDockerCommand    func(context.Context, ...string) ([]byte, error)
+	waitDockerRetry     func(time.Duration)
 }
 
 // UserQuotaProvider 用于查询用户容器配额
@@ -161,10 +160,6 @@ func (dp *Pool) SetOutputRetentionLimit(limit int) {
 	if limit > 0 {
 		dp.outputRetainedBytes = limit
 	}
-}
-
-func (dp *Pool) SetPersonalDependencyScope(scope string) {
-	dp.personalDependencyScope = scope
 }
 
 const (
@@ -860,6 +855,23 @@ func (dp *Pool) acquireViaQueue(ctx context.Context, userID, image, cacheKey str
 // acquireInternal 实际获取容器的内部实现。
 // Phase 3: L1=热池 → L2=空闲复用池 → L3=本地镜像创建 → L4=拉取镜像创建
 func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, output session.OutputWriter, cacheKey string, contextVolumes, contextEnv map[string]string) (string, error) {
+	// Build an owned, non-nil option set before reserving global capacity. Cache
+	// v2 deliberately has no legacy user defaults, while dependency/toolchain
+	// leases still supply overlays. Merging those overlays into the nil defaults
+	// used to panic after activeCount had already been incremented.
+	extraVolumes := mergeContainerOptions(dp.buildUserVolumes(userID, image), contextVolumes)
+	extraEnv := mergeContainerOptions(dp.buildPersistEnvForUser(userID, image), contextEnv)
+
+	// Once capacity is reserved, every return and panic must either transfer the
+	// reservation to a tracked container or release it. net/http recovers handler
+	// panics, so omitting this guard would permanently reduce usable capacity.
+	activeReservationOwned := false
+	defer func() {
+		if activeReservationOwned {
+			dp.decActive()
+		}
+	}()
+
 	dp.mu.Lock()
 	if dp.closed {
 		dp.mu.Unlock()
@@ -969,11 +981,13 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 			return "", fmt.Errorf("maximum container count (%d) reached", dp.maxTotal)
 		}
 		dp.activeCount++
+		activeReservationOwned = true
 		dp.mu.Unlock()
 		slog.Info("Evicted pooled container to free slot for new container",
 			"evicted_id", evictedID[:12], "from_user", evictedUser, "for_user", userID, "image", image)
 	} else {
 		dp.activeCount++
+		activeReservationOwned = true
 		dp.mu.Unlock()
 	}
 
@@ -982,7 +996,6 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 			output.WriteStatus("docker", fmt.Sprintf("Pulling image %s...", image))
 		}
 		if err := dp.pullImage(ctx, image, output); err != nil {
-			dp.decActive()
 			return "", fmt.Errorf("failed to pull image %s: %w", image, err)
 		}
 		dp.markImageLocal(image)
@@ -991,30 +1004,19 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 		}
 	}
 
-	// 构建用户持久化卷挂载 + 环境变量
-	extraVolumes := dp.buildUserVolumes(userID, image)
-	extraEnv := dp.buildPersistEnvForUser(userID, image)
-	for hostPath, containerPath := range contextVolumes {
-		extraVolumes[hostPath] = containerPath
-	}
-	for key, value := range contextEnv {
-		extraEnv[key] = value
-	}
-
 	createStarted := time.Now()
 	containerID, err := dp.createContainer(ctx, image, extraVolumes, extraEnv)
 	if dp.metrics != nil {
 		dp.metrics.Observe("container.create", time.Since(createStarted))
 	}
 	if err != nil {
-		if containerID == "" {
-			dp.decActive()
-		} else {
+		if containerID != "" {
 			dp.mu.Lock()
 			dp.containerUser[containerID] = userID
 			dp.imageByContainerID[containerID] = image
 			dp.recordContainerContextLocked(containerID, cacheKey)
 			dp.mu.Unlock()
+			activeReservationOwned = false
 			dp.DiscardForUser(containerID, userID)
 		}
 		return "", fmt.Errorf("failed to create container: %w", err)
@@ -1027,6 +1029,7 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 		dp.recordContainerContextLocked(containerID, cacheKey)
 		closed := dp.closed
 		dp.mu.Unlock()
+		activeReservationOwned = false
 		dp.DiscardForUser(containerID, userID)
 		if closed {
 			return "", fmt.Errorf("docker pool is shutting down")
@@ -1038,10 +1041,25 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 	dp.recordContainerContextLocked(containerID, cacheKey)
 	dp.mu.Unlock()
 	dp.incUserActive(userID)
+	activeReservationOwned = false
 	if output != nil {
 		output.WriteStatus("docker", fmt.Sprintf("Container created: %s", containerID[:12]))
 	}
 	return containerID, nil
+}
+
+// mergeContainerOptions returns an owned map whose overlay values take
+// precedence. It intentionally returns a writable non-nil map even when both
+// inputs are empty because cache-v2 no longer supplies legacy defaults.
+func mergeContainerOptions(defaults, overlay map[string]string) map[string]string {
+	merged := make(map[string]string, len(defaults)+len(overlay))
+	for key, value := range defaults {
+		merged[key] = value
+	}
+	for key, value := range overlay {
+		merged[key] = value
+	}
+	return merged
 }
 
 // Release 销毁容器（Phase 1 兼容接口）。
@@ -1569,7 +1587,7 @@ func (dp *Pool) PreWarm(image, userID string) {
 // PreWarmAllForUsers 在后台为指定用户列表串行预热所有镜像。
 // 串行而非并发：让每个镜像拿满带宽，总时间通常更短；且用户触发 runCode 时
 // 在线拉取只需与"当前这一个"预热镜像竞争带宽，而非全部。
-// 按用户隔离预热：每个用户的热池容器挂载各自的 /persist 持久化卷。
+// 按用户隔离预热：每个用户的热池容器挂载各自的 cache-v2 下载缓存。
 func (dp *Pool) PreWarmAllForUsers(images []string, userIDs []string) {
 	go func() {
 		slog.Info("Pre-warming all images for users (sequential)", "images", len(images), "users", len(userIDs))
@@ -1581,85 +1599,11 @@ func (dp *Pool) PreWarmAllForUsers(images []string, userIDs []string) {
 	}()
 }
 
-var projectLockSharedCacheDirectories = []string{"pip-cache", "go-cache", "npm-cache"}
-
-// buildUserVolumes builds the persistent mounts shared by one user. In
-// project-lock mode the managed project-dependencies tree is deliberately not
-// reachable through /persist; only download/build caches are shared, while the
-// exact dependency namespace is mounted separately as /project-deps.
+// buildUserVolumes intentionally returns no implicit user cache mounts.
+// Dependencies, tool downloads, and compiler state are all attached by
+// cache-v2 leases with trusted runtime/source identities.
 func (dp *Pool) buildUserVolumes(userID, image string) map[string]string {
-	if userID == "" || dp.userDataDir == "" {
-		return nil
-	}
-	persistHost := filepath.Join(dp.userDataDir, userID, "persist")
-	if dp.personalDependencyScope != "project-lock" {
-		return map[string]string{persistHost: "/persist"}
-	}
-	volumes := make(map[string]string, len(projectLockSharedCacheDirectories))
-	for _, directory := range projectLockSharedCacheDirectories {
-		volumes[filepath.Join(persistHost, directory)] = "/persist/" + directory
-	}
-	return volumes
-}
-
-const (
-	pythonPersistPackagesRoot = "/persist/pip-packages"
-	pythonPersistRuntimesRoot = pythonPersistPackagesRoot + "/runtimes"
-)
-
-// pythonRuntimePackageTarget derives a stable package namespace from supported
-// Python image tags. Only decimal major/minor components are accepted, so an
-// arbitrary image value can never affect a container path or shell command.
-func pythonRuntimePackageTarget(image string) string {
-	name := strings.ToLower(strings.TrimSpace(image))
-	if slash := strings.LastIndexByte(name, '/'); slash >= 0 {
-		name = name[slash+1:]
-	}
-	if !strings.HasPrefix(name, "python:") {
-		return ""
-	}
-
-	tag := strings.TrimPrefix(name, "python:")
-	if dash := strings.IndexByte(tag, '-'); dash >= 0 {
-		tag = tag[:dash]
-	}
-	parts := strings.Split(tag, ".")
-	if len(parts) < 2 || !decimalComponent(parts[0]) || !decimalComponent(parts[1]) {
-		return ""
-	}
-	return pythonPersistRuntimesRoot + "/python-" + parts[0] + "." + parts[1]
-}
-
-func decimalComponent(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, char := range value {
-		if char < '0' || char > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-// pythonExecutionPath picks a scoped package directory if it already exists.
-// A legacy flat tree remains compatible only until that runtime has a scoped
-// directory; it is never appended to a scoped PYTHONPATH.
-func (dp *Pool) pythonExecutionPath(userID, target string) string {
-	if target == "" || userID == "" || dp.userDataDir == "" {
-		return target
-	}
-
-	persistRoot := filepath.Join(dp.userDataDir, userID, "persist")
-	runtimeDir := filepath.Join(persistRoot, "pip-packages", "runtimes", filepath.Base(target))
-	if info, err := os.Stat(runtimeDir); err == nil && info.IsDir() {
-		return target
-	}
-	legacyDir := filepath.Join(persistRoot, "pip-packages")
-	if info, err := os.Stat(legacyDir); err == nil && info.IsDir() {
-		return pythonPersistPackagesRoot
-	}
-	return target
+	return nil
 }
 
 // memoryLimitForImage returns the Docker memory limit for a given image,
@@ -1686,45 +1630,10 @@ func (dp *Pool) buildPersistEnv(image string) map[string]string {
 	return dp.buildPersistEnvForUser("", image)
 }
 
-// buildPersistEnvForUser constructs package-manager environment variables for
-// one container. Python installations go into a major/minor runtime namespace.
+// buildPersistEnvForUser constructs download-cache variables only. Exact
+// dependency destinations and compiler caches are supplied by scoped leases.
 func (dp *Pool) buildPersistEnvForUser(userID, image string) map[string]string {
-	if dp.personalDependencyScope == "project-lock" {
-		return map[string]string{
-			"PIP_CACHE_DIR":    "/persist/pip-cache",
-			"GOCACHE":          "/persist/go-cache",
-			"NPM_CONFIG_CACHE": "/persist/npm-cache",
-		}
-	}
-	env := map[string]string{
-		// Python: cache plus legacy defaults for non-Python images.
-		"PIP_CACHE_DIR": "/persist/pip-cache",
-		"PIP_TARGET":    pythonPersistPackagesRoot,
-		"PYTHONPATH":    pythonPersistPackagesRoot + ":" + os.Getenv("PYTHONPATH"),
-		// Go: 模块缓存 + 构建缓存
-		"GOPATH":     "/persist/go",
-		"GOMODCACHE": "/persist/go/pkg/mod",
-		"GOCACHE":    "/persist/go-cache",
-		// Rust: cargo 家目录
-		"CARGO_HOME": "/persist/cargo",
-		// Java: Maven 本地仓库
-		"MAVEN_OPTS":       "-Dmaven.repo.local=/persist/maven",
-		"GRADLE_USER_HOME": "/persist/gradle",
-		// Node.js: npm 全局安装前缀 + 下载缓存 + 模块搜索路径
-		"NPM_CONFIG_PREFIX": "/persist/npm-global",
-		"NPM_CONFIG_CACHE":  "/persist/npm-cache",
-		"NODE_PATH":         "/persist/npm-global/lib/node_modules",
-	}
-	if target := pythonRuntimePackageTarget(image); target != "" {
-		env["PIP_TARGET"] = target
-		// Python containers must not inherit a host PYTHONPATH compiled for a
-		// different runtime image or ABI.
-		env["PYTHONPATH"] = dp.pythonExecutionPath(userID, target)
-	} else if env["PYTHONPATH"] == ":" || env["PYTHONPATH"] == pythonPersistPackagesRoot+":" {
-		env["PYTHONPATH"] = pythonPersistPackagesRoot
-	}
-
-	return env
+	return map[string]string{}
 }
 
 // ---------- 用户配额追踪 ----------

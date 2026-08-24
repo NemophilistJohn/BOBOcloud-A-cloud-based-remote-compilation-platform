@@ -41,6 +41,8 @@ import {
   var presentationGeneration = 0;
   var terminalUiLoadPromise = null;
   var capabilitySubscription = null;
+  var packageIntentInFlight = null;
+  var managedRestartCancellationEpoch = 0;
 
   function t(key, params) {
     return BOBO.i18n && typeof BOBO.i18n.t === 'function' ? BOBO.i18n.t(key, params) : key;
@@ -163,6 +165,12 @@ import {
       context.dataset.state = 'loading';
       bindContextText(label, 'Closing cloud terminal');
       setContextDetail('Runtime: {runtime}', { runtime: runtime });
+      return;
+    }
+    if (state === 'packages') {
+      context.dataset.state = 'loading';
+      bindContextText(label, 'Updating project libraries');
+      setContextDetail('The terminal will resume automatically after the managed environment is ready.');
       return;
     }
     if (state === 'error') {
@@ -297,6 +305,7 @@ import {
       runtimeId: currentRuntime(),
       workspace: workspace,
       setupCommands: Array.isArray(S.setupCommands) ? S.setupCommands.slice() : [],
+      packageIntents: true,
       context: {
         workspaceRoot: rootPath,
         workspaceIdentity: S.workspaceIdentity == null ? null : S.workspaceIdentity,
@@ -348,58 +357,75 @@ import {
     renderTerminalContext('idle');
   }
 
-  function refreshDependenciesAfterConfirmedClose(closedSessionId) {
-    if (!BOBO.lsp) return;
+  function refreshDependenciesAfterConfirmedClose(closedSessionId, mutation) {
+    mutation = mutation || {};
+    var dependenciesChanged = mutation.dependenciesChanged === true;
+    var environmentChanged = mutation.environmentChanged === true;
+    if (!dependenciesChanged && !environmentChanged) return;
     var refreshSession = String(closedSessionId || '');
     if (refreshSession && refreshSession === lastDependencyRefreshSession) return;
     if (refreshSession) lastDependencyRefreshSession = refreshSession;
-    var fallback = function() {
-      if (typeof BOBO.lsp.dependenciesChanged !== 'function') return;
-      try {
-        Promise.resolve(BOBO.lsp.dependenciesChanged()).catch(function() {});
-      } catch (_) {}
+    var detail = {
+      source: 'terminal',
+      reason: 'terminal-publish',
+      sessionId: refreshSession,
+      dependenciesChanged: dependenciesChanged,
+      environmentChanged: environmentChanged,
+      cacheRevision: String(mutation.cacheRevision || ''),
+      generation: String(mutation.generation || ''),
+      dependencyDigest: String(mutation.dependencyDigest || ''),
+      cacheEntryId: String(mutation.cacheEntryId || '')
     };
-    if (typeof BOBO.lsp.restartAnalysis !== 'function') {
-      fallback();
-      return;
+    if (BOBO.cacheStore && typeof BOBO.cacheStore.invalidate === 'function') {
+      BOBO.cacheStore.invalidate(detail);
+    } else if (typeof global.CustomEvent === 'function') {
+      global.dispatchEvent(new global.CustomEvent('bobo:cache-changed', { detail: detail }));
     }
-    try {
-      Promise.resolve(BOBO.lsp.restartAnalysis()).catch(fallback);
-    } catch (_) {
-      fallback();
+    if (typeof global.CustomEvent === 'function') {
+      global.dispatchEvent(new global.CustomEvent('bobo:environment-changed', { detail: detail }));
+    }
+    if (dependenciesChanged && BOBO.lsp && typeof BOBO.lsp.dependenciesChanged === 'function') {
+      try { Promise.resolve(BOBO.lsp.dependenciesChanged(detail)).catch(function() {}); } catch (_) {}
     }
   }
 
-  async function closeTerminal(reason) {
+  async function stopTerminal(reason) {
+    reason = String(reason || 'close');
+    if (reason !== 'package-intent' && reason !== 'replace') managedRestartCancellationEpoch += 1;
     var closingSession = sessionId;
     var wasStarting = !!startPromise;
     sessionGeneration += 1;
     if ((!closingSession && !wasStarting) || !global.api || typeof global.api.terminalStop !== 'function') {
       resetSessionState('');
-      return true;
+      return { state: 'idle', confirmed: true };
     }
     sessionPhase = 'closing';
     sessionCapabilities = null;
     renderTerminalContext('closing');
     clearQueuedInput();
     try {
-      var result = await global.api.terminalStop(String(reason || 'close'));
+      var result = await global.api.terminalStop(reason);
       var confirmed = !result || result.confirmed !== false;
       var closedMessage = confirmed
         ? t('Cloud terminal session closed.')
         : t('Cloud terminal closed locally, but server cleanup was not confirmed.');
       resetSessionState(closedMessage);
-      if (confirmed) refreshDependenciesAfterConfirmedClose(closingSession);
+      if (confirmed) refreshDependenciesAfterConfirmedClose(closingSession, result);
       else {
         renderTerminalContext('error', { message: closedMessage });
         if (BOBO.toast && typeof BOBO.toast.error === 'function') BOBO.toast.error(closedMessage);
       }
-      return confirmed;
+      return Object.assign({ state: 'closed', confirmed: confirmed }, result || {});
     } catch (error) {
       resetSessionState('');
       renderTerminalContext('error', { message: error && error.message ? error.message : t('Unknown error') });
-      return false;
+      return { state: 'closed', confirmed: false, reason: 'stop_failed', error: error };
     }
+  }
+
+  async function closeTerminal(reason) {
+    var result = await stopTerminal(reason);
+    return result.confirmed !== false;
   }
 
   async function prepareSnapshot() {
@@ -431,6 +457,11 @@ import {
 
   async function startTerminal() {
     if (!terminal) return false;
+    if (packageIntentInFlight) {
+      setAnnouncement(t('Wait for the project library update to finish.'));
+      renderTerminalContext('packages');
+      return false;
+    }
     if (!terminalAvailability().available) {
       showUnavailable(terminalUnavailableText());
       return false;
@@ -624,6 +655,10 @@ import {
   function sendInput(data) {
     var text = String(data == null ? '' : data);
     if (!text) return;
+    if (packageIntentInFlight) {
+      setAnnouncement(t('Wait for the project library update to finish.'));
+      return;
+    }
     var byteLength = utf8ByteLength(text);
     if (byteLength > MAX_PENDING_TERMINAL_INPUT_BYTES ||
         queuedInputBytes + byteLength > MAX_PENDING_TERMINAL_INPUT_BYTES) {
@@ -715,8 +750,187 @@ import {
       if (cleanupPending && !wasClosing) {
         if (BOBO.toast && typeof BOBO.toast.error === 'function') BOBO.toast.error(closeAnnouncement);
       }
-      if (exitedSession && status.confirmed === true) refreshDependenciesAfterConfirmedClose(exitedSession);
+      if (exitedSession && status.confirmed === true) refreshDependenciesAfterConfirmedClose(exitedSession, status);
     }
+  }
+
+  function terminalIntentChanges(intent) {
+    return (Array.isArray(intent && intent.packages) ? intent.packages : []).map(function(item) {
+      return {
+        operation: intent.operation === 'remove' ? 'remove' : 'install',
+        name: String(item && item.name || ''),
+        version: String(item && item.version || ''),
+        features: Array.isArray(item && item.features) ? item.features.slice() : [],
+        scope: 'runtime'
+      };
+    });
+  }
+
+  function intentMatchesRequest(intent, request) {
+    if (!intent || !request || String(intent.runtimeId || '') !== String(request.runtimeId || '')) return false;
+    var received = intent.workspace && typeof intent.workspace === 'object' ? intent.workspace : {};
+    var expected = request.workspace && typeof request.workspace === 'object' ? request.workspace : {};
+    if (String(received.kind || '') !== String(expected.kind || '')) return false;
+    if (expected.kind === 'team') {
+      return String(received.teamId || '') === String(expected.teamId || '') &&
+        String(received.projectId || '') === String(expected.projectId || '') &&
+        String(received.branch || '') === String(expected.branch || '');
+    }
+    var receivedKey = String(received.folderKey || '');
+    var expectedKey = String(expected.folderKey || '');
+    if (receivedKey && expectedKey) return receivedKey === expectedKey;
+    return Boolean(received.folderName && expected.folderName) &&
+      String(received.folderName) === String(expected.folderName);
+  }
+
+  function decideTerminalPackageIntent(event, accepted, code) {
+    var intentId = String(event && event.intentId || '');
+    var eventSession = eventSessionIdentifier(event);
+    if (!intentId || !eventSession || eventSession !== sessionId || !global.api ||
+        typeof global.api.terminalPackageIntentDecision !== 'function') return Promise.resolve(false);
+    return global.api.terminalPackageIntentDecision({
+      intentId: intentId,
+      accepted: accepted === true,
+      code: String(code || '')
+    }).then(function() { return true; }).catch(function() { return false; });
+  }
+
+  function terminalPackageIntentRejectionMessage(code) {
+    switch (String(code || '')) {
+    case 'unsupported_option':
+      return t('This pip option cannot be managed safely in the project environment.');
+    case 'unsupported_requirement':
+      return t('This package requirement cannot be managed safely. Use a package name with an optional exact version.');
+    case 'unknown_source':
+      return t('This package source is not configured on the server.');
+    case 'unsupported_invocation':
+    case 'unsupported_command':
+      return t('This pip command is not supported by managed project environments.');
+    case 'package_intent_timeout':
+      return t('The terminal package request expired before it could be accepted. Run the command again.');
+    case 'package_intent_stale':
+      return t('This terminal package request is no longer active. Run the command again.');
+    case 'package_intent_pending':
+      return t('Wait for the project library update to finish.');
+    default:
+      return t('This terminal library command cannot be managed automatically. Use Package Center instead.');
+    }
+  }
+
+  function showTerminalPackageIntentRejection(code) {
+    var message = terminalPackageIntentRejectionMessage(code);
+    setAnnouncement(message);
+    if (BOBO.toast && typeof BOBO.toast.warning === 'function') BOBO.toast.warning(message);
+    else if (BOBO.toast && typeof BOBO.toast.info === 'function') BOBO.toast.info(message);
+  }
+
+  async function processTerminalPackageIntent(event) {
+    if (!event) return false;
+    var intentId = String(event.intentId || '');
+    var intentSessionId = eventSessionIdentifier(event);
+    if (packageIntentInFlight) {
+      if (intentId && packageIntentInFlight.intentId !== intentId) {
+        await decideTerminalPackageIntent(event, false, 'client_busy');
+      }
+      return false;
+    }
+    var rejectionCode = '';
+    if (!contextMatches(event)) rejectionCode = 'client_context_mismatch';
+    else if (!intentId || !intentSessionId || intentSessionId !== sessionId) rejectionCode = 'client_session_mismatch';
+    else if (event.requiresTerminalClose !== true || !sessionCapabilities || sessionCapabilities.packageIntents !== true) rejectionCode = 'client_capability_mismatch';
+    var request = currentRequest();
+    if (!rejectionCode && !intentMatchesRequest(event, request)) rejectionCode = 'client_workspace_mismatch';
+    if (rejectionCode) {
+      await decideTerminalPackageIntent(event, false, rejectionCode);
+      showTerminalPackageIntentRejection(rejectionCode);
+      return false;
+    }
+
+    var operation = {
+      intentId: intentId,
+      sessionId: intentSessionId,
+      requestKey: requestKey(request),
+      request: request,
+      restartCancellationEpoch: managedRestartCancellationEpoch
+    };
+    packageIntentInFlight = operation;
+    clearQueuedInput();
+
+    var cleanupConfirmed = false;
+    var restartAllowed = false;
+    var packagesApplied = false;
+    var decisionSent = false;
+    try {
+      decisionSent = await decideTerminalPackageIntent(event, true, 'managed');
+      if (!decisionSent) throw new Error(t('The terminal could not confirm cleanup for this library command.'));
+      sessionPhase = 'packages';
+      setAnnouncement(t('Moving the terminal command into the managed project environment...'));
+      renderTerminalContext('packages');
+      var closeResult = await stopTerminal('package-intent');
+      cleanupConfirmed = closeResult && closeResult.cleanupConfirmed === true &&
+        closeResult.packageIntentPending === true && String(closeResult.packageIntentId || '') === intentId;
+      if (!cleanupConfirmed) throw new Error(t('The terminal could not confirm cleanup for this library command.'));
+      if (requestKey(currentRequest()) !== operation.requestKey) throw new Error(t('The project changed before dependency files were updated.'));
+      if (!BOBO.packageCenter || typeof BOBO.packageCenter.applyManagedPackageChanges !== 'function') {
+        throw new Error(t('Library management is unavailable in this client build.'));
+      }
+
+      restartAllowed = true;
+      sessionPhase = 'packages';
+      setAnnouncement(t('Updating project libraries...'));
+      renderTerminalContext('packages');
+      var applied = await BOBO.packageCenter.applyManagedPackageChanges(terminalIntentChanges(event), {
+        source: 'terminal',
+        sourceId: String(event.sourceId || ''),
+        runtimeId: String(event.runtimeId || ''),
+        removalConfirmed: true,
+        discardOnFailure: true
+      });
+      var packageState = BOBO.packageCenter.getState ? BOBO.packageCenter.getState() : {};
+      if (!applied || packageState.recovery) {
+        restartAllowed = !packageState.recovery;
+        throw new Error(packageState.recovery
+          ? t('Complete dependency file recovery before reopening the terminal.')
+          : t('Library update failed.'));
+      }
+      packagesApplied = true;
+      setAnnouncement(t('Project libraries updated. Restarting the terminal...'));
+      return true;
+    } catch (error) {
+      if (!cleanupConfirmed && decisionSent && isSessionReady()) {
+        await decideTerminalPackageIntent(event, false, 'client_apply_cancelled');
+      }
+      var message = error && error.message ? error.message : t('Library update failed.');
+      setAnnouncement(message);
+      if (BOBO.toast && typeof BOBO.toast.error === 'function') BOBO.toast.error(message);
+      if (!cleanupConfirmed) renderTerminalContext('error', { message: message });
+      return false;
+    } finally {
+      if (packageIntentInFlight === operation) packageIntentInFlight = null;
+      if (restartAllowed && operation.restartCancellationEpoch === managedRestartCancellationEpoch &&
+          requestKey(currentRequest()) === operation.requestKey) {
+        await startTerminal();
+      } else if (packagesApplied) {
+        setAnnouncement(t('Project libraries updated'));
+        renderTerminalContext('idle');
+      }
+    }
+  }
+
+  function handleTerminalPackageIntent(event) {
+    void processTerminalPackageIntent(event);
+  }
+
+  function handleTerminalPackageIntentRejected(event) {
+    if (!event || !contextMatches(event)) return;
+    var eventSession = eventSessionIdentifier(event);
+    if (eventSession && sessionId && eventSession !== sessionId) return;
+    var code = String(event.code || '');
+    if ((code === 'package_intent_pending' || code === 'invalid_package_intent') &&
+        event.intentId && !packageIntentInFlight) {
+      void decideTerminalPackageIntent(event, false, code === 'package_intent_pending' ? 'client_recovered_pending' : 'client_invalid_intent');
+    }
+    showTerminalPackageIntentRejection(code);
   }
 
   async function confirmMultilinePaste(text) {
@@ -811,9 +1025,17 @@ import {
       if (global.api && typeof global.api.onTerminalOutput === 'function' && typeof global.api.onTerminalStatus === 'function') {
         var disposeOutput = global.api.onTerminalOutput(handleTerminalOutput);
         var disposeStatus = global.api.onTerminalStatus(handleTerminalStatus);
+        var disposePackageIntent = typeof global.api.onTerminalPackageIntent === 'function'
+          ? global.api.onTerminalPackageIntent(handleTerminalPackageIntent)
+          : null;
+        var disposePackageIntentRejected = typeof global.api.onTerminalPackageIntentRejected === 'function'
+          ? global.api.onTerminalPackageIntentRejected(handleTerminalPackageIntentRejected)
+          : null;
         eventDispose = function() {
           if (typeof disposeOutput === 'function') disposeOutput();
           if (typeof disposeStatus === 'function') disposeStatus();
+          if (typeof disposePackageIntent === 'function') disposePackageIntent();
+          if (typeof disposePackageIntentRejected === 'function') disposePackageIntentRejected();
         };
       }
       deferFit();
@@ -887,6 +1109,7 @@ import {
         cols: terminal ? Number(terminal.cols || 0) : 0,
         rows: terminal ? Number(terminal.rows || 0) : 0,
         generation: sessionGeneration,
+        packageIntentId: packageIntentInFlight && packageIntentInFlight.intentId || '',
         connected: isSessionReady()
       };
     }

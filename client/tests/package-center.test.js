@@ -25,6 +25,11 @@ const {
   mergeInstalledState,
   upsertChange,
   removeChange,
+  normalizeManagedPackageChanges,
+  exactDeclaredPackageVersion,
+  managedPackageDeclarations,
+  inventoryBinding,
+  packageContextMatchesRequest,
   localizedPackageError,
   applyServerPlan,
   captureOperationContext,
@@ -35,7 +40,10 @@ const {
   updateOpenBuffers,
   collectEditorConflicts,
   refreshConfiguredLanguageService,
+  packageQueryTimeoutMs,
   packageApplyTimeoutMs,
+  PACKAGE_QUERY_TIMEOUT_MS,
+  PACKAGE_QUERY_GRACE_MS,
   PACKAGE_APPLY_GRACE_MS,
   PACKAGE_APPLY_RESPONSE_GRACE_MS,
   PACKAGE_PLAN_TIMEOUT_MS
@@ -46,6 +54,7 @@ test('package IPC errors use stable localized messages instead of raw main-proce
   let locale = 'zh-CN';
   const translations = {
     'The library plan contains an invalid dependency file change.': '本地化：计划无效',
+    'The selected library change conflicts with the project dependency file.': '本地化：依赖文件冲突',
     'Package transaction id is required': '本地化：缺少事务 ID',
     'The project library cache quota is full.': '本地化：缓存配额已满',
     'The library request failed.': '本地化：请求失败',
@@ -63,6 +72,10 @@ test('package IPC errors use stable localized messages instead of raw main-proce
     assert.equal(
       localizedPackageError({ success: false, errorCode: 'package_storage_quota_exceeded', error: 'raw server wording' }, 'Library update failed.'),
       '本地化：缓存配额已满'
+    );
+    assert.equal(
+      localizedPackageError({ success: false, errorCode: 'package_manifest_change_invalid', error: 'raw server wording' }, 'Library update failed.'),
+      '本地化：依赖文件冲突'
     );
     assert.equal(
       localizedPackageError({ success: false, error: 'dynamic English server detail' }, 'The library request failed.'),
@@ -91,6 +104,7 @@ test('package IPC errors use stable localized messages instead of raw main-proce
 test('package center honors the server planning capability and source defaults', () => {
   const context = normalizeContext({
     defaultSource: 'pypi-tuna',
+    catalogTimeoutSeconds: 12,
     searchMode: 'exact',
     sources: [
       { id: 'pypi-official', name: 'PyPI', kind: 'official' },
@@ -104,11 +118,18 @@ test('package center honors the server planning capability and source defaults',
   assert.equal(context.reason, 'Library management is unavailable for this project.');
   assert.equal(context.selectedSourceId, 'pypi-tuna');
   assert.equal(context.searchMode, 'exact');
+  assert.equal(context.catalogTimeoutSeconds, 12);
   assert.equal(context.inventoryExact, false, 'ready but inexact inventory must remain read-only');
   assert.equal(context.operationTimeoutSeconds, 600);
 });
 
-test('installed view includes managed declarations missing from the project cache', () => {
+test('catalog requests follow the server deadline with transport grace', () => {
+  assert.equal(packageQueryTimeoutMs(), PACKAGE_QUERY_TIMEOUT_MS);
+  assert.equal(packageQueryTimeoutMs(5), PACKAGE_QUERY_TIMEOUT_MS);
+  assert.equal(packageQueryTimeoutMs(12), 12000 + PACKAGE_QUERY_GRACE_MS);
+});
+
+test('installed view never promotes a manifest declaration into installed inventory', () => {
   const normalized = normalizeContext({
     manifests: [
       { path: 'requirements.txt', kind: 'requirements', language: 'python' },
@@ -124,19 +145,26 @@ test('installed view includes managed declarations missing from the project cach
       missing: [{ name: 'numpy', constraint: '==2.3.1', source: 'requirements.txt' }, { name: 'cv2', source: '.bobocloud/source-imports.txt' }],
       unknown: []
     },
-    inventory: { exact: true }
+    inventory: {
+      exact: true,
+      generation: 'generation-current',
+      dependencyDigest: 'digest-current',
+      cacheEntryId: 'cache-entry-current'
+    }
   });
-  assert.deepEqual(normalized.installed.map(item => item.name), ['requests', 'numpy']);
-  const missing = normalized.installed[1];
-  assert.equal(missing.version, '2.3.1');
-  assert.equal(missing.direct, true);
-  assert.equal(missing.inventoryPresent, false);
-  assert.equal(missing.inventoryState, 'missing');
+  assert.deepEqual(normalized.installed.map(item => item.name), ['requests']);
+  assert.equal(normalized.installed[0].version, '2.31.0');
+  assert.equal(normalized.inventoryGeneration, 'generation-current');
+  assert.equal(normalized.inventoryDependencyDigest, 'digest-current');
+  assert.equal(normalized.inventoryCacheEntryId, 'cache-entry-current');
+  assert.deepEqual(normalized.missing.map(item => item.name), ['numpy', 'cv2']);
 
-  const catalog = mergeInstalledState({ name: 'numpy', latestVersion: '2.3.1' }, normalized.installed);
-  assert.equal(catalog.installedVersion, '2.3.1');
+  const catalog = mergeInstalledState({ name: 'numpy', latestVersion: '2.3.1', installedVersion: '9.9.9', direct: true }, normalized.installed);
+  assert.equal(catalog.installedVersion, '');
+  assert.equal(catalog.direct, false);
   assert.equal(catalog.projectCached, false);
-  assert.equal(catalog.inventoryState, 'missing');
+  assert.equal(catalog.inventoryPresent, false);
+  assert.equal(catalog.inventoryState, '');
 });
 
 test('installed view preserves a real but declaration-mismatched version', () => {
@@ -149,12 +177,60 @@ test('installed view preserves a real but declaration-mismatched version', () =>
       missing: [{ name: 'demo.pkg', constraint: '==2.0.0', source: 'requirements.txt' }],
       unknown: []
     },
-    inventory: { exact: true }
+    inventory: {
+      exact: true,
+      generation: 'generation-mismatch',
+      dependencyDigest: 'digest-mismatch',
+      cacheId: 'cache-entry-mismatch'
+    }
   });
   assert.equal(normalized.installed.length, 1, 'PEP 503 equivalent names must merge');
   assert.equal(normalized.installed[0].version, '1.0.0');
   assert.equal(normalized.installed[0].inventoryPresent, true);
   assert.equal(normalized.installed[0].inventoryState, 'mismatch');
+  assert.equal(normalized.missing.length, 0, 'an observed installed package must not also appear as a missing suggestion');
+});
+
+test('installed view rejects exact-looking inventory without current cache binding', () => {
+  const normalized = normalizeContext({
+    packages: {
+      installed: [{ name: 'numpy', version: '2.3.1', relationship: 'direct' }],
+      missing: [],
+      unknown: []
+    },
+    inventory: { exact: true, generation: 'generation-only' }
+  });
+  assert.equal(normalized.inventoryExact, false);
+  assert.deepEqual(normalized.installed, []);
+});
+
+test('package inventory binding accepts the current Go cache id and binds response identity', () => {
+  assert.deepEqual(inventoryBinding({ inventory: {
+    exact: true,
+    cacheId: 'cache-current',
+    generation: 'generation-current',
+    dependencyDigest: 'digest-current'
+  } }), {
+    exact: true,
+    authoritative: true,
+    cacheEntryId: 'cache-current',
+    generation: 'generation-current',
+    dependencyDigest: 'digest-current'
+  });
+  const response = {
+    workspace: { kind: 'personal', key: 'project-key' },
+    runtime: { id: 'python:3.11' },
+    language: { id: 'python' }
+  };
+  assert.equal(packageContextMatchesRequest(response, {
+    folderKey: 'project-key', runtime: 'python:3.11', language: 'python'
+  }), true);
+  assert.equal(packageContextMatchesRequest(response, {
+    folderKey: 'other-project', runtime: 'python:3.11', language: 'python'
+  }), false);
+  assert.equal(packageContextMatchesRequest(response, {
+    folderKey: 'project-key', runtime: 'python:3.12', language: 'python'
+  }), false);
 });
 
 test('catalog results distinguish direct updates from transitive pins', () => {
@@ -236,6 +312,46 @@ test('pending changes remain one operation per package and can be cancelled', ()
   ]);
   changes = removeChange(changes, 'NUMPY');
   assert.deepEqual(changes.map((item) => item.name), ['requests']);
+});
+
+test('terminal package intents map through authoritative installed inventory', () => {
+  const changes = normalizeManagedPackageChanges([
+    { operation: 'install', name: 'NumPy', version: '2.3.1' },
+    { operation: 'install', name: 'urllib3' },
+    { operation: 'remove', name: 'requests', version: 'ignored' }
+  ], [
+    { name: 'numpy', version: '2.2.0', direct: true, scope: 'runtime' },
+    { name: 'urllib3', version: '2.4.0', direct: false, scope: 'runtime' }
+  ]);
+  assert.deepEqual(changes, [
+    { operation: 'update', name: 'NumPy', version: '2.3.1', scope: 'runtime' },
+    { operation: 'add', name: 'urllib3', version: '', scope: 'runtime' },
+    { operation: 'remove', name: 'requests', version: '', scope: 'runtime' }
+  ]);
+});
+
+test('managed installs rehydrate an exact declared package and add a genuinely undeclared package', () => {
+  const context = {
+    manifests: [
+      { path: 'requirements.txt', kind: 'requirements' },
+      { path: '.bobocloud/source-imports.txt', kind: 'source-imports' }
+    ],
+    packages: { declared: [
+      { name: 'numpy', constraint: '==2.1.0', source: 'requirements.txt', scope: 'runtime' },
+      { name: 'cv2', source: '.bobocloud/source-imports.txt' }
+    ] }
+  };
+  const declarations = managedPackageDeclarations(context);
+  assert.deepEqual(declarations.map(item => item.name), ['numpy']);
+  assert.equal(exactDeclaredPackageVersion(declarations[0]), '2.1.0');
+  assert.deepEqual(normalizeManagedPackageChanges([
+    { operation: 'install', name: 'NumPy' },
+    { operation: 'install', name: 'pandas', version: '2.3.1' }
+  ], [], declarations), [{
+    operation: 'update', name: 'NumPy', version: '2.1.0', scope: 'runtime'
+  }, {
+    operation: 'add', name: 'pandas', version: '2.3.1', scope: 'runtime'
+  }]);
 });
 
 test('package apply retries uncertain transport with the same plan and honors Retry-After', async () => {

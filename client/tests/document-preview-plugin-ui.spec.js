@@ -6,7 +6,6 @@ const { createPluginController } = require('../main/plugins');
 
 const PLUGIN_ID = 'bobocloud.document-preview';
 const PLUGIN_REPOSITORY = path.resolve(process.cwd(), '..', '..', 'my-electron-app', 'bobocloud-document-preview');
-
 function resolveArtifact() {
   const packageFile = path.join(PLUGIN_REPOSITORY, 'package.json');
   if (!fs.existsSync(packageFile)) return '';

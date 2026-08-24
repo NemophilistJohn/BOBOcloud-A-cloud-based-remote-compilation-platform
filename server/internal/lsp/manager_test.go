@@ -289,7 +289,7 @@ func TestManagerRejectsUserDependencyMountsForHostAnalyzer(t *testing.T) {
 	defer manager.Close()
 	_, err := manager.Start(SessionContext{
 		UserID: "u1", WorkspaceKind: "personal", FolderKey: "project", RuntimeID: "local", LanguageID: "python", Mode: ModeStandard,
-		RemoteRoot: t.TempDir(), DependencyView: AnalysisDependencyView{Mounts: []AnalysisDependencyMount{{HostPath: t.TempDir(), ContainerPath: pythonLegacyPackagesContainer, ReadOnly: true}}},
+		RemoteRoot: t.TempDir(), DependencyView: AnalysisDependencyView{Mounts: []AnalysisDependencyMount{{HostPath: t.TempDir(), ContainerPath: AnalysisDependenciesRoot + "/python/test", ReadOnly: true}}},
 	})
 	if err == nil {
 		t.Fatal("host analyzer accepted a user-controlled dependency mount")
@@ -354,10 +354,10 @@ func TestManagerRejectsDuplicateSessionWhileFirstStartIsPending(t *testing.T) {
 
 func TestManagerRefreshesOnlyChangedDependencyViews(t *testing.T) {
 	root := t.TempDir()
-	persist := makeDependencyDir(t, filepath.Join(root, "persist"))
-	packages := makeDependencyDir(t, filepath.Join(persist, "pip-packages"))
+	packages := makeDependencyDir(t, filepath.Join(root, "cache-v2", "python"))
 	registry := NewDefaultDependencyRegistry()
 	request := personalDependencyRequest(root, "python", "python:3.10")
+	request.Paths.Extra = map[string][]string{DependencyRolePythonPackages: {packages}}
 	view, err := registry.Resolve(request)
 	if err != nil {
 		t.Fatal(err)
@@ -386,7 +386,7 @@ func TestManagerRefreshesOnlyChangedDependencyViews(t *testing.T) {
 		t.Fatalf("changed dependency view restarted %d sessions", restarted)
 	}
 	status, ok := session.DependencyRestartStatus()
-	if !ok || status.Revision == view.Revision || status.Status != "mixed" {
+	if !ok || status.Revision == view.Revision || status.Status != "ready" {
 		t.Fatalf("missing dependency restart status: %+v, present=%v", status, ok)
 	}
 	select {

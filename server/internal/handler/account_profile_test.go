@@ -19,6 +19,7 @@ import (
 	"bobocloud-server/internal/config"
 	"bobocloud-server/internal/lifecycle"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/session"
 	"bobocloud-server/internal/storage"
 )
@@ -623,18 +624,14 @@ func TestServeHTTPResourceMutationsDoNotSelfConflictWithRequestLease(t *testing.
 		}
 	})
 
-	t.Run("delete cache", func(t *testing.T) {
+	t.Run("clear cache scope", func(t *testing.T) {
 		handler, _, user := newAuthenticatedLifecycleHandler(t)
-		cache := filepath.Join(handler.Config.DataDir, "users", user.ID, "persist", "go-build", "entry")
-		if err := os.MkdirAll(cache, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		recorder := serveAuthenticatedAction(t, handler, user.APIKey, `{"action":"deleteCacheModule","cachePath":"go-build/entry"}`)
+		handler.PersonalCache = personalcache.NewManager(handler.Config.DataDir, personalcache.Options{})
+		inventory := personalCacheV2Inventory(t, handler, user.APIKey)
+		payload, _ := json.Marshal(map[string]any{"action": "clearCacheScope", "scope": "owner", "expectedRevision": inventory.Revision})
+		recorder := serveAuthenticatedAction(t, handler, user.APIKey, string(payload))
 		if recorder.Code != http.StatusOK {
-			t.Fatalf("deleteCacheModule self-conflicted: status=%d body=%s", recorder.Code, recorder.Body.String())
-		}
-		if _, err := os.Stat(cache); !os.IsNotExist(err) {
-			t.Fatalf("cache still exists: %v", err)
+			t.Fatalf("clearCacheScope self-conflicted: status=%d body=%s", recorder.Code, recorder.Body.String())
 		}
 	})
 }

@@ -52,7 +52,7 @@ type packageInventoryDocument struct {
 // namespace selected by request. It never falls back to another project,
 // runtime, language, or dependency digest.
 func (m *Manager) InspectPackageInventory(request Request) InventoryInspection {
-	if m == nil || m.options.ScopeMode != "project-lock" {
+	if m == nil {
 		return InventoryInspection{State: "unavailable", Detail: "Project dependency cache inspection is unavailable"}
 	}
 	gate := m.userGate(request.UserID)
@@ -66,7 +66,7 @@ func (m *Manager) InspectPackageInventory(request Request) InventoryInspection {
 // generation for the exact reviewed dependency digest. It is used only to
 // reconcile a durable completion intent after a server restart.
 func (m *Manager) PublishedOperation(request Request, operationID string) (bool, error) {
-	if m == nil || m.options.ScopeMode != "project-lock" || strings.TrimSpace(operationID) == "" {
+	if m == nil || strings.TrimSpace(operationID) == "" {
 		return false, nil
 	}
 	gate := m.userGate(request.UserID)
@@ -92,7 +92,7 @@ func (m *Manager) PublishedOperation(request Request, operationID string) (bool,
 // inventory under the same per-user gate. Delete and LRU cannot remove the
 // namespace until the returned lease is released.
 func (m *Manager) AcquirePackageInventoryRead(request Request) (*ReadLease, Entry, InventoryInspection) {
-	if m == nil || m.options.ScopeMode != "project-lock" {
+	if m == nil {
 		inspection := InventoryInspection{State: "unavailable", Detail: "Project dependency cache inspection is unavailable"}
 		return nil, Entry{}, inspection
 	}
@@ -117,7 +117,7 @@ func (m *Manager) AcquirePackageInventoryRead(request Request) (*ReadLease, Entr
 // corrupt so callers can report inventory health and analyzer visibility from
 // one coherent snapshot.
 func (m *Manager) AcquirePackageInventorySnapshotRead(request Request) (*ReadLease, Entry, InventoryInspection, bool) {
-	if m == nil || m.options.ScopeMode != "project-lock" {
+	if m == nil {
 		inspection := InventoryInspection{State: "unavailable", Detail: "Project dependency cache inspection is unavailable"}
 		return nil, Entry{}, inspection, false
 	}

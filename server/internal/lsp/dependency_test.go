@@ -54,7 +54,7 @@ func TestDefaultDependencyRegistryCoversCompiledLanguages(t *testing.T) {
 	}
 }
 
-func TestPythonDependencyViewUsesLegacyPackagesReadOnly(t *testing.T) {
+func TestPythonDependencyViewIgnoresLegacyUserPackages(t *testing.T) {
 	root := t.TempDir()
 	packages := makeDependencyDir(t, filepath.Join(root, "persist", "pip-packages"))
 	makeDependencyDir(t, filepath.Join(packages, "numpy"))
@@ -63,68 +63,39 @@ func TestPythonDependencyViewUsesLegacyPackagesReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(view.Mounts) != 1 {
-		t.Fatalf("mounts = %+v", view.Mounts)
-	}
-	mount := view.Mounts[0]
-	if !mount.ReadOnly || !mount.Legacy || mount.ContainerPath != pythonLegacyPackagesContainer {
-		t.Fatalf("unexpected Python mount: %+v", mount)
-	}
-	if view.DockerEnvironment["PYTHONPATH"] != pythonLegacyPackagesContainer {
-		t.Fatalf("docker environment = %+v", view.DockerEnvironment)
-	}
-	if view.DockerEnvironment["BOBO_PYRIGHT_DEPENDENCY_PATHS"] != pythonLegacyPackagesContainer {
-		t.Fatalf("Pyright dependency overlay environment = %+v", view.DockerEnvironment)
-	}
-	pythonSettings := view.DockerLSPSettings["python"].(map[string]any)
-	analysis := pythonSettings["analysis"].(map[string]any)
-	pyright := view.DockerLSPSettings["pyright"].(map[string]any)
-	if pyright["pythonVersion"] != "3.10" || pyright["pythonPlatform"] != "Linux" {
-		t.Fatalf("Python runtime settings = %+v", pyright)
-	}
-	if !reflect.DeepEqual(analysis["extraPaths"], []string{pythonLegacyPackagesContainer}) {
-		t.Fatalf("Python extraPaths = %+v", analysis["extraPaths"])
-	}
-	if analysis["autoImportCompletions"] != true {
-		t.Fatalf("Python auto-import completions = %+v", analysis["autoImportCompletions"])
-	}
-	if pythonSettings["pythonPath"] != pythonAnalyzerInterpreter || pythonSettings["defaultInterpreterPath"] != pythonAnalyzerInterpreter {
-		t.Fatalf("Python server-owned interpreter = %+v", pythonSettings)
-	}
-	if view.Revision == "" || len(view.Metadata.Sources) != 1 {
-		t.Fatalf("missing revision metadata: %+v", view)
-	}
-	if status := view.PublicStatus(true, "user"); status.Status != "mixed" || status.Source != "mixed" {
-		t.Fatalf("legacy package status = %+v, want mixed compatibility status", status)
+	if len(view.Mounts) != 0 || view.DockerEnvironment["PYTHONPATH"] != "" {
+		t.Fatalf("legacy user packages were exposed to LSP: %+v", view)
 	}
 }
 
-func TestPythonRuntimeSpecificPackagesExcludeLegacyDirectory(t *testing.T) {
+func TestPythonDependencyViewUsesExactProjectGeneration(t *testing.T) {
 	root := t.TempDir()
-	persist := makeDependencyDir(t, filepath.Join(root, "persist"))
-	legacy := makeDependencyDir(t, filepath.Join(persist, "pip-packages"))
-	specific := makeDependencyDir(t, filepath.Join(legacy, "runtimes", "python-3.10"))
-	view, err := NewDefaultDependencyRegistry().Resolve(personalDependencyRequest(root, "python", "python:3.10"))
+	specific := makeDependencyDir(t, filepath.Join(root, "cache-v2", "python"))
+	request := personalDependencyRequest(root, "python", "python:3.10")
+	request.Generation = "project-lock:generation-a"
+	request.Paths.Extra = map[string][]string{DependencyRolePythonPackages: {specific}}
+	view, err := NewDefaultDependencyRegistry().Resolve(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(view.Mounts) != 1 {
-		t.Fatalf("mounts = %+v, want runtime-specific only", view.Mounts)
+		t.Fatalf("mounts = %+v, want exact project generation", view.Mounts)
 	}
 	if got := view.Mounts[0].HostPath; got != specific {
-		t.Fatalf("mounted %q, want runtime-specific %q", got, specific)
+		t.Fatalf("mounted %q, want %q", got, specific)
 	}
 	if view.Mounts[0].Legacy {
-		t.Fatal("runtime-specific package directory was marked legacy")
+		t.Fatal("project generation was marked legacy")
 	}
-	if got := view.DockerEnvironment["PYTHONPATH"]; got != pythonRuntimePackagesContainer {
-		t.Fatalf("runtime-specific PYTHONPATH = %q, want %q", got, pythonRuntimePackagesContainer)
+	wantContainer := pythonExtraPackagesRoot + "/00"
+	if got := view.DockerEnvironment["PYTHONPATH"]; got != wantContainer {
+		t.Fatalf("project PYTHONPATH = %q, want %q", got, wantContainer)
 	}
-	if got := view.DockerEnvironment["BOBO_PYRIGHT_DEPENDENCY_PATHS"]; got != pythonRuntimePackagesContainer {
-		t.Fatalf("runtime-specific Pyright overlay = %q, want %q", got, pythonRuntimePackagesContainer)
+	if got := view.DockerEnvironment["BOBO_PYRIGHT_DEPENDENCY_PATHS"]; got != wantContainer {
+		t.Fatalf("project Pyright overlay = %q, want %q", got, wantContainer)
 	}
 	if status := view.PublicStatus(true, "user"); status.Status != "ready" || status.Source != "user" {
-		t.Fatalf("runtime-specific package status = %+v, want ready user status", status)
+		t.Fatalf("project package status = %+v, want ready user status", status)
 	}
 }
 
@@ -133,6 +104,7 @@ func TestDependencyRevisionChangesWithGenerationAndPackageMetadata(t *testing.T)
 	packages := makeDependencyDir(t, filepath.Join(root, "persist", "pip-packages"))
 	registry := NewDefaultDependencyRegistry()
 	request := personalDependencyRequest(root, "python", "python:3.10")
+	request.Paths.Extra = map[string][]string{DependencyRolePythonPackages: {packages}}
 	request.Generation = "generation-1"
 	first, err := registry.Resolve(request)
 	if err != nil {
@@ -427,11 +399,11 @@ func TestTeamGoDependencyViewPrefersSharedModuleSources(t *testing.T) {
 
 func TestDependencyAdaptersExposeRuntimeSources(t *testing.T) {
 	root := t.TempDir()
-	persist := makeDependencyDir(t, filepath.Join(root, "persist"))
 	snapshots := makeDependencyDir(t, filepath.Join(root, "snapshots"))
-	makeDependencyDir(t, filepath.Join(persist, "npm-global", "lib", "node_modules"))
-	makeDependencyDir(t, filepath.Join(persist, "cargo", "registry", "src"))
-	makeDependencyDir(t, filepath.Join(persist, "maven"))
+	nodeModules := makeDependencyDir(t, filepath.Join(root, "project-node-modules"))
+	cargoHome := makeDependencyDir(t, filepath.Join(root, "cargo"))
+	makeDependencyDir(t, filepath.Join(cargoHome, "registry", "src"))
+	mavenHome := makeDependencyDir(t, filepath.Join(root, "maven"))
 	makeGradleDependencySnapshot(t, snapshots, "java:21")
 	sysroot := makeDependencyDir(t, filepath.Join(root, "toolchain"))
 	include := makeDependencyDir(t, filepath.Join(root, "include"))
@@ -443,9 +415,9 @@ func TestDependencyAdaptersExposeRuntimeSources(t *testing.T) {
 		paths    AnalysisDependencyPaths
 		roles    []string
 	}{
-		{language: "typescript", runtime: "node:20", paths: AnalysisDependencyPaths{UserPersistRoot: persist, AllowedRoots: []string{root}}, roles: []string{DependencyRoleNodeModules}},
-		{language: "rust", runtime: "rust:1.82", paths: AnalysisDependencyPaths{UserPersistRoot: persist, AllowedRoots: []string{root}}, roles: []string{DependencyRoleRustRegistrySrc}},
-		{language: "java", runtime: "java:21", paths: AnalysisDependencyPaths{UserPersistRoot: persist, SnapshotRoot: snapshots, AllowedRoots: []string{root}}, roles: []string{DependencyRoleJavaMaven, DependencyRoleJavaGradle}},
+		{language: "typescript", runtime: "node:20", paths: AnalysisDependencyPaths{Extra: map[string][]string{DependencyRoleNodeModules: {nodeModules}}, AllowedRoots: []string{root}}, roles: []string{DependencyRoleNodeModules}},
+		{language: "rust", runtime: "rust:1.82", paths: AnalysisDependencyPaths{Extra: map[string][]string{DependencyRoleRustCargoHome: {cargoHome}}, AllowedRoots: []string{root}}, roles: []string{DependencyRoleRustRegistrySrc}},
+		{language: "java", runtime: "java:21", paths: AnalysisDependencyPaths{Extra: map[string][]string{DependencyRoleJavaMaven: {mavenHome}}, SnapshotRoot: snapshots, AllowedRoots: []string{root}}, roles: []string{DependencyRoleJavaMaven, DependencyRoleJavaGradle}},
 		{language: "c++", runtime: "cpp:13", paths: AnalysisDependencyPaths{ToolchainRoots: []string{sysroot}, Extra: map[string][]string{DependencyRoleNativeIncludes: {include}}, AllowedRoots: []string{root}}, roles: []string{DependencyRoleNativeSysroot, DependencyRoleNativeIncludes}},
 	}
 	for _, test := range tests {
@@ -470,15 +442,17 @@ func TestDependencyAdaptersExposeRuntimeSources(t *testing.T) {
 
 func TestDependencyAdaptersKeepWritableCachesSeparate(t *testing.T) {
 	root := t.TempDir()
-	persist := makeDependencyDir(t, filepath.Join(root, "persist"))
 	snapshots := makeDependencyDir(t, filepath.Join(root, "snapshots"))
-	makeDependencyDir(t, filepath.Join(persist, "cargo", "registry", "src"))
-	makeDependencyDir(t, filepath.Join(persist, "maven"))
+	cargoHome := makeDependencyDir(t, filepath.Join(root, "cargo"))
+	makeDependencyDir(t, filepath.Join(cargoHome, "registry", "src"))
+	mavenHome := makeDependencyDir(t, filepath.Join(root, "maven"))
 	gradleRoot := makeGradleDependencySnapshot(t, snapshots, "java:21")
 	gradleModules := filepath.Join(gradleRoot, "modules-2")
 	registry := NewDefaultDependencyRegistry()
 
-	rustView, err := registry.Resolve(personalDependencyRequest(root, "rust", "rust:1.82"))
+	rustRequest := personalDependencyRequest(root, "rust", "rust:1.82")
+	rustRequest.Paths.Extra = map[string][]string{DependencyRoleRustCargoHome: {cargoHome}}
+	rustView, err := registry.Resolve(rustRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,6 +465,7 @@ func TestDependencyAdaptersKeepWritableCachesSeparate(t *testing.T) {
 
 	javaRequest := personalDependencyRequest(root, "java", "java:21")
 	javaRequest.Paths.SnapshotRoot = snapshots
+	javaRequest.Paths.Extra = map[string][]string{DependencyRoleJavaMaven: {mavenHome}}
 	javaView, err := registry.Resolve(javaRequest)
 	if err != nil {
 		t.Fatal(err)
@@ -575,10 +550,14 @@ func TestNativeDependencyViewIsEmptyWithoutProducedToolchainRoots(t *testing.T) 
 
 func TestJavaDependencyViewIgnoresUnseededGradleHome(t *testing.T) {
 	root := t.TempDir()
-	persist := makeDependencyDir(t, filepath.Join(root, "persist"))
-	maven := makeDependencyDir(t, filepath.Join(persist, "maven"))
-	makeDependencyDir(t, filepath.Join(persist, "gradle"))
-	view, err := NewDefaultDependencyRegistry().Resolve(personalDependencyRequest(root, "java", "java:21"))
+	maven := makeDependencyDir(t, filepath.Join(root, "cache-v2", "maven"))
+	gradle := makeDependencyDir(t, filepath.Join(root, "cache-v2", "gradle"))
+	request := personalDependencyRequest(root, "java", "java:21")
+	request.Paths.Extra = map[string][]string{
+		DependencyRoleJavaMaven:  {maven},
+		DependencyRoleJavaGradle: {gradle},
+	}
+	view, err := NewDefaultDependencyRegistry().Resolve(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -702,8 +681,10 @@ func TestNodeDependencyViewPrefersPublishedSnapshot(t *testing.T) {
 
 func TestDependencyViewJSONDoesNotExposeHostPaths(t *testing.T) {
 	root := t.TempDir()
-	makeDependencyDir(t, filepath.Join(root, "persist", "pip-packages"))
-	view, err := NewDefaultDependencyRegistry().Resolve(personalDependencyRequest(root, "python", "python:3.10"))
+	packages := makeDependencyDir(t, filepath.Join(root, "cache-v2", "python"))
+	request := personalDependencyRequest(root, "python", "python:3.10")
+	request.Paths.Extra = map[string][]string{DependencyRolePythonPackages: {packages}}
+	view, err := NewDefaultDependencyRegistry().Resolve(request)
 	if err != nil {
 		t.Fatal(err)
 	}

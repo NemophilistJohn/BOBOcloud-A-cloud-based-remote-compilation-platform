@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="./styles/ai.css">
   <link rel="stylesheet" href="./styles/ai-settings.css">
   <link rel="stylesheet" href="./styles/auth.css">
+  <link rel="stylesheet" href="./styles/cache-center.css">
   <link rel="stylesheet" href="./styles/collaboration.css">
   <link rel="stylesheet" href="./styles/workbench.css">
   <link rel="stylesheet" href="./styles/environment-center.css">
@@ -1157,21 +1158,21 @@
   </div>
 
   <!-- ══════════ Server Projects 管理弹窗 ══════════ -->
-  <div id="projects-modal">
+  <div id="projects-modal" role="dialog" aria-modal="true" aria-labelledby="projects-dialog-title" aria-hidden="true">
     <div class="projects-card">
       <div class="projects-head">
-        <div class="ss-title">Server Storage</div>
-        <button id="projects-close-x" class="close-btn" title="Close">&times;</button>
+        <div class="ss-title" id="projects-dialog-title">Server Storage</div>
+        <button id="projects-close-x" class="close-btn" type="button" title="Close" aria-label="Close">&times;</button>
       </div>
       <!-- 顶部摘要 -->
       <div class="projects-summary" id="projects-summary">Loading...</div>
       <!-- 子标签 -->
-      <div class="projects-tabs">
-        <div class="projects-tab active" data-ptab="projects">Projects</div>
-        <div class="projects-tab" data-ptab="cache">Cache</div>
+      <div class="projects-tabs" role="tablist" aria-label="Server Storage">
+        <button type="button" class="projects-tab active" id="projects-tab-projects" data-ptab="projects" role="tab" aria-selected="true" aria-controls="projects-pane-projects">Projects</button>
+        <button type="button" class="projects-tab" id="projects-tab-cache" data-ptab="cache" role="tab" aria-selected="false" aria-controls="projects-pane-cache" tabindex="-1">Cache</button>
       </div>
       <!-- Projects 标签页 -->
-      <div class="projects-pane active" id="projects-pane-projects">
+      <div class="projects-pane active" id="projects-pane-projects" role="tabpanel" aria-labelledby="projects-tab-projects">
         <div class="projects-pie-row">
           <div class="quota-pie-wrap">
             <div class="quota-pie" id="quota-pie"></div>
@@ -1182,7 +1183,7 @@
         <div class="projects-list" id="projects-list"></div>
       </div>
       <!-- Cache 标签页 -->
-      <div class="projects-pane" id="projects-pane-cache">
+      <div class="projects-pane" id="projects-pane-cache" role="tabpanel" aria-labelledby="projects-tab-cache" hidden>
         <div class="cache-tree" id="cache-tree"></div>
       </div>
       <div class="ss-foot">

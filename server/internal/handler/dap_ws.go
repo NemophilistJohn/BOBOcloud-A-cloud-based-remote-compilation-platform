@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"bobocloud-server/internal/auth"
+	"bobocloud-server/internal/cachev2"
 	"bobocloud-server/internal/collab"
 	"bobocloud-server/internal/config"
 	"bobocloud-server/internal/dap"
@@ -473,10 +474,16 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	sessionRelease := pendingRelease
 	sessionRelease = combineDAPReleases(sessionRelease, cleanupTemp)
 	pendingRelease = func() {}
+	dapRuntimePart, partErr := cachev2.SafeSegment(runtime.RuntimeID)
+	if partErr != nil {
+		releaseDAPSessionAfterStartError(sessionRelease, partErr)
+		writeDAPControlError(conn, "start_failed", "invalid debug runtime cache identity")
+		return
+	}
 	session, err := h.Manager.Start(dap.SessionContext{
 		UserID: user.ID, WorkspaceKind: start.Workspace.Kind, TeamID: teamID, ProjectID: projectID,
 		Branch: branch, FolderKey: folderKey, RuntimeID: runtime.RuntimeID, LanguageID: languageID,
-		RemoteRoot: tempRoot, PersistDir: filepath.Join(h.Config.DataDir, "users", user.ID, "persist"),
+		RemoteRoot: tempRoot, PersistDir: filepath.Join(h.Config.DataDir, "dap-cache", "downloads", user.ID, dapRuntimePart),
 		DependencyRoot: dependencyRoot, DependencyMountRoot: filepath.Join(h.Config.DataDir, "dap-cache", "mounts"), DependencyEnv: dependencyEnv, ProcessContext: processContext, Release: sessionRelease,
 	})
 	if err != nil {

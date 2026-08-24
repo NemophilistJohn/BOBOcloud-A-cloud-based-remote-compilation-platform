@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"bobocloud-server/internal/cachev2"
 	"bobocloud-server/internal/metrics"
 )
 
@@ -28,9 +29,14 @@ var (
 )
 
 const (
-	dependenciesDir     = "project-dependencies"
-	stagingDir          = ".project-dependency-staging"
-	retiredDir          = ".project-dependency-retired"
+	cacheSchema         = cachev2.SchemaVersion
+	cacheRootDir        = cachev2.RootDirectoryName
+	dependenciesDir     = cachev2.DependenciesRelativePath
+	stagingDir          = "transactions/dependencies"
+	retiredDir          = "retired/dependencies"
+	bindingsDir         = "registry/current"
+	incrementalDir      = cachev2.IncrementalRelativePath
+	toolchainsDir       = cachev2.ToolchainsRelativePath
 	metadataFile        = ".cache-meta.json"
 	generationFile      = ".container-generation"
 	maxMetadataBytes    = int64(1 << 20)
@@ -40,10 +46,13 @@ const (
 )
 
 type Options struct {
+	// ScopeMode is retained only as an internal call-site shim. cache-v2 always
+	// uses project-lock identity and never opens legacy user-level stores.
 	ScopeMode           string
 	ReservationBytes    int64
 	MaxFiles            int64
 	ReservationFiles    int64
+	MaxGenerations      int
 	ScanInterval        time.Duration
 	Retention           time.Duration
 	Metrics             *metrics.Registry
@@ -95,7 +104,16 @@ type metadata struct {
 	LastUsed           time.Time `json:"last_used"`
 }
 
+type currentBinding struct {
+	Schema    int             `json:"schema"`
+	CacheID   cachev2.CacheID `json:"cache_id"`
+	Digest    string          `json:"digest"`
+	UpdatedAt time.Time       `json:"updated_at"`
+}
+
 type Entry struct {
+	ID            string    `json:"id"`
+	Category      string    `json:"category"`
 	Path          string    `json:"path"`
 	WorkspaceID   string    `json:"workspace_id"`
 	WorkspaceName string    `json:"workspace_name"`
@@ -106,6 +124,9 @@ type Entry struct {
 	SizeBytes     int64     `json:"size_bytes"`
 	Files         int       `json:"files"`
 	LastUsed      time.Time `json:"last_used"`
+	CreatedAt     time.Time `json:"created_at"`
+	Current       bool      `json:"current"`
+	Superseded    bool      `json:"superseded"`
 	Active        bool      `json:"active"`
 	Writing       bool      `json:"writing"`
 	Orphaned      bool      `json:"orphaned"`
@@ -129,6 +150,7 @@ type Info struct {
 }
 
 type Manager struct {
+	dataDir                  string
 	root                     string
 	options                  Options
 	mu                       sync.Mutex
@@ -145,6 +167,8 @@ type Manager struct {
 	readers                  map[dependencyGeneration]int
 	writerHasBase            map[string]bool
 	retired                  map[dependencyGeneration][]string
+	buildLocks               map[string]*cacheLock
+	buildActive              map[string]int
 	testBeforeReleaseCleanup func([]string)
 	userGates                sync.Map
 }
@@ -152,6 +176,10 @@ type Manager struct {
 type dependencyGeneration struct {
 	cacheKey   string
 	generation string
+}
+
+type cacheLock struct {
+	token chan struct{}
 }
 
 type Lease struct {
@@ -166,6 +194,7 @@ type Lease struct {
 	Hit           bool
 	manager       *Manager
 	request       Request
+	resolved      resolvedCacheRequest
 	meta          metadata
 	guard         *Guard
 	reader        *ReadLease
@@ -232,9 +261,6 @@ type Operation struct {
 }
 
 func NewManager(dataDir string, options Options) *Manager {
-	if options.ScopeMode == "" {
-		options.ScopeMode = "project-lock"
-	}
 	if options.ReservationBytes <= 0 {
 		options.ReservationBytes = 256_000_000
 	}
@@ -247,15 +273,20 @@ func NewManager(dataDir string, options Options) *Manager {
 	if options.ReservationFiles > options.MaxFiles {
 		options.ReservationFiles = options.MaxFiles
 	}
+	if options.MaxGenerations <= 0 {
+		options.MaxGenerations = 2
+	}
 	if options.ScanInterval <= 0 {
 		options.ScanInterval = 250 * time.Millisecond
 	}
-	managerRoot := filepath.Join(filepath.Clean(dataDir), "users")
+	cleanDataDir := filepath.Clean(dataDir)
+	managerRoot := filepath.Join(cleanDataDir, cachev2.UsersDirectoryName)
 	return &Manager{
-		root: managerRoot, options: options,
+		dataDir: cleanDataDir, root: managerRoot, options: options,
 		active: make(map[string]int), writers: make(map[string]int), mutations: make(map[string]uint64), activePaths: make(map[string]int),
 		activeUsers: make(map[string]int), reserved: make(map[string]int64), reservedFiles: make(map[string]int64), writerDone: make(map[string]chan struct{}),
 		protectedReaders: make(map[string]int), readers: make(map[dependencyGeneration]int), writerHasBase: make(map[string]bool), retired: make(map[dependencyGeneration][]string),
+		buildLocks: make(map[string]*cacheLock), buildActive: make(map[string]int),
 	}
 }
 
@@ -271,9 +302,9 @@ func (m *Manager) RecoverOrphanedTransactions() {
 
 func (m *Manager) ScopeMode() string {
 	if m == nil {
-		return "legacy-user"
+		return ""
 	}
-	return m.options.ScopeMode
+	return "project-lock"
 }
 
 type resolvedCacheRequest struct {
@@ -291,8 +322,14 @@ func (m *Manager) resolveRequest(request Request) (resolvedCacheRequest, error) 
 	if strings.TrimSpace(request.UserID) == "" || strings.TrimSpace(request.WorkspaceID) == "" || strings.TrimSpace(request.RuntimeID) == "" {
 		return resolvedCacheRequest{}, fmt.Errorf("personal dependency cache requires user, workspace, and runtime")
 	}
+	if strings.TrimSpace(request.RuntimeFingerprint) == "" {
+		return resolvedCacheRequest{}, fmt.Errorf("trusted immutable runtime identity is unavailable")
+	}
+	layout, err := m.ensureUserLayout(request.UserID)
+	if err != nil {
+		return resolvedCacheRequest{}, err
+	}
 	var fingerprint Fingerprint
-	var err error
 	if len(request.ManifestSnapshot) > 0 {
 		fingerprint, err = DependencyFingerprintFromSnapshot(request.Language, request.SetupCommands, request.RuntimeFingerprint, request.ManifestSnapshot)
 	} else {
@@ -304,7 +341,7 @@ func (m *Manager) resolveRequest(request Request) (resolvedCacheRequest, error) 
 	workspacePart := safePart(request.WorkspaceID)
 	runtimePart := safePart(request.RuntimeID)
 	languagePart := safePart(request.Language)
-	persistRoot := filepath.Join(m.root, request.UserID, "persist")
+	persistRoot := layout.Root
 	hostRoot := filepath.Join(persistRoot, dependenciesDir, workspacePart, runtimePart, languagePart, fingerprint.Digest)
 	relative, _ := filepath.Rel(persistRoot, hostRoot)
 	return resolvedCacheRequest{
@@ -319,7 +356,7 @@ func (m *Manager) resolveRequest(request Request) (resolvedCacheRequest, error) 
 // A concurrent controlled setup writes a staging generation, so an existing
 // published generation remains stable and immediately reusable.
 func (m *Manager) PrepareReadOnly(ctx context.Context, request Request) (*Lease, error) {
-	if m == nil || m.options.ScopeMode != "project-lock" {
+	if m == nil {
 		return nil, nil
 	}
 	started := time.Now()
@@ -350,7 +387,7 @@ func (m *Manager) PrepareReadOnly(ctx context.Context, request Request) (*Lease,
 			lease := &Lease{
 				Key: entry.key, ContainerKey: "personal/" + entry.key + "@" + generation + ":ro", Generation: generation,
 				HostRoot: reader.HostRoot, RelativePath: entry.Path,
-				DockerMounts: readOnlyProjectDependencyMounts(resolved.persistRoot, reader.HostRoot),
+				DockerMounts: readOnlyProjectDependencyMounts(reader.HostRoot),
 				DockerEnv:    ReadOnlyDependencyDockerEnvironment(request.Language), Fingerprint: resolved.fingerprint,
 				Hit: true, manager: m, request: request, meta: metadata{}, reader: reader,
 				canonical: entry.absPath, writable: false,
@@ -369,19 +406,13 @@ func (m *Manager) PrepareReadOnly(ctx context.Context, request Request) (*Lease,
 			continue
 		}
 		gate.Unlock()
-		// A read-only caller must never receive a writable cache merely because
-		// this digest has not been seen before. Publish an empty server-owned
-		// generation, then retain it read-only; explicit managed setup paths use
-		// Prepare directly when they need to install dependencies.
-		initializer, prepareErr := m.Prepare(ctx, request)
-		if prepareErr != nil {
-			return nil, prepareErr
+		// Import/run/LSP/DAP probes must not manufacture a persistent empty
+		// generation. Only an explicit managed package operation may write one.
+		if m.options.Metrics != nil {
+			m.options.Metrics.Cache("dependency.cache", false)
+			m.options.Metrics.Observe("dependency.cache.prepare.read", time.Since(started))
 		}
-		if initializer == nil {
-			return nil, nil
-		}
-		initializer.Release()
-		return m.PrepareReadOnly(ctx, request)
+		return nil, nil
 	}
 }
 
@@ -402,7 +433,7 @@ func (l *Lease) Abort() {
 }
 
 func (m *Manager) Prepare(ctx context.Context, request Request) (*Lease, error) {
-	if m == nil || m.options.ScopeMode != "project-lock" {
+	if m == nil {
 		return nil, nil
 	}
 	started := time.Now()
@@ -433,7 +464,7 @@ func (m *Manager) Prepare(ctx context.Context, request Request) (*Lease, error) 
 	}
 	now := time.Now().UTC()
 	meta := metadata{
-		Schema: 1, UserID: request.UserID, WorkspaceID: request.WorkspaceID, WorkspaceName: request.WorkspaceName,
+		Schema: cacheSchema, UserID: request.UserID, WorkspaceID: request.WorkspaceID, WorkspaceName: request.WorkspaceName,
 		RuntimeID: request.RuntimeID, RuntimeFingerprint: request.RuntimeFingerprint, Language: request.Language, Digest: resolved.fingerprint.Digest,
 		DigestSource: resolved.fingerprint.Source, Manifests: resolved.fingerprint.Manifests, OperationID: strings.TrimSpace(request.OperationID), CreatedAt: now, LastUsed: now,
 	}
@@ -479,6 +510,12 @@ func (m *Manager) Prepare(ctx context.Context, request Request) (*Lease, error) 
 		}
 		return nil, err
 	}
+	if _, err := cachev2.EnsurePersistentCacheID(workRoot); err != nil {
+		if staged {
+			_ = os.RemoveAll(workRoot)
+		}
+		return nil, err
+	}
 	generation, err := replaceGeneration(workRoot)
 	if err != nil {
 		if staged {
@@ -510,7 +547,7 @@ func (m *Manager) Prepare(ctx context.Context, request Request) (*Lease, error) 
 		HostRoot: workRoot, RelativePath: filepath.ToSlash(resolved.relative),
 		DockerMounts: map[string]string{workRoot: "/project-deps"},
 		DockerEnv:    dependencyEnvironment(request.Language),
-		Fingerprint:  resolved.fingerprint, Hit: hit, manager: m, request: request, meta: meta,
+		Fingerprint:  resolved.fingerprint, Hit: hit, manager: m, request: request, resolved: resolved, meta: meta,
 		canonical: resolved.hostRoot, staged: staged, writable: true, stageBaseline: leaseBaseline, reserved: true,
 	}
 	releaseReservation = false
@@ -530,7 +567,7 @@ func dependencyEnvironment(language string) map[string]string {
 	case "go":
 		return map[string]string{"GOPATH": "/project-deps/go", "GOMODCACHE": "/project-deps/go/pkg/mod"}
 	case "rust":
-		return map[string]string{"CARGO_HOME": "/project-deps/cargo", "CARGO_TARGET_DIR": "/project-deps/cargo-target"}
+		return map[string]string{"CARGO_HOME": "/project-deps/cargo"}
 	case "java":
 		return map[string]string{"MAVEN_OPTS": "-Dmaven.repo.local=/project-deps/maven", "GRADLE_USER_HOME": "/project-deps/gradle"}
 	default:
@@ -538,15 +575,8 @@ func dependencyEnvironment(language string) map[string]string {
 	}
 }
 
-func readOnlyProjectDependencyMounts(persistRoot, dependencyRoot string) map[string]string {
-	mounts := map[string]string{dependencyRoot: "/project-deps:ro"}
-	// The Docker pool normally exposes these shared download/build caches as
-	// writable. Import-only runs override the same host paths as read-only, so
-	// they cannot grow /persist and do not need a full-tree quota guard.
-	for _, cache := range []string{"pip-cache", "go-cache", "npm-cache"} {
-		mounts[filepath.Join(persistRoot, cache)] = "/persist/" + cache + ":ro"
-	}
-	return mounts
+func readOnlyProjectDependencyMounts(dependencyRoot string) map[string]string {
+	return map[string]string{dependencyRoot: "/project-deps:ro"}
 }
 
 func (l *Lease) StartGuard(parent context.Context) *Guard {
@@ -598,6 +628,9 @@ func (m *Manager) newGuard(parent context.Context, userID string, quotaBytes int
 func (m *Manager) BeginOperation(parent context.Context, userID string, quotaBytes int64) (*Operation, error) {
 	if m == nil || strings.TrimSpace(userID) == "" {
 		return nil, nil
+	}
+	if _, err := m.ensureUserLayout(userID); err != nil {
+		return nil, err
 	}
 	gate := m.userGate(userID)
 	gate.Lock()
@@ -721,6 +754,11 @@ func (l *Lease) Release() {
 				invalidatesIdleMounts = true
 			}
 		}
+		if committed {
+			if bindErr := l.manager.writeCurrentBindingLocked(l.request, l.resolved); bindErr != nil {
+				slog.Warn("Project dependency current binding update failed", "user_id", l.request.UserID, "workspace_id", l.request.WorkspaceID, "error", bindErr)
+			}
+		}
 		if !committed {
 			if l.staged {
 				cleanupPaths = append(cleanupPaths, leaseRoot)
@@ -775,6 +813,9 @@ func (l *Lease) Release() {
 			delete(l.manager.activeUsers, l.request.UserID)
 		}
 		l.manager.mu.Unlock()
+		if committed && l.manager.pruneSupersededLocked(l.request, l.resolved) {
+			invalidatesIdleMounts = true
+		}
 		if l.reserved {
 			l.manager.releaseReservation(l.request.UserID, l.Key)
 		}
@@ -804,7 +845,7 @@ func (m *Manager) publishStagedLocked(lease *Lease) (string, string, error) {
 	if retiredGeneration == "" {
 		retiredGeneration = lease.Fingerprint.Digest
 	}
-	retiredRoot := filepath.Join(m.root, lease.request.UserID, "persist", retiredDir)
+	retiredRoot := filepath.Join(m.root, lease.request.UserID, cacheRootDir, retiredDir)
 	if err := os.MkdirAll(retiredRoot, 0700); err != nil {
 		return "", "", err
 	}
@@ -844,7 +885,7 @@ func (m *Manager) detachFailedCanonicalLocked(lease *Lease) (string, error) {
 	} else {
 		metadataErr = nil
 	}
-	retiredRoot := filepath.Join(m.root, lease.request.UserID, "persist", retiredDir)
+	retiredRoot := filepath.Join(m.root, lease.request.UserID, cacheRootDir, retiredDir)
 	if err := ensureRealDirectory(retiredRoot); err == nil {
 		failedPath, allocateErr := uniqueDependencyPath(retiredRoot, "failed-")
 		if allocateErr == nil {
@@ -963,30 +1004,7 @@ func (m *Manager) enforceLocked(userID string, quotaBytes, targetBytes, targetFi
 	if targetFiles < 0 {
 		targetFiles = 0
 	}
-	info := m.inspectLocked(userID, quotaBytes)
-	cutoff := time.Now().UTC().Add(-m.options.Retention)
-	evicted := false
-	for _, entry := range oldestEntries(info.Entries) {
-		if entry.Active {
-			continue
-		}
-		expired := m.options.Retention > 0 && !entry.LastUsed.IsZero() && entry.LastUsed.Before(cutoff)
-		overBytes := quotaBytes > 0 && info.UsedBytes > targetBytes
-		overFiles := info.ScanTruncated || info.UsedFiles > targetFiles
-		if !expired && !overBytes && !overFiles {
-			continue
-		}
-		if os.RemoveAll(entry.absPath) == nil {
-			info.UsedBytes = subtractFloorZero(info.UsedBytes, entry.SizeBytes)
-			info.UsedFiles = subtractFloorZero(info.UsedFiles, int64(entry.Files))
-			if entry.key != "" {
-				m.mu.Lock()
-				delete(m.mutations, entry.key)
-				m.mu.Unlock()
-			}
-			evicted = true
-		}
-	}
+	evicted := m.evictCacheV2Locked(userID, quotaBytes, targetBytes, targetFiles, m.options.Retention)
 	m.mu.Lock()
 	userActive := m.activeUsers[userID] > 0
 	m.mu.Unlock()
@@ -995,23 +1013,6 @@ func (m *Manager) enforceLocked(userID string, quotaBytes, targetBytes, targetFi
 			m.options.OnEvicted()
 		}
 		return
-	}
-	candidates, candidatesTruncated := m.legacyCandidates(filepath.Join(m.root, userID, "persist"))
-	if candidatesTruncated {
-		info.ScanTruncated = true
-	}
-	for _, candidate := range candidates {
-		expired := m.options.Retention > 0 && !candidate.lastUsed.IsZero() && candidate.lastUsed.Before(cutoff)
-		overBytes := quotaBytes > 0 && info.UsedBytes > targetBytes
-		overFiles := info.ScanTruncated || info.UsedFiles > targetFiles
-		if !expired && !overBytes && !overFiles {
-			continue
-		}
-		if os.RemoveAll(candidate.path) == nil {
-			info.UsedBytes = subtractFloorZero(info.UsedBytes, candidate.size)
-			info.UsedFiles = subtractFloorZero(info.UsedFiles, candidate.files)
-			evicted = true
-		}
 	}
 	if evicted && m.options.OnEvicted != nil {
 		m.options.OnEvicted()
@@ -1030,7 +1031,7 @@ func (m *Manager) Inspect(userID string, quotaBytes int64) Info {
 
 func (m *Manager) inspectLocked(userID string, quotaBytes int64) Info {
 	userRoot := filepath.Join(m.root, userID)
-	persistRoot := filepath.Join(userRoot, "persist")
+	persistRoot := filepath.Join(userRoot, cacheRootDir)
 	userUsage := m.directoryUsage(userRoot)
 	persistUsage := m.directoryUsage(persistRoot)
 	info := Info{
@@ -1087,7 +1088,7 @@ func (m *Manager) inspectLocked(userID string, quotaBytes int64) Info {
 				lastUsed = stat.ModTime().UTC()
 			}
 			info.Entries = append(info.Entries, Entry{
-				Path: filepath.ToSlash(relative), WorkspaceName: "Unattributed project cache",
+				Category: "dependency", Path: filepath.ToSlash(relative), WorkspaceName: "Unattributed project cache",
 				RuntimeID: parts[1], Language: parts[2], Digest: parts[3], DigestSource: "unknown",
 				SizeBytes: entryUsage.bytes, Files: entryFiles, LastUsed: lastUsed, Active: pathActive, Writing: pathActive,
 				Orphaned: true, Generation: readGeneration(path), HostPath: path, absPath: path,
@@ -1099,10 +1100,13 @@ func (m *Manager) inspectLocked(userID string, quotaBytes int64) Info {
 		}
 		relative, _ := filepath.Rel(persistRoot, path)
 		key := metadataKey(meta)
+		bindingRequest := Request{WorkspaceID: meta.WorkspaceID, RuntimeID: meta.RuntimeID, Language: meta.Language}
+		current := readCurrentDigest(persistRoot, bindingRequest) == meta.Digest
 		info.Entries = append(info.Entries, Entry{
-			Path: filepath.ToSlash(relative), WorkspaceID: meta.WorkspaceID, WorkspaceName: meta.WorkspaceName,
+			Category: "dependency", Path: filepath.ToSlash(relative), WorkspaceID: meta.WorkspaceID, WorkspaceName: meta.WorkspaceName,
 			RuntimeID: meta.RuntimeID, Language: meta.Language, Digest: meta.Digest, DigestSource: meta.DigestSource,
-			SizeBytes: entryUsage.bytes, Files: entryFiles, LastUsed: meta.LastUsed, Active: active[key], Writing: writing[key], Generation: readGeneration(path), HostPath: path, key: key, absPath: path,
+			SizeBytes: entryUsage.bytes, Files: entryFiles, LastUsed: meta.LastUsed, CreatedAt: meta.CreatedAt,
+			Current: current, Superseded: !current, Active: active[key], Writing: writing[key], Generation: readGeneration(path), HostPath: path, key: key, absPath: path,
 		})
 		if entryUsage.truncated {
 			break
@@ -1214,7 +1218,7 @@ func touchDependencyMetadata(root string, request Request) error {
 		return err
 	}
 	var meta metadata
-	if json.Unmarshal(data, &meta) != nil || meta.Schema != 1 || meta.UserID != request.UserID ||
+	if json.Unmarshal(data, &meta) != nil || meta.Schema != cacheSchema || meta.UserID != request.UserID ||
 		meta.WorkspaceID != request.WorkspaceID || meta.RuntimeID != request.RuntimeID || !strings.EqualFold(meta.Language, request.Language) {
 		return fmt.Errorf("project dependency metadata no longer matches its request")
 	}
@@ -1225,7 +1229,7 @@ func touchDependencyMetadata(root string, request Request) error {
 // AcquireRead retains the last published exact project/runtime/digest
 // namespace. A writer with a staging base does not block this immutable view.
 func (m *Manager) AcquireRead(request Request) (*ReadLease, Entry, bool, error) {
-	if m == nil || m.options.ScopeMode != "project-lock" {
+	if m == nil {
 		return nil, Entry{}, false, nil
 	}
 	gate := m.userGate(request.UserID)
@@ -1276,14 +1280,21 @@ func (m *Manager) lookupResolvedLocked(request Request, resolved resolvedCacheRe
 	if !hit {
 		return Entry{WorkspaceID: request.WorkspaceID, WorkspaceName: request.WorkspaceName, RuntimeID: request.RuntimeID, Language: request.Language, Digest: resolved.fingerprint.Digest, DigestSource: resolved.fingerprint.Source}, false, nil
 	}
+	if err := m.writeCurrentBindingLocked(request, resolved); err != nil {
+		slog.Warn("Project dependency current binding refresh failed", "user_id", request.UserID, "workspace_id", request.WorkspaceID, "error", err)
+	}
 	m.mu.Lock()
 	active := m.active[resolved.key] > 0
 	writing := m.writers[resolved.key] > 0
 	m.mu.Unlock()
+	id, err := cachev2.ReadPersistentCacheID(resolved.hostRoot)
+	if err != nil {
+		return Entry{}, false, err
+	}
 	return Entry{
-		Path: filepath.ToSlash(resolved.relative), WorkspaceID: meta.WorkspaceID, WorkspaceName: meta.WorkspaceName,
+		ID: id.String(), Category: "dependency", Path: filepath.ToSlash(resolved.relative), WorkspaceID: meta.WorkspaceID, WorkspaceName: meta.WorkspaceName,
 		RuntimeID: meta.RuntimeID, Language: meta.Language, Digest: meta.Digest, DigestSource: meta.DigestSource,
-		LastUsed: meta.LastUsed, Active: active, Writing: writing, Generation: readGeneration(resolved.hostRoot), HostPath: resolved.hostRoot,
+		LastUsed: meta.LastUsed, CreatedAt: meta.CreatedAt, Current: true, Active: active, Writing: writing, Generation: readGeneration(resolved.hostRoot), HostPath: resolved.hostRoot,
 		key: resolved.key, absPath: resolved.hostRoot,
 	}, true, nil
 }
@@ -1295,7 +1306,7 @@ func (m *Manager) Delete(userID, relative string) error {
 	gate := m.userGate(userID)
 	gate.Lock()
 	defer gate.Unlock()
-	persistRoot := filepath.Join(m.root, userID, "persist")
+	persistRoot := filepath.Join(m.root, userID, cacheRootDir)
 	target := filepath.Clean(filepath.Join(persistRoot, filepath.FromSlash(relative)))
 	managedRoot := filepath.Join(persistRoot, dependenciesDir)
 	if target == managedRoot || !strings.HasPrefix(target, managedRoot+string(filepath.Separator)) {
@@ -1328,6 +1339,12 @@ func (m *Manager) Delete(userID, relative string) error {
 		return err
 	}
 	if key != "" {
+		request := Request{WorkspaceID: meta.WorkspaceID, RuntimeID: meta.RuntimeID, Language: meta.Language}
+		if err := removeCurrentBindingIfMatches(persistRoot, request, meta.Digest); err != nil {
+			return err
+		}
+	}
+	if key != "" {
 		m.mu.Lock()
 		delete(m.mutations, key)
 		m.mu.Unlock()
@@ -1351,9 +1368,16 @@ func (m *Manager) DeleteWorkspace(userID, workspaceID string) error {
 		}
 	}
 	m.mu.Unlock()
-	target := filepath.Join(m.root, userID, "persist", dependenciesDir, safePart(workspaceID))
-	if err := os.RemoveAll(target); err != nil {
-		return err
+	cacheRoot := filepath.Join(m.root, userID, cacheRootDir)
+	for _, target := range []string{
+		filepath.Join(cacheRoot, dependenciesDir, safePart(workspaceID)),
+		filepath.Join(cacheRoot, incrementalDir, safePart(workspaceID)),
+		filepath.Join(cacheRoot, "artifacts", "results", safePart(workspaceID)),
+		filepath.Join(cacheRoot, bindingsDir, safePart(workspaceID)),
+	} {
+		if err := os.RemoveAll(target); err != nil {
+			return err
+		}
 	}
 	m.mu.Lock()
 	for key := range m.mutations {
@@ -1375,7 +1399,14 @@ func ensureCacheParents(managerRoot, userID string, resolved resolvedCacheReques
 	userRoot := filepath.Join(managerRoot, userID)
 	for _, directory := range []string{
 		filepath.Dir(managerRoot), managerRoot, userRoot, resolved.persistRoot,
+		filepath.Join(resolved.persistRoot, "artifacts"),
 		filepath.Join(resolved.persistRoot, dependenciesDir),
+		filepath.Join(resolved.persistRoot, "transactions"),
+		filepath.Join(resolved.persistRoot, stagingDir),
+		filepath.Join(resolved.persistRoot, "retired"),
+		filepath.Join(resolved.persistRoot, retiredDir),
+		filepath.Join(resolved.persistRoot, "registry"),
+		filepath.Join(resolved.persistRoot, bindingsDir),
 		filepath.Join(resolved.persistRoot, dependenciesDir, resolved.workspace),
 		filepath.Join(resolved.persistRoot, dependenciesDir, resolved.workspace, resolved.runtime),
 		filepath.Join(resolved.persistRoot, dependenciesDir, resolved.workspace, resolved.runtime, resolved.language),
@@ -1608,12 +1639,15 @@ func readValidMetadata(root string, request Request, fingerprint Fingerprint) (b
 	if json.Unmarshal(data, &meta) != nil {
 		return false, metadata{}
 	}
-	return meta.Schema == 1 && meta.UserID == request.UserID && meta.WorkspaceID == request.WorkspaceID &&
+	if _, err := cachev2.ReadPersistentCacheID(root); err != nil {
+		return false, metadata{}
+	}
+	return meta.Schema == cacheSchema && meta.UserID == request.UserID && meta.WorkspaceID == request.WorkspaceID &&
 		meta.RuntimeID == request.RuntimeID && strings.EqualFold(meta.Language, request.Language) && meta.Digest == fingerprint.Digest, meta
 }
 
 func metadataMatchesPath(meta metadata, userID string, parts []string) bool {
-	return len(parts) == 4 && meta.Schema == 1 && meta.UserID == userID && meta.Digest != "" &&
+	return len(parts) == 4 && meta.Schema == cacheSchema && meta.UserID == userID && meta.Digest != "" &&
 		safePart(meta.WorkspaceID) == parts[0] && safePart(meta.RuntimeID) == parts[1] &&
 		safePart(meta.Language) == parts[2] && meta.Digest == parts[3]
 }

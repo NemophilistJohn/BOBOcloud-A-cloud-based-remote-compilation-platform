@@ -1,7 +1,0 @@
-./auth.go
-./bolt_invite.go
-./bolt_session.go
-./bolt_user.go
-./invite.go
-./password.go
-./session.go

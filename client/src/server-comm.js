@@ -238,6 +238,7 @@
   // ──── HTTP communication ────
   // opts.quiet: 不把错误写入输出面板、返回 {success:false,error} 而非 null（供登录等 UI 场景使用）
   // opts.timeoutMs: abort the underlying fetch after the requested deadline.
+  // opts.signal: allow a caller to cancel superseded requests.
   BOBO.sendToServer = async function(action, data, opts) {
     opts = opts || {};
     data = data || {};
@@ -255,11 +256,22 @@
       if (data.hasOwnProperty(k)) payload[k] = data[k];
     }
     var timeoutMs = Number(opts.timeoutMs || 0);
-    var abortController = timeoutMs > 0 && typeof global.AbortController === 'function'
+    var externalSignal = opts.signal && typeof opts.signal === 'object' ? opts.signal : null;
+    var abortController = (timeoutMs > 0 || externalSignal) && typeof global.AbortController === 'function'
       ? new global.AbortController()
       : null;
     var timeoutHandle = null;
     var didTimeout = false;
+    var didCancel = false;
+    var externalAbortHandler = null;
+    if (externalSignal && abortController) {
+      externalAbortHandler = function() {
+        didCancel = true;
+        abortController.abort();
+      };
+      if (externalSignal.aborted) externalAbortHandler();
+      else if (typeof externalSignal.addEventListener === 'function') externalSignal.addEventListener('abort', externalAbortHandler, { once: true });
+    }
     if (abortController) {
       timeoutHandle = setTimeout(function() {
         didTimeout = true;
@@ -278,7 +290,7 @@
         method: 'POST',
         headers: headers,
         body: JSON.stringify(payload),
-        signal: abortController ? abortController.signal : undefined
+        signal: abortController ? abortController.signal : externalSignal || undefined
       });
       // Reverse proxies and TLS listeners can return plain text or HTML. Never
       // leak a JSON parser exception into the workspace/sync workflow.
@@ -330,12 +342,18 @@
         BOBO.updateRunOutput('Error communicating with server: ' + timeoutError);
         return null;
       }
+      if (didCancel || externalSignal && externalSignal.aborted) {
+        var cancelError = localizeServerError('The server request was cancelled.');
+        if (opts.quiet) return { success: false, error: cancelError, errorCode: 'transport_cancelled' };
+        return null;
+      }
       var localizedError = localizeServerError(error.message);
       if (opts.quiet) return { success: false, error: localizedError };
       BOBO.updateRunOutput('Error communicating with server: ' + localizedError);
       return null;
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (externalSignal && externalAbortHandler && typeof externalSignal.removeEventListener === 'function') externalSignal.removeEventListener('abort', externalAbortHandler);
     }
   };
 })(window);

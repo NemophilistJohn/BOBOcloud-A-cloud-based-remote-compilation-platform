@@ -19,10 +19,13 @@ type PackageCenterCapability struct {
 }
 
 type ProjectPackageInventory struct {
-	Status    string `json:"status"`
-	Detail    string `json:"detail,omitempty"`
-	Exact     bool   `json:"exact"`
-	CheckedAt int64  `json:"checkedAt,omitempty"`
+	Status           string `json:"status"`
+	Detail           string `json:"detail,omitempty"`
+	Exact            bool   `json:"exact"`
+	CheckedAt        int64  `json:"checkedAt,omitempty"`
+	CacheID          string `json:"cacheId,omitempty"`
+	DependencyDigest string `json:"dependencyDigest,omitempty"`
+	Generation       string `json:"generation,omitempty"`
 }
 
 type ProjectPackageInstalled struct {
@@ -49,6 +52,7 @@ type ProjectPackageCenterContext struct {
 	Sources                 []PackageCenterSource        `json:"sources"`
 	DefaultSource           string                       `json:"defaultSource,omitempty"`
 	SearchMode              string                       `json:"searchMode"`
+	CatalogTimeoutSeconds   int                          `json:"catalogTimeoutSeconds"`
 	OperationTimeoutSeconds int                          `json:"operationTimeoutSeconds"`
 	DefaultManifestPath     string                       `json:"defaultManifestPath,omitempty"`
 	Manifests               []ProjectEnvironmentManifest `json:"manifests"`

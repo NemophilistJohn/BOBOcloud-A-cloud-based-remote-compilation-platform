@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -182,12 +183,12 @@ func TestTerminalReadyPayloadAdvertisesSnapshotAndCapabilities(t *testing.T) {
 		RuntimeID: "python:3.11", DisplayName: "Python 3.11", Language: "python",
 		Version: "3.11", DockerImage: "python:3.11-slim",
 	}
-	payload := terminalReadyPayload("session", runtime, map[string]string{"kind": "personal"}, limits, true)
+	payload := terminalReadyPayload("session", runtime, map[string]string{"kind": "personal"}, limits, true, true)
 	if payload["type"] != "terminal.ready" || payload["protocol"] != terminalProtocolVersion || payload["snapshot"] != true {
 		t.Fatalf("terminal ready payload = %#v", payload)
 	}
 	capabilities, ok := payload["capabilities"].(map[string]bool)
-	if !ok || !capabilities["isolatedWorkspace"] || !capabilities["tty"] || capabilities["resize"] {
+	if !ok || !capabilities["isolatedWorkspace"] || !capabilities["tty"] || capabilities["resize"] || !capabilities["packageIntents"] {
 		t.Fatalf("terminal capabilities = %#v", payload["capabilities"])
 	}
 	environment, ok := payload["environment"].(map[string]string)
@@ -375,13 +376,56 @@ func TestTerminalInputFallbackNormalizesCarriageReturns(t *testing.T) {
 }
 
 func TestTerminalShellCommandSizesTheSamePTYUsedByTheShell(t *testing.T) {
-	command := terminalShellCommand(context.Background(), "container-id", terminalWorkspaceDir, 176, 44, true)
+	command := terminalShellCommand(context.Background(), "container-id", terminalWorkspaceDir, 176, 44, true, true)
 	joined := strings.Join(command.Args, " ")
 	if !strings.Contains(joined, `COLUMNS=176`) || !strings.Contains(joined, `LINES=44`) {
 		t.Fatalf("terminal dimensions missing from docker exec args: %q", joined)
 	}
 	if !strings.Contains(joined, `stty cols "$COLUMNS" rows "$LINES"`) {
 		t.Fatalf("terminal PTY is not sized before starting the shell: %q", joined)
+	}
+	if !strings.Contains(joined, terminalPackageShimRoot+`/bin:$PATH`) {
+		t.Fatalf("terminal package shim is not first on PATH: %q", joined)
+	}
+	legacy := terminalShellCommand(context.Background(), "container-id", terminalWorkspaceDir, 120, 30, true, false)
+	if strings.Contains(strings.Join(legacy.Args, " "), terminalPackageShimRoot) {
+		t.Fatalf("non-negotiating client unexpectedly received the package shim: %q", legacy.Args)
+	}
+}
+
+func TestTerminalAttachedProcessHelper(t *testing.T) {
+	if os.Getenv("BOBOCLOUD_TERMINAL_PROCESS_HELPER") != "1" {
+		return
+	}
+	for {
+		time.Sleep(time.Second)
+	}
+}
+
+func TestTerminalStopBeforeStreamingActuallyEndsAttachedProcess(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=^TestTerminalAttachedProcessHelper$")
+	command.Env = append(os.Environ(), "BOBOCLOUD_TERMINAL_PROCESS_HELPER=1")
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stopTerminalShellBeforeStreaming(command, nil, "")
+	if command.ProcessState == nil {
+		t.Fatalf("attached terminal process survived stop: %#v", command.ProcessState)
+	}
+}
+
+func TestTerminalExitPayloadNeverClaimsIntentWasPublished(t *testing.T) {
+	for _, cleanupConfirmed := range []bool{false, true} {
+		payload := terminalExitPayload("closed", 0, 1500*time.Millisecond, cleanupConfirmed, "intent-id")
+		if payload["packageIntentPending"] != true || payload["packageIntentId"] != "intent-id" {
+			t.Fatalf("pending intent was lost: %#v", payload)
+		}
+		if payload["dependenciesChanged"] != false || payload["environmentChanged"] != false || payload["generation"] != "" || payload["dependencyDigest"] != "" {
+			t.Fatalf("terminal exit claimed an unpublished dependency change: %#v", payload)
+		}
+		if payload["cleanupConfirmed"] != cleanupConfirmed {
+			t.Fatalf("cleanup gate changed: %#v", payload)
+		}
 	}
 }
 

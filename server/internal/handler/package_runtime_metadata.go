@@ -88,6 +88,7 @@ func (provider *DockerImageRuntimeMetadataProvider) resolve(ctx context.Context,
 	key := strings.TrimSpace(runtimeID) + "\x00" + strings.TrimSpace(image)
 	now := provider.now()
 	provider.mu.Lock()
+	previous, hasPrevious := provider.cache[key]
 	if cached, ok := provider.cache[key]; !fresh && ok && now.Before(cached.expiresAt) {
 		provider.mu.Unlock()
 		return cached.metadata
@@ -115,11 +116,18 @@ func (provider *DockerImageRuntimeMetadataProvider) resolve(ctx context.Context,
 			metadata = inspected
 			cacheTTL = provider.ttl
 		}
+	} else if !fresh && hasPrevious && strings.TrimSpace(previous.metadata.ImageID) != "" {
+		// A transient Docker inspect failure must not manufacture a second cache
+		// identity for the same mutable image tag. Normal consumers may retain the
+		// last trusted image ID briefly; fresh package transactions fail closed.
+		metadata = previous.metadata
 	}
 
 	provider.mu.Lock()
 	call.metadata = metadata
-	provider.cache[key] = runtimeMetadataCacheEntry{metadata: metadata, expiresAt: provider.now().Add(cacheTTL)}
+	if strings.TrimSpace(metadata.ImageID) != "" || !hasPrevious {
+		provider.cache[key] = runtimeMetadataCacheEntry{metadata: metadata, expiresAt: provider.now().Add(cacheTTL)}
+	}
 	delete(provider.inFlight, key)
 	close(call.done)
 	provider.mu.Unlock()
@@ -165,6 +173,9 @@ func resolvedRuntimeFingerprint(ctx context.Context, provider RuntimeMetadataPro
 	if provider != nil {
 		metadata = provider.Resolve(ctx, runtimeID, image, configuredVersion)
 	}
+	if provider != nil && strings.TrimSpace(image) != "" && strings.TrimSpace(metadata.ImageID) == "" {
+		return ""
+	}
 	return personalCacheRuntimeFingerprint(runtimeID, image, metadata.ImageID)
 }
 
@@ -178,6 +189,9 @@ func resolvedRuntimeFingerprintFresh(ctx context.Context, provider RuntimeMetada
 		metadata = freshProvider.ResolveFresh(ctx, runtimeID, image, configuredVersion)
 	} else if provider != nil {
 		metadata = provider.Resolve(ctx, runtimeID, image, configuredVersion)
+	}
+	if provider != nil && strings.TrimSpace(image) != "" && strings.TrimSpace(metadata.ImageID) == "" {
+		return ""
 	}
 	return personalCacheRuntimeFingerprint(runtimeID, image, metadata.ImageID)
 }

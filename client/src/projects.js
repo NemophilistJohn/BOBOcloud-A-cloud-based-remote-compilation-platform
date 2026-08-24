@@ -28,24 +28,7 @@
     '#e06c75', '#56b6c2', '#d19a66', '#ff6b9d',
     '#7ee787', '#79c0ff', '#f0883e', '#a371f7'
   ];
-  var LANG_COLORS = {
-    python: '#61afef', go: '#56b6c2', rust: '#e06c75',
-    java: '#e5c07b', analysis: '#c678dd', other: '#abb2bf'
-  };
   var FREE_COLOR = 'rgba(255,255,255,0.06)';
-
-  function cacheActivityRank(entry) {
-    if (entry && entry.writing) return 2;
-    return entry && entry.active ? 1 : 0;
-  }
-
-  function compareCacheEntries(a, b) {
-    if (cacheActivityRank(a) !== cacheActivityRank(b)) return cacheActivityRank(b) - cacheActivityRank(a);
-    if ((b.last_used || 0) !== (a.last_used || 0)) return (b.last_used || 0) - (a.last_used || 0);
-    if ((b.size_bytes || 0) !== (a.size_bytes || 0)) return (b.size_bytes || 0) - (a.size_bytes || 0);
-    return String(a.name || '').localeCompare(String(b.name || ''));
-  }
-
   function resolveProjectDisplayName(project, names) {
     project = project || {};
     names = names || {};
@@ -53,92 +36,10 @@
     return serverName || names[project.key] || project.key || '';
   }
 
-  function organizeCacheGroups(cacheGroups) {
-    var projectsByKey = Object.create(null);
-    var projectOrder = [];
-    var shared = [];
-    var totalBytes = 0;
-    var activeCount = 0;
-    var writingCount = 0;
-    var analysisCount = 0;
-    var snapshotCount = 0;
-    var itemCount = 0;
-
-    (Array.isArray(cacheGroups) ? cacheGroups : []).forEach(function(group) {
-      (Array.isArray(group.modules) ? group.modules : []).forEach(function(source) {
-        var entry = Object.assign({}, source, {
-          language: group.language || 'other',
-          language_label: group.label || group.language || 'Other'
-        });
-        var size = Number(entry.size_bytes) || 0;
-        totalBytes += Math.max(0, size);
-        itemCount += 1;
-        if (entry.writing || entry.active) activeCount += 1;
-        if (entry.writing) writingCount += 1;
-        else if (entry.active) analysisCount += 1;
-
-        if (entry.kind !== 'project-dependency') {
-          shared.push(entry);
-          return;
-        }
-
-        snapshotCount += 1;
-        var workspaceID = String(entry.workspace_id || '');
-        var projectName = String(entry.project_name || entry.name || '');
-        var key = workspaceID ? 'workspace:' + workspaceID : 'name:' + (projectName || '__unattributed__');
-        var project = projectsByKey[key];
-        if (!project) {
-          project = projectsByKey[key] = {
-            key: key,
-            workspaceID: workspaceID,
-            name: projectName,
-            orphaned: Boolean(entry.orphaned || (!workspaceID && !projectName)),
-            entries: [],
-            sizeBytes: 0,
-            activeCount: 0,
-            writingCount: 0,
-            analysisCount: 0,
-            lastUsed: 0
-          };
-          projectOrder.push(project);
-        }
-        project.entries.push(entry);
-        project.sizeBytes += Math.max(0, size);
-        if (entry.writing || entry.active) project.activeCount += 1;
-        if (entry.writing) project.writingCount += 1;
-        else if (entry.active) project.analysisCount += 1;
-        project.lastUsed = Math.max(project.lastUsed, Number(entry.last_used) || 0);
-        project.orphaned = project.orphaned || Boolean(entry.orphaned);
-      });
-    });
-
-    projectOrder.forEach(function(project) { project.entries.sort(compareCacheEntries); });
-    projectOrder.sort(function(a, b) {
-      if (Boolean(a.writingCount) !== Boolean(b.writingCount)) return a.writingCount ? -1 : 1;
-      if (Boolean(a.activeCount) !== Boolean(b.activeCount)) return a.activeCount ? -1 : 1;
-      if (b.lastUsed !== a.lastUsed) return b.lastUsed - a.lastUsed;
-      if (b.sizeBytes !== a.sizeBytes) return b.sizeBytes - a.sizeBytes;
-      return String(a.name || '').localeCompare(String(b.name || ''));
-    });
-    shared.sort(compareCacheEntries);
-
-    return {
-      projects: projectOrder,
-      shared: shared,
-      totalBytes: totalBytes,
-      activeCount: activeCount,
-      writingCount: writingCount,
-      analysisCount: analysisCount,
-      snapshotCount: snapshotCount,
-      itemCount: itemCount
-    };
-  }
-
   // ──── Modal ────
   var projectNamesLoadVersion = 0;
   var projectsLoadVersion = 0;
-  var cacheLoadVersion = 0;
-  var cacheMutationPaths = Object.create(null);
+  var previouslyFocused = null;
 
   function projectViewIdentity() {
     var user = S.auth && S.auth.user ? S.auth.user : {};
@@ -149,27 +50,47 @@
     return Boolean($('projects-modal') && $('projects-modal').classList.contains('open'));
   }
 
-  function open() {
+  function open(options) {
+    options = options || {};
     // 清除可能残留的旧提示条幅
     var oldBanner = document.getElementById('quota-warn-banner');
     if (oldBanner) oldBanner.remove();
+    previouslyFocused = document.activeElement;
     $('projects-modal').classList.add('open');
+    $('projects-modal').setAttribute('aria-hidden', 'false');
+    switchTab(options.tab || 'projects');
     loadAll();
+    setTimeout(function() {
+      var activeTab = document.querySelector('.projects-tab.active');
+      if (activeTab) activeTab.focus();
+    }, 0);
   }
   function close() {
     projectNamesLoadVersion += 1;
     projectsLoadVersion += 1;
-    cacheLoadVersion += 1;
     $('projects-modal').classList.remove('open');
+    $('projects-modal').setAttribute('aria-hidden', 'true');
+    if (BOBO.cacheCenter) BOBO.cacheCenter.setVisible(false);
+    if (previouslyFocused && typeof previouslyFocused.focus === 'function') previouslyFocused.focus();
+    previouslyFocused = null;
   }
 
   function switchTab(name) {
-    document.querySelectorAll('.projects-tab').forEach(function(t) {
-      t.classList.toggle('active', t.dataset.ptab === name);
+    if (name !== 'projects' && name !== 'cache') return;
+    document.querySelectorAll('.projects-tab').forEach(function(tab) {
+      var active = tab.dataset.ptab === name;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-selected', active ? 'true' : 'false');
+      tab.tabIndex = active ? 0 : -1;
     });
-    document.querySelectorAll('.projects-pane').forEach(function(p) {
-      p.classList.toggle('active', p.id === 'projects-pane-' + name);
+    document.querySelectorAll('.projects-pane').forEach(function(pane) {
+      var active = pane.id === 'projects-pane-' + name;
+      pane.classList.toggle('active', active);
+      pane.hidden = !active;
     });
+    var card = document.querySelector('.projects-card');
+    if (card) card.classList.toggle('cache-active', name === 'cache');
+    if (BOBO.cacheCenter) BOBO.cacheCenter.setVisible(name === 'cache' && projectsModalOpen());
   }
 
   // ──── Load all data ────
@@ -183,7 +104,11 @@
     try { names = await window.api.readProjectNames() || {}; } catch (e) { names = {}; }
     if (requestVersion !== projectNamesLoadVersion || requestIdentity !== projectViewIdentity() || !projectsModalOpen()) return;
     localProjectNames = names;
-    await Promise.all([loadProjects(), loadCache()]);
+    if (BOBO.cacheCenter) BOBO.cacheCenter.setProjectNames(names);
+    await Promise.all([
+      loadProjects(),
+      BOBO.cacheCenter ? BOBO.cacheCenter.load({ force: true }).catch(function() {}) : Promise.resolve()
+    ]);
   }
 
   // ──── Projects tab ────
@@ -346,274 +271,53 @@
     });
   }
 
-  // ──── Cache tab ────
-  var cacheExpansion = Object.create(null);
-
-  function cacheMutationCount() {
-    return Object.keys(cacheMutationPaths).length;
-  }
-
-  function syncCacheMutationControls(path) {
-    var pending = cacheMutationCount() > 0;
-    var refresh = $('projects-refresh');
-    if (refresh) refresh.disabled = pending;
-    if (!path || !$('cache-tree')) return;
-    $('cache-tree').querySelectorAll('.cache-del').forEach(function(control) {
-      if (control.dataset.path === path && cacheMutationPaths[path]) control.disabled = true;
-    });
-  }
-
-  function beginCacheMutation(path) {
-    if (!path || cacheMutationPaths[path]) return false;
-    cacheMutationPaths[path] = true;
-    cacheLoadVersion += 1;
-    syncCacheMutationControls(path);
-    return true;
-  }
-
-  function finishCacheMutation(path) {
-    delete cacheMutationPaths[path];
-    syncCacheMutationControls(path);
-    return cacheMutationCount() === 0;
-  }
-
-  function cacheIcon(name, fallback) {
-    return BOBO.icons && BOBO.icons[name] ? BOBO.icons[name] : (fallback || '');
-  }
-
-  function cacheLocale() {
-    var locale = BOBO.i18n && BOBO.i18n.getActive ? BOBO.i18n.getActive() : 'en';
-    if (locale === 'ja') return 'ja-JP';
-    return locale === 'zh-CN' ? 'zh-CN' : 'en-US';
-  }
-
-  function formatCacheDate(value) {
-    var timestamp = Number(value) || 0;
-    if (!timestamp) return t('Never used');
-    try {
-      return new Intl.DateTimeFormat(cacheLocale(), {
-        year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-      }).format(new Date(timestamp));
-    } catch (error) {
-      return new Date(timestamp).toLocaleString();
-    }
-  }
-
-  function cacheLanguageMeta(entry) {
-    var label = t(entry.language_label || entry.language || 'Other');
-    var color = LANG_COLORS[entry.language] || '#abb2bf';
-    return '<span class="cache-runtime-language"><span class="cache-language-dot" style="background:' + color + '"></span>' + esc(label) + '</span>';
-  }
-
-  function cacheDeleteButton(entry, label) {
-    var writing = Boolean(entry.writing);
-    var serviceActive = Boolean(entry.active) && !writing;
-    var title = writing ? t('Cache is being updated')
-      : serviceActive ? t('Delete cache and stop service') : t('Delete cache');
-    return '<button type="button" class="cache-del" data-path="' + esc(entry.path) + '" data-name="' + esc(label) +
-      '" data-kind="' + esc(entry.kind || '') + '" data-active="' + (serviceActive ? 'true' : 'false') +
-      '" data-writing="' + (writing ? 'true' : 'false') + '" title="' + esc(title) + '" aria-label="' + esc(title) + '"' +
-      (writing ? ' disabled' : '') + '>' + cacheIcon('trash', esc(t('Delete'))) + '</button>';
-  }
-
-  function renderCachePackages(entry) {
-    if (entry.kind !== 'project-dependency') return '';
-    var packages = Array.isArray(entry.packages) ? entry.packages.slice() : [];
-    packages.sort(function(a, b) { return String(a.name || '').localeCompare(String(b.name || '')); });
-    var ready = entry.inventory_status === 'ready' && entry.inventory_exact;
-    var heading = '<div class="cache-package-heading"><span>' + cacheIcon('package') + esc(t('Installed packages')) +
-      '</span><strong>' + packages.length + '</strong></div>';
-    if (!ready && packages.length === 0) {
-      return '<div class="cache-package-section unavailable">' + heading +
-        '<div class="cache-package-notice"><strong>' + esc(t('Package inventory unavailable')) + '</strong>' +
-        (entry.inventory_detail ? '<small>' + esc(entry.inventory_detail) + '</small>' : '') + '</div></div>';
-    }
-    if (packages.length === 0) {
-      return '<div class="cache-package-section">' + heading + '<div class="cache-package-notice">' + esc(t('No installed packages')) + '</div></div>';
-    }
-    var rows = packages.map(function(packageInfo) {
-      var imports = Array.isArray(packageInfo.imports) ? packageInfo.imports.filter(Boolean) : [];
-      return '<div class="cache-package-row" data-package="' + esc(packageInfo.name) + '">' +
-        '<span class="cache-package-identity"><strong>' + esc(packageInfo.name) + '</strong>' +
-          (imports.length ? '<small>' + esc(t('Imports: {names}', { names: imports.join(', ') })) + '</small>' : '') + '</span>' +
-        '<code class="cache-package-version">' + esc(packageInfo.version || t('Unknown')) + '</code>' +
-        '<span class="cache-package-storage"><strong>' + fmt(packageInfo.size_bytes || 0) + '</strong><small>' +
-          esc(t('{count} files', { count: packageInfo.files || 0 })) + '</small></span></div>';
-    }).join('');
-    var readOnlyNotice = '<div class="cache-package-notice"><strong>' + esc(t('Package inventory is read-only')) + '</strong>' +
-      (entry.inventory_detail ? '<small>' + esc(entry.inventory_detail) + '</small>' : '') + '</div>';
-    return '<div class="cache-package-section' + (ready ? '' : ' unavailable') + '">' + heading + readOnlyNotice + rows + '</div>';
-  }
-
-  function renderCacheEntry(entry, projectName) {
-    var isProjectDependency = entry.kind === 'project-dependency';
-    var digest = String(entry.digest || '');
-    var digestSource = entry.digest_source ? t(entry.digest_source) : t('Unknown source');
-    var runtime = entry.runtime_id || entry.language_label || entry.language || t('Unknown runtime');
-    var identity;
-    var deleteLabel;
-
-    if (isProjectDependency) {
-      identity = '<span class="cache-snapshot-title">' + cacheLanguageMeta(entry) + '<strong>' + esc(runtime) + '</strong></span>' +
-        '<span class="cache-snapshot-digest"><span>' + esc(t('Digest')) + '</span> <code>' + esc(digest ? digest.slice(0, 12) : t('Not available')) + '</code>' +
-        '<span class="cache-digest-source">' + esc(digestSource) + '</span></span>';
-      deleteLabel = (projectName || entry.project_name || entry.name || t('Unattributed project cache')) + ' / ' + runtime +
-        (digest ? ' / ' + digest.slice(0, 12) : '');
-    } else {
-      var kind = entry.kind === 'legacy-cache' ? t('Legacy shared download cache') : t('System cache');
-      identity = '<span class="cache-snapshot-title"><strong>' + esc(t(entry.name || 'Cache')) + '</strong></span>' +
-        '<span class="cache-snapshot-digest">' + cacheLanguageMeta(entry) + '<span>' + esc(kind) + '</span></span>';
-      deleteLabel = t(entry.name || 'Cache');
-    }
-
-    var stateClass = entry.writing ? ' writing' : entry.active ? ' analysis' : '';
-    var stateLabel = entry.writing ? t('Updating') : entry.active ? t('Service in use') : t('Available');
-    return '<div class="cache-snapshot-block" data-cache-path="' + esc(entry.path) + '">' +
-      '<div class="cache-snapshot-row">' +
-        '<span class="cache-snapshot-identity">' + identity + '</span>' +
-        '<span class="cache-snapshot-state' + stateClass + '"><span></span>' + esc(stateLabel) + '</span>' +
-        '<span class="cache-snapshot-used">' + esc(formatCacheDate(entry.last_used)) + '</span>' +
-        '<span class="cache-snapshot-storage"><strong>' + fmt(entry.size_bytes || 0) + '</strong><small>' + (entry.files || 0) + ' ' + esc(t('Files')) + '</small></span>' +
-        cacheDeleteButton(entry, deleteLabel) +
-      '</div>' + renderCachePackages(entry) +
-    '</div>';
-  }
-
-  function renderCacheColumns() {
-    return '<div class="cache-list-columns" aria-hidden="true">' +
-      '<span>' + esc(t('Runtime and digest')) + '</span><span>' + esc(t('Status')) + '</span>' +
-      '<span>' + esc(t('Last used')) + '</span><span>' + esc(t('Storage')) + '</span><span></span></div>';
-  }
-
-  function renderProjectCache(project, index) {
-    var panelID = 'cache-project-' + index;
-    var expanded = Object.prototype.hasOwnProperty.call(cacheExpansion, project.key)
-      ? cacheExpansion[project.key]
-      : (index === 0 || project.activeCount > 0);
-    var projectName = project.name || t('Unattributed project cache');
-	var details = project.entries.length === 1
-	  ? t('1 snapshot')
-	  : t('{count} snapshots', { count: project.entries.length });
-    if (project.workspaceID) details += ' · ' + project.workspaceID.slice(0, 16);
-    var status = project.writingCount > 0
-      ? '<span class="cache-project-state writing">' + esc(t('Updating')) + '</span>'
-      : project.analysisCount > 0
-        ? '<span class="cache-project-state analysis">' + esc(t('Service in use')) + '</span>'
-        : project.orphaned ? '<span class="cache-project-state warning">' + esc(t('Unattributed')) + '</span>' : '';
-
-    return '<section class="cache-project-group">' +
-      '<button type="button" class="cache-project-header" data-cache-project="' + index + '" aria-expanded="' + (expanded ? 'true' : 'false') + '" aria-controls="' + panelID + '">' +
-        '<span class="cache-project-arrow">' + cacheIcon('chevronRight') + '</span>' +
-        '<span class="cache-project-icon">' + cacheIcon('folder') + '</span>' +
-        '<span class="cache-project-identity"><strong>' + esc(projectName) + '</strong><small>' + esc(details) + '</small></span>' +
-        status + '<span class="cache-project-size">' + fmt(project.sizeBytes) + '</span>' +
-      '</button>' +
-      '<div class="cache-project-body' + (expanded ? ' open' : '') + '" id="' + panelID + '">' +
-        project.entries.map(function(entry) { return renderCacheEntry(entry, projectName); }).join('') +
-      '</div>' +
-    '</section>';
-  }
-
-  async function loadCache() {
-    if (cacheMutationCount() > 0) return;
-    var requestVersion = ++cacheLoadVersion;
-    var requestIdentity = projectViewIdentity();
-    var treeEl = $('cache-tree');
-    treeEl.innerHTML = '<div class="cache-empty">' + esc(t('Loading...')) + '</div>';
-
-    var res = await BOBO.sendToServer('listCacheModules', {}, { quiet: true });
-    if (requestVersion !== cacheLoadVersion || requestIdentity !== projectViewIdentity() || !projectsModalOpen() || cacheMutationCount() > 0) return;
-    if (!res || !res.success) {
-      treeEl.innerHTML = '<div class="cache-empty">' + esc((res && res.error) || t('Failed to load')) + '</div>';
-      return;
-    }
-
-    var cache = organizeCacheGroups(res.cacheGroups || []);
-    if (cache.itemCount === 0) {
-      treeEl.innerHTML = '<div class="cache-empty"><strong>' + esc(t('No build cache found.')) + '</strong><span>' + esc(t('Run some code to populate cache.')) + '</span></div>';
-      return;
-    }
-
-    var html = '<div class="cache-overview">' +
-      '<span class="cache-overview-primary"><small>' + esc(t('Total cache')) + '</small><strong>' + fmt(cache.totalBytes) + '</strong></span>' +
-      '<span class="cache-overview-metric"><strong>' + cache.projects.length + '</strong><small>' + esc(t('Projects')) + '</small></span>' +
-      '<span class="cache-overview-metric"><strong>' + cache.snapshotCount + '</strong><small>' + esc(t('Dependency snapshots')) + '</small></span>' +
-      '<span class="cache-overview-metric active"><strong>' + cache.activeCount + '</strong><small>' + esc(t('In use')) + '</small></span>' +
-    '</div>';
-
-    if (cache.projects.length > 0) {
-      html += '<div class="cache-section-title"><span>' + esc(t('Project caches')) + '</span><small>' + cache.projects.length + ' ' + esc(t('Projects')) + '</small></div>' +
-        renderCacheColumns() + cache.projects.map(renderProjectCache).join('');
-    }
-    if (cache.shared.length > 0) {
-      html += '<div class="cache-section-title shared"><span>' + esc(t('Shared and system caches')) + '</span><small>' + cache.shared.length + ' ' + esc(t('Items')) + '</small></div>' +
-        renderCacheColumns() + '<section class="cache-shared-list">' + cache.shared.map(function(entry) { return renderCacheEntry(entry, ''); }).join('') + '</section>';
-    }
-
-    treeEl.innerHTML = html;
-
-    treeEl.querySelectorAll('.cache-project-header').forEach(function(header) {
-      header.addEventListener('click', function() {
-        var index = Number(header.dataset.cacheProject);
-        var project = cache.projects[index];
-        var body = $('cache-project-' + index);
-        if (!project || !body) return;
-        var expanded = header.getAttribute('aria-expanded') !== 'true';
-        header.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-        body.classList.toggle('open', expanded);
-        cacheExpansion[project.key] = expanded;
-      });
-    });
-
-    treeEl.querySelectorAll('.cache-del').forEach(function(btn) {
-      btn.addEventListener('click', async function(e) {
-        e.stopPropagation();
-        var path = btn.dataset.path;
-        var name = btn.dataset.name;
-        var isProjectDependency = btn.dataset.kind === 'project-dependency';
-        var serviceActive = btn.dataset.active === 'true' && btn.dataset.writing !== 'true';
-        var message = '"' + name + '"\n' + t(isProjectDependency ? 'This removes only this project dependency snapshot.' : 'This removes the cached data.');
-        if (serviceActive) message += '\n' + t('Deleting this cache will stop the service that is using it.');
-        var ok = await BOBO.confirm({
-          title: t('Delete cache'),
-          message: message,
-          confirmLabel: t('Delete'),
-          danger: true
-        });
-        if (!ok) return;
-        if (!beginCacheMutation(path)) return;
-        btn.classList.add('busy');
-        try {
-          var r = await BOBO.sendToServer('deleteCacheModule', { cachePath: path }, { quiet: true });
-          if (!r || !r.success) global.alert((r && r.error) || t('Delete failed'));
-        } catch (err) {
-          global.alert((err && err.message) || t('Delete failed'));
-        } finally {
-          btn.classList.remove('busy');
-          if (finishCacheMutation(path)) await loadAll();
-        }
-      });
-    });
-
-  }
-
   // ──── UI binding ────
   var uiBound = false;
+  function activeTabName() {
+    var active = document.querySelector('.projects-tab.active');
+    return active && active.dataset.ptab || 'projects';
+  }
+
+  function refreshActiveTab() {
+    if (activeTabName() === 'cache' && BOBO.cacheCenter) {
+      return BOBO.cacheCenter.load({ force: true }).catch(function() {});
+    }
+    return loadAll();
+  }
+
   function bindUI() {
     if (uiBound) return;
     uiBound = true;
 
+    if (BOBO.cacheCenter) BOBO.cacheCenter.init();
+
     $('projects-close-x').addEventListener('click', close);
     $('projects-close').addEventListener('click', close);
-    $('projects-refresh').addEventListener('click', loadAll);
+    $('projects-refresh').addEventListener('click', refreshActiveTab);
     $('projects-modal').addEventListener('click', function(e) {
       if (e.target === $('projects-modal')) close();
     });
     document.querySelectorAll('.projects-tab').forEach(function(tab) {
       tab.addEventListener('click', function() { switchTab(tab.dataset.ptab); });
+      tab.addEventListener('keydown', function(event) {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        event.preventDefault();
+        var next = tab.dataset.ptab === 'projects' ? 'cache' : 'projects';
+        switchTab(next);
+        var nextTab = document.querySelector('.projects-tab[data-ptab="' + next + '"]');
+        if (nextTab) nextTab.focus();
+      });
+    });
+    $('projects-modal').addEventListener('keydown', function(event) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close();
+      }
     });
     global.addEventListener('bobo:language-changed', function() {
-      if ($('projects-modal').classList.contains('open')) loadAll();
+      if (!projectsModalOpen()) return;
+      if (activeTabName() === 'cache' && BOBO.cacheCenter) BOBO.cacheCenter.render();
+      else loadProjects();
     });
     if (global.api && typeof global.api.onOpenServerProjects === 'function') {
       global.api.onOpenServerProjects(function() { open(); });
@@ -642,13 +346,11 @@
 
   BOBO.projects = {
     init: bindUI, open: open, openWithQuotaError: openWithQuotaError,
-    close: close, loadProjects: loadAll
+    close: close, loadProjects: loadAll, switchTab: switchTab
   };
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
-      organizeCacheGroups: organizeCacheGroups,
-      compareCacheEntries: compareCacheEntries,
       resolveProjectDisplayName: resolveProjectDisplayName
     };
   }

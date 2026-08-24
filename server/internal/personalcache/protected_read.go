@@ -10,7 +10,7 @@ import (
 // this form because they do not have the original workspace tree needed to
 // recompute the dependency digest, and merely listing caches is not cache use.
 func (m *Manager) AcquireEntryInspectionRead(userID, relative string) (*ReadLease, Entry, bool, error) {
-	if m == nil || m.options.ScopeMode != "project-lock" {
+	if m == nil {
 		return nil, Entry{}, false, nil
 	}
 	gate := m.userGate(userID)
@@ -41,7 +41,7 @@ func (m *Manager) AcquireEntryInspectionRead(userID, relative string) (*ReadLeas
 // AcquireProtectedRead retains an exact namespace and prevents a package
 // manager from mutating that same digest until the lease is released.
 func (m *Manager) AcquireProtectedRead(request Request) (*ReadLease, Entry, bool, error) {
-	if m == nil || m.options.ScopeMode != "project-lock" {
+	if m == nil {
 		return nil, Entry{}, false, nil
 	}
 	gate := m.userGate(request.UserID)
@@ -68,7 +68,7 @@ func (m *Manager) AcquireProtectedRead(request Request) (*ReadLease, Entry, bool
 // AcquireProtectedPackageInventoryRead is the Python inventory-verified form
 // of AcquireProtectedRead.
 func (m *Manager) AcquireProtectedPackageInventoryRead(request Request) (*ReadLease, Entry, InventoryInspection) {
-	if m == nil || m.options.ScopeMode != "project-lock" {
+	if m == nil {
 		inspection := InventoryInspection{State: "unavailable", Detail: "Project dependency cache inspection is unavailable"}
 		return nil, Entry{}, inspection
 	}

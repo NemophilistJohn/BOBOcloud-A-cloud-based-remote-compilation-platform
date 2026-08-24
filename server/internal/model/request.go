@@ -51,6 +51,11 @@ type Request struct {
 	CachePackageVersion    string `json:"cachePackageVersion,omitempty"`
 	CacheGeneration        string `json:"cacheGeneration,omitempty"`
 	CacheInventoryRevision string `json:"cacheInventoryRevision,omitempty"`
+	CacheID                string `json:"cacheId,omitempty"`
+	ExpectedRevision       string `json:"expectedRevision,omitempty"`
+	Scope                  string `json:"scope,omitempty"`
+	WorkspaceID            string `json:"workspaceId,omitempty"`
+	Category               string `json:"category,omitempty"`
 	MaxUses                int    `json:"maxUses,omitempty"`        // createInvite
 	ExpiresInHours         int    `json:"expiresInHours,omitempty"` // createInvite
 	Limit                  int    `json:"limit,omitempty"`          // listAuditLog

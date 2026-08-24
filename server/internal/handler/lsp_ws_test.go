@@ -379,14 +379,21 @@ type bridgePythonDependencyAdapter struct{}
 func (bridgePythonDependencyAdapter) Name() string        { return "bridge-python" }
 func (bridgePythonDependencyAdapter) Languages() []string { return []string{"python"} }
 func (bridgePythonDependencyAdapter) Resolve(ctx lsp.DependencyAdapterContext) (lsp.DependencyAdapterResult, error) {
-	if ctx.Paths.UserPersistRoot == "" {
+	packages := ""
+	if roots := ctx.Paths.Extra[lsp.DependencyRolePythonPackages]; len(roots) > 0 {
+		packages = roots[0]
+	} else if ctx.Paths.UserPersistRoot != "" {
+		packages = filepath.Join(ctx.Paths.UserPersistRoot, "pip-packages", "runtimes", "python-3.10")
+	}
+	if packages == "" {
 		return lsp.DependencyAdapterResult{}, nil
 	}
-	packages := filepath.Join(ctx.Paths.UserPersistRoot, "pip-packages", "runtimes", "python-3.10")
 	if info, err := os.Stat(packages); err != nil || !info.IsDir() {
 		return lsp.DependencyAdapterResult{}, nil
 	}
-	return lsp.DependencyAdapterResult{Mounts: []lsp.DependencyMountSpec{{Role: lsp.DependencyRolePythonPackages, HostPath: packages, ContainerPath: lsp.AnalysisDependenciesRoot + "/python/test-site-packages"}}}, nil
+	return lsp.DependencyAdapterResult{Mounts: []lsp.DependencyMountSpec{{
+		Role: lsp.DependencyRolePythonPackages, HostPath: packages, ContainerPath: lsp.AnalysisDependenciesRoot + "/python/test-site-packages",
+	}}}, nil
 }
 
 func (s *bridgeTestStarter) Start(_ context.Context, spec lsp.LaunchSpec) (lsp.Process, error) {
@@ -728,14 +735,28 @@ func TestLSPWebSocketDependencyAPIIndexControl(t *testing.T) {
 	cfg.LSPEnabled = true
 	cfg.LSPMaxMessageBytes = 1 << 20
 	cfg.LSPBandwidthPerMinuteBytes = 8 << 20
-	packages := filepath.Join(cfg.DataDir, "users", "default", "persist", "pip-packages", "runtimes", "python-3.10", "numpy")
-	if err := os.MkdirAll(packages, 0755); err != nil {
+	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
+	personalCache := personalcache.NewManager(cfg.DataDir, personalcache.Options{ReservationBytes: 8})
+	cacheRequest := personalcache.Request{
+		UserID: "default", WorkspaceID: lsp.StableWorkspaceIdentity("default", "", "", "", "project-key"), WorkspaceName: "Project",
+		RuntimeID: "python:3.10", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.10", "python:3.10-slim"), Language: "python", WorkspaceRoot: workspace,
+	}
+	dependencyLease, err := personalCache.Prepare(t.Context(), cacheRequest)
+	if err != nil {
 		t.Fatal(err)
 	}
+	writePythonDistInfo(t, filepath.Join(dependencyLease.HostRoot, "python"), "numpy", "2.1.0")
+	packages := filepath.Join(dependencyLease.HostRoot, "python", "numpy")
 	if err := os.WriteFile(filepath.Join(packages, "__init__.py"), []byte("def array(): pass\nclass Matrix: pass\n"), 0600); err != nil {
+		dependencyLease.Abort()
+		dependencyLease.Release()
 		t.Fatal(err)
 	}
-	handler := &WSHandler{Config: cfg, LSP: manager, DependencyViews: dependencyViews, Lifecycle: lifecycle.NewManager()}
+	dependencyLease.Release()
+	if !dependencyLease.Published() {
+		t.Fatal("exact project dependency generation was not published")
+	}
+	handler := &WSHandler{Config: cfg, LSP: manager, PersonalCache: personalCache, DependencyViews: dependencyViews, Lifecycle: lifecycle.NewManager()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/lsp", handler.HandleLSPWebSocket)
 	testServer := httptest.NewServer(mux)
