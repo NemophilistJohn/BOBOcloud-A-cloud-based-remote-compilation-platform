@@ -49,6 +49,7 @@ import '../src/workspace-settings.js';
 import '../src/editor-core.js';
 import '../src/document-views.js';
 import '../src/workspace.js';
+import '../src/agent-workbench.js';
 import '../src/plugin-details.js';
 import '../src/rclone-client.js';
 import '../src/run-config.js';
@@ -73,7 +74,6 @@ import '../src/account-profile.js';
 
 // AI modules.
 import '../src/ai-settings-schema.js';
-import '../src/ai-capabilities.js';
 import '../src/ai-prompts.js';
 import '../src/ai-service.js';
 import '../src/ai-context.js';

@@ -2,7 +2,7 @@
 
 <p align="right"><a href="README.md">English</a> | <strong>简体中文</strong></p>
 
-BOBOCLOUD 是一套由 Electron 桌面端和自托管 Go 服务组成的云开发工作台。源码保留并编辑在本地工作区；Linux 执行、Docker 运行时、项目任务、语言智能、断点调试、依赖环境、团队协作和可选 AI 能力由服务端提供。当前源码中的桌面客户端版本为 **2.6.1**，服务端版本为 **2.5.0**。
+BOBOCLOUD 是一套由 Electron 桌面端和自托管 Go 服务组成的云开发工作台。源码保留并编辑在本地工作区；Linux 执行、Docker 运行时、项目任务、语言智能、断点调试、依赖环境、团队协作和可选 AI 能力由服务端提供。当前源码中的桌面客户端版本为 **2.7.0**，服务端版本为 **2.5.0**。
 
 没有配置服务器时，应用仍然可以打开目录并编辑文件；云端运行、任务、调试、终端、依赖管理和团队功能则需要连接兼容的 BOBOCLOUD 服务。
 
@@ -178,15 +178,17 @@ LSP 与 DAP 相互独立。新客户端优先连接 HTTP(S) `:3100` 上的 `/lsp
 
 ![AI 控制中心](docs/screenshots/ai-control-center.png)
 
-AI 是可选能力，完全由用户自行配置。聊天与行内补全拥有独立的 Agent、Provider 配置、提示词、采样参数和上下文预算。传输层支持 OpenAI-compatible 和 Anthropic 风格配置、流式输出、取消、chat/completions/FIM 路由及响应上限。
+AI 是可选能力，完全由用户自行配置。内置 Chat 与行内补全仍是相互独立的能力，分别拥有 Provider 配置、提示词、采样参数和上下文预算。传输层支持 OpenAI-compatible 和 Anthropic 风格配置、流式输出、取消、chat/completions/FIM 路由及响应上限。
 
-在容量与安全限制内，上下文可以包含当前选区、活动文件、项目摘要和用户明确引用的文件。Markdown、代码复制和数学公式由宿主渲染。当前控制中心中的 Skills 与 MCP 注册表只是说明和规划界面；BOBOCLOUD 本身不会执行外部 skill 或 MCP 工具。
+BOBOCLOUD 2.7 新增了独立的 Plugin API 1.4 Agent 界面。[官方 AI Agent 插件](https://github.com/NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical)以编辑器同级选项卡和左侧会话栏呈现，支持 Chat/Goal 模式、四档思考强度、用户选择的本地 `SKILL.md`、只读/搜索工具，以及必须显式审批的工作区写入和本机进程。它通过不透明引用复用用户的 Chat 模型配置，但不共享 Chat 历史，也不替代行内补全。
+
+Agent 完全属于桌面用户端，不新增任何 Go 服务端接口。下载的 Agent 代码只在隔离 Worker 中运行；模型密钥、真实审批详情、工作区路径、文件操作和结构化 `shell: false` 进程全部由 Electron 主进程持有。完整 API、生命周期、安全和跨平台契约见[本地 AI Agent 插件架构](docs/ai-agent-plugin-architecture.md)。本版本不提供通用 MCP 运行时。
 
 ### 扩展
 
 扩展可以从已验证市场安装，也可以导入本地 `.boboplugin`。正式写入前会校验元数据、包字节、清单结构、引擎兼容性和逐文件 SHA-256。插件只能在不透明 sandbox Worker 中运行一个打包后的 ESM 入口，没有 DOM、Node.js、Electron、shell、环境变量、凭据、任意文件系统或通用网络权限。
 
-宿主 API 目前通过受控接口提供命令注册/执行、界面 contribution、只读服务、源代码管理 provider、文件装饰和有限 Git 读写。清单声明的权限安装后默认启用，但用户可以逐项撤销。官方在线市场只展示最新验证版；安装旧版本必须显式导入本地包。
+宿主 API 目前通过受控接口提供命令注册/执行、界面与 Agent contribution、只读服务、源代码管理 provider、文件装饰、有限 Git 操作、不透明模型请求、Skills、隔离存储和需审批的本机工具。清单声明的权限安装后默认启用，但用户可以逐项撤销。官方在线市场只展示最新验证版；安装旧版本必须显式导入本地包。
 
 ## 架构与信任边界
 

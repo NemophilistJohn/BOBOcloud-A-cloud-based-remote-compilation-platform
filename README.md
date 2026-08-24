@@ -2,7 +2,7 @@
 
 <p align="right"><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a></p>
 
-BOBOCLOUD is a desktop cloud-development workbench built with Electron and a self-hosted Go service. You keep and edit source code in a local workspace; the service supplies Linux execution, Docker runtimes, project tasks, language intelligence, debugging, dependency environments, team collaboration, and optional AI access. The current source identifies the desktop client as **2.6.1** and the server as **2.5.0**.
+BOBOCLOUD is a desktop cloud-development workbench built with Electron and a self-hosted Go service. You keep and edit source code in a local workspace; the service supplies Linux execution, Docker runtimes, project tasks, language intelligence, debugging, dependency environments, team collaboration, and optional AI access. The current source identifies the desktop client as **2.7.0** and the server as **2.5.0**.
 
 The application can open and edit a folder before a server is configured. Cloud Run, tasks, debugging, terminals, dependency management, and team features require a compatible BOBOCLOUD service.
 
@@ -178,15 +178,17 @@ Team projects add Git-backed server worktrees, invitations and membership, branc
 
 ![AI Control Center](docs/screenshots/ai-control-center.png)
 
-AI is optional and configured by the user. Chat and inline completion have separate agents, provider profiles, prompts, sampling controls, and context budgets. The transport supports OpenAI-compatible and Anthropic-style profiles, streaming, cancellation, chat/completions/FIM routing, and bounded responses.
+AI is optional and configured by the user. Built-in Chat and inline completion remain independent features with separate provider profiles, prompts, sampling controls, and context budgets. The transport supports OpenAI-compatible and Anthropic-style profiles, streaming, cancellation, chat/completions/FIM routing, and bounded responses.
 
-Context can include the current selection, active file, project summary, and explicitly referenced files, subject to size and safety limits. Markdown, copied code, and mathematical output are rendered by the host. The Skills and MCP registries in the current control center are descriptive/planning surfaces; they do not execute external skills or MCP tools inside BOBOCLOUD.
+BOBOCLOUD 2.7 adds a separate Plugin API 1.4 Agent surface. The [official AI Agent plugin](https://github.com/NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical) opens as an editor-sized tab with a session sidebar and supports Chat/Goal modes, four reasoning levels, selected local `SKILL.md` files, read/search tools, and approval-gated workspace writes or local processes. It reuses opaque references to the user's Chat model profiles but does not share Chat history or replace inline completion.
+
+Agent execution is entirely a desktop-client capability; it adds no Go service endpoint. Downloaded Agent code remains in an isolated Worker, while model credentials, canonical approval details, workspace paths, file operations, and structured `shell: false` processes stay in the Electron main process. See [Local AI Agent plugin architecture](docs/ai-agent-plugin-architecture.md) for the API, lifecycle, security, and cross-platform contract. A general MCP runtime is not part of this release.
 
 ### Extensions
 
 Extensions can be installed from the verified marketplace or imported as a local `.boboplugin` archive. Package metadata, exact bytes, manifest structure, engine compatibility, and per-file SHA-256 integrity are validated before promotion. A plugin runs one bundled ESM entry in an opaque sandbox Worker with no DOM, Node.js, Electron, shell, environment, credential, arbitrary filesystem, or general network access.
 
-The host API currently mediates command registration/execution, UI contributions, read-only services, source-control providers, file decorations, and bounded Git read/write operations. Declared permissions start enabled but remain individually revocable. The official marketplace exposes the latest verified release; older versions require explicit local archive import.
+The host API currently mediates command registration/execution, UI and Agent contributions, read-only services, source-control providers, file decorations, bounded Git operations, opaque model requests, Skills, isolated storage, and approval-gated local tools. Declared permissions start enabled but remain individually revocable. The official marketplace exposes the latest verified release; older versions require explicit local archive import.
 
 ## Architecture and trust boundaries
 

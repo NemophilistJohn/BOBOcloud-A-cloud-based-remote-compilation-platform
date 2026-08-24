@@ -11,6 +11,7 @@ import {
   createSourceControlCommandPayload,
   normalizeSourceControlFormValues
 } from '../core/source-control.js';
+import { createAgentCommandPayload } from '../core/agent.js';
 
 const BOBO = window.BOBO = window.BOBO || {};
 
@@ -182,6 +183,12 @@ BOBO.platform = Object.freeze({
     createCommandPayload: (descriptorId, actionId, values, details) => (
       createSourceControlCommandPayload(descriptorId, actionId, values, details)
     )
+  }),
+  agents: Object.freeze({
+    list: () => rendererPlatform.agents.list(),
+    get: (id) => rendererPlatform.agents.get(id),
+    onDidChange: (listener) => rendererPlatform.agents.onDidChange(listener),
+    createCommandPayload: (providerId, action, values) => createAgentCommandPayload(providerId, action, values)
   }),
   services: Object.freeze({
     has: (id) => rendererPlatform.services.has(id),

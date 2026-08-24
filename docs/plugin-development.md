@@ -1,6 +1,6 @@
 # BOBOCloud Plugin Development Guide
 
-This guide targets the BOBOCloud Plugin API `1.3.0` in BOBOCloud `2.6.1` and later.
+This guide targets BOBOCloud Plugin API `1.4.0`, whose minimum desktop host is BOBOCloud `2.7.0`.
 
 Plugins are installed locally. They run in an isolated sandbox and communicate with the workbench through a narrow, permission-gated API. A plugin is never given Node.js, Electron IPC, `window.api`, account credentials, the workspace path, or arbitrary DOM access.
 
@@ -29,8 +29,8 @@ hello-plugin/
   "description": "Adds a safe example command.",
   "version": "1.0.0",
   "engines": {
-    "bobocloud": ">=2.6.1",
-    "pluginApi": "^1.3.0"
+    "bobocloud": ">=2.7.0 <3.0.0",
+    "pluginApi": "^1.4.0"
   },
   "main": "dist/extension.js",
   "activationEvents": ["onStartupFinished"],
@@ -102,11 +102,11 @@ These checks are deliberately strict. They prevent path traversal, archive bombs
 | `displayName` | No | Human-readable name, up to 120 characters. Defaults to `id`. |
 | `description` | No | Human-readable summary, up to 500 characters. |
 | `version` | Yes | Strict semantic version, for example `1.2.3`. |
-| `engines.bobocloud` | Yes | Semver range supported by the BOBOCloud application, for example `>=2.6.1 <3.0.0`. |
-| `engines.pluginApi` | Yes | Semver range supported by the plugin API, for example `^1.3.0` for document views. |
+| `engines.bobocloud` | Yes | Semver range supported by the BOBOCloud application, for example `>=2.7.0 <3.0.0` for API 1.4 Agent packages. |
+| `engines.pluginApi` | Yes | Semver range supported by the plugin API, for example `^1.4.0` for Agent capabilities. |
 | `main` | Yes | One bundled `.js` or `.mjs` entry relative to the package root. |
-| `activationEvents` | No | Optional array of up to 64 bounded activation labels. API v1 stores these labels as metadata; enabled, verified packages currently activate after the workbench is ready. |
-| `permissions` | Yes | Unique capability ids. API 1.3.0 accepts the permissions listed in the API reference. Declared permissions are the package's hard capability ceiling and are enabled automatically after a verified install. |
+| `activationEvents` | Yes | Array of up to 64 bounded activation labels. Use `onStartupFinished` for the current eager post-workbench activation path. |
+| `permissions` | Yes | Unique capability ids. API 1.4.0 accepts the permissions listed in the API reference. Declared permissions are the package's hard capability ceiling and are enabled automatically after a verified install. |
 | `contributes` | No | Bounded declarative JSON contribution metadata. Schema 2 may declare `documentViewers`; each executable view still requires runtime registration. |
 | `localization` | No | Map from `default`, `en`, `zh-CN`, or `ja` to a package-relative JSON file. |
 | `integrity` | Yes | SHA-256 file coverage map described below. |
@@ -190,11 +190,11 @@ The host applies the following lifecycle guarantees:
 - Disabling, uninstalling, refreshing, or disposing the application deactivates the plugin and removes its command and contribution registrations.
 - `context.subscriptions.add(disposable)` owns a disposable for the plugin lifetime. The returned value must expose `dispose()`.
 
-Do not start background work during activation. API v1's optional activation event labels are validated and stored but do not yet provide lazy host dispatch; enabled, verified packages currently activate after the `bobo:ready` workbench event. Future releases may make the labels routing triggers.
+Do not start background work during activation. API v1 requires activation event labels in the manifest, but they are currently validated and stored rather than used for lazy host dispatch; enabled, verified packages activate after the `bobo:ready` workbench event. Future releases may make the labels routing triggers.
 
 ## 6. Runtime API
 
-The activation sandbox receives a frozen `context` object. All methods are asynchronous except adding a subscription. Arguments and results cross a JSON-like data boundary: plain objects, arrays, strings, booleans, finite numbers, and `null`. Functions, DOM nodes, class instances, accessors, circular data, and oversized payloads are rejected. TypeScript projects can reference [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts) for the exact API `1.3.0` declarations.
+The activation sandbox receives a frozen `context` object. All methods are asynchronous except adding a subscription. Arguments and results cross a JSON-like data boundary: plain objects, arrays, strings, booleans, finite numbers, and `null`. Functions, DOM nodes, class instances, accessors, circular data, and oversized payloads are rejected. TypeScript projects can reference [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts) for the exact API `1.4.0` declarations.
 
 ```ts
 interface Disposable { dispose(): void }
@@ -221,6 +221,11 @@ interface PluginContext {
   readonly documentViews: Readonly<{
     register(descriptor: { id: string; title: string }): Promise<Disposable>;
   }>;
+  readonly agents: PluginAgents;
+  readonly models: PluginModels;
+  readonly tools: PluginTools;
+  readonly skills: PluginSkills;
+  readonly storage: PluginStorage;
   readonly services: Readonly<{
     get(id: string): Promise<unknown>;
   }>;
@@ -264,7 +269,7 @@ The command registry is live in API v1. A command-palette integration is only ex
 - `mcp.providers`
 - `skills.providers`
 
-The host intentionally rejects executable file-decoration providers and debug-configuration providers. The static SCM decoration publisher is a separately permissioned, data-only exception. API v1 implements package validation, isolation, lifecycle cleanup, the command registry, and the read-only task snapshot. The contribution points above are accepted as declarative, lifecycle-managed data but are reserved for future workbench consumers: they do not yet create a visible UI, execute a task, start an MCP server, invoke an AI tool, or load a language provider. Mark feature usage as optional and provide a command fallback until the corresponding consumer is released.
+The host intentionally rejects executable file-decoration providers and debug-configuration providers. The static SCM decoration publisher is a separately permissioned, data-only exception. The contribution points above are accepted as declarative, lifecycle-managed data but remain reserved for their future workbench consumers: generic `ai.tools` and `skills.providers` declarations do not invoke the API 1.4 model or Skill brokers. Agent plugins must use the dedicated Agent context namespaces described below.
 
 ### Document views
 
@@ -314,9 +319,42 @@ API 1.2.0 introduced a permission-gated, local-only SCM boundary:
 
 The activation entry never receives a workspace root, local file handle, shell, environment, raw network capability, credential, DOM node, styling primitive, or arbitrary process arguments. Request only the exact permission needed: `sourceControl.register`, `fileDecorations.scm`, `scm.git.read`, or `scm.git.write`.
 
+### Agent modules
+
+API 1.4 treats an Agent as a dedicated plugin module, separate from native Chat and inline completion. BOBOCloud owns the trusted editor-sized Agent tab, session rail, state validation, model connections, filesystem/process brokers, approvals, Skill discovery, and local storage. The plugin owns the prompt, turn loop, goal planning, tool selection, localized session content, and complete state snapshots.
+
+An Agent package commonly requests:
+
+```json
+{
+  "engines": { "bobocloud": ">=2.7.0 <3.0.0", "pluginApi": "^1.4.0" },
+  "activationEvents": ["onStartupFinished"],
+  "permissions": [
+    "commands.register",
+    "agents.register",
+    "models.generate",
+    "workspace.read",
+    "workspace.write",
+    "process.execute",
+    "skills.read",
+    "storage.local"
+  ]
+}
+```
+
+Register every command first, then call `context.agents.register()` with one namespaced provider id, nine namespaced command ids, and the supported modes/reasoning efforts. Publish the session list and active session through the returned provider's `setState()`. The host supplies one bounded `AgentCommandPayload` to each command and renders only validated data. It never executes plugin HTML, CSS, DOM callbacks, or arbitrary UI code. A `send` command should start a tracked asynchronous turn, publish running state, and return promptly; do not await the full model/tool loop inside the command's 10-second invocation window.
+
+Use `context.models.list()` to populate the state with opaque configured model refs. A model key and endpoint remain in the host profile. Pass a unique `requestId` to `generate()` and call `context.models.cancel(requestId)` from the Agent's cancel command; the host scopes the actual request id to the calling plugin. Do not infer a provider's native reasoning parameter: expose `low`, `medium`, `high`, and `max` as portable orchestration choices and let the broker map only explicitly enabled provider options.
+
+The fixed read tools (`workspace_list`, `workspace_read`, and `workspace_search`) run immediately and require `workspace.read`. `workspace_write` and `process_run` only create expiring pending operations. Publish only the returned approval id as `{ approval: { id } }` in Agent state and stop that turn; plugin state cannot supply the tool, summary, risk, expiry, or decision details. The Worker intentionally has no approve, reject, decide, or process-cancel method. The trusted workbench describes the canonical pending operation, asks the user, calls the main-process decision/cancel API directly, then invokes the plugin's namespaced `approve` or `reject` command with `{ approvalId, approvalResult }`. Treat that command as a completion notification and resume orchestration from the canonical result; it is not the authority that performs the write or process. Writes use workspace-relative paths plus SHA-256 conflict checks. Processes use an allowlisted executable and structured argv with `shell: false`; no shell string, absolute cwd, custom environment, or tool installation is available. Handle missing executables and path/case differences across Windows, macOS, and Linux as normal failures.
+
+`context.skills` returns opaque ids and bounded `SKILL.md` metadata/content from supported user and workspace roots. Treat Skill text as untrusted instructions: selecting a Skill never grants a permission, and resulting actions still use the same broker and approval path. `context.storage` atomically replaces one plugin-private JSON object up to 8 MiB; use it for sessions and preferences, not secrets.
+
+See [Plugin API: Agent Platform](./plugin-api.md#agent-platform) and the SDK declaration for the full state, model, tool, Skill, storage, error, and command-payload shapes.
+
 ### Read-only host metadata
 
-`context.host.request()` is a narrow read-only metadata API. It is not a manifest permission and does not provide a general broker. API `1.3.0` accepts only these methods:
+`context.host.request()` is a narrow read-only metadata API. It is not a manifest permission and does not provide a general broker. API `1.4.0` accepts only these methods:
 
 - `host.getInfo` returns the plugin API version and the calling plugin's id and version.
 - `permissions.get` returns the calling plugin's requested and currently granted permissions.
@@ -339,8 +377,15 @@ Every permission must appear in `manifest.permissions`. After a verified install
 | `scm.git.write` | Call structured local SCM mutation operations. |
 | `documentViews.register` | Register a document viewer already authorized by schema-2 manifest metadata. |
 | `documents.read` | Read only the current user-opened document from that viewer through a scoped opaque handle. |
+| `agents.register` | Register a bounded host-rendered Agent provider and publish its state. |
+| `models.generate` | List opaque model refs, generate turns, and cancel this plugin's requests. |
+| `workspace.read` | Invoke bounded workspace list, read, and search tools. |
+| `workspace.write` | Request a pending write for the trusted workbench to decide. |
+| `process.execute` | Request a pending process for the trusted workbench to decide or cancel. |
+| `skills.read` | Discover and read bounded Skills through opaque ids. |
+| `storage.local` | Read and replace isolated plugin-private JSON state. |
 
-These ten permissions are valid in an API 1.3.0 manifest. Automatic enablement does not bypass the sandbox, the main-process broker, argument validation, ownership rules, or workspace scoping. Workspace enumeration and general access, networking, process execution, raw credentials, MCP, AI, task execution, and debugger capabilities are not requestable in API 1.3.0.
+These seventeen permissions are valid in an API 1.4.0 manifest. Automatic enablement does not bypass the sandbox, the main-process broker, argument validation, ownership rules, workspace scoping, or Agent approval. API 1.4 exposes only its named workspace and process tools; arbitrary filesystem access, shell commands, caller-defined environments, raw credentials, networking, MCP, cloud task execution, and debugger capabilities remain unavailable.
 
 ## 8. Security Model
 
@@ -354,6 +399,8 @@ The security model is part of the compatibility contract:
 - A document view uses a second opaque-origin iframe with `sandbox=allow-scripts`, a network-denying CSP, blocked browser connection APIs, no parent/workbench access, and no absolute path. It receives only verified source/resources and the selected file through a scoped MessageChannel broker.
 - Document sessions are bound to the IPC sender, plugin id, viewer id, workspace identity, file size, and modification time. The main process reauthorizes every chunk and closes sessions on tab/plugin/workspace/sender lifecycle events.
 - Main process policy validates installations, permissions, IPC sender identity, bounded RPC arguments, allowed service ids, document handles, and the structured local-SCM allowlist.
+- Agent brokers keep model credentials in the main process, expose only opaque model and Skill ids, reject workspace escapes and symlinks, and bind pending mutations to the plugin, active workspace identity, and expiry. Only the trusted renderer/preload/main path can describe, decide, or cancel them; the Worker API can only request them.
+- Agent process execution uses a fixed executable allowlist, argv arrays, `shell: false`, a relative workspace cwd, bounded output, and a bounded timeout; plugins cannot provide an environment object.
 - The renderer validates owned ids, message protocol version, data-only payloads, request timeouts, and reverse-order disposal.
 - The management UI sees only sanitized package metadata. It does not receive plugin source, internal installation paths, or secrets.
 
@@ -392,11 +439,13 @@ Before publishing a package:
 9. Test English, Simplified Chinese, and Japanese strings for any visible plugin contribution.
 10. Run the host repository's `npm test` when contributing changes to the Plugin API itself.
 11. For document views, verify the iframe lacks `allow-same-origin`, cannot read `window.parent`, `window.api`, or the network, and loses document access after permission revocation, disable, tab close, or workspace switch.
+12. For Agents, verify registration/state rejection, model cancellation, each permission revocation, absence of Worker approval methods, trusted write/process decisions and rejection, stale-workspace and file-conflict failures, Skill opacity, storage limits, and provider cleanup after disable/uninstall.
+13. Exercise Agent behavior on Windows, macOS, and Linux (or CI representatives), including executable availability, path separators, case sensitivity, cancellation, and process termination.
 
 ## 11. Compatibility and Publishing
 
 - Treat `engines.pluginApi` major versions as hard compatibility boundaries.
-- Prefer a conservative range such as `^1.3.0` when using document views; do not claim future API support before testing it.
+- Prefer a conservative range such as `^1.4.0` when using Agent capabilities; do not claim future API support before testing it.
 - Additive behavior may arrive in a plugin API minor version. Removed or changed behavior requires a new major API version.
 - Keep command ids, setting ids, contribution ids, and persisted data names stable after release.
 - The `.boboplugin` extension only identifies an installable package. It is not a signature or a trust endorsement.
@@ -413,4 +462,6 @@ Before publishing a package:
 | Activation fails | The entry is not a single ESM bundle or does not export `activate(context)`. | Build a self-contained `.js` or `.mjs` entry and export `activate`. |
 | A document opens as text | Its viewer was not declared and registered, lacks a permission, or the extension is disabled. | Check schema 2, the exact namespaced id, both document-view permissions, integrity, and enabled state. |
 | Command is not shown in the palette | The active command palette may not support disposable third-party registrations yet. | Keep the command registration, but expose a supported menu/contribution when that consumer is released. |
-| A privileged operation is unavailable | API v1 does not expose general filesystem, network, process, credential, MCP, AI, task, or debugger capabilities. | Do not rely on undocumented bridges; use only a named, permissioned broker. |
+| Agent does not appear | The plugin is disabled, lacks `agents.register`, failed activation, or registered an invalid descriptor/command namespace. | Review the plugin detail state and error, then verify all nine commands and the provider id use the plugin namespace. |
+| Model generation is unavailable | `models.generate` is missing/revoked or the selected opaque model profile is incomplete. | Restore the minimal permission or configure a local chat profile; never embed an API key in the plugin. |
+| A local Agent action is unavailable | The named tool permission is absent, the approval expired, the workspace changed, or the executable is unavailable. | Re-read current state, request a fresh operation, and handle platform-specific tool availability; do not use undocumented bridges. |

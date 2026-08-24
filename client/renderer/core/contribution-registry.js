@@ -15,6 +15,7 @@ export const ContributionPoint = Object.freeze({
   AI_TOOLS: 'ai.tools',
   MCP_PROVIDERS: 'mcp.providers',
   SKILL_PROVIDERS: 'skills.providers',
+  AGENTS: 'agents',
   // This is a data-only descriptor for a future trusted SCM sidebar. It is
   // intentionally distinct from file-decoration SCM state and from generic
   // webview-style contributions.

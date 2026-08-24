@@ -102,6 +102,7 @@ async function createHarness(t, options = {}) {
     dialog: options.dialog || { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
     shell: { openPath: async () => '' },
     getWindow: () => window,
+    agentBroker: options.agentBroker,
     getWorkspaceIdentity: () => ({ ...workspaceState }),
     resolveWorkspaceFile: (candidate) => {
       const filePath = path.resolve(candidate);
@@ -164,6 +165,111 @@ test('plugin packages install atomically, remain disabled, and receive declared 
     { code: 'plugins.rpc.service' }
   );
   assert.ok(harness.events.some((event) => event.channel === 'plugins:changed'));
+});
+
+test('Agent broker RPC denies Worker decisions while trusted approval IPC retains exact authority', async (t) => {
+  const calls = [];
+  const disposed = [];
+  const agentBroker = {
+    request: async (pluginId, method, args) => {
+      calls.push({ pluginId, method, args });
+      if (method === 'models.list') return { models: [] };
+      if (method === 'models.generate') return { content: 'done', reasoning: '', toolCalls: [], finishReason: 'stop', usage: null };
+      if (method === 'models.cancel') return { success: true, cancelled: true };
+      if (method === 'agent.tools.invoke') {
+        const process = args && args.tool === 'process_run';
+        return { approvalRequired: true, approval: { id: process ? 'approval-process' : 'approval-write', tool: args.tool } };
+      }
+      return {};
+    },
+    describeApproval: (pluginId, approvalId) => {
+      calls.push({ pluginId, method: 'describeApproval', args: { approvalId } });
+      if (approvalId === 'approval-write') {
+        return {
+          approvalId,
+          tool: 'workspace_write',
+          summary: 'Write src/app.js',
+          risk: 'write',
+          permission: 'workspace.write',
+          expiresAt: '2026-08-25T12:00:00.000Z',
+          details: { path: 'src/app.js', bytes: 4, contentPreview: 'next', contentTruncated: false }
+        };
+      }
+      return {
+        approvalId,
+        tool: 'process_run',
+        summary: 'Run node --version',
+        risk: 'execute',
+        permission: 'process.execute',
+        expiresAt: '2026-08-25T12:00:00.000Z',
+        details: { command: 'node', args: ['--version'], cwd: '.', timeoutMs: 10_000 }
+      };
+    },
+    decideApproval: async (pluginId, approvalId, approved) => {
+      calls.push({ pluginId, method: 'decideApproval', args: { approvalId, approved } });
+      return approved
+        ? { approved: true, path: 'src/app.js', sha256: 'a'.repeat(64) }
+        : { rejected: true, tool: 'workspace_write' };
+    },
+    cancelApproval: (pluginId, approvalId) => {
+      calls.push({ pluginId, method: 'cancelApproval', args: { approvalId } });
+      return { cancelled: true };
+    },
+    disposePlugin: (pluginId) => disposed.push(pluginId)
+  };
+  const harness = await createHarness(t, { agentBroker });
+  const sourceDirectory = path.join(harness.root, 'agent-package');
+  const extensionSource = 'export function activate() {}\n';
+  await fsp.mkdir(path.join(sourceDirectory, 'dist'), { recursive: true });
+  await fsp.writeFile(path.join(sourceDirectory, 'dist', 'extension.js'), extensionSource, 'utf8');
+  await fsp.writeFile(path.join(sourceDirectory, 'manifest.json'), JSON.stringify(makeManifest('1.0.0', extensionSource, {
+    permissions: ['agents.register', 'models.generate', 'workspace.read', 'workspace.write', 'process.execute']
+  }), null, 2), 'utf8');
+
+  await harness.controller.installFromPath(sourceDirectory);
+  await harness.controller.setEnabled('acme.sample-plugin', true);
+  assert.deepEqual(await harness.controller.rpc('acme.sample-plugin', 'models.list', {}), { models: [] });
+  assert.equal((await harness.controller.rpc('acme.sample-plugin', 'models.generate', {
+    modelRef: 'chat:model',
+    requestId: 'turn-1',
+    messages: [{ role: 'user', content: 'hello' }]
+  })).content, 'done');
+  assert.deepEqual(await harness.controller.rpc('acme.sample-plugin', 'models.cancel', { requestId: 'turn-1' }), {
+    success: true,
+    cancelled: true
+  });
+  assert.equal((await harness.controller.rpc('acme.sample-plugin', 'agent.tools.invoke', {
+    tool: 'workspace_write',
+    input: { path: 'src/app.js', content: 'next' }
+  })).approvalRequired, true);
+  assert.equal((await harness.controller.rpc('acme.sample-plugin', 'agent.tools.invoke', {
+    tool: 'process_run', input: { command: 'node', args: ['--version'] }
+  })).approval.id, 'approval-process');
+  for (const method of ['agent.tools.approve', 'agent.tools.reject', 'agent.tools.cancel']) {
+    await assert.rejects(
+      () => harness.controller.rpc('acme.sample-plugin', method, { approvalId: 'approval-process' }),
+      { code: 'plugins.rpc.denied' }
+    );
+  }
+
+  const trustedEvent = { sender: harness.window.webContents };
+  assert.equal((await harness.handlers.get('plugins:agent-approval-describe')(trustedEvent, {
+    pluginId: 'acme.sample-plugin', approvalId: 'approval-write'
+  })).permission, 'workspace.write');
+  assert.equal((await harness.handlers.get('plugins:agent-approval-decide')(trustedEvent, {
+    pluginId: 'acme.sample-plugin', approvalId: 'approval-write', approved: true
+  })).approved, true);
+  assert.deepEqual(await harness.handlers.get('plugins:agent-approval-cancel')(trustedEvent, {
+    pluginId: 'acme.sample-plugin', approvalId: 'approval-process'
+  }), { cancelled: true });
+
+  assert.deepEqual(calls.filter((call) => call.method.startsWith('models.')).map((call) => call.method), [
+    'models.list',
+    'models.generate',
+    'models.cancel'
+  ]);
+  await harness.controller.setEnabled('acme.sample-plugin', false);
+  assert.equal(disposed.includes('acme.sample-plugin'), true);
 });
 
 test('legacy permission state migrates installed plugins to declared default grants once', async (t) => {
@@ -453,6 +559,7 @@ test('plugin IPC surface is explicit and sender-bound', async (t) => {
     'plugins:list', 'plugins:get', 'plugins:install', 'plugins:enable', 'plugins:disable', 'plugins:uninstall',
     'plugins:grant', 'plugins:revoke', 'plugins:runtime-descriptors', 'plugins:load-entry', 'plugins:load-localization',
     'plugins:load-document-view', 'plugins:document-open', 'plugins:document-read', 'plugins:document-close', 'plugins:rpc',
+    'plugins:agent-approval-describe', 'plugins:agent-approval-decide', 'plugins:agent-approval-cancel',
     'plugins:open-folder', 'plugins:refresh'
   ];
   assert.deepEqual(Array.from(harness.handlers.keys()), expected);

@@ -12,7 +12,7 @@ const zlib = require('node:zlib');
 const { SCM_GIT_METHODS, createScmGitBroker } = require('./scm-git');
 const { createPluginDocumentBroker } = require('./plugin-documents');
 
-const PLUGIN_API_VERSION = '1.3.0';
+const PLUGIN_API_VERSION = '1.4.0';
 const PACKAGE_SCHEMA_VERSIONS = new Set([1, 2]);
 const STATE_SCHEMA_VERSION = 1;
 const PERMISSIONS_SCHEMA_VERSION = 2;
@@ -37,6 +37,7 @@ const MAX_LOCALIZATION_ENTRIES = 1024;
 const MAX_LOCALIZATION_KEY_LENGTH = 160;
 const MAX_LOCALIZATION_VALUE_LENGTH = 8192;
 const MAX_RPC_ARGUMENT_BYTES = 64 * 1024;
+const MAX_AGENT_RPC_ARGUMENT_BYTES = 1024 * 1024;
 
 const PluginPermission = Object.freeze({
   COMMANDS_REGISTER: 'commands.register',
@@ -48,7 +49,14 @@ const PluginPermission = Object.freeze({
   SCM_GIT_WRITE: 'scm.git.write',
   FILE_DECORATIONS_SCM: 'fileDecorations.scm',
   DOCUMENT_VIEWS_REGISTER: 'documentViews.register',
-  DOCUMENTS_READ: 'documents.read'
+  DOCUMENTS_READ: 'documents.read',
+  AGENTS_REGISTER: 'agents.register',
+  MODELS_GENERATE: 'models.generate',
+  WORKSPACE_READ: 'workspace.read',
+  WORKSPACE_WRITE: 'workspace.write',
+  PROCESS_EXECUTE: 'process.execute',
+  SKILLS_READ: 'skills.read',
+  STORAGE_LOCAL: 'storage.local'
 });
 
 const KNOWN_PERMISSIONS = new Set(Object.values(PluginPermission));
@@ -65,7 +73,8 @@ const KNOWN_CONTRIBUTION_POINTS = new Set([
   'languages',
   'ai.tools',
   'mcp.providers',
-  'skills.providers'
+  'skills.providers',
+  'agents'
 ]);
 const ALLOWED_FILE_EXTENSIONS = new Set([
   '.js', '.mjs', '.json', '.md', '.txt', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.css'
@@ -845,6 +854,7 @@ function createPluginController(options) {
   const getWindow = options.getWindow;
   const hostVersion = String(options.hostVersion || (typeof app.getVersion === 'function' ? app.getVersion() : '0.0.0'));
   const onDidChange = typeof options.onDidChange === 'function' ? options.onDidChange : () => {};
+  const agentBroker = options.agentBroker && typeof options.agentBroker.request === 'function' ? options.agentBroker : null;
   const pluginRoot = path.join(app.getPath('userData'), 'plugins');
   const registryPath = path.join(pluginRoot, REGISTRY_FILE);
   const permissionsPath = path.join(pluginRoot, PERMISSIONS_FILE);
@@ -915,6 +925,11 @@ function createPluginController(options) {
   }
 
   function emitChanged(reason) {
+    if (agentBroker && typeof agentBroker.disposePlugin === 'function') {
+      for (const record of records.values()) {
+        if (record.status !== 'enabled') agentBroker.disposePlugin(record.id);
+      }
+    }
     const payload = immutable({ reason, plugins: currentList() });
     const window = getWindow();
     if (window && !window.isDestroyed() && window.webContents && !window.webContents.isDestroyed()) {
@@ -1048,12 +1063,14 @@ function createPluginController(options) {
 
   async function refreshInternal(reason = 'manual') {
     await initialize();
-    const previousIds = documentBroker ? new Set(records.keys()) : null;
+    const previousIds = new Set(records.keys());
     await scanInstalled();
+    for (const id of previousIds) {
+      if (records.has(id)) continue;
+      if (documentBroker) documentBroker.closePlugin(id);
+      if (agentBroker && typeof agentBroker.disposePlugin === 'function') agentBroker.disposePlugin(id);
+    }
     if (documentBroker) {
-      for (const id of previousIds) {
-        if (!records.has(id)) documentBroker.closePlugin(id);
-      }
       for (const record of records.values()) {
         if (record.status !== 'enabled' || !record.integrity.valid) documentBroker.closePlugin(record.id);
       }
@@ -1211,6 +1228,17 @@ function createPluginController(options) {
         (permission === PluginPermission.DOCUMENT_VIEWS_REGISTER || permission === PluginPermission.DOCUMENTS_READ)) {
       documentBroker.closePlugin(pluginId);
     }
+    if (granted !== true && agentBroker && typeof agentBroker.disposePlugin === 'function' && [
+      PluginPermission.AGENTS_REGISTER,
+      PluginPermission.MODELS_GENERATE,
+      PluginPermission.WORKSPACE_READ,
+      PluginPermission.WORKSPACE_WRITE,
+      PluginPermission.PROCESS_EXECUTE,
+      PluginPermission.SKILLS_READ,
+      PluginPermission.STORAGE_LOCAL
+    ].includes(permission)) {
+      agentBroker.disposePlugin(pluginId);
+    }
     permissions.initialized[pluginId] = true;
     await persistPermissions();
     await refreshInternal(granted === true ? 'permission-granted' : 'permission-revoked');
@@ -1222,6 +1250,7 @@ function createPluginController(options) {
     const pluginId = assertSafePluginId(id);
     if (!records.has(pluginId)) throw pluginError('plugins.notFound', 'Plugin is not installed.');
     if (documentBroker) documentBroker.closePlugin(pluginId);
+    if (agentBroker && typeof agentBroker.disposePlugin === 'function') agentBroker.disposePlugin(pluginId);
     const destination = packagePath(pluginId);
     const backup = path.join(trashRoot, pluginId + '.' + crypto.randomUUID());
     await fsp.rename(destination, backup);
@@ -1399,10 +1428,10 @@ function createPluginController(options) {
     });
   }
 
-  function validateRpcArguments(args) {
+  function validateRpcArguments(args, maximumBytes = MAX_RPC_ARGUMENT_BYTES) {
     try {
       const encoded = JSON.stringify(args === undefined ? null : args);
-      if (Buffer.byteLength(encoded, 'utf8') > MAX_RPC_ARGUMENT_BYTES) throw new Error('large');
+      if (Buffer.byteLength(encoded, 'utf8') > maximumBytes) throw new Error('large');
       return cloneJson(args === undefined ? null : args);
     } catch (_) {
       throw pluginError('plugins.rpc.args', 'Plugin RPC arguments must be bounded JSON data.');
@@ -1419,7 +1448,8 @@ function createPluginController(options) {
     if (!isNonEmptyString(method, 120)) {
       throw pluginError('plugins.rpc.denied', 'Plugin RPC method is invalid.');
     }
-    const payload = validateRpcArguments(args);
+    const agentMethod = method === 'models.generate' || method.startsWith('agent.');
+    const payload = validateRpcArguments(args, agentMethod ? MAX_AGENT_RPC_ARGUMENT_BYTES : MAX_RPC_ARGUMENT_BYTES);
     const permissionForMethod = Object.assign({
       'commands.register': PluginPermission.COMMANDS_REGISTER,
       'commands.execute': PluginPermission.COMMANDS_EXECUTE,
@@ -1427,7 +1457,15 @@ function createPluginController(options) {
       'services.get': PluginPermission.SERVICES_READ,
       'sourceControl.register': PluginPermission.SOURCE_CONTROL_REGISTER,
       'fileDecorations.scm.register': PluginPermission.FILE_DECORATIONS_SCM,
-      'documentViews.register': PluginPermission.DOCUMENT_VIEWS_REGISTER
+      'documentViews.register': PluginPermission.DOCUMENT_VIEWS_REGISTER,
+      'agents.register': PluginPermission.AGENTS_REGISTER,
+      'models.list': PluginPermission.MODELS_GENERATE,
+      'models.generate': PluginPermission.MODELS_GENERATE,
+      'models.cancel': PluginPermission.MODELS_GENERATE,
+      'agent.storage.read': PluginPermission.STORAGE_LOCAL,
+      'agent.storage.write': PluginPermission.STORAGE_LOCAL,
+      'agent.skills.list': PluginPermission.SKILLS_READ,
+      'agent.skills.read': PluginPermission.SKILLS_READ
     }, SCM_GIT_METHODS);
     if (method === 'host.getInfo') {
       return immutable({ apiVersion: PLUGIN_API_VERSION, plugin: { id: pluginId, version: record.version } });
@@ -1435,7 +1473,17 @@ function createPluginController(options) {
     if (method === 'permissions.get') {
       return immutable({ requested: [...record.requestedPermissions], granted: [...record.grantedPermissions] });
     }
-    const permission = permissionForMethod[method];
+    if (method === 'agent.lifecycle.dispose') {
+      if (agentBroker && typeof agentBroker.disposePlugin === 'function') agentBroker.disposePlugin(pluginId);
+      return immutable({ disposed: true });
+    }
+    let permission = permissionForMethod[method];
+    if (method === 'agent.tools.invoke') {
+      const tool = payload && payload.tool;
+      if (tool === 'workspace_list' || tool === 'workspace_read' || tool === 'workspace_search') permission = PluginPermission.WORKSPACE_READ;
+      else if (tool === 'workspace_write') permission = PluginPermission.WORKSPACE_WRITE;
+      else if (tool === 'process_run') permission = PluginPermission.PROCESS_EXECUTE;
+    }
     if (!permission) throw pluginError('plugins.rpc.denied', 'Plugin RPC method is not available: ' + String(method));
     if (!record.grantedPermissions.includes(permission)) {
       throw pluginError('plugins.rpc.permission', 'Plugin permission has not been granted: ' + permission);
@@ -1447,6 +1495,10 @@ function createPluginController(options) {
       // only in the local main-process broker. They contain opaque repository
       // ids and sanitized data, never a path, command, credential, or server.
       return scmGit.request(method, payload);
+    }
+    if (method === 'models.list' || method === 'models.generate' || method === 'models.cancel' || method.startsWith('agent.')) {
+      if (!agentBroker) throw pluginError('plugins.agent.unavailable', 'The local Agent broker is unavailable.');
+      return immutable(await agentBroker.request(pluginId, method, payload));
     }
     if (method === 'commands.register') {
       if (!isNonEmptyString(payload.id, 180) || !payload.id.startsWith(pluginId + '.')) {
@@ -1505,6 +1557,14 @@ function createPluginController(options) {
         viewer: Object.assign(cloneJson(viewer), { title: payload.title.trim() })
       });
     }
+    if (method === 'agents.register') {
+      const allowed = new Set(['id', 'title', 'description', 'icon', 'order', 'commands', 'capabilities']);
+      if (Object.keys(payload).some((key) => !allowed.has(key)) ||
+          !isNonEmptyString(payload.id, 180) || !payload.id.startsWith(pluginId + '.') ||
+          !isNonEmptyString(payload.title, 160) || payload.icon !== 'sparkles') {
+        throw pluginError('plugins.rpc.agent', 'Agent provider registration is invalid.');
+      }
+    }
     // Renderer extension host owns the actual registry operation. The main
     // process is the authority for the capability decision only.
     return immutable({ authorized: true, method, permission });
@@ -1519,6 +1579,35 @@ function createPluginController(options) {
   }
 
   const optionsT = typeof options.t === 'function' ? options.t : null;
+
+  async function agentApprovalRecord(pluginId, approvalId) {
+    await initialize();
+    const id = assertSafePluginId(pluginId);
+    const record = records.get(id);
+    if (!record || record.status !== 'enabled' || !record.integrity.valid || !record.manifest || !agentBroker) {
+      throw pluginError('plugins.agent.unavailable', 'The Agent plugin or local approval broker is unavailable.');
+    }
+    const approval = agentBroker.describeApproval(id, approvalId);
+    if (!record.grantedPermissions.includes(approval.permission)) {
+      throw pluginError('plugins.rpc.permission', 'Plugin permission has not been granted: ' + approval.permission);
+    }
+    return { id, approval };
+  }
+
+  async function describeAgentApproval(payload) {
+    const current = await agentApprovalRecord(payload && payload.pluginId, payload && payload.approvalId);
+    return immutable(current.approval);
+  }
+
+  async function decideAgentApproval(payload) {
+    const current = await agentApprovalRecord(payload && payload.pluginId, payload && payload.approvalId);
+    return immutable(await agentBroker.decideApproval(current.id, current.approval.approvalId, payload && payload.approved === true));
+  }
+
+  async function cancelAgentApproval(payload) {
+    const current = await agentApprovalRecord(payload && payload.pluginId, payload && payload.approvalId);
+    return immutable(await agentBroker.cancelApproval(current.id, current.approval.approvalId));
+  }
 
   function registerIpc() {
     ipcMain.handle('plugins:list', async (event) => { trustedSender(event); await initialize(); return currentList(); });
@@ -1563,6 +1652,9 @@ function createPluginController(options) {
       trustedSender(event);
       return rpc(payload && payload.pluginId, payload && payload.method, payload && payload.args);
     });
+    ipcMain.handle('plugins:agent-approval-describe', async (event, payload) => { trustedSender(event); return describeAgentApproval(payload); });
+    ipcMain.handle('plugins:agent-approval-decide', async (event, payload) => { trustedSender(event); return decideAgentApproval(payload); });
+    ipcMain.handle('plugins:agent-approval-cancel', async (event, payload) => { trustedSender(event); return cancelAgentApproval(payload); });
     ipcMain.handle('plugins:open-folder', async (event) => { trustedSender(event); return openFolder(); });
     ipcMain.handle('plugins:refresh', async (event) => { trustedSender(event); return refresh('manual'); });
   }

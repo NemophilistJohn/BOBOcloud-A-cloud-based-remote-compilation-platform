@@ -593,36 +593,6 @@
     pane.append(custom.root);
   }
 
-  function renderCapabilities(pane) {
-    pane.append(pageHeader('ai.control.capabilities.title', 'ai.control.capabilities.description'));
-    var registry = section('ai.control.capabilities.registry', 'ai.control.capabilities.registryDescription');
-    var list = element('div');
-    var entries = BOBO.aiCapabilities && BOBO.aiCapabilities.list ? BOBO.aiCapabilities.list() : [];
-    entries.forEach(function(entry) {
-      var row = element('div', 'ai-control-capability-row');
-      var copy = element('div', 'ai-control-row-copy');
-      var labelKey = entry.id === 'workspace.context' ? 'ai.control.capability.workspace'
-        : entry.id === 'skills.registry' ? 'ai.control.capability.skills'
-        : entry.id === 'mcp.registry' ? 'ai.control.capability.mcp' : entry.label;
-      var descriptionKey = entry.id === 'workspace.context' ? 'ai.control.capability.workspaceDescription'
-        : entry.id === 'skills.registry' ? 'ai.control.capability.skillsDescription'
-        : entry.id === 'mcp.registry' ? 'ai.control.capability.mcpDescription' : entry.description;
-      copy.append(element('strong', '', labelKey), element('span', '', descriptionKey));
-      var stateKey = entry.state === 'available' ? 'ai.control.status.available' : 'ai.control.status.planned';
-      var state = element('span', 'ai-control-row-state', stateKey);
-      state.dataset.state = entry.state === 'available' ? 'ready' : 'warning';
-      row.append(copy, state);
-      list.append(row);
-    });
-    registry.root.append(list);
-    pane.append(registry.root);
-    var boundary = section('ai.control.capabilities.boundary', 'ai.control.capabilities.boundaryDescription');
-    var callout = element('div', 'ai-control-callout');
-    callout.append(element('span', '', 'ai.control.capabilities.boundaryNote'));
-    boundary.root.append(callout);
-    pane.append(boundary.root);
-  }
-
   function renderActivePane() {
     if (!content || !draft) return;
     var pane = content.querySelector('[data-ai-pane="' + activeTab + '"]');
@@ -633,7 +603,6 @@
     else if (activeTab === 'chat') renderChat(pane);
     else if (activeTab === 'inline') renderInline(pane);
     else if (activeTab === 'instructions') renderInstructions(pane);
-    else if (activeTab === 'capabilities') renderCapabilities(pane);
   }
 
   function switchTab(tab) {
@@ -725,6 +694,7 @@
       applySettingsToState(normalized);
       if (BOBO.aiService && BOBO.aiService.clearInlineCache) BOBO.aiService.clearInlineCache();
       if (BOBO.aiAgentButton && BOBO.aiAgentButton.updateLEDs) BOBO.aiAgentButton.updateLEDs(S.ai.status);
+      if (BOBO.agentWorkbench && BOBO.agentWorkbench.refreshModels) BOBO.agentWorkbench.refreshModels();
       if (draftRevision === savedRevision) {
         draft = clone(normalized);
         dirty = false;
@@ -869,7 +839,7 @@
     });
     var iconNames = {
       overview: 'cloud', connections: 'key', chat: 'mail', inline: 'fileText',
-      instructions: 'fileText', capabilities: 'shield'
+      instructions: 'fileText'
     };
     Array.prototype.forEach.call(modal.querySelectorAll('[data-ai-tab]'), function(tab) {
       var slot = tab.querySelector('.ai-control-tab-icon');

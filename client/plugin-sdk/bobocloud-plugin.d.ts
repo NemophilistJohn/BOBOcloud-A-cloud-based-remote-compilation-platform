@@ -1,5 +1,5 @@
 /**
- * BOBOCloud Plugin API 1.3.0 declarations.
+ * BOBOCloud Plugin API 1.4.0 declarations.
  *
  * Copy or reference this file from a plugin's TypeScript project. The runtime
  * is a sandboxed ES module; Node.js, Electron, DOM, and window APIs are not
@@ -7,7 +7,8 @@
  */
 
 export type JsonPrimitive = string | number | boolean | null;
-export type JsonValue = JsonPrimitive | JsonValue[] | { readonly [key: string]: JsonValue | undefined };
+export interface JsonObject { readonly [key: string]: JsonValue | undefined }
+export type JsonValue = JsonPrimitive | JsonValue[] | JsonObject;
 
 export interface Disposable {
   dispose(): void;
@@ -28,7 +29,14 @@ export type PluginPermission =
   | 'scm.git.read'
   | 'scm.git.write'
   | 'documentViews.register'
-  | 'documents.read';
+  | 'documents.read'
+  | 'agents.register'
+  | 'models.generate'
+  | 'workspace.read'
+  | 'workspace.write'
+  | 'process.execute'
+  | 'skills.read'
+  | 'storage.local';
 
 export interface CommandMetadata {
   readonly title?: string;
@@ -446,6 +454,291 @@ export interface PluginScm {
   readonly git: PluginScmGit;
 }
 
+export type AgentPhase = 'idle' | 'loading' | 'ready' | 'unconfigured' | 'error';
+export type AgentMode = 'chat' | 'goal';
+export type AgentReasoningEffort = 'low' | 'medium' | 'high' | 'max';
+export type AgentSessionStatus = 'idle' | 'running' | 'waiting-approval' | 'completed' | 'failed' | 'cancelled';
+export type AgentTimelineKind = 'thought' | 'tool' | 'status' | 'skill' | 'error';
+export type AgentTimelineStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'rejected';
+export type AgentGoalStepStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';
+
+export interface AgentCommandMap {
+  /** Every command id must use the registering plugin namespace. */
+  readonly create: string;
+  readonly select: string;
+  readonly delete: string;
+  readonly send: string;
+  readonly cancel: string;
+  readonly approve: string;
+  readonly reject: string;
+  readonly preferences: string;
+  readonly configure: string;
+}
+
+/** Data-only declaration rendered by the trusted Agent workbench. */
+export interface AgentDescriptor {
+  readonly id: string;
+  readonly title: string;
+  readonly description?: string;
+  readonly icon?: 'sparkles';
+  readonly order?: number;
+  readonly commands: AgentCommandMap;
+  readonly capabilities?: Readonly<{
+    readonly modes?: readonly AgentMode[];
+    readonly reasoningEfforts?: readonly AgentReasoningEffort[];
+    readonly skills?: boolean;
+    readonly localTools?: boolean;
+  }>;
+}
+
+export interface AgentSessionSummary {
+  readonly id: string;
+  readonly title: string;
+  readonly updatedAt?: string;
+  readonly status?: AgentSessionStatus;
+  readonly mode?: AgentMode;
+}
+
+/** Opaque model reference backed by a host-owned AI profile. It contains no credentials. */
+export interface AgentModelChoice {
+  readonly ref: string;
+  readonly name: string;
+  readonly provider?: string;
+  readonly modelId?: string;
+  readonly purpose?: 'chat' | 'inline';
+  readonly configured?: boolean;
+}
+
+export interface AgentSkillChoice {
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly source?: 'workspace' | 'user';
+  readonly enabled?: boolean;
+}
+
+export interface AgentMessage {
+  readonly id: string;
+  readonly role: 'user' | 'assistant' | 'system';
+  readonly content?: string;
+  readonly reasoning?: string;
+  readonly createdAt?: string;
+}
+
+export interface AgentTimelineItem {
+  readonly id: string;
+  readonly kind?: AgentTimelineKind;
+  readonly title: string;
+  readonly detail?: string;
+  readonly status?: AgentTimelineStatus;
+  readonly createdAt?: string;
+}
+
+export interface AgentGoalStep {
+  readonly id: string;
+  readonly title: string;
+  readonly status?: AgentGoalStepStatus;
+}
+
+export interface AgentGoal {
+  readonly title: string;
+  readonly status?: AgentGoalStepStatus;
+  readonly steps?: readonly AgentGoalStep[];
+}
+
+export interface AgentApproval {
+  readonly id: string;
+}
+
+export interface AgentActiveSession {
+  readonly id: string;
+  readonly title: string;
+  readonly status?: AgentSessionStatus;
+  readonly mode?: AgentMode;
+  readonly reasoningEffort?: AgentReasoningEffort;
+  readonly modelRef?: string;
+  readonly messages?: readonly AgentMessage[];
+  readonly timeline?: readonly AgentTimelineItem[];
+  readonly goal?: AgentGoal | null;
+  readonly approval?: AgentApproval | null;
+}
+
+/** Complete replacement snapshot. The host validates, bounds, freezes, and renders it. */
+export interface AgentState {
+  readonly phase?: AgentPhase;
+  readonly message?: string;
+  readonly activeSessionId?: string;
+  readonly sessions?: readonly AgentSessionSummary[];
+  readonly models?: readonly AgentModelChoice[];
+  readonly skills?: readonly AgentSkillChoice[];
+  readonly activeSession?: AgentActiveSession | null;
+}
+
+/** The host supplies this single data argument to every Agent command. */
+export interface AgentCommandPayload {
+  readonly providerId: string;
+  readonly action: string;
+  readonly sessionId?: string;
+  readonly text?: string;
+  readonly mode?: AgentMode;
+  readonly reasoningEffort?: AgentReasoningEffort;
+  readonly modelRef?: string;
+  readonly skillIds?: readonly string[];
+  readonly approvalId?: string;
+  /** Canonical result produced by the trusted host approval broker. */
+  readonly approvalResult?: AgentApprovalResult;
+}
+
+export interface AgentStateProvider extends Disposable {
+  readonly id: string;
+  setState(state: AgentState): Promise<Readonly<{ version: number }>>;
+  clearState(): Promise<Readonly<{ version: number }>>;
+}
+
+export interface PluginAgents {
+  /** Requires `agents.register`; lifecycle cleanup is automatic. */
+  register(descriptor: AgentDescriptor): Promise<AgentStateProvider>;
+}
+
+export interface AgentModelMessage {
+  readonly role: 'system' | 'user' | 'assistant' | 'tool';
+  readonly content: string;
+  readonly name?: string;
+  readonly tool_call_id?: string;
+  readonly tool_calls?: readonly JsonObject[];
+}
+
+export interface AgentModelToolDefinition {
+  readonly type: 'function';
+  readonly function: Readonly<{
+    readonly name: string;
+    readonly description?: string;
+    readonly parameters?: JsonObject;
+  }>;
+}
+
+export interface AgentModelGenerateRequest {
+  readonly modelRef: string;
+  readonly requestId?: string;
+  readonly messages: readonly AgentModelMessage[];
+  readonly tools?: readonly AgentModelToolDefinition[];
+  readonly reasoningEffort?: AgentReasoningEffort;
+  readonly maxTokens?: number;
+  readonly temperature?: number;
+}
+
+export interface AgentModelToolCall {
+  readonly id: string;
+  readonly name: string;
+  /** JSON-encoded tool arguments supplied by the model. Validate before use. */
+  readonly arguments: string;
+}
+
+export interface AgentModelGenerateResult {
+  readonly content: string;
+  readonly reasoning: string;
+  readonly toolCalls: readonly AgentModelToolCall[];
+  readonly finishReason: string;
+  readonly usage: JsonObject | null;
+}
+
+export interface PluginModels {
+  /** All methods require `models.generate`; returned refs never contain a secret. */
+  list(): Promise<Readonly<{ models: readonly AgentModelChoice[] }>>;
+  generate(args: AgentModelGenerateRequest): Promise<AgentModelGenerateResult>;
+  /** Cancels only this plugin's host-prefixed request id. */
+  cancel(requestId: string): Promise<Readonly<{ success: boolean; cancelled: boolean }>>;
+}
+
+export interface AgentWorkspaceListInput { readonly path?: string; readonly depth?: number; readonly limit?: number }
+export interface AgentWorkspaceListResult {
+  readonly entries: readonly Readonly<{ path: string; type: 'file' | 'directory' }>[];
+  readonly truncated: boolean;
+  readonly workspaceIdentity: number;
+}
+export interface AgentWorkspaceReadInput { readonly path: string }
+export interface AgentWorkspaceReadResult { readonly path: string; readonly content: string; readonly sha256: string; readonly size: number }
+export interface AgentWorkspaceSearchInput { readonly query: string; readonly caseSensitive?: boolean; readonly limit?: number }
+export interface AgentWorkspaceSearchResult {
+  readonly results: readonly Readonly<{ path: string; line: number; preview: string }>[];
+  readonly truncated: boolean;
+}
+export interface AgentWorkspaceWriteInput { readonly path: string; readonly content: string; readonly expectedSha256?: string }
+export interface AgentProcessRunInput {
+  readonly command: string;
+  readonly args?: readonly string[];
+  readonly cwd?: string;
+  readonly timeoutMs?: number;
+}
+export interface AgentToolApprovalRequired {
+  readonly approvalRequired: true;
+  readonly approval: Readonly<{
+    readonly id: string;
+    readonly tool: string;
+    readonly summary: string;
+    readonly risk: 'read' | 'write' | 'execute' | 'network';
+    readonly expiresAt: string;
+  }>;
+}
+export interface AgentWorkspaceWriteResult { readonly approved: true; readonly path: string; readonly sha256: string }
+export interface AgentProcessRunResult {
+  readonly approved: true;
+  readonly exitCode: number | null;
+  readonly signal: string;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly truncated: boolean;
+  readonly timedOut: boolean;
+  readonly cancelled: boolean;
+}
+export interface AgentToolRejectedResult {
+  readonly approved?: false;
+  readonly rejected: true;
+  readonly cancelled?: boolean;
+  readonly tool: 'workspace_write' | 'process_run';
+}
+export type AgentApprovalResult =
+  | AgentWorkspaceWriteResult
+  | AgentProcessRunResult
+  | AgentToolRejectedResult;
+
+export interface PluginTools {
+  /** `workspace_list`, `workspace_read`, and `workspace_search` require `workspace.read`. */
+  invoke(tool: 'workspace_list', input?: AgentWorkspaceListInput): Promise<AgentWorkspaceListResult>;
+  invoke(tool: 'workspace_read', input: AgentWorkspaceReadInput): Promise<AgentWorkspaceReadResult>;
+  invoke(tool: 'workspace_search', input: AgentWorkspaceSearchInput): Promise<AgentWorkspaceSearchResult>;
+  /** Mutating and process tools return a user-approval token without executing. */
+  invoke(tool: 'workspace_write', input: AgentWorkspaceWriteInput): Promise<AgentToolApprovalRequired>;
+  invoke(tool: 'process_run', input: AgentProcessRunInput): Promise<AgentToolApprovalRequired>;
+  invoke(tool: string, input?: JsonObject): Promise<JsonValue>;
+}
+
+export interface AgentSkillSummary {
+  readonly id: string;
+  readonly source: 'workspace' | 'user';
+  readonly name: string;
+  readonly description: string;
+  readonly size: number;
+}
+export interface AgentSkillDocument {
+  readonly id: string;
+  readonly source: 'workspace' | 'user';
+  readonly name: string;
+  readonly description: string;
+  readonly content: string;
+}
+export interface PluginSkills {
+  /** Requires `skills.read`; no filesystem path is returned. */
+  list(): Promise<Readonly<{ skills: readonly AgentSkillSummary[] }>>;
+  read(skillId: string): Promise<AgentSkillDocument>;
+}
+
+export interface PluginStorage {
+  /** Requires `storage.local`; data is isolated by plugin id and limited to 8 MiB. */
+  read(): Promise<Readonly<{ value: JsonObject }>>;
+  write(value: JsonObject): Promise<Readonly<{ saved: true; bytes: number }>>;
+}
+
 export interface HostInfo {
   readonly apiVersion: string;
   readonly plugin: PluginIdentity;
@@ -477,6 +770,11 @@ export interface PluginContext {
   readonly sourceControl: PluginSourceControl;
   readonly fileDecorations: PluginFileDecorations;
   readonly documentViews: PluginDocumentViews;
+  readonly agents: PluginAgents;
+  readonly models: PluginModels;
+  readonly tools: PluginTools;
+  readonly skills: PluginSkills;
+  readonly storage: PluginStorage;
   readonly scm: PluginScm;
   readonly services: PluginServices;
   readonly host: PluginHost;
@@ -501,6 +799,30 @@ export type ScmGitErrorCode =
   | 'SCM_GIT_OUTPUT_TOO_LARGE'
   | 'SCM_GIT_OPERATION_FAILED';
 
+/** Stable failures returned by the local Agent capability brokers. */
+export type AgentErrorCode =
+  | 'AGENT_NO_WORKSPACE'
+  | 'AGENT_STALE_WORKSPACE'
+  | 'AGENT_INVALID_PATH'
+  | 'AGENT_INVALID_MODEL_REQUEST'
+  | 'AGENT_MODEL_FAILED'
+  | 'AGENT_MODEL_UNCONFIGURED'
+  | 'AGENT_MODEL_PROTOCOL'
+  | 'AGENT_STORAGE_TOO_LARGE'
+  | 'AGENT_STORAGE_INVALID'
+  | 'AGENT_FILE_TOO_LARGE'
+  | 'AGENT_INVALID_SEARCH'
+  | 'AGENT_FILE_CHANGED'
+  | 'AGENT_COMMAND_DENIED'
+  | 'AGENT_INVALID_COMMAND'
+  | 'AGENT_INVALID_TOOL'
+  | 'AGENT_TOOL_NOT_FOUND'
+  | 'AGENT_PROCESS_FAILED'
+  | 'AGENT_APPROVAL_NOT_FOUND'
+  | 'AGENT_APPROVAL_EXPIRED'
+  | 'AGENT_SKILL_NOT_FOUND'
+  | 'AGENT_METHOD_DENIED';
+
 export interface PluginApiError extends Error {
   readonly code:
     | 'EXTENSION_CANCELLED'
@@ -511,6 +833,7 @@ export interface PluginApiError extends Error {
     | 'EXTENSION_TIMEOUT'
     | 'EXTENSION_UNAVAILABLE'
     | ScmGitErrorCode
+    | AgentErrorCode
     | string;
 }
 

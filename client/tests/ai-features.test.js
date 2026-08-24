@@ -84,7 +84,7 @@ function loadAiCore(overrides = {}) {
 
   const window = { api, BOBO: { state: { ai: {} } } };
   const context = vm.createContext({ window, console, Map, Date, Promise, setTimeout, clearTimeout });
-  ['ai-settings-schema.js', 'ai-capabilities.js', 'ai-prompts.js'].forEach(file => {
+  ['ai-settings-schema.js', 'ai-prompts.js'].forEach(file => {
     vm.runInContext(fs.readFileSync(path.join(projectRoot, 'src', file), 'utf8'), context, { filename: `src/${file}` });
   });
   const canonical = window.BOBO.aiSettingsSchema.normalizeSettings(overrides.settings || settings());
@@ -102,7 +102,6 @@ function loadAiCore(overrides = {}) {
     service: window.BOBO.aiService,
     schema: window.BOBO.aiSettingsSchema,
     prompts: window.BOBO.aiPrompts,
-    capabilities: window.BOBO.aiCapabilities,
     state: window.BOBO.state.ai,
     calls,
     listeners
@@ -424,18 +423,13 @@ test('application knowledge gives exact cache paths without inventing an action'
   assert.match(knowledge, /inactive namespace, shared cache, or all team cache/);
 });
 
-test('capability registry contributes metadata but exposes no execution API or request tools', () => {
+test('native Chat keeps a static read-only boundary and never sends Agent tools', () => {
   const fixture = loadAiCore();
-  assert.equal(typeof fixture.capabilities.register, 'function');
-  assert.equal(typeof fixture.capabilities.list, 'function');
-  assert.equal('execute' in fixture.capabilities, false);
-  assert.equal('invoke' in fixture.capabilities, false);
-
   const payload = fixture.service.buildChatPayload(fixture.service.getProfileFor('chat'), 'Help.', {}, 'chat-cap', false);
-  assert.equal(payload.contextMetadata.capabilityRegistry, 'informational-only');
   assert.equal('capabilities' in payload.contextMetadata, false);
   assert.equal('tools' in payload, false);
-  assert.match(payload.messages[0].content, /No capability can be invoked from this chat/);
+  assert.match(payload.messages[0].content, /Chat surface is read-only and separate from installed Agent plugins/);
+  assert.match(payload.messages[0].content, /Never claim that you executed a tool/);
 });
 
 test('chat-mode inline prompt layers global and inline instructions without chat instructions', () => {

@@ -209,6 +209,12 @@ contextBridge.exposeInMainWorld('api', {
   }),
   onOpenPluginManager: (cb) => subscribe('open-plugin-manager', cb),
 
+  // Agent approval decisions stay in the trusted renderer/main path. Downloaded
+  // extension Workers cannot access this bridge.
+  pluginsAgentApprovalDescribe: (payload) => ipcRenderer.invoke('plugins:agent-approval-describe', payload),
+  pluginsAgentApprovalDecide: (payload) => ipcRenderer.invoke('plugins:agent-approval-decide', payload),
+  pluginsAgentApprovalCancel: (payload) => ipcRenderer.invoke('plugins:agent-approval-cancel', payload),
+
   // ──── AI Agent ────
   aiChatRequest: (payload) => ipcRenderer.invoke('ai-chat-request', payload),
   aiCancelStream: () => ipcRenderer.invoke('ai-cancel-stream'),

@@ -51,6 +51,53 @@ function completionMessages(payload) {
   ];
 }
 
+function normalizeToolDefinitions(value) {
+  return Array.isArray(value) ? value.slice(0, 48).filter((tool) => (
+    tool && tool.type === 'function' && tool.function && typeof tool.function.name === 'string'
+  )) : [];
+}
+
+function anthropicToolDefinitions(tools) {
+  return tools.map((tool) => ({
+    name: tool.function.name,
+    description: tool.function.description || '',
+    input_schema: tool.function.parameters || { type: 'object', properties: {} }
+  }));
+}
+
+function anthropicMessages(messages) {
+  const result = [];
+  for (const message of messages.filter((item) => item.role !== 'system')) {
+    if (message.role === 'tool') {
+      const block = { type: 'tool_result', tool_use_id: message.tool_call_id || '', content: String(message.content || '') };
+      const previous = result[result.length - 1];
+      if (previous && previous.role === 'user' && Array.isArray(previous.content) && previous.content.every((item) => item.type === 'tool_result')) {
+        previous.content.push(block);
+      } else {
+        result.push({ role: 'user', content: [block] });
+      }
+      continue;
+    }
+    if (message.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length) {
+      const content = message.content ? [{ type: 'text', text: String(message.content) }] : [];
+      for (const call of message.tool_calls.slice(0, 32)) {
+        let input = {};
+        try { input = JSON.parse(call && call.function && call.function.arguments || '{}'); } catch (_) {}
+        content.push({
+          type: 'tool_use',
+          id: String(call && call.id || ''),
+          name: String(call && call.function && call.function.name || ''),
+          input: input && typeof input === 'object' && !Array.isArray(input) ? input : {}
+        });
+      }
+      result.push({ role: 'assistant', content });
+      continue;
+    }
+    result.push({ role: message.role === 'assistant' ? 'assistant' : 'user', content: String(message.content || '') });
+  }
+  return result;
+}
+
 function createAiController(options) {
   const ipcMain = options.ipcMain;
   const getWindow = options.getWindow;
@@ -116,11 +163,19 @@ function createAiController(options) {
       }
 
       const modelOptions = modelConfig.options && typeof modelConfig.options === 'object' ? modelConfig.options : {};
+      const providerOptions = Object.assign({}, modelOptions);
+      delete providerOptions.enableReasoningEffort;
+      delete providerOptions.enableThinking;
+      delete providerOptions.thinkingMode;
       const temperature = clampNumber(payload.temperature, clampNumber(modelOptions.temperature, mode === 'fim' ? 0 : 0.2, 0, 2), 0, 2);
       const topP = clampNumber(payload.topP, clampNumber(modelOptions.top_p, 1, 0, 1), 0, 1);
       const stop = normalizeStop(payload.stop, modelOptions.stop);
       const nativeFim = mode === 'fim' && resolveApiContract(payload, url) === 'fim';
       const effectiveMessages = mode === 'fim' && !nativeFim ? completionMessages(payload) : messages;
+      const tools = normalizeToolDefinitions(payload.tools);
+      const reasoningEffort = ['low', 'medium', 'high', 'max'].includes(payload.reasoningEffort)
+        ? payload.reasoningEffort
+        : '';
       let body;
       if (nativeFim) {
         body = JSON.stringify({
@@ -135,26 +190,40 @@ function createAiController(options) {
         });
       } else if (modelConfig.provider === 'anthropic') {
         const systemMessage = effectiveMessages.find((message) => message.role === 'system');
-        const chatMessages = effectiveMessages.filter((message) => message.role !== 'system');
+        const chatMessages = anthropicMessages(effectiveMessages);
+        const thinkingMode = !tools.length && reasoningEffort && modelOptions.thinkingMode === 'adaptive'
+          ? 'adaptive'
+          : (!tools.length && reasoningEffort && modelOptions.enableThinking === true ? 'enabled' : '');
+        const thinking = thinkingMode === 'adaptive'
+          ? { type: 'adaptive' }
+          : (thinkingMode === 'enabled'
+              ? { type: 'enabled', budget_tokens: reasoningEffort === 'max' ? 16000 : reasoningEffort === 'high' ? 8000 : reasoningEffort === 'medium' ? 4000 : 1600 }
+              : undefined);
         body = JSON.stringify({
           model: modelConfig.modelId,
           max_tokens: clampInteger(payload.maxTokens, mode === 'fim' ? 160 : 4096, 1, 32768),
           stream,
-          temperature,
-          top_p: topP,
+          temperature: thinking ? undefined : temperature,
+          top_p: thinking ? undefined : topP,
           stop_sequences: stop.length ? stop : undefined,
           system: systemMessage ? systemMessage.content : undefined,
-          messages: chatMessages
+          messages: chatMessages,
+          tools: tools.length ? anthropicToolDefinitions(tools) : undefined,
+          thinking,
+          output_config: thinkingMode === 'adaptive' ? { effort: reasoningEffort } : undefined
         });
       } else {
-        body = JSON.stringify(Object.assign({}, modelOptions, {
+        body = JSON.stringify(Object.assign({}, providerOptions, {
           model: modelConfig.modelId,
           max_tokens: clampInteger(payload.maxTokens, mode === 'fim' ? 160 : 4096, 1, 32768),
           stream,
           messages: effectiveMessages,
           temperature,
           top_p: topP,
-          stop: stop.length ? stop : undefined
+          stop: stop.length ? stop : undefined,
+          tools: tools.length ? tools : undefined,
+          tool_choice: tools.length ? 'auto' : undefined,
+          reasoning_effort: reasoningEffort && modelOptions.enableReasoningEffort === true ? reasoningEffort : undefined
         }));
       }
 
@@ -352,6 +421,15 @@ function createAiController(options) {
     });
   }
 
+  function cancel(requestId) {
+    if (typeof requestId !== 'string' || !requestId) return { success: true, cancelled: false };
+    const activeRequest = activeInlineRequests.get(requestId);
+    if (!activeRequest) return { success: true, cancelled: false };
+    activeInlineRequests.delete(requestId);
+    activeRequest.destroy();
+    return { success: true, cancelled: true };
+  }
+
   function registerIpc() {
     ipcMain.handle('ai-chat-request', async (_event, payload) => {
       try {
@@ -373,12 +451,7 @@ function createAiController(options) {
     });
     ipcMain.handle('ai-inline-cancel', async (_event, requestId) => {
       try {
-        if (typeof requestId !== 'string' || !requestId) return { success: true, cancelled: false };
-        const activeRequest = activeInlineRequests.get(requestId);
-        if (!activeRequest) return { success: true, cancelled: false };
-        activeInlineRequests.delete(requestId);
-        activeRequest.destroy();
-        return { success: true, cancelled: true };
+        return cancel(requestId);
       } catch (error) {
         return { success: false, error: error.message };
       }
@@ -413,7 +486,7 @@ function createAiController(options) {
     activeInlineRequests.clear();
   }
 
-  return { registerIpc, request, dispose };
+  return { registerIpc, request, cancel, dispose };
 }
 
-module.exports = { createAiController, completionMessages, resolveApiContract };
+module.exports = { createAiController, anthropicMessages, anthropicToolDefinitions, completionMessages, normalizeToolDefinitions, resolveApiContract };

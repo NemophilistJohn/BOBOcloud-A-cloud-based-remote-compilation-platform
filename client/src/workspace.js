@@ -41,6 +41,7 @@
       key: key,
       name: String(tab.name || key).slice(0, 160),
       title: String(tab.title || tab.name || key).slice(0, 320),
+      category: String(tab.category || '').slice(0, 80),
       providerId: providerId,
       closeable: tab.closeable !== false,
       draggable: tab.draggable === true
@@ -82,6 +83,10 @@
     var match = findWorkbenchTab(key);
     if (!match || !match.provider || typeof match.provider.activate !== 'function') return false;
     try {
+      workbenchTabProviders.forEach(function(provider, providerId) {
+        if (providerId === match.tab.providerId || !provider || typeof provider.deactivate !== 'function') return;
+        try { provider.deactivate(); } catch (error) {}
+      });
       match.provider.activate(key);
       return true;
     } catch (error) {
@@ -1713,7 +1718,7 @@
     var label = document.getElementById('workspace-label');
     var workbenchTab = findWorkbenchTab(S.activeTabPath);
     if (workbenchTab) {
-      label.textContent = t('Extensions') + ' / ' + workbenchTab.tab.name;
+      label.textContent = (workbenchTab.tab.category || t('Workbench')) + ' / ' + workbenchTab.tab.name;
       label.title = workbenchTab.tab.title;
       return;
     }

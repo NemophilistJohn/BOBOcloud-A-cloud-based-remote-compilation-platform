@@ -298,9 +298,9 @@ test('dynamic UI translation entry points reference defined English keys', () =>
   const messages = JSON.parse(fs.readFileSync(path.join(ROOT, 'language-packs', 'en', 'messages.json'), 'utf8'));
   const sourceFiles = [
     'ai-agent-button.js', 'ai-chat-panel.js', 'ai-markdown.js', 'ai-settings-center.js',
-    'ai-capabilities.js', 'ai-prompts.js', 'collaboration.js', 'account-profile.js',
+    'ai-prompts.js', 'collaboration.js', 'account-profile.js',
     'project-tasks.js', 'workspace-sync-status.js', 'task-problem-matcher.js', 'runner.js', 'run-config.js', 'runtime.js', 'dap-client.js', 'terminal.js', 'auth.js', 'plugin-manager-ui.js', 'plugin-details.js',
-    'source-control-view.js', 'command-palette.js', 'file-search.js', 'workspace.js', 'projects.js', 'cache-center.js', 'environment-center.js', 'package-center.js'
+    'source-control-view.js', 'agent-workbench.js', 'command-palette.js', 'file-search.js', 'workspace.js', 'projects.js', 'cache-center.js', 'environment-center.js', 'package-center.js'
   ];
 
   function assertLiteralCalls(source, fileName, pattern, keyGroup) {

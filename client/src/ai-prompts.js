@@ -78,9 +78,10 @@
   }
 
   function capabilityPrompt() {
-    return BOBO.aiCapabilities && BOBO.aiCapabilities.describeForPrompt
-      ? BOBO.aiCapabilities.describeForPrompt()
-      : 'No external tool, Skill, or MCP execution is available.';
+    return [
+      'This Chat surface is read-only and separate from installed Agent plugins.',
+      'Never claim that you executed a tool, Skill, terminal command, file edit, build, or cloud action.'
+    ].join('\n');
   }
 
   function appendBudgeted(parts, value, remaining, keep) {

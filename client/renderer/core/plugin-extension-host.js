@@ -5,6 +5,7 @@ import { createScmFileDecorationProvider } from './scm-file-decoration.js';
 import { normalizeScmGitRequest } from './scm-git.js';
 import { SourceControlStateStore, validateSourceControlDescriptor } from './source-control.js';
 import { validateDocumentViewDescriptor } from './document-view.js';
+import { validateAgentDescriptor } from './agent.js';
 import {
   EXTENSION_PROTOCOL_VERSION,
   ExtensionErrorCode,
@@ -183,6 +184,7 @@ export class PluginExtensionHost {
     this._contributions = options.contributions;
     this._sourceControls = options.sourceControls || new SourceControlStateStore({ onError: options.onError });
     this._ownsSourceControls = !options.sourceControls;
+    this._agents = options.agents;
     this._loadEntry = options.loadEntry;
     this._listDescriptors = typeof options.listDescriptors === 'function' ? options.listDescriptors : null;
     this._broker = typeof options.broker === 'function' ? options.broker : null;
@@ -312,6 +314,7 @@ export class PluginExtensionHost {
       subscriptions: new DisposableStore({ onError: (event) => this._report('extension-dispose', normalized.id, event.error) }),
       sandbox: null,
       pending: new Map(),
+      incomingRequests: new Set(),
       handles: new Map(),
       ready: createDeferred(),
       cancellation,
@@ -507,11 +510,22 @@ export class PluginExtensionHost {
       this._respond(record, message && message.id, false, null, error);
       return;
     }
+    if (record.incomingRequests.has(message.id) || record.incomingRequests.size >= 32) {
+      const error = createExtensionError(ExtensionErrorCode.UNAVAILABLE, 'Extension request concurrency limit reached.');
+      this._respond(record, message.id, false, null, error);
+      return;
+    }
+    record.incomingRequests.add(message.id);
     try {
       const value = await this._dispatchExtensionRequest(record, message.method, message.args);
-      this._respond(record, message.id, true, cloneExtensionData(value));
+      const cloneOptions = message.method === ExtensionHostMethod.AGENT_BROKER_REQUEST
+        ? { maxStringLength: 2 * 1024 * 1024, maxItems: 8192 }
+        : undefined;
+      this._respond(record, message.id, true, cloneExtensionData(value, cloneOptions));
     } catch (error) {
       this._respond(record, message.id, false, null, error);
+    } finally {
+      record.incomingRequests.delete(message.id);
     }
   }
 
@@ -550,6 +564,16 @@ export class PluginExtensionHost {
         return this._registerDocumentView(record, args);
       case ExtensionHostMethod.DOCUMENT_VIEW_DISPOSE:
         return this._disposeHandle(record, args, 'document-view');
+      case ExtensionHostMethod.AGENT_REGISTER:
+        return this._registerAgent(record, args);
+      case ExtensionHostMethod.AGENT_SET_STATE:
+        return this._setAgentState(record, args);
+      case ExtensionHostMethod.AGENT_CLEAR_STATE:
+        return this._clearAgentState(record, args);
+      case ExtensionHostMethod.AGENT_DISPOSE:
+        return this._disposeHandle(record, args, 'agent');
+      case ExtensionHostMethod.AGENT_BROKER_REQUEST:
+        return this._requestAgentBroker(record, args);
       case ExtensionHostMethod.SCM_GIT_REQUEST:
         return this._requestScmGit(record, args);
       case ExtensionHostMethod.SERVICE_GET:
@@ -900,12 +924,105 @@ export class PluginExtensionHost {
     return cloneExtensionData(snapshotFactory(id, service));
   }
 
+  async _registerAgent(record, args) {
+    this._requirePermission(record, PluginPermission.AGENTS_REGISTER);
+    if (!this._agents) throw createExtensionError(ExtensionErrorCode.UNAVAILABLE, 'Agent state store is unavailable.');
+    let descriptor;
+    try {
+      descriptor = validateAgentDescriptor(cloneExtensionData(args), record.descriptor.id);
+    } catch (error) {
+      throw extensionInvalidRequest(error, 'Agent descriptor is invalid.');
+    }
+    await this._authorize(record, ExtensionHostMethod.AGENT_REGISTER, descriptor, PluginPermission.AGENTS_REGISTER);
+    const contributionDisposable = this._contributions.register(ContributionPoint.AGENTS, descriptor, {
+      id: descriptor.id,
+      owner: record.descriptor.id
+    });
+    let stateProvider;
+    try {
+      stateProvider = this._agents.register(descriptor, { owner: record.descriptor.id });
+    } catch (error) {
+      contributionDisposable.dispose();
+      throw error;
+    }
+    const handle = 'agent-' + (++record.nextRequestId);
+    const resource = toDisposable(() => {
+      record.handles.delete(handle);
+      stateProvider.dispose();
+      contributionDisposable.dispose();
+    });
+    record.handles.set(handle, { kind: 'agent', disposable: resource, stateProvider });
+    record.subscriptions.add(resource);
+    return { handle, id: descriptor.id };
+  }
+
+  _agentHandle(record, args) {
+    this._requirePermission(record, PluginPermission.AGENTS_REGISTER);
+    const value = cloneExtensionData(args || {});
+    const handle = asNonEmptyString(value.handle, 'Agent handle');
+    if (!handle.startsWith('agent-')) throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Agent handle is invalid.');
+    const resource = record.handles.get(handle);
+    if (!resource || resource.kind !== 'agent' || !resource.stateProvider) {
+      throw createExtensionError(ExtensionErrorCode.NOT_FOUND, 'Agent provider is no longer available.');
+    }
+    return { value, resource };
+  }
+
+  _setAgentState(record, args) {
+    try {
+      const current = this._agentHandle(record, args);
+      if (Object.keys(current.value).some((key) => key !== 'handle' && key !== 'state')) {
+        throw new TypeError('Agent state request includes an unsupported field.');
+      }
+      return current.resource.stateProvider.setState(current.value.state);
+    } catch (error) {
+      if (error && error.code) throw error;
+      throw extensionInvalidRequest(error, 'Agent state is invalid.');
+    }
+  }
+
+  _clearAgentState(record, args) {
+    try {
+      const current = this._agentHandle(record, args);
+      if (Object.keys(current.value).some((key) => key !== 'handle')) throw new TypeError('Agent clear request includes an unsupported field.');
+      return current.resource.stateProvider.clearState();
+    } catch (error) {
+      if (error && error.code) throw error;
+      throw extensionInvalidRequest(error, 'Agent state clear request is invalid.');
+    }
+  }
+
+  async _requestAgentBroker(record, args) {
+    if (!this._broker) throw createExtensionError(ExtensionErrorCode.UNAVAILABLE, 'Agent broker is unavailable.');
+    const value = cloneExtensionData(args || {});
+    const method = asNonEmptyString(value.method, 'Agent broker method');
+    const directPermissions = {
+      'models.list': PluginPermission.MODELS_GENERATE,
+      'models.generate': PluginPermission.MODELS_GENERATE,
+      'models.cancel': PluginPermission.MODELS_GENERATE,
+      'agent.storage.read': PluginPermission.STORAGE_LOCAL,
+      'agent.storage.write': PluginPermission.STORAGE_LOCAL,
+      'agent.skills.list': PluginPermission.SKILLS_READ,
+      'agent.skills.read': PluginPermission.SKILLS_READ
+    };
+    let permission = directPermissions[method];
+    if (method === 'agent.tools.invoke') {
+      const tool = value.args && value.args.tool;
+      if (tool === 'workspace_list' || tool === 'workspace_read' || tool === 'workspace_search') permission = PluginPermission.WORKSPACE_READ;
+      else if (tool === 'workspace_write') permission = PluginPermission.WORKSPACE_WRITE;
+      else if (tool === 'process_run') permission = PluginPermission.PROCESS_EXECUTE;
+    }
+    if (!permission) throw createExtensionError(ExtensionErrorCode.DENIED, 'Agent broker method is not available.');
+    this._requirePermission(record, permission);
+    return cloneExtensionData(await this._broker(record.descriptor.id, method, value.args || {}), { maxStringLength: 2 * 1024 * 1024, maxItems: 8192 });
+  }
+
   async _brokerRequest(record, args) {
     if (!this._broker) throw createExtensionError(ExtensionErrorCode.UNAVAILABLE, 'Extension broker is unavailable.');
     const value = cloneExtensionData(args || {});
     const method = asNonEmptyString(value.method, 'Broker method');
     if (method !== 'host.getInfo' && method !== 'permissions.get') {
-      throw createExtensionError(ExtensionErrorCode.DENIED, 'This extension broker method is not available in API 1.2.');
+      throw createExtensionError(ExtensionErrorCode.DENIED, 'This extension broker method is not available in API 1.4.');
     }
     return cloneExtensionData(await this._broker(record.descriptor.id, method, value.args));
   }
@@ -1006,11 +1123,14 @@ export class PluginExtensionHost {
       pending.reject(createExtensionError(ExtensionErrorCode.CANCELLED, 'Extension was deactivated.'));
     }
     record.pending.clear();
+    record.incomingRequests.clear();
     record.handles.clear();
     record.subscriptions.dispose();
     this._commands.disposeOwner(record.descriptor.id);
     this._contributions.disposeOwner(record.descriptor.id);
     this._sourceControls.disposeOwner(record.descriptor.id);
+    if (this._agents) this._agents.disposeOwner(record.descriptor.id);
+    if (this._broker) void Promise.resolve(this._broker(record.descriptor.id, 'agent.lifecycle.dispose', {})).catch(() => {});
     try { if (record.sandbox) record.sandbox.dispose(); } catch (error) { this._report('extension-sandbox-dispose', record.descriptor.id, error); }
     this._emit(record, 'stopped');
   }

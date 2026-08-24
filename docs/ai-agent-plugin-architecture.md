@@ -1,0 +1,180 @@
+# BOBOCloud Local AI Agent Plugin Architecture
+
+Status: API 1.4 implementation contract and construction guide. The minimum desktop host is BOBOCloud 2.7.0.
+
+## Scope and product boundary
+
+The Agent is a purely local client capability. It does not add a Go endpoint, change the cloud compiler protocol, or send Agent state through the BOBOCloud server. Chat and inline completion remain native client features. Agent behavior is supplied by an independently installed plugin and is visible only while that plugin is enabled and successfully registered.
+
+The design has four non-negotiable properties:
+
+1. Downloaded code runs without Node.js, Electron, preload, DOM, filesystem, process, credential, or raw network authority.
+2. The host owns every reusable privileged capability and every generic UI surface.
+3. The plugin owns orchestration: prompts, turn loops, reasoning policy, goal planning, session semantics, and localized content.
+4. Every registration and pending privilege is tied to plugin and workspace lifecycle.
+
+## Layered architecture
+
+```text
+Official Agent plugin repository
+  manifest + one bundled Worker entry + en/zh-CN/ja messages
+                         |
+                         | bounded JSON-like messages
+                         v
+Renderer extension host and protocol
+  activation Worker | permission checks | lifecycle handles
+                         |
+             +-----------+------------+
+             |                        |
+             v                        v
+Renderer Agent platform          Main-process Agent broker
+  descriptors/state/store          models | workspace tools
+  command payloads                 approvals | Skills | storage
+             |                        |
+             v                        v
+Trusted Agent workbench          OS / local workspace / AI provider
+```
+
+### Host modules
+
+| Module | Responsibility |
+| --- | --- |
+| `client/main/plugins.js` | Package validation, permission grants, broker method authorization, install/disable/uninstall lifecycle, and sanitized plugin records. |
+| `client/main/agent-platform.js` | Opaque model refs, structured local tools, pending-operation decisions, Skill discovery, and isolated JSON persistence. |
+| `client/main/ai.js` | Provider-specific HTTP request normalization and cancellation while retaining secret model profiles in the main process. |
+| `client/renderer/core/agent.js` | Agent descriptor/state validation, immutable snapshots, bounds, events, and owner cleanup. |
+| `client/renderer/core/plugin-extension-protocol.js` | Data-only cross-realm protocol and bounded cloning/error envelopes. |
+| `client/renderer/core/plugin-extension-host.js` | Permission enforcement, contribution handles, command routing, broker delegation, and deterministic teardown. |
+| `client/renderer/core/plugin-extension-sandbox.js` | Frozen public plugin context inside the network-disabled Worker. |
+| Trusted Agent workbench | Dynamic activity entry, session navigation, editor-sized tab, host controls, and state-to-command translation. |
+
+No module above is specific to the official Agent plugin id. A future Agent plugin can use the same descriptor, state, model, tool, Skill, storage, and lifecycle contracts without a host patch.
+
+### Plugin modules
+
+The official package should keep a small internal split before bundling:
+
+| Logical module | Responsibility |
+| --- | --- |
+| activation | Register commands and Agent provider; hydrate persisted state; publish the initial snapshot. |
+| sessions | Create, select, delete, title, bound history, and serialize sessions. |
+| orchestrator | Build system/user/tool messages, run model turns, parse tool calls, and enforce turn/tool limits. |
+| goals | Translate a user goal into bounded steps and publish step transitions. |
+| tools | Validate model-generated JSON arguments, invoke only named host tools, and pause on approval. |
+| skills | Select opaque Skill ids, read selected documents, and inject bounded instruction text into model context. |
+| presentation | Convert domain state into the host `AgentState`; localize every visible title and status. |
+
+The release artifact remains one self-contained ES module. Source modules, build tools, tests, and `node_modules` are repository inputs, not package runtime dependencies.
+
+## Frontend architecture
+
+The Agent follows the editor-page layout used by modern VS Code coding agents:
+
+- A dynamic Agent activity-bar item opens a dedicated left sidebar containing new-session, search/grouping, and session-history controls.
+- Selecting a session opens or reuses a closeable Agent tab in the central editor area. The Agent tab is a peer of code, settings, plugin-detail, and document tabs rather than a narrow chat panel.
+- The central page has a compact transcript/timeline, optional goal progress, an approval row when needed, and a stable bottom composer with model, mode, effort, and Skill controls.
+- The existing bottom Problems/Output/Debug Console/Terminal panel remains independent and can stay visible under the Agent tab.
+- The host renders empty, loading, unconfigured, running, waiting-approval, completed, failed, and cancelled states. A plugin supplies data and commands, never markup.
+- If no Agent provider is registered, no empty Agent shell is shown. Disable or uninstall removes its activity entry, sidebar, state, and open tabs.
+
+This requires a frontend API, but it is a data API rather than a webview API: `agents.register()`, immutable Agent state, Agent-state events for trusted workbench code, and namespaced command payloads. Keeping rendering in the host preserves consistent theme, accessibility, localization behavior, layout, and security.
+
+## Runtime flows
+
+### Activation
+
+1. The main process validates package structure, hashes, engine ranges, requested permissions, and grants.
+2. The renderer extension host loads the verified entry into a dedicated Worker and supplies a frozen context.
+3. The plugin registers its commands and calls `agents.register()`.
+4. The extension host validates ownership, registers the contribution and state provider, and returns an opaque handle.
+5. The plugin restores its private JSON state, lists model and Skill metadata as permitted, then publishes one complete Agent snapshot.
+6. The trusted workbench creates the activity item and opens the selected session only from that snapshot.
+
+### User turn
+
+1. The workbench invokes the plugin's `send` command with one bounded payload.
+2. The plugin appends the user message, marks the session running, creates a unique request id, starts a tracked asynchronous turn, republishes state, and returns from the command without waiting for the full turn.
+3. The plugin calls `models.generate()` using an opaque model ref and bounded tool schemas.
+4. The main broker resolves the secret host profile and returns normalized text, reasoning text, and tool calls.
+5. The plugin either publishes the assistant result or validates and dispatches a named tool.
+6. The loop ends on a final response, cancellation, approval wait, bounded iteration limit, or error.
+
+`models.cancel(requestId)` maps only to the calling plugin's host-prefixed request. Cancellation is a real transport operation, not merely a UI state change.
+
+### Goal mode
+
+Goal mode is an orchestration policy, not a more privileged capability. The plugin creates a bounded plan, publishes step statuses, and iterates the same model/tool loop. Each step is `pending`, `in-progress`, `completed`, or `blocked`. A blocked or failed step does not silently widen permissions. Resuming continues from persisted semantic state but must re-read workspace facts and request fresh approvals.
+
+### Approval
+
+1. The plugin invokes `workspace_write` or `process_run` with structured input.
+2. The main broker validates the request and stores the operation under an unguessable, plugin-scoped, workspace-scoped, expiring id. The id alone is not execution authority.
+3. The plugin publishes only `{ id }` in `activeSession.approval`; it cannot supply tool, summary, risk, expiry, or details to the workbench.
+4. The trusted workbench asks main to describe the canonical pending operation and renders the decision from that result.
+5. Only an explicit user action in trusted UI calls the preload/main `decide` operation. Main consumes the pending id once, checks the exact permission, and revalidates workspace/file state before executing or rejecting it.
+6. The workbench invokes the plugin's approval or rejection command only after main returns, carrying the canonical `approvalResult`; the plugin then resumes orchestration.
+
+The Worker context has no approval, rejection, decision, or process-cancel method. For an approved `process_run`, the id remains a trusted-workbench runtime handle: preload/main `cancel` requires the original plugin's `process.execute` grant and terminates only its matching process. Disabling, uninstalling, replacing, or disposing a plugin also terminates its active processes.
+
+## Security model
+
+| Threat | Control |
+| --- | --- |
+| Plugin reads API keys | Model references are opaque; complete profiles are resolved only in main process memory. |
+| Path traversal or symlink escape | Paths are workspace-relative, normalized, resolved against real parents, and rechecked against the active workspace. Symlink traversal is rejected or skipped. |
+| Overwriting a changed file | Reads return SHA-256; write requests require the expected hash and recheck it after approval. |
+| Shell injection | Process requests use an allowlisted executable and argv array with `shell: false`; no shell string or environment object is accepted. |
+| Plugin self-approves a mutation | The Worker can only create a pending operation. Describe, decide, and cancel exist solely on the sender-bound trusted renderer/preload/main path. |
+| Silent mutation | Write and process tools return a pending operation before any side effect. Decisions are one-use, expire, and recheck plugin grant plus workspace. |
+| Orphaned local process | Running processes stay keyed by plugin and approval id; trusted workbench cancel and every plugin/host teardown path terminate them. |
+| Cross-plugin request cancellation | Model request ids are host-prefixed by plugin id. |
+| Skill-based privilege escalation | Skill content is instruction data only; it grants no permission and cannot bypass tool approval. |
+| Stale state after workspace switch | Brokers capture and revalidate a monotonic workspace identity; pending approvals are invalidated by mismatch. |
+| UI injection | The host accepts bounded state fields and semantic icon/status tokens only; no HTML, CSS, URLs, or callbacks cross the boundary. |
+| Resource exhaustion | Entry, RPC, model input, file, output, state-list, session, message, timeline, Skill, storage, timeout, and result counts are bounded. |
+| Disabled plugin leaves authority | Deactivation disposes command/contribution/Agent handles and clears plugin-owned pending approvals. |
+
+Plugin-local storage should still be treated as ordinary local application data, not a credential vault. The current application AI settings also need a separate at-rest secret-storage migration; the Agent boundary prevents new exposure to plugins but does not by itself encrypt existing host settings.
+
+## Cross-platform contract
+
+The implementation remains JavaScript-only and uses Node/Electron primitives that exist on Windows, macOS, and Linux:
+
+- `node:path`, `realpath`, and workspace-relative POSIX serialization normalize OS-specific paths at the broker edge.
+- `spawn(executable, argv, { shell: false })` avoids shell dialect coupling. `windowsHide` prevents helper windows on Windows.
+- The executable allowlist includes platform spellings where needed (`npm.cmd`, `gradle.bat`, and similar), while absence is reported as a normal process failure.
+- Plugin state lives beneath Electron `app.getPath('userData')`; Skills use `app.getPath('home')` plus supported dot-directory conventions.
+- The plugin never embeds drive letters, `/home` paths, shell separators, signal assumptions, or a platform-specific package path.
+
+macOS and Linux still require release-time validation for executable permissions and process termination semantics; Windows requires validation of atomic replacement when a destination already exists and command resolution for `.cmd`/`.bat`. These belong in platform CI and focused integration tests, not in plugin branching logic.
+
+## Language decision
+
+Keeping the client and official plugin in JavaScript is the preferred design. The difficult parts are capability isolation, lifecycle, validation, concurrency, cancellation, and tests; adding another user-side language would not remove that complexity and would introduce a sidecar protocol, packaging matrix, update channel, signing surface, crash supervision, and cross-platform binary distribution.
+
+Use the TypeScript declaration as the public contract and incrementally add JSDoc or TypeScript source at build time if stronger static checking is needed. The emitted runtime can remain a single JavaScript bundle. A native or non-JS sidecar is justified only for a concrete capability Node/Electron cannot provide with acceptable correctness or performance, and it should still sit behind the same main-process broker rather than being exposed to plugins.
+
+## Delivery and registration
+
+The official plugin is developed and released from [BOBOCloud-AI-Agent-plugin-offical](https://github.com/NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical). The host repository ignores its local nested checkout so the package retains an independent history and release cadence.
+
+Each release must:
+
+1. Build one deterministic activation entry and include en, zh-CN, and ja plugin-local messages.
+2. Regenerate the manifest integrity map from exact package bytes.
+3. Validate and install the produced `.boboplugin`, including enable, permission revocation, approval, cancellation, disable, update, and uninstall paths.
+4. Publish the immutable archive and SHA-256 in the plugin repository release.
+5. Register that exact version, source, artifact URL, size, SHA-256, engine ranges, publisher, and localized metadata in [BOBOCloud-Marketplace-Registry](https://github.com/NemophilistJohn/BOBOCloud-Marketplace-Registry).
+6. Recompute and validate the registry's package/version/shard/root hash chain, then verify remote artifact bytes and catalog metadata.
+
+The marketplace or host chooses the artifact URL. A plugin cannot supply an install URL or update itself.
+
+## Construction sequence
+
+1. Land the generic API 1.4 capability and state contracts with unit tests.
+2. Land the trusted Agent workbench and remove obsolete Agent/Skill/MCP placeholders from native AI settings while leaving Chat and inline completion intact.
+3. Build the official plugin against the declaration, including session storage, Chat/Goal modes, effort levels, model cancellation, Skills, tool iteration, and approvals.
+4. Run Node contract tests, renderer build checks, and real Electron UI flows at desktop and compact viewports.
+5. Package and install the real archive, verify three locales and lifecycle cleanup, then publish the plugin release.
+6. Register the immutable artifact in the marketplace and verify the complete remote hash chain.
+7. Add Windows, macOS, and Linux CI coverage for packaging, path behavior, process handling, and cancellation before widening the executable/tool catalog.

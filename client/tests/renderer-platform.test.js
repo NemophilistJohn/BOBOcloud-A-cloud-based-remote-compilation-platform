@@ -1146,7 +1146,7 @@ test('thin BOBO adapter projects the same registered file icon service', () => {
   vm.runInNewContext(compatibilityBundle, context);
 
   const BOBO = context.window.BOBO;
-  assert.equal(BOBO.platform.apiVersion, '1.3.0');
+  assert.equal(BOBO.platform.apiVersion, '1.4.0');
   assert.equal(BOBO.platform.services.has('workbench.fileIcons'), true);
   assert.equal(BOBO.platform.services.get('workbench.fileIcons'), BOBO.fileIcons);
   assert.equal(BOBO.fileIcons.getFileIcon('main.go'), 'ico/file_type_go.svg');

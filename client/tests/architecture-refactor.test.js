@@ -104,6 +104,9 @@ const EXPECTED_IPC = new Map([
   ['plugins:marketplace-refresh', 'handle'],
   ['plugins:marketplace-install', 'handle'],
   ['plugins:rpc', 'handle'],
+  ['plugins:agent-approval-describe', 'handle'],
+  ['plugins:agent-approval-decide', 'handle'],
+  ['plugins:agent-approval-cancel', 'handle'],
   ['plugins:open-folder', 'handle'],
   ['plugins:refresh', 'handle'],
   ['tasks:list', 'handle'],
@@ -159,6 +162,7 @@ const LEGACY_RENDERER_MODULES = [
   'src/editor-core.js',
   'src/document-views.js',
   'src/workspace.js',
+  'src/agent-workbench.js',
   'src/plugin-details.js',
   'src/rclone-client.js',
   'src/run-config.js',
@@ -175,7 +179,6 @@ const LEGACY_RENDERER_MODULES = [
   'src/collaboration.js',
   'src/account-profile.js',
   'src/ai-settings-schema.js',
-  'src/ai-capabilities.js',
   'src/ai-prompts.js',
   'src/ai-service.js',
   'src/ai-context.js',
@@ -260,9 +263,11 @@ test('checked renderer bundles are fresh for their recorded build mode', async (
   await buildRenderer({ mode: manifest.mode, outputDirectory: temporaryDirectory, logLevel: 'silent' });
 
   for (const fileName of ['bobo-renderer.js', 'bobo-ai-ui.js']) {
-    assert.deepEqual(
-      fs.readFileSync(path.join(temporaryDirectory, fileName)),
-      fs.readFileSync(path.join(RENDERER_OUTPUT, fileName)),
+    assert.equal(
+      fs.readFileSync(path.join(temporaryDirectory, fileName)).equals(
+        fs.readFileSync(path.join(RENDERER_OUTPUT, fileName))
+      ),
+      true,
       fileName + ' is stale; rebuild the renderer'
     );
   }

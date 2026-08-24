@@ -34,6 +34,11 @@ export const ExtensionHostMethod = Object.freeze({
   FILE_DECORATIONS_SCM_DISPOSE: 'fileDecorations.scm.dispose',
   DOCUMENT_VIEW_REGISTER: 'documentViews.register',
   DOCUMENT_VIEW_DISPOSE: 'documentViews.dispose',
+  AGENT_REGISTER: 'agents.register',
+  AGENT_SET_STATE: 'agents.setState',
+  AGENT_CLEAR_STATE: 'agents.clearState',
+  AGENT_DISPOSE: 'agents.dispose',
+  AGENT_BROKER_REQUEST: 'agent.broker.request',
   SERVICE_GET: 'services.get',
   BROKER_REQUEST: 'host.request'
 });
@@ -56,7 +61,7 @@ export const ExtensionErrorCode = Object.freeze({
 
 const MAX_DEPTH = 24;
 const MAX_ITEMS = 4096;
-const MAX_STRING_LENGTH = 64 * 1024;
+const MAX_STRING_LENGTH = 512 * 1024;
 
 export function createExtensionError(code, message) {
   const error = new Error(message);
@@ -111,16 +116,21 @@ export function isPlainObject(value) {
 export function cloneExtensionData(value, options = {}) {
   const maxDepth = Number.isInteger(options.maxDepth) ? options.maxDepth : MAX_DEPTH;
   const maxItems = Number.isInteger(options.maxItems) ? options.maxItems : MAX_ITEMS;
+  const maxStringLength = Number.isInteger(options.maxStringLength) ? options.maxStringLength : MAX_STRING_LENGTH;
   const seen = new WeakSet();
   let itemCount = 0;
 
   function clone(current, depth) {
+    itemCount += 1;
+    if (itemCount > maxItems * 8) {
+      throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension payload is too large.');
+    }
     if (depth > maxDepth) {
       throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension payload exceeds the maximum depth.');
     }
     if (current === null || typeof current === 'boolean') return current;
     if (typeof current === 'string') {
-      if (current.length > MAX_STRING_LENGTH) {
+      if (current.length > maxStringLength) {
         throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension payload contains an oversized string.');
       }
       return current;
@@ -160,10 +170,6 @@ export function cloneExtensionData(value, options = {}) {
       const descriptor = descriptors[key];
       if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
         throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension payload cannot contain accessors.');
-      }
-      itemCount += 1;
-      if (itemCount > maxItems * 8) {
-        throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension payload is too large.');
       }
       result[key] = clone(descriptor.value, depth + 1);
     }

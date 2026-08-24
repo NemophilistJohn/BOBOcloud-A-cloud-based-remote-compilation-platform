@@ -6,6 +6,7 @@ const { createWindowState } = require('./main/window-state');
 const { createWorkspaceController } = require('./main/workspace');
 const { createWorkspaceSettingsController } = require('./main/workspace-settings');
 const { createAiController } = require('./main/ai');
+const { createAgentPlatformBroker } = require('./main/agent-platform');
 const { createLspController } = require('./main/lsp');
 const { createAuthController } = require('./main/auth');
 const { registerDiagnosticsIpc } = require('./main/diagnostics');
@@ -27,7 +28,7 @@ const settings = createSettingsStore({ app, rclone });
 const secureTransport = createSecureTransportGuard();
 const navigationSecurity = createNavigationSecurity({ shell, trustedRendererPath: path.join(__dirname, 'index.html') });
 const lsp = createLspController({ ipcMain, getWindow, settings });
-let dap = null, terminal = null, workspaceSettings = null, packageCenter = null;
+let dap = null, terminal = null, workspaceSettings = null, packageCenter = null, agentBroker = null;
 const disposeRemoteEditorServices = () => {
   lsp.dispose();
   if (dap) void dap.dispose();
@@ -45,7 +46,7 @@ const workspace = createWorkspaceController({
   stopTerminal: (reason) => terminal ? terminal.stop(reason) : { state: 'idle' },
   beforeWorkspaceChange: (reason) => packageCenter ? packageCenter.beginWorkspaceTransition(reason) : [],
   afterWorkspaceChange: () => packageCenter ? packageCenter.endWorkspaceTransition() : true,
-  onWorkspaceChanged: () => { if (workspaceSettings) workspaceSettings.workspaceChanged(); },
+  onWorkspaceChanged: () => { if (workspaceSettings) workspaceSettings.workspaceChanged(); if (agentBroker) agentBroker.workspaceChanged(); },
   onWorkspaceFilesystemEvent: (rootPath, workspaceIdentity, changedPath) => {
     if (workspaceSettings) workspaceSettings.notifyFilesystemEvent(rootPath, workspaceIdentity, changedPath);
   }
@@ -55,9 +56,12 @@ workspaceSettings = createWorkspaceSettingsController({
   getWindow,
   getWorkspaceIdentity: workspace.getIdentity
 });
+const ai = createAiController({ ipcMain, getWindow, settings });
+agentBroker = createAgentPlatformBroker({ app, settings, getWorkspaceIdentity: workspace.getIdentity, notifyWorkspaceFiles: workspace.notifyExternalFileChanges, requestModel: ai.request, cancelModel: ai.cancel });
 const plugins = createPluginController({ app, ipcMain, dialog, shell, getWindow, t: languagePacks.t,
   getWorkspaceIdentity: workspace.getIdentity,
   resolveWorkspaceFile: workspace.resolveWorkspaceFile,
+  agentBroker,
   onDidChange: () => { if (menu) menu.rebuild(); }
 });
 const marketplace = createMarketplaceController({ app, ipcMain, getWindow, pluginManager: plugins, hostVersion: app.getVersion() });
@@ -67,12 +71,10 @@ const auth = createAuthController({ ipcMain, settings, disposeLsp: disposeRemote
   onStateChanged: () => { if (menu) menu.rebuild(); }, onServerSettingsWritten: secureTransport.update });
 menu = createMenuController({ Menu, dialog, getWindow, languagePacks, getAuthState: auth.getState,
   pickAndOpenWorkspace: workspace.pickAndOpenWorkspace });
-const ai = createAiController({ ipcMain, getWindow, settings });
 const tasks = createTasksController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity });
 dap = createDapController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity, settings });
 terminal = createTerminalController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity, settings });
 const windowState = createWindowState({ screen, filePath: settings.paths.windowState, getWindow });
-
 workspace.registerIpc();
 workspaceSettings.registerIpc();
 lsp.registerIpc();
@@ -134,7 +136,7 @@ function createWindow() {
     lsp.dispose();
     void dap.dispose();
     void terminal.dispose();
-    ai.dispose();
+    ai.dispose(); agentBroker.dispose();
     if (packageTransitionHeld) { packageTransitionHeld = false; void packageCenter.endWorkspaceTransition(); }
     window = null;
   });
@@ -171,7 +173,7 @@ app.on('will-quit', () => {
   lsp.dispose();
   void dap.dispose();
   void terminal.dispose();
-  ai.dispose();
+  ai.dispose(); agentBroker.dispose();
   workspace.clearWatchers();
 });
 

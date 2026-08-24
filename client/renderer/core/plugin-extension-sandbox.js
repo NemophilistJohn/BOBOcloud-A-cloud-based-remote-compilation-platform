@@ -82,6 +82,11 @@ function extensionWorkerBootstrapSource() {
     FILE_DECORATIONS_SCM_DISPOSE: 'fileDecorations.scm.dispose',
     DOCUMENT_VIEW_REGISTER: 'documentViews.register',
     DOCUMENT_VIEW_DISPOSE: 'documentViews.dispose',
+    AGENT_REGISTER: 'agents.register',
+    AGENT_SET_STATE: 'agents.setState',
+    AGENT_CLEAR_STATE: 'agents.clearState',
+    AGENT_DISPOSE: 'agents.dispose',
+    AGENT_BROKER_REQUEST: 'agent.broker.request',
     SERVICE_GET: 'services.get',
     BROKER_REQUEST: 'host.request'
   };
@@ -140,6 +145,10 @@ function extensionWorkerBootstrapSource() {
       operation,
     args: args === undefined ? {} : args
     });
+  }
+
+  function agentBrokerRequest(method, args) {
+    return request(HOST_METHOD.AGENT_BROKER_REQUEST, { method, args: args === undefined ? {} : args });
   }
 
   function normalizeLocalization(value) {
@@ -336,6 +345,49 @@ function extensionWorkerBootstrapSource() {
           addSubscription(disposable);
           return disposable;
         }
+      }),
+      agents: Object.freeze({
+        async register(descriptor) {
+          const result = await request(HOST_METHOD.AGENT_REGISTER, descriptor);
+          let active = true;
+          const requireActive = () => {
+            if (!active) throw fail('EXTENSION_CANCELLED', 'Agent provider has been disposed.');
+          };
+          const provider = Object.freeze({
+            id: typeof result.id === 'string' ? result.id : descriptor && descriptor.id,
+            setState(state) {
+              requireActive();
+              return request(HOST_METHOD.AGENT_SET_STATE, { handle: result.handle, state });
+            },
+            clearState() {
+              requireActive();
+              return request(HOST_METHOD.AGENT_CLEAR_STATE, { handle: result.handle });
+            },
+            dispose() {
+              if (!active) return;
+              active = false;
+              request(HOST_METHOD.AGENT_DISPOSE, { handle: result.handle }).catch(() => {});
+            }
+          });
+          addSubscription(provider);
+          return provider;
+        }
+      }),
+      models: Object.freeze({
+        list: () => agentBrokerRequest('models.list'),
+        generate: (args) => agentBrokerRequest('models.generate', args),
+        cancel: (requestId) => agentBrokerRequest('models.cancel', { requestId })
+      }),
+      tools: Object.freeze({
+        invoke: (tool, input) => agentBrokerRequest('agent.tools.invoke', { tool, input: input || {} })
+      }),
+      skills: Object.freeze({
+        list: () => agentBrokerRequest('agent.skills.list'),
+        read: (skillId) => agentBrokerRequest('agent.skills.read', { skillId })
+      }),
+      storage: Object.freeze({
+        read: () => agentBrokerRequest('agent.storage.read'),
+        write: (value) => agentBrokerRequest('agent.storage.write', { value })
       }),
       scm: Object.freeze({
         git: Object.freeze({

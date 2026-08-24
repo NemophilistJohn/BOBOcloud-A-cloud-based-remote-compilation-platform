@@ -17,6 +17,7 @@ export const rendererExtensionHost = pluginApi
       commands: rendererPlatform.commands,
       contributions: rendererPlatform.contributions,
       sourceControls: rendererPlatform.sourceControls,
+      agents: rendererPlatform.agents,
       listDescriptors: () => pluginApi.runtimeDescriptors(),
       loadEntry: (id) => pluginApi.loadEntry(id),
       loadLocalization: typeof pluginApi.loadLocalization === 'function'
@@ -50,12 +51,21 @@ export const rendererExtensionHost = pluginApi
 if (rendererExtensionHost) {
   rendererPlatform.lifecycle.add(rendererExtensionHost);
   let started = false;
-  let refreshQueued = false;
+  let refreshRunning = false;
+  let refreshDirty = false;
   const refresh = () => {
-    if (!started || refreshQueued || rendererPlatform.disposed) return;
-    refreshQueued = true;
-    Promise.resolve().then(() => rendererExtensionHost.refresh()).catch(() => {}).finally(() => {
-      refreshQueued = false;
+    if (!started || rendererPlatform.disposed) return;
+    refreshDirty = true;
+    if (refreshRunning) return;
+    refreshRunning = true;
+    Promise.resolve().then(async () => {
+      while (refreshDirty && !rendererPlatform.disposed) {
+        refreshDirty = false;
+        try { await rendererExtensionHost.refresh(); } catch (_) {}
+      }
+    }).finally(() => {
+      refreshRunning = false;
+      if (refreshDirty) refresh();
     });
   };
   const start = () => {

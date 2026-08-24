@@ -2,8 +2,9 @@ import { DisposableStore } from './disposable.js';
 import { ContributionPoint } from './contribution-registry.js';
 import { SourceControlStateStore, validateSourceControlDescriptor } from './source-control.js';
 import { validateDocumentViewDescriptor } from './document-view.js';
+import { validateAgentDescriptor } from './agent.js';
 
-export const PLUGIN_API_VERSION = '1.3.0';
+export const PLUGIN_API_VERSION = '1.4.0';
 
 export const PluginPermission = Object.freeze({
   COMMANDS_REGISTER: 'commands.register',
@@ -15,7 +16,14 @@ export const PluginPermission = Object.freeze({
   SCM_GIT_WRITE: 'scm.git.write',
   FILE_DECORATIONS_SCM: 'fileDecorations.scm',
   DOCUMENT_VIEWS_REGISTER: 'documentViews.register',
-  DOCUMENTS_READ: 'documents.read'
+  DOCUMENTS_READ: 'documents.read',
+  AGENTS_REGISTER: 'agents.register',
+  MODELS_GENERATE: 'models.generate',
+  WORKSPACE_READ: 'workspace.read',
+  WORKSPACE_WRITE: 'workspace.write',
+  PROCESS_EXECUTE: 'process.execute',
+  SKILLS_READ: 'skills.read',
+  STORAGE_LOCAL: 'storage.local'
 });
 
 const KNOWN_PERMISSIONS = new Set(Object.values(PluginPermission));
@@ -25,7 +33,9 @@ const KNOWN_PERMISSIONS = new Set(Object.values(PluginPermission));
 // runtime mirrors the same contribution ownership boundary for core callers.
 const KNOWN_CONTRIBUTION_POINTS = new Set(
   Object.values(ContributionPoint).filter((point) => (
-    point !== ContributionPoint.SOURCE_CONTROL && point !== ContributionPoint.DOCUMENT_VIEWS
+    point !== ContributionPoint.SOURCE_CONTROL &&
+    point !== ContributionPoint.DOCUMENT_VIEWS &&
+    point !== ContributionPoint.AGENTS
   ))
 );
 
@@ -182,6 +192,7 @@ export class PluginRuntime {
     this._contributions = options.contributions;
     this._sourceControls = options.sourceControls || new SourceControlStateStore({ onError: options.onError });
     this._ownsSourceControls = !options.sourceControls;
+    this._agents = options.agents;
     this._getPluginI18n = typeof options.getPluginI18n === 'function'
       ? options.getPluginI18n
       : () => ({ locale: 'en', messages: Object.create(null) });
@@ -391,6 +402,35 @@ export class PluginRuntime {
           return disposable;
         }
       }),
+      agents: Object.freeze({
+        register: (descriptor) => {
+          requirePermission(PluginPermission.AGENTS_REGISTER);
+          if (!this._agents) throw new Error('Agent state store is unavailable.');
+          const normalizedDescriptor = validateAgentDescriptor(descriptor, manifest.id);
+          const contributionDisposable = this._contributions.register(ContributionPoint.AGENTS, normalizedDescriptor, {
+            id: normalizedDescriptor.id,
+            owner: manifest.id
+          });
+          let stateHandle;
+          try {
+            stateHandle = this._agents.register(normalizedDescriptor, { owner: manifest.id });
+          } catch (error) {
+            contributionDisposable.dispose();
+            throw error;
+          }
+          const provider = Object.freeze({
+            id: normalizedDescriptor.id,
+            setState: (state) => stateHandle.setState(state),
+            clearState: () => stateHandle.clearState(),
+            dispose: () => {
+              stateHandle.dispose();
+              contributionDisposable.dispose();
+            }
+          });
+          subscriptions.add(provider);
+          return provider;
+        }
+      }),
       i18n: this._createPluginI18n(manifest)
     });
   }
@@ -468,6 +508,7 @@ export class PluginRuntime {
     this._commands.disposeOwner(record.manifest.id);
     this._contributions.disposeOwner(record.manifest.id);
     this._sourceControls.disposeOwner(record.manifest.id);
+    if (this._agents) this._agents.disposeOwner(record.manifest.id);
     this._services.disposeOwner(record.manifest.id);
   }
 

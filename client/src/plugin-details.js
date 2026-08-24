@@ -552,7 +552,7 @@
 
   function providerTabs() {
     return tabs().map(function(tab) {
-      return { key: tab.key, name: tab.detail.name, title: t('Plugin details') + ': ' + tab.detail.name, closeable: true, draggable: false };
+      return { key: tab.key, name: tab.detail.name, title: t('Plugin details') + ': ' + tab.detail.name, category: t('Extensions'), closeable: true, draggable: false };
     });
   }
 

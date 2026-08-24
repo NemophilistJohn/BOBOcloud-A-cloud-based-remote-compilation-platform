@@ -20,6 +20,7 @@
   <link rel="stylesheet" href="./styles/plugin-manager.css">
   <link rel="stylesheet" href="./styles/plugin-details.css">
   <link rel="stylesheet" href="./styles/source-control-view.css">
+  <link rel="stylesheet" href="./styles/agent-workbench.css">
 </head>
 <body>
   <div id="layout" class="workbench-shell" data-panel-position="bottom" data-density="comfortable">
@@ -793,11 +794,10 @@
         <div class="ai-control-nav-label" data-i18n="ai.control.group.workspace">Workspace AI</div>
         <button class="ai-control-tab active" type="button" role="tab" data-ai-tab="overview" aria-selected="true" aria-controls="ai-pane-overview"><span class="ai-control-tab-icon" aria-hidden="true"></span><span data-i18n="ai.control.tab.overview">Overview</span></button>
         <button class="ai-control-tab" type="button" role="tab" data-ai-tab="connections" aria-selected="false" aria-controls="ai-pane-connections" tabindex="-1"><span class="ai-control-tab-icon" aria-hidden="true"></span><span data-i18n="ai.control.tab.connections">Connections</span></button>
-        <button class="ai-control-tab" type="button" role="tab" data-ai-tab="chat" aria-selected="false" aria-controls="ai-pane-chat" tabindex="-1"><span class="ai-control-tab-icon" aria-hidden="true"></span><span data-i18n="ai.control.tab.chat">Chat agent</span></button>
+        <button class="ai-control-tab" type="button" role="tab" data-ai-tab="chat" aria-selected="false" aria-controls="ai-pane-chat" tabindex="-1"><span class="ai-control-tab-icon" aria-hidden="true"></span><span data-i18n="ai.control.tab.chat">Chat</span></button>
         <button class="ai-control-tab" type="button" role="tab" data-ai-tab="inline" aria-selected="false" aria-controls="ai-pane-inline" tabindex="-1"><span class="ai-control-tab-icon" aria-hidden="true"></span><span data-i18n="ai.control.tab.inline">Inline completion</span></button>
         <div class="ai-control-nav-label" data-i18n="ai.control.group.customization">Customization</div>
         <button class="ai-control-tab" type="button" role="tab" data-ai-tab="instructions" aria-selected="false" aria-controls="ai-pane-instructions" tabindex="-1"><span class="ai-control-tab-icon" aria-hidden="true"></span><span data-i18n="ai.control.tab.instructions">Instructions</span></button>
-        <button class="ai-control-tab" type="button" role="tab" data-ai-tab="capabilities" aria-selected="false" aria-controls="ai-pane-capabilities" tabindex="-1"><span class="ai-control-tab-icon" aria-hidden="true"></span><span data-i18n="ai.control.tab.capabilities">Capabilities</span></button>
       </nav>
 
       <div id="ai-control-content" class="ai-control-content">
@@ -806,7 +806,6 @@
         <section id="ai-pane-chat" class="ai-control-pane" role="tabpanel" data-ai-pane="chat" hidden></section>
         <section id="ai-pane-inline" class="ai-control-pane" role="tabpanel" data-ai-pane="inline" hidden></section>
         <section id="ai-pane-instructions" class="ai-control-pane" role="tabpanel" data-ai-pane="instructions" hidden></section>
-        <section id="ai-pane-capabilities" class="ai-control-pane" role="tabpanel" data-ai-pane="capabilities" hidden></section>
       </div>
 
       <footer class="ai-control-footer">

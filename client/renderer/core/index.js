@@ -28,6 +28,14 @@ export {
   scmGitPermissionForOperation
 } from './scm-git.js';
 export {
+  AgentPhase,
+  AgentSessionStatus,
+  AgentStateStore,
+  createAgentCommandPayload,
+  validateAgentDescriptor,
+  validateAgentState
+} from './agent.js';
+export {
   SourceControlActionKind,
   SourceControlFormFieldType,
   SourceControlIcon,

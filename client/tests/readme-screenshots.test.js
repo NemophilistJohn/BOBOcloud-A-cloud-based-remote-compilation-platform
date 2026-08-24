@@ -27,7 +27,7 @@ function pngMetadata(filePath) {
 }
 
 test('README documents current client/server contracts, language navigation, and deployment assets', () => {
-  assert.match(README, /client as \*\*2\.6\.1\*\* and the server as \*\*2\.5\.0\*\*/);
+  assert.match(README, /client as \*\*2\.7\.0\*\* and the server as \*\*2\.5\.0\*\*/);
   assert.match(README, /README\.zh-CN\.md/);
   assert.match(README, /For desktop users/);
   assert.match(README, /For server operators/);
@@ -50,6 +50,9 @@ test('README documents current client/server contracts, language navigation, and
   assert.match(README, /`cortex-m4`/);
   assert.match(README, /Package Center for personal Python projects/);
   assert.match(README, /project-lock dependency storage/);
+  assert.match(README, /Plugin API 1\.4 Agent surface/);
+  assert.match(README, /docs\/ai-agent-plugin-architecture\.md/);
+  assert.match(README, /adds no Go service endpoint/);
   assert.match(README, /`serverInfo` descriptor/);
   assert.match(README, /`\$\{input:\*\}` supports `promptString`/);
   assert.doesNotMatch(README, /renderer\.js/);
@@ -58,11 +61,14 @@ test('README documents current client/server contracts, language navigation, and
 
 test('Chinese README mirrors the three audience paths and links back to English', () => {
   assert.match(README_ZH, /README\.md/);
-  assert.match(README_ZH, /客户端版本为 \*\*2\.6\.1\*\*，服务端版本为 \*\*2\.5\.0\*\*/);
+  assert.match(README_ZH, /客户端版本为 \*\*2\.7\.0\*\*，服务端版本为 \*\*2\.5\.0\*\*/);
   assert.match(README_ZH, /用户端使用者/);
   assert.match(README_ZH, /服务器运维者/);
   assert.match(README_ZH, /贡献者/);
   assert.match(README_ZH, /软件包中心/);
+  assert.match(README_ZH, /Plugin API 1\.4 Agent 界面/);
+  assert.match(README_ZH, /docs\/ai-agent-plugin-architecture\.md/);
+  assert.match(README_ZH, /不新增任何 Go 服务端接口/);
   assert.match(README_ZH, /cross-toolkit/);
 });
 
