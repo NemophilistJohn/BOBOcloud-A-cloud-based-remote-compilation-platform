@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,14 +68,17 @@ func TestPersonalProjectPythonDependenciesMountExactDigestDespiteIncompleteInven
 	if release != nil {
 		defer release()
 	}
-	if projectRoot == "" || !strings.Contains(generation, lease.Fingerprint.Digest) {
-		t.Fatalf("exact project inventory was not resolved: root=%q generation=%q", projectRoot, generation)
+	if projectRoot == "" || project.RevisionRoot == "" || !strings.Contains(generation, lease.Fingerprint.Digest) {
+		t.Fatalf("exact project inventory was not resolved: root=%q revisionRoot=%q generation=%q", projectRoot, project.RevisionRoot, generation)
 	}
 	request, view, resolved := handler.resolveAnalysisDependencies(
 		"user-a", "", "python:3.10", "python", workspace, workspaceID, "", "", generation, project,
 	)
 	if !resolved || request.Generation != generation {
 		t.Fatalf("dependency view not resolved: request=%+v view=%+v", request, view)
+	}
+	if request.Paths.ExtraRevision == nil || filepath.Clean(request.Paths.ExtraRevision.HostRoot) != filepath.Clean(projectRoot) || filepath.Clean(request.Paths.ExtraRevision.IdentityRoot) != filepath.Clean(project.RevisionRoot) {
+		t.Fatalf("project reader did not retain its canonical revision identity: project=%+v request=%+v", project, request.Paths.ExtraRevision)
 	}
 	found := false
 	expectedPythonRoot := filepath.Join(projectRoot, "python")
@@ -88,6 +92,24 @@ func TestPersonalProjectPythonDependenciesMountExactDigestDespiteIncompleteInven
 	}
 	if len(view.Mounts) != 1 || view.Mounts[0].Legacy {
 		t.Fatalf("legacy user dependencies polluted the exact project view: %+v", view.Mounts)
+	}
+	sameProject := handler.resolvePersonalProjectDependencies(
+		"user-a", workspaceID, "Project", "python:3.10", "python:3.10-slim", "python", workspace, nil,
+	)
+	if sameProject.Release != nil {
+		defer sameProject.Release()
+	}
+	_, sameView, sameResolved := handler.resolveAnalysisDependencies(
+		"user-a", "", "python:3.10", "python", workspace, workspaceID, "", "", sameProject.Generation, sameProject,
+	)
+	if !sameResolved || sameProject.Generation != generation || filepath.Clean(sameProject.RevisionRoot) != filepath.Clean(project.RevisionRoot) || sameView.Revision != view.Revision {
+		t.Fatalf("reacquired project generation changed dependency identity: firstProject=%+v secondProject=%+v firstRevision=%q secondRevision=%q", project, sameProject, view.Revision, sameView.Revision)
+	}
+	if runtime.GOOS == "linux" && filepath.Clean(sameProject.Root) == filepath.Clean(project.Root) {
+		t.Fatalf("Linux project readers unexpectedly reused one bind anchor: first=%q second=%q", project.Root, sameProject.Root)
+	}
+	if sameProject.Release != nil {
+		sameProject.Release()
 	}
 	updatedWriter, err := manager.Prepare(context.Background(), cacheRequest)
 	if err != nil {
@@ -243,9 +265,19 @@ func TestPersonalProjectDependenciesUseCurrentDigestForEveryManagedLanguage(t *t
 			if !resolved || dependencyRequest.Paths.UserPersistRoot != "" || dependencyRequest.Paths.SnapshotRoot != "" || len(view.Mounts) == 0 {
 				t.Fatalf("project-lock dependency truth was not isolated: request=%+v mounts=%+v", dependencyRequest, view.Mounts)
 			}
+			if dependencyRequest.Paths.ExtraRevision == nil || filepath.Clean(dependencyRequest.Paths.ExtraRevision.HostRoot) != filepath.Clean(project.Root) || filepath.Clean(dependencyRequest.Paths.ExtraRevision.IdentityRoot) != filepath.Clean(project.RevisionRoot) {
+				t.Fatalf("project-lock revision identity missing for %s: project=%+v request=%+v", test.language, project, dependencyRequest.Paths.ExtraRevision)
+			}
 			for _, mount := range view.Mounts {
 				if !strings.HasPrefix(filepath.Clean(mount.HostPath), filepath.Clean(project.Root)+string(filepath.Separator)) || !mount.ReadOnly {
 					t.Fatalf("non-project dependency mount leaked into %s view: %+v", test.language, mount)
+				}
+				relative, err := filepath.Rel(project.Root, mount.HostPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if want := filepath.Join(project.RevisionRoot, relative); filepath.Clean(mount.RevisionIdentity) != filepath.Clean(want) {
+					t.Fatalf("%s dependency mount revision identity = %q, want %q for host path %q", test.language, mount.RevisionIdentity, want, mount.HostPath)
 				}
 			}
 		})

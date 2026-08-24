@@ -79,6 +79,7 @@
   // Project environment diagnosis is event-driven and becomes active only
   // after auth, runtime, LSP, and terminal workflows are ready.
   try { if (BOBO.environmentCenter) BOBO.environmentCenter.init(); } catch (e) { console.error('environment center init:', e); }
+  try { if (BOBO.packageCenter) BOBO.packageCenter.init(); } catch (e) { console.error('package center init:', e); }
 
   // ── Phase 5: Output panel tabs ──
   try { BOBO.outputPanel.init(); } catch (e) { console.error('outputPanel init:', e); }

@@ -41,16 +41,17 @@ var dapUpgrader = websocket.Upgrader{
 }
 
 type DAPHandler struct {
-	Config        *config.Config
-	Manager       *dap.Manager
-	AuthEnabled   bool
-	Authenticator auth.Authenticator
-	UserStore     auth.UserStore
-	AuthSessions  auth.AuthSessionStore
-	Collaboration *collab.Manager
-	Lifecycle     *lifecycle.Manager
-	ChildTickets  *dap.ChildTicketBroker
-	PersonalCache *personalcache.Manager
+	Config          *config.Config
+	Manager         *dap.Manager
+	AuthEnabled     bool
+	Authenticator   auth.Authenticator
+	UserStore       auth.UserStore
+	AuthSessions    auth.AuthSessionStore
+	Collaboration   *collab.Manager
+	Lifecycle       *lifecycle.Manager
+	ChildTickets    *dap.ChildTicketBroker
+	PersonalCache   *personalcache.Manager
+	RuntimeMetadata RuntimeMetadataProvider
 }
 
 type dapWorkspaceStart struct {
@@ -242,7 +243,7 @@ func (h *DAPHandler) acquireDAPDependencyCache(userID, workspaceName, folderKey,
 	}
 	request := personalcache.Request{
 		UserID: userID, WorkspaceID: lsp.StableWorkspaceIdentity(userID, "", "", "", folderKey),
-		WorkspaceName: workspaceName, RuntimeID: runtimeID, RuntimeFingerprint: personalCacheRuntimeFingerprint(runtimeID, runtimeImage), Language: language,
+		WorkspaceName: workspaceName, RuntimeID: runtimeID, RuntimeFingerprint: resolvedRuntimeFingerprint(context.Background(), h.RuntimeMetadata, runtimeID, runtimeImage, configuredRuntimeVersion(runtimeID)), Language: language,
 		WorkspaceRoot: workspaceRoot, SetupCommands: setupCommands,
 		QuotaBytes: userQuotaBytes(h.UserStore, userID),
 	}

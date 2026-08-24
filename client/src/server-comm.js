@@ -23,6 +23,13 @@
     return localizeServerError('The server returned an invalid response. Check the server address and transport setting.');
   }
 
+  function retryAfterSeconds(response) {
+    if (!response || !response.headers || typeof response.headers.get !== 'function') return 0;
+    var raw = response.headers.get('Retry-After');
+    var seconds = Number(raw);
+    return Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : 0;
+  }
+
   function escHtml(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -230,6 +237,7 @@
 
   // ──── HTTP communication ────
   // opts.quiet: 不把错误写入输出面板、返回 {success:false,error} 而非 null（供登录等 UI 场景使用）
+  // opts.timeoutMs: abort the underlying fetch after the requested deadline.
   BOBO.sendToServer = async function(action, data, opts) {
     opts = opts || {};
     data = data || {};
@@ -246,6 +254,18 @@
     for (var k in data) {
       if (data.hasOwnProperty(k)) payload[k] = data[k];
     }
+    var timeoutMs = Number(opts.timeoutMs || 0);
+    var abortController = timeoutMs > 0 && typeof global.AbortController === 'function'
+      ? new global.AbortController()
+      : null;
+    var timeoutHandle = null;
+    var didTimeout = false;
+    if (abortController) {
+      timeoutHandle = setTimeout(function() {
+        didTimeout = true;
+        abortController.abort();
+      }, timeoutMs);
+    }
     try {
       var headers = { 'Content-Type': 'application/json' };
       // 多人模式优先使用登录会话 token；否则回退到设置中的 API Key
@@ -257,7 +277,8 @@
       var response = await fetch(url, {
         method: 'POST',
         headers: headers,
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: abortController ? abortController.signal : undefined
       });
       // Reverse proxies and TLS listeners can return plain text or HTML. Never
       // leak a JSON parser exception into the workspace/sync workflow.
@@ -287,11 +308,14 @@
         }
         var errMsg = localizeServerError(result && result.error ? result.error : 'HTTP ' + response.status);
         if (opts.quiet) {
-          return Object.assign({}, result || {}, {
+          var failure = Object.assign({}, result || {}, {
             success: false,
             error: errMsg,
             status: response.status
           });
+          var retrySeconds = retryAfterSeconds(response);
+          if (retrySeconds) failure.retryAfterSeconds = retrySeconds;
+          return failure;
         }
         throw new Error(errMsg);
       }
@@ -300,10 +324,18 @@
       }
       return result;
     } catch (error) {
+      if (didTimeout) {
+        var timeoutError = localizeServerError('The server request timed out.');
+        if (opts.quiet) return { success: false, error: timeoutError, errorCode: 'transport_timeout' };
+        BOBO.updateRunOutput('Error communicating with server: ' + timeoutError);
+        return null;
+      }
       var localizedError = localizeServerError(error.message);
       if (opts.quiet) return { success: false, error: localizedError };
       BOBO.updateRunOutput('Error communicating with server: ' + localizedError);
       return null;
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
     }
   };
 })(window);

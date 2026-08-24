@@ -13,6 +13,8 @@
     "test:ui": "playwright test tests/lsp-ui.spec.js tests/environment-center-ui.spec.js tests/projects-cache-ui.spec.js tests/workspace-scale-ui.spec.js tests/workspace-context-menu-ui.spec.js tests/workspace-lifecycle-ui.spec.js tests/workspace-sync-status-ui.spec.js tests/project-tasks-ui.spec.js tests/task-problems-ui.spec.js tests/settings-editor-visual-ui.spec.js tests/workspace-settings-ui.spec.js tests/ai-settings-ui.spec.js tests/ai-transport-ui.spec.js tests/onboarding-ai-rendering-ui.spec.js tests/account-profile-ui.spec.js tests/admin-users-ui.spec.js tests/dap-ui.spec.js tests/run-config-target-ui.spec.js tests/runtime-auto-selection-ui.spec.js tests/terminal-ui.spec.js tests/plugin-manager-ui.spec.js tests/plugin-details-ui.spec.js tests/plugin-marketplace-ui.spec.js tests/source-control-view-ui.spec.js tests/official-local-scm-plugin-ui.spec.js --workers=1",
     "pretest:ui:environment": "npm run build:renderer:dev",
     "test:ui:environment": "playwright test tests/environment-center-ui.spec.js --workers=1",
+    "pretest:ui:packages": "npm run build:renderer:dev",
+    "test:ui:packages": "playwright test tests/package-center-ui.spec.js --workers=1",
     "predocs:screenshots": "npm run build:renderer:dev",
     "docs:screenshots": "node scripts/capture-readme-screenshots.js",
     "build": "electron-builder",

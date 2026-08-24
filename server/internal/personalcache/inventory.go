@@ -62,6 +62,32 @@ func (m *Manager) InspectPackageInventory(request Request) InventoryInspection {
 	return inspection
 }
 
+// PublishedOperation proves that a package operation owns the canonical
+// generation for the exact reviewed dependency digest. It is used only to
+// reconcile a durable completion intent after a server restart.
+func (m *Manager) PublishedOperation(request Request, operationID string) (bool, error) {
+	if m == nil || m.options.ScopeMode != "project-lock" || strings.TrimSpace(operationID) == "" {
+		return false, nil
+	}
+	gate := m.userGate(request.UserID)
+	gate.Lock()
+	defer gate.Unlock()
+	resolved, err := m.resolveRequest(request)
+	if err != nil {
+		return false, err
+	}
+	valid, meta := readValidMetadata(resolved.hostRoot, request, resolved.fingerprint)
+	if !valid || meta.OperationID != strings.TrimSpace(operationID) {
+		return false, nil
+	}
+	entry, exists, err := m.lookupResolvedLocked(request, resolved)
+	if err != nil || !exists {
+		return false, err
+	}
+	inspection := m.inspectPackageInventoryEntryLocked(request, entry)
+	return inspection.State == "ready" && inspection.Exact, nil
+}
+
 // AcquirePackageInventoryRead validates and retains one exact package
 // inventory under the same per-user gate. Delete and LRU cannot remove the
 // namespace until the returned lease is released.
@@ -215,6 +241,33 @@ func (m *Manager) inspectPackageInventoryEntryLocked(request Request, entry Entr
 	return InventoryInspection{
 		State: "ready", Detail: "The package inventory matches the current project dependency digest",
 		Packages: packages, Exact: true, GeneratedAt: document.GeneratedAt, Revision: revision,
+	}
+}
+
+// PreviewPackageInventory scans a writable generation without publishing it.
+// Package-center transactions use this as their pre-commit validation step so
+// an incomplete install can never replace the last known-good generation.
+func (l *Lease) PreviewPackageInventory() InventoryInspection {
+	if l == nil || l.manager == nil || !l.writable {
+		return InventoryInspection{State: "unavailable", Detail: "A writable project dependency generation is required"}
+	}
+	if l.aborted.Load() {
+		return InventoryInspection{State: "aborted", Detail: "The project dependency generation was aborted"}
+	}
+	if !strings.EqualFold(strings.TrimSpace(l.request.Language), "python") {
+		return InventoryInspection{State: "unsupported", Detail: "Exact package inventory is not available for this language"}
+	}
+	packages, revision, _, err := scanPythonPackageTree(filepath.Join(l.HostRoot, "python"))
+	if err != nil {
+		return InventoryInspection{State: "incomplete", Detail: "Python package metadata could not be read completely: " + err.Error()}
+	}
+	return InventoryInspection{
+		State:       "ready",
+		Detail:      "The staged package inventory is exact and ready to publish",
+		Packages:    packages,
+		Exact:       true,
+		GeneratedAt: time.Now().UTC(),
+		Revision:    revision,
 	}
 }
 

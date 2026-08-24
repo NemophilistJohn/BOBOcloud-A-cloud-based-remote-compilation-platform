@@ -111,6 +111,13 @@
           <button class="sidebar-hide" title="Hide primary sidebar" aria-label="Hide primary sidebar"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m10 3-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         </div>
 
+        <div id="environment-view-tabs" class="environment-view-tabs" role="tablist" aria-label="Environment Center views">
+          <button id="environment-tab-overview" type="button" role="tab" aria-selected="true" aria-controls="environment-overview-view">Status</button>
+          <button id="environment-tab-packages" type="button" role="tab" aria-selected="false" aria-controls="package-center-view" title="Third-party libraries">Libraries</button>
+        </div>
+
+        <div id="environment-overview-view" class="environment-overview-view" role="tabpanel" aria-labelledby="environment-tab-overview">
+
         <div id="environment-center-empty" class="environment-center-state environment-center-empty">
           <span class="environment-state-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="m4.4 7.7 7.6 4.2 7.6-4.2M12 12v8.5" stroke="currentColor" stroke-width="1.5"/></svg></span>
           <strong>Open a workspace to inspect its environment.</strong>
@@ -207,6 +214,69 @@
             </div>
           </div>
         </div>
+        </div>
+
+        <section id="package-center-view" class="package-center-view" role="tabpanel" aria-labelledby="environment-tab-packages" aria-busy="false" hidden>
+          <header class="package-context-bar">
+            <div class="package-context-copy"><strong id="package-context-project" data-i18n-skip>--</strong><small id="package-context-runtime" data-i18n-skip>--</small></div>
+            <label class="package-manifest-control"><span class="sr-only">Dependency file</span><select id="package-manifest-select" aria-label="Dependency file"></select><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></label>
+          </header>
+
+          <div class="package-center-toolbar">
+            <label class="package-search-box" for="package-search-input">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.35"/><path d="m10.5 10.5 3.5 3.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/></svg>
+              <input id="package-search-input" type="search" placeholder="Search exact package name" aria-label="Search exact package name" autocomplete="off" spellcheck="false">
+              <button id="package-search-clear" class="package-inline-icon" type="button" title="Clear search" aria-label="Clear search" hidden><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+            </label>
+            <label class="package-source-control"><span class="sr-only">Download source</span><select id="package-source-select" aria-label="Download source"></select><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></label>
+          </div>
+
+          <div class="package-mode-tabs" role="tablist" aria-label="Library views">
+            <button id="package-mode-discover" type="button" role="tab" aria-selected="true" aria-controls="package-center-browser">Discover</button>
+            <button id="package-mode-installed" type="button" role="tab" aria-selected="false" aria-controls="package-center-browser"><span>Installed</span><span id="package-installed-count" class="environment-count" data-i18n-skip>0</span></button>
+          </div>
+
+          <div class="package-center-body sidebar-scroll">
+            <section id="package-center-browser" class="package-center-pane" aria-label="Package catalog">
+              <div id="package-center-state" class="package-center-state" role="status" aria-live="polite">
+                <span class="package-state-mark" aria-hidden="true"></span><span id="package-center-state-label">Select a project runtime to browse compatible libraries.</span>
+              </div>
+              <section id="package-suggestions-section" class="package-list-section" aria-labelledby="package-suggestions-heading" hidden>
+                <div class="package-section-heading"><h2 id="package-suggestions-heading">Detected missing imports</h2><span id="package-suggestions-count" class="environment-count" data-i18n-skip>0</span></div>
+                <div id="package-suggestions-list" class="package-list" role="list"></div>
+              </section>
+              <section class="package-list-section" aria-labelledby="package-results-heading">
+                <div class="package-section-heading"><h2 id="package-results-heading">Library catalog</h2><button id="package-refresh" class="package-icon-button" type="button" title="Refresh libraries" aria-label="Refresh libraries"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M15.5 6.5A6 6 0 1 0 16 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M12.5 3.5H16V7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+                <div id="package-results-list" class="package-list" role="list"></div>
+                <div id="package-results-empty" class="package-empty" hidden><strong>No libraries found</strong><span>Try another name, version, or download source.</span></div>
+                <button id="package-load-more" class="package-load-more" type="button" hidden>Load more</button>
+              </section>
+            </section>
+
+            <section id="package-center-detail" class="package-center-pane package-detail" aria-label="Library details" hidden>
+              <div class="package-pane-heading">
+                <button id="package-detail-back" class="package-icon-button" type="button" title="Back to libraries" aria-label="Back to libraries"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m12.5 4.5-5.5 5.5 5.5 5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                <div><strong id="package-detail-name" data-i18n-skip>--</strong><small id="package-detail-summary" data-i18n-skip></small></div>
+              </div>
+              <dl class="package-detail-facts">
+                <div><dt>Compatibility</dt><dd id="package-detail-compatibility" data-i18n-skip>--</dd></div>
+                <div><dt>Catalog</dt><dd id="package-detail-catalog" data-i18n-skip>--</dd></div>
+                <div><dt>Project cache</dt><dd id="package-detail-cache" data-i18n-skip>--</dd></div>
+              </dl>
+              <label class="package-field"><span>Version</span><select id="package-version-select"></select></label>
+              <label class="package-field"><span>Dependency group</span><select id="package-scope-select"></select></label>
+              <label class="package-check"><input id="package-prerelease" type="checkbox"><span>Include prerelease versions</span></label>
+              <div id="package-detail-note" class="package-detail-note" data-i18n-skip></div>
+              <button id="package-stage-change" class="package-primary-action" type="button"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 3.5v8m0 0 3-3m-3 3-3-3M4.5 13.5v2h11v-2" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Install</span></button>
+            </section>
+          </div>
+
+          <div id="package-operation-status" class="package-operation-status" role="status" aria-live="polite" hidden>
+            <span class="environment-busy-spinner" aria-hidden="true"></span><span id="package-operation-label">Preparing library changes...</span>
+            <button id="package-operation-retry" class="package-icon-button" type="button" title="Retry recovery" aria-label="Retry recovery" hidden><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M15.5 6.5V3.8m0 0h-2.7m2.7 0A6.2 6.2 0 1 0 16 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          </div>
+
+        </section>
       </section>
       <section id="extensions-sidebar" class="sidebar-view extensions-sidebar" data-sidebar-view="extensions" aria-label="Extensions">
         <div class="sidebar-header extensions-sidebar-header">

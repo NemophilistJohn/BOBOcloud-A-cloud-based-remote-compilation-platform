@@ -281,6 +281,17 @@ test('language packs have identical keys and placeholder contracts', () => {
     assert.ok(keys.includes(key), `missing localized SCM decoration key: ${key}`);
     for (const locale of locales) assert.notEqual(packs[locale][key], '', `${locale}: ${key} must be translated`);
   }
+  for (const key of [
+    'The library plan contains an invalid dependency file change.',
+    'The dependency file transaction is invalid.',
+    'The dependency file transaction is no longer available.',
+    'Package plan contains an invalid local file change',
+    'Package transaction id is required'
+  ]) {
+    assert.ok(keys.includes(key), `missing package error translation key: ${key}`);
+    assert.notEqual(packs['zh-CN'][key], key, `zh-CN package error is not translated: ${key}`);
+    assert.notEqual(packs.ja[key], key, `ja package error is not translated: ${key}`);
+  }
 });
 
 test('dynamic UI translation entry points reference defined English keys', () => {
@@ -289,7 +300,7 @@ test('dynamic UI translation entry points reference defined English keys', () =>
     'ai-agent-button.js', 'ai-chat-panel.js', 'ai-markdown.js', 'ai-settings-center.js',
     'ai-capabilities.js', 'ai-prompts.js', 'collaboration.js', 'account-profile.js',
     'project-tasks.js', 'workspace-sync-status.js', 'task-problem-matcher.js', 'runner.js', 'run-config.js', 'runtime.js', 'dap-client.js', 'terminal.js', 'auth.js', 'plugin-manager-ui.js', 'plugin-details.js',
-    'source-control-view.js', 'command-palette.js', 'file-search.js', 'workspace.js', 'projects.js'
+    'source-control-view.js', 'command-palette.js', 'file-search.js', 'workspace.js', 'projects.js', 'environment-center.js', 'package-center.js'
   ];
 
   function assertLiteralCalls(source, fileName, pattern, keyGroup) {

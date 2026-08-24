@@ -46,12 +46,15 @@ type ProjectEnvironmentLanguage struct {
 }
 
 type ProjectEnvironmentRuntime struct {
-	ID          string `json:"id"`
-	Language    string `json:"language,omitempty"`
-	Version     string `json:"version,omitempty"`
-	Image       string `json:"image,omitempty"`
-	DisplayName string `json:"displayName,omitempty"`
-	Status      string `json:"status"`
+	ID                    string `json:"id"`
+	Language              string `json:"language,omitempty"`
+	Version               string `json:"version,omitempty"`
+	ResolvedVersion       string `json:"resolvedVersion,omitempty"`
+	ResolvedVersionSource string `json:"resolvedVersionSource,omitempty"`
+	ResolvedVersionTrust  string `json:"resolvedVersionTrust,omitempty"`
+	Image                 string `json:"image,omitempty"`
+	DisplayName           string `json:"displayName,omitempty"`
+	Status                string `json:"status"`
 }
 
 type ProjectEnvironmentManifest struct {

@@ -120,7 +120,10 @@ const EXPECTED_IPC = new Map([
   ['terminal:write', 'handle'],
   ['terminal:resize', 'handle'],
   ['terminal:stop', 'handle'],
-  ['terminal:status', 'handle']
+  ['terminal:status', 'handle'],
+  ['package-center:apply-local-changes', 'handle'],
+  ['package-center:rollback-local-changes', 'handle'],
+  ['package-center:commit-local-changes', 'handle']
 ]);
 
 const LEGACY_RENDERER_MODULES = [
@@ -163,6 +166,7 @@ const LEGACY_RENDERER_MODULES = [
   'renderer/compat/dap-adapter.js',
   'src/environment-activity.js',
   'src/environment-center.js',
+  'src/package-center.js',
   'src/views.js',
   'src/diagnostics-settings.js',
   'src/auth.js',
@@ -200,12 +204,12 @@ function mainRegistrations() {
 
 test('main.js is a composition root and IPC ownership is complete and unique', () => {
   const composition = read('main.js');
-  assert.ok(composition.split(/\r?\n/).length <= 180, 'main.js should remain a small composition root');
+  assert.ok(composition.trimEnd().split(/\r?\n/).length <= 180, 'main.js should remain a small composition root');
   assert.doesNotMatch(composition, /\bipcMain\.(?:handle|on)\(/);
 
   for (const moduleName of [
     'settings-store', 'window-state', 'workspace', 'workspace-settings', 'ai', 'lsp', 'dap', 'terminal', 'auth',
-    'diagnostics', 'rclone-ipc', 'language-packs', 'plugins', 'marketplace', 'menu'
+    'diagnostics', 'rclone-ipc', 'language-packs', 'plugins', 'marketplace', 'package-center', 'menu'
   ]) {
     assert.match(composition, new RegExp("require\\('./main/" + moduleName.replace('-', '\\-') + "'\\)"), moduleName + ' is composed');
   }

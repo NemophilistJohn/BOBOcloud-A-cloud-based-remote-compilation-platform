@@ -196,7 +196,12 @@ func (h *HTTPHandler) inspectProjectEnvironment(r *http.Request, req *model.Requ
 		if rt == nil {
 			return nil, resolved, fmt.Errorf("unknown runtime: %s", req.Runtime)
 		}
-		runtime = model.ProjectEnvironmentRuntime{ID: rt.RuntimeID, Language: rt.Language, Version: rt.Version, Image: rt.DockerImage, DisplayName: rt.DisplayName, Status: "ready"}
+		metadata := resolveProjectRuntimeMetadata(r.Context(), h.RuntimeMetadata, rt.RuntimeID, rt.DockerImage, rt.Version)
+		runtime = model.ProjectEnvironmentRuntime{
+			ID: rt.RuntimeID, Language: rt.Language, Version: rt.Version,
+			ResolvedVersion: metadata.Version, ResolvedVersionSource: metadata.VersionSource, ResolvedVersionTrust: metadata.VersionTrust,
+			Image: rt.DockerImage, DisplayName: rt.DisplayName, Status: "ready",
+		}
 		if language == "" {
 			language = rt.Language
 		}
@@ -1661,7 +1666,7 @@ func personalProjectDependencyViewFromEnvironmentSnapshot(snapshot *environmentD
 			return personalProjectDependencyView{}
 		}
 		return personalProjectDependencyView{
-			Root: snapshot.reader.HostRoot, Generation: generation,
+			Root: snapshot.reader.HostRoot, RevisionRoot: snapshot.entry.HostPath, Generation: generation,
 			Extra: map[string][]string{lsp.DependencyRolePythonPackages: {root}},
 		}
 	}
@@ -1669,7 +1674,7 @@ func personalProjectDependencyViewFromEnvironmentSnapshot(snapshot *environmentD
 	if len(extra) == 0 {
 		return personalProjectDependencyView{}
 	}
-	return personalProjectDependencyView{Root: snapshot.reader.HostRoot, Generation: generation, Extra: extra}
+	return personalProjectDependencyView{Root: snapshot.reader.HostRoot, RevisionRoot: snapshot.entry.HostPath, Generation: generation, Extra: extra}
 }
 
 func (h *HTTPHandler) resolveEnvironmentDependencyStatus(r *http.Request, req *model.Request, resolved environmentResolved, runtime model.ProjectEnvironmentRuntime, language string, snapshots ...*environmentDependencySnapshot) (environmentDependencyStatus, int64) {
@@ -1717,6 +1722,9 @@ func (h *HTTPHandler) resolveEnvironmentDependencyStatus(r *http.Request, req *m
 			paths.Extra = project.Extra
 			paths.AllowedRoots = appendExistingDependencyRoot(paths.AllowedRoots, project.Root)
 			dependencyGeneration = project.Generation
+			if project.Generation != "" && project.RevisionRoot != "" {
+				paths.ExtraRevision = &lsp.AnalysisDependencyExtraRevision{HostRoot: project.Root, IdentityRoot: project.RevisionRoot}
+			}
 		}
 	}
 	paths.AllowedRoots = appendExistingDependencyRoot(paths.AllowedRoots, resolved.root)
@@ -1802,6 +1810,11 @@ func environmentRevision(environment *model.ProjectEnvironment, dependencyRevisi
 	copyValue := *environment
 	copyValue.Revision = ""
 	copyValue.CheckedAt = 0
+	// Observation timestamps are UI metadata, not package-plan inputs. Reads,
+	// indexing, and compile-history updates must not invalidate the same plan.
+	copyValue.Activity = model.ProjectEnvironmentActivity{}
+	copyValue.DependencyCache.LastUsedAt = 0
+	copyValue.DependencyCache.InventoryCheckedAt = 0
 	data, _ := json.Marshal(copyValue)
 	hash := sha256.Sum256(append(data, dependencyRevision...))
 	return hex.EncodeToString(hash[:16])

@@ -6,7 +6,15 @@ const { createPluginController } = require('../main/plugins');
 
 const PLUGIN_ID = 'bobocloud.document-preview';
 const PLUGIN_REPOSITORY = path.resolve(process.cwd(), '..', '..', 'my-electron-app', 'bobocloud-document-preview');
-const ARTIFACT = path.join(PLUGIN_REPOSITORY, 'artifacts', 'bobocloud.document-preview-1.0.0.boboplugin');
+
+function resolveArtifact() {
+  const packageFile = path.join(PLUGIN_REPOSITORY, 'package.json');
+  if (!fs.existsSync(packageFile)) return '';
+  const version = JSON.parse(fs.readFileSync(packageFile, 'utf8')).version;
+  return path.join(PLUGIN_REPOSITORY, 'artifacts', `${PLUGIN_ID}-${version}.boboplugin`);
+}
+
+const ARTIFACT = resolveArtifact();
 
 function electronPath() {
   const dist = path.join(process.cwd(), 'node_modules', 'electron', 'dist');

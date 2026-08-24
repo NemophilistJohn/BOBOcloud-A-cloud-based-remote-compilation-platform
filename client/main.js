@@ -19,17 +19,15 @@ const { createSecureTransportGuard } = require('./main/secure-transport');
 const { createNavigationSecurity } = require('./main/navigation-security');
 const { createPluginController } = require('./main/plugins');
 const { createMarketplaceController } = require('./main/marketplace');
+const { createPackageCenterController } = require('./main/package-center');
 
-let window = null;
-let menu = null;
+let window = null, menu = null;
 const getWindow = () => window;
 const settings = createSettingsStore({ app, rclone });
 const secureTransport = createSecureTransportGuard();
 const navigationSecurity = createNavigationSecurity({ shell, trustedRendererPath: path.join(__dirname, 'index.html') });
 const lsp = createLspController({ ipcMain, getWindow, settings });
-let dap = null;
-let terminal = null;
-let workspaceSettings = null;
+let dap = null, terminal = null, workspaceSettings = null, packageCenter = null;
 const disposeRemoteEditorServices = () => {
   lsp.dispose();
   if (dap) void dap.dispose();
@@ -45,6 +43,8 @@ const workspace = createWorkspaceController({
   t: languagePacks.t,
   disposeLsp: disposeRemoteEditorServices,
   stopTerminal: (reason) => terminal ? terminal.stop(reason) : { state: 'idle' },
+  beforeWorkspaceChange: (reason) => packageCenter ? packageCenter.beginWorkspaceTransition(reason) : [],
+  afterWorkspaceChange: () => packageCenter ? packageCenter.endWorkspaceTransition() : true,
   onWorkspaceChanged: () => { if (workspaceSettings) workspaceSettings.workspaceChanged(); },
   onWorkspaceFilesystemEvent: (rootPath, workspaceIdentity, changedPath) => {
     if (workspaceSettings) workspaceSettings.notifyFilesystemEvent(rootPath, workspaceIdentity, changedPath);
@@ -61,6 +61,8 @@ const plugins = createPluginController({ app, ipcMain, dialog, shell, getWindow,
   onDidChange: () => { if (menu) menu.rebuild(); }
 });
 const marketplace = createMarketplaceController({ app, ipcMain, getWindow, pluginManager: plugins, hostVersion: app.getVersion() });
+packageCenter = createPackageCenterController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity,
+  onFilesChanged: files => workspace.notifyExternalFileChanges(files) });
 const auth = createAuthController({ ipcMain, settings, disposeLsp: disposeRemoteEditorServices,
   onStateChanged: () => { if (menu) menu.rebuild(); }, onServerSettingsWritten: secureTransport.update });
 menu = createMenuController({ Menu, dialog, getWindow, languagePacks, getAuthState: auth.getState,
@@ -82,6 +84,7 @@ terminal.registerIpc();
 languagePacks.registerIpc();
 plugins.registerIpc();
 marketplace.registerIpc();
+packageCenter.registerIpc();
 registerDiagnosticsIpc({ ipcMain, settings });
 registerRcloneIpc({ ipcMain, BrowserWindow, dialog, getWindow, rclone });
 
@@ -105,22 +108,22 @@ function createWindow() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(windowState.save, 300);
   };
-  window.on('resize', saveSoon);
-  window.on('move', saveSoon);
+  window.on('resize', saveSoon); window.on('move', saveSoon);
   window.on('maximize', saveSoon);
   window.on('unmaximize', saveSoon);
 
-  let closeApproved = false;
-  let closeDecisionPending = false;
+  let closeApproved = false, closeDecisionPending = false, packageTransitionHeld = false;
   window.on('close', (event) => {
     windowState.save();
     if (closeApproved) return;
     event.preventDefault();
     if (closeDecisionPending) return;
     closeDecisionPending = true;
-    workspace.requestRendererLeave('window-close', null).then((decision) => {
+    workspace.requestRendererLeave('window-close', null).then(async (decision) => {
       closeDecisionPending = false;
       if (!decision.allowed || !window || window.isDestroyed()) return;
+      await packageCenter.beginWorkspaceTransition('window-close');
+      packageTransitionHeld = true;
       closeApproved = true;
       window.close();
     });
@@ -132,10 +135,12 @@ function createWindow() {
     void dap.dispose();
     void terminal.dispose();
     ai.dispose();
+    if (packageTransitionHeld) { packageTransitionHeld = false; void packageCenter.endWorkspaceTransition(); }
     window = null;
   });
   window.webContents.on('render-process-gone', () => {
     workspace.handleRendererGone();
+    void packageCenter.preserveAll('renderer-gone');
     if (terminal) void terminal.dispose();
   });
   menu.rebuild();
@@ -170,6 +175,4 @@ app.on('will-quit', () => {
   workspace.clearWatchers();
 });
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
-});
+app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

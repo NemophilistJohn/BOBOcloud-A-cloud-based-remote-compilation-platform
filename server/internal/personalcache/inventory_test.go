@@ -536,6 +536,32 @@ func TestPackageInventorySnapshotRetainsPublishedGenerationWhenInventoryIsCorrup
 	}
 }
 
+func TestPreviewPackageInventoryDoesNotPublishRejectedGeneration(t *testing.T) {
+	manager := NewManager(t.TempDir(), Options{ScopeMode: "project-lock", ReservationBytes: 8})
+	request, _ := inventoryTestRequest(t, manager)
+	lease, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeInventoryDistInfo(t, filepath.Join(lease.HostRoot, "python"), "numpy", "2.2.6")
+	preview := lease.PreviewPackageInventory()
+	if preview.State != "ready" || !preview.Exact || len(preview.Packages) != 1 || preview.Packages[0].Name != "numpy" {
+		t.Fatalf("staged inventory preview = %+v", preview)
+	}
+	if lease.Published() {
+		t.Fatal("preview marked an uncommitted generation as published")
+	}
+	info := manager.Inspect(request.UserID, 0)
+	if len(info.Entries) != 1 || !info.Entries[0].Writing {
+		t.Fatalf("preview did not remain an active staged writer: %+v", info.Entries)
+	}
+	lease.Abort()
+	lease.Release()
+	if lease.Published() {
+		t.Fatal("aborted preview generation was published")
+	}
+}
+
 func TestPythonInventoryRemainsIncompleteAfterUncleanRestart(t *testing.T) {
 	dataDir := t.TempDir()
 	manager := NewManager(dataDir, Options{ReservationBytes: 8})

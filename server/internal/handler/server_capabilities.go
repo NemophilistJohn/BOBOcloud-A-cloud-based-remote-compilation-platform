@@ -45,6 +45,7 @@ type serverFeatureCapabilities struct {
 	Tasks              bool                    `json:"tasks"`
 	Terminal           bool                    `json:"terminal"`
 	ProjectEnvironment bool                    `json:"projectEnvironment"`
+	PackageCenter      bool                    `json:"packageCenter"`
 	Collaboration      bool                    `json:"collaboration"`
 	LSP                serverServiceCapability `json:"lsp"`
 	DAP                serverServiceCapability `json:"dap"`
@@ -56,10 +57,11 @@ type serverServiceCapability struct {
 }
 
 type serverCapabilityLimits struct {
-	RunMaxConcurrent          int                 `json:"runMaxConcurrent"`
-	TerminalMaxSessionSeconds int                 `json:"terminalMaxSessionSeconds"`
-	LSP                       serverSessionLimits `json:"lsp"`
-	DAP                       serverSessionLimits `json:"dap"`
+	RunMaxConcurrent               int                 `json:"runMaxConcurrent"`
+	TerminalMaxSessionSeconds      int                 `json:"terminalMaxSessionSeconds"`
+	PackageOperationTimeoutSeconds int                 `json:"packageOperationTimeoutSeconds"`
+	LSP                            serverSessionLimits `json:"lsp"`
+	DAP                            serverSessionLimits `json:"dap"`
 }
 
 type serverSessionLimits struct {
@@ -121,8 +123,10 @@ func (h *HTTPHandler) serverCapabilities() serverCapabilityDescriptor {
 	descriptor.Capabilities.Tasks = descriptor.Capabilities.Run
 	descriptor.Capabilities.Terminal = h.Terminal != nil
 	descriptor.Capabilities.ProjectEnvironment = h.DependencyViews != nil
+	descriptor.Capabilities.PackageCenter = cfg.PackageCenterEnabled && h.PackageCatalog != nil && h.PersonalCache != nil && h.PersonalCache.ScopeMode() == "project-lock" && h.EnvironmentSetup != nil
 	descriptor.Capabilities.Collaboration = h.Collaboration != nil
 	descriptor.Limits.RunMaxConcurrent = cfg.DockerMaxContainers
+	descriptor.Limits.PackageOperationTimeoutSeconds = cfg.PackageOperationTimeoutSeconds
 	if descriptor.Capabilities.Terminal {
 		descriptor.Limits.TerminalMaxSessionSeconds = cfg.TerminalMaxSessionSeconds
 	}

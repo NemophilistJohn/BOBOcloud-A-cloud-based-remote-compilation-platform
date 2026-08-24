@@ -13,6 +13,8 @@ function createWorkspaceController(options) {
   const t = options.t;
   const disposeLsp = options.disposeLsp || (() => {});
   const stopTerminal = options.stopTerminal || (() => {});
+  const beforeWorkspaceChange = options.beforeWorkspaceChange || (() => {});
+  const afterWorkspaceChange = options.afterWorkspaceChange || (() => {});
   const onWorkspaceChanged = options.onWorkspaceChanged || (() => {});
   const onWorkspaceFilesystemEvent = options.onWorkspaceFilesystemEvent || (() => {});
   const settings = options.settings;
@@ -348,35 +350,54 @@ function createWorkspaceController(options) {
     let tree = await scanTreeDirectory(folder);
     if (currentOpenSequence !== openSequence || !tree) return null;
     let leaveToken = null;
+    let transitionStarted = false;
+    let transitionOutcome = 'workspace-switch-aborted';
     const sourceRoot = workspaceRoot;
     const sourceTree = treeCache;
-    if (workspaceRoot) {
-      const decision = await requestRendererLeave('switch', folder);
-      if (!decision.allowed || currentOpenSequence !== openSequence) {
-        abortLeave(decision.leaveToken);
-        return null;
+    try {
+      if (workspaceRoot) {
+        const decision = await requestRendererLeave('switch', folder);
+        if (!decision.allowed || currentOpenSequence !== openSequence) {
+          abortLeave(decision.leaveToken);
+          return null;
+        }
+        leaveToken = decision.leaveToken;
+        try {
+          await Promise.resolve(beforeWorkspaceChange('workspace-switch'));
+          transitionStarted = true;
+        } catch (error) {
+          abortLeave(leaveToken);
+          throw error;
+        }
+        try {
+          // The renderer has approved the transition. Terminals are scoped to
+          // the old remote snapshot and must not survive into the new one.
+          await Promise.resolve(stopTerminal('workspace-switch'));
+          tree = await scanTreeDirectory(folder);
+        } catch (error) {
+          abortLeave(leaveToken);
+          throw error;
+        }
+        if (currentOpenSequence !== openSequence || !tree) {
+          abortLeave(leaveToken);
+          return null;
+        }
       }
-      leaveToken = decision.leaveToken;
-      // The renderer has approved the transition. Terminals are scoped to the
-      // old remote workspace snapshot and must never survive into the new one.
-      await Promise.resolve(stopTerminal('workspace-switch'));
-      tree = await scanTreeDirectory(folder);
-      if (currentOpenSequence !== openSequence || !tree) {
-        abortLeave(leaveToken);
-        return null;
-      }
+      clearWatchers();
+      workspaceRoot = folder;
+      workspaceIdentity += 1;
+      activeArtifactRunContext = null;
+      const targetIdentity = workspaceIdentity;
+      onWorkspaceChanged({ rootPath: folder, workspaceIdentity: targetIdentity });
+      watchFolderRecursive(folder, targetIdentity);
+      setTreeCache(tree);
+      if (leaveToken) committedSwitches.set(leaveToken, { sourceRoot, sourceTree, targetRoot: folder, targetIdentity });
+      scheduleTreeRefresh(folder, targetIdentity);
+      transitionOutcome = 'workspace-switch-complete';
+      return { rootPath: folder, tree, workspaceIdentity, leaveToken, teamMapping: readTeamMapping(folder) };
+    } finally {
+      if (transitionStarted) await Promise.resolve(afterWorkspaceChange(transitionOutcome));
     }
-    clearWatchers();
-    workspaceRoot = folder;
-    workspaceIdentity += 1;
-    activeArtifactRunContext = null;
-    const targetIdentity = workspaceIdentity;
-    onWorkspaceChanged({ rootPath: folder, workspaceIdentity: targetIdentity });
-    watchFolderRecursive(folder, targetIdentity);
-    setTreeCache(tree);
-    if (leaveToken) committedSwitches.set(leaveToken, { sourceRoot, sourceTree, targetRoot: folder, targetIdentity });
-    scheduleTreeRefresh(folder, targetIdentity);
-    return { rootPath: folder, tree, workspaceIdentity, leaveToken, teamMapping: readTeamMapping(folder) };
   }
 
   async function pickAndOpenWorkspace() {
@@ -437,26 +458,34 @@ function createWorkspaceController(options) {
       const leaveToken = details && details.leaveToken;
       const committed = leaveToken && committedSwitches.get(leaveToken);
       if (!committed) return { rolledBack: false, rootPath: workspaceRoot, workspaceIdentity };
-      committedSwitches.delete(leaveToken);
       if (workspaceRoot !== committed.targetRoot || workspaceIdentity !== committed.targetIdentity) {
+        committedSwitches.delete(leaveToken);
         return { rolledBack: false, rootPath: workspaceRoot, workspaceIdentity };
       }
-      openSequence += 1;
-      committedSwitches.clear();
-      clearWatchers();
-      workspaceRoot = committed.sourceRoot;
-      workspaceIdentity += 1;
-      activeArtifactRunContext = null;
-      onWorkspaceChanged({ rootPath: workspaceRoot, workspaceIdentity });
-      const restoredTree = committed.sourceTree || (workspaceRoot ? await scanTreeDirectory(workspaceRoot) : null);
-      if (workspaceRoot) {
-        setTreeCache(restoredTree);
-        watchFolderRecursive(workspaceRoot, workspaceIdentity);
-        scheduleTreeRefresh(workspaceRoot, workspaceIdentity);
-      } else {
-        invalidateTreeCache();
+      await Promise.resolve(beforeWorkspaceChange('workspace-switch-reject'));
+      committedSwitches.delete(leaveToken);
+      let transitionComplete = false;
+      try {
+        openSequence += 1;
+        committedSwitches.clear();
+        clearWatchers();
+        workspaceRoot = committed.sourceRoot;
+        workspaceIdentity += 1;
+        activeArtifactRunContext = null;
+        onWorkspaceChanged({ rootPath: workspaceRoot, workspaceIdentity });
+        const restoredTree = committed.sourceTree || (workspaceRoot ? await scanTreeDirectory(workspaceRoot) : null);
+        if (workspaceRoot) {
+          setTreeCache(restoredTree);
+          watchFolderRecursive(workspaceRoot, workspaceIdentity);
+          scheduleTreeRefresh(workspaceRoot, workspaceIdentity);
+        } else {
+          invalidateTreeCache();
+        }
+        transitionComplete = true;
+        return { rolledBack: true, rootPath: workspaceRoot, workspaceIdentity, tree: restoredTree };
+      } finally {
+        await Promise.resolve(afterWorkspaceChange(transitionComplete ? 'workspace-switch-reject-complete' : 'workspace-switch-reject-aborted'));
       }
-      return { rolledBack: true, rootPath: workspaceRoot, workspaceIdentity, tree: restoredTree };
     });
     ipcMain.handle('artifact-run-context', async (_event, context) => {
       if (!context || context.clear === true) {
@@ -506,17 +535,22 @@ function createWorkspaceController(options) {
       return true;
     });
     ipcMain.handle('close-workspace', async () => {
-      disposeLsp();
-      openSequence += 1;
-      committedSwitches.clear();
-      clearWatchers();
-      workspaceRoot = null;
-      workspaceIdentity += 1;
-      activeArtifactRunContext = null;
-      onWorkspaceChanged({ rootPath: null, workspaceIdentity });
-      invalidateTreeCache();
-      send('workspace-closed', {});
-      return true;
+      await Promise.resolve(beforeWorkspaceChange('workspace-close'));
+      try {
+        disposeLsp();
+        openSequence += 1;
+        committedSwitches.clear();
+        clearWatchers();
+        workspaceRoot = null;
+        workspaceIdentity += 1;
+        activeArtifactRunContext = null;
+        onWorkspaceChanged({ rootPath: null, workspaceIdentity });
+        invalidateTreeCache();
+        send('workspace-closed', {});
+        return true;
+      } finally {
+        await Promise.resolve(afterWorkspaceChange('workspace-close-complete'));
+      }
     });
     ipcMain.handle('read-file', async (_event, filePath) => {
       return fs.promises.readFile(resolveWorkspacePath(filePath), 'utf-8');
@@ -666,6 +700,26 @@ function createWorkspaceController(options) {
     handleWindowClosed,
     clearWatchers,
     resolveWorkspaceFile,
+    notifyExternalFileChanges(files) {
+      if (!workspaceRoot || !Array.isArray(files) || files.length === 0) return;
+      const rootPath = workspaceRoot;
+      const identity = workspaceIdentity;
+      invalidateTreeCache();
+      for (const item of files) {
+        const target = item && typeof item.path === 'string' ? path.resolve(item.path) : '';
+        if (!target || pathIsOutside(path.resolve(rootPath), target)) continue;
+        send('file-event', {
+          event: item.event === 'file-created' || item.event === 'file-deleted' ? item.event : 'file-changed',
+          path: target,
+          parentPath: path.dirname(target),
+          name: path.basename(target),
+          nodeType: 'file',
+          rootPath,
+          workspaceIdentity: identity
+        });
+      }
+      scheduleTreeRefresh(rootPath, identity);
+    },
     getIdentity: () => ({ rootPath: workspaceRoot, workspaceIdentity })
   };
 }

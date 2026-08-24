@@ -836,12 +836,12 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 
 	var personalLease *personalcache.Lease
 	var persistOperation *personalcache.Operation
-	cacheCommitAllowed := false
+	var terminalDependencyEnv map[string]string
 	if workspace.teamID == "" && h.PersonalCache != nil && projectLockDependencyLanguage(runtime.Language) {
 		workspaceID := lsp.StableWorkspaceIdentity(user.ID, "", "", "", workspace.activityKey)
-		personalLease, err = h.PersonalCache.Prepare(ctx, personalcache.Request{
+		personalLease, err = h.PersonalCache.PrepareReadOnly(ctx, personalcache.Request{
 			UserID: user.ID, WorkspaceID: workspaceID, WorkspaceName: start.Workspace.FolderName,
-			RuntimeID: runtime.RuntimeID, RuntimeFingerprint: personalCacheRuntimeFingerprint(runtime.RuntimeID, runtime.DockerImage), Language: runtime.Language, WorkspaceRoot: workspace.root,
+			RuntimeID: runtime.RuntimeID, RuntimeFingerprint: resolvedRuntimeFingerprint(ctx, h.RuntimeMetadata, runtime.RuntimeID, runtime.DockerImage, runtime.Version), Language: runtime.Language, WorkspaceRoot: workspace.root,
 			SetupCommands: start.SetupCommands,
 			QuotaBytes:    userQuotaBytes(h.UserStore, user.ID),
 		})
@@ -852,14 +852,9 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 		if personalLease != nil {
 			dependencyScope := personalDependencyRefreshScope(user.ID, workspace.activityKey, runtime.RuntimeID, runtime.Language)
 			pendingResourceRelease = combineTerminalResourceReleases(func() {
-				if !cacheCommitAllowed {
-					personalLease.Abort()
-				}
 				h.releasePersonalCacheLease(personalLease, dependencyScope)
 			}, pendingResourceRelease)
-			if guard := personalLease.StartGuard(ctx); guard != nil {
-				ctx = guard.Context
-			}
+			terminalDependencyEnv = personalcache.TerminalDependencyDockerEnvironment(runtime.Language, personalLease.Hit)
 		}
 	}
 	if personalLease == nil && h.PersonalCache != nil {
@@ -875,7 +870,7 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 	}
 	var containerID string
 	if personalLease != nil {
-		containerID, err = h.DockerPool.AcquireForUserWithContext(ctx, user.ID, runtime.DockerImage, personalLease.ContainerKey, personalLease.DockerMounts, personalLease.DockerEnv, nil)
+		containerID, err = h.DockerPool.AcquireForUserWithContext(ctx, user.ID, runtime.DockerImage, personalLease.ContainerKey+":terminal", personalLease.DockerMounts, terminalDependencyEnv, nil)
 	} else {
 		containerID, err = h.DockerPool.AcquireForUser(ctx, user.ID, runtime.DockerImage, nil)
 	}
@@ -904,13 +899,6 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 		_ = writer.control(map[string]any{"type": "terminal.error", "code": "workspace_copy_failed", "message": "unable to prepare the terminal workspace"})
 		slog.Warn("Terminal workspace copy failed", "user_id", user.ID, "runtime", runtimeID, "error", err)
 		return
-	}
-	if personalLease != nil && personalLease.DockerEnv["BOBOCLOUD_NODE_MODULES"] != "" {
-		if _, stderr, code, linkErr := h.DockerPool.Exec(ctx, containerID, []string{"ln", "-sfn", personalLease.DockerEnv["BOBOCLOUD_NODE_MODULES"], terminalWorkspaceDir + "/node_modules"}, "/"); linkErr != nil || code != 0 {
-			_ = writer.control(map[string]any{"type": "terminal.error", "code": "dependency_mount_failed", "message": "unable to attach project dependencies"})
-			slog.Warn("Terminal dependency directory attach failed", "user_id", user.ID, "stderr", stderr, "error", linkErr)
-			return
-		}
 	}
 	defer os.RemoveAll(tempDir)
 
@@ -954,7 +942,6 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 		stopTerminalShellBeforeStreaming(shell, stdin, containerID)
 		return
 	}
-	cacheCommitAllowed = true
 	sessionReady.Store(true)
 
 	type shellResult struct{ err error }
@@ -1067,7 +1054,6 @@ sessionLoop:
 		case <-ctx.Done():
 			if personalCacheLeaseError(personalLease, ctx) != nil || (persistOperation != nil && persistOperation.Err() != nil) {
 				reason = "storage_quota"
-				cacheCommitAllowed = false
 				_ = writer.control(map[string]any{"type": "terminal.error", "code": "storage_quota", "message": "personal storage quota was exceeded"})
 			} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				reason = "max_duration"

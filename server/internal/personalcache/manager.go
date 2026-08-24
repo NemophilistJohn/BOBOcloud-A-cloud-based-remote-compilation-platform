@@ -63,7 +63,20 @@ type Request struct {
 	Language           string
 	WorkspaceRoot      string
 	SetupCommands      []string
-	QuotaBytes         int64
+	// ManifestSnapshot binds a controlled mutation to reviewed immutable bytes.
+	// When present, fingerprinting never re-reads the concurrently writable
+	// workspace tree.
+	ManifestSnapshot []ManifestSnapshot
+	// OperationID binds a controlled package mutation to the generation that
+	// eventually becomes canonical. It is not part of the dependency digest.
+	OperationID string
+	QuotaBytes  int64
+}
+
+type ManifestSnapshot struct {
+	Path    string
+	Content []byte
+	Lock    bool
 }
 
 type metadata struct {
@@ -77,6 +90,7 @@ type metadata struct {
 	Digest             string    `json:"digest"`
 	DigestSource       string    `json:"digest_source"`
 	Manifests          []string  `json:"manifests,omitempty"`
+	OperationID        string    `json:"operation_id,omitempty"`
 	CreatedAt          time.Time `json:"created_at"`
 	LastUsed           time.Time `json:"last_used"`
 }
@@ -277,7 +291,13 @@ func (m *Manager) resolveRequest(request Request) (resolvedCacheRequest, error) 
 	if strings.TrimSpace(request.UserID) == "" || strings.TrimSpace(request.WorkspaceID) == "" || strings.TrimSpace(request.RuntimeID) == "" {
 		return resolvedCacheRequest{}, fmt.Errorf("personal dependency cache requires user, workspace, and runtime")
 	}
-	fingerprint, err := DependencyFingerprintWithRuntime(request.WorkspaceRoot, request.Language, request.SetupCommands, request.RuntimeFingerprint)
+	var fingerprint Fingerprint
+	var err error
+	if len(request.ManifestSnapshot) > 0 {
+		fingerprint, err = DependencyFingerprintFromSnapshot(request.Language, request.SetupCommands, request.RuntimeFingerprint, request.ManifestSnapshot)
+	} else {
+		fingerprint, err = DependencyFingerprintWithRuntime(request.WorkspaceRoot, request.Language, request.SetupCommands, request.RuntimeFingerprint)
+	}
 	if err != nil {
 		return resolvedCacheRequest{}, err
 	}
@@ -296,8 +316,8 @@ func (m *Manager) resolveRequest(request Request) (resolvedCacheRequest, error) 
 }
 
 // PrepareReadOnly retains the last published project dependency generation.
-// A concurrent terminal or setup command writes a staging generation, so an
-// existing published generation remains stable and immediately reusable.
+// A concurrent controlled setup writes a staging generation, so an existing
+// published generation remains stable and immediately reusable.
 func (m *Manager) PrepareReadOnly(ctx context.Context, request Request) (*Lease, error) {
 	if m == nil || m.options.ScopeMode != "project-lock" {
 		return nil, nil
@@ -351,8 +371,8 @@ func (m *Manager) PrepareReadOnly(ctx context.Context, request Request) (*Lease,
 		gate.Unlock()
 		// A read-only caller must never receive a writable cache merely because
 		// this digest has not been seen before. Publish an empty server-owned
-		// generation, then retain it read-only; terminals and explicit setup
-		// paths use Prepare directly when they need to install dependencies.
+		// generation, then retain it read-only; explicit managed setup paths use
+		// Prepare directly when they need to install dependencies.
 		initializer, prepareErr := m.Prepare(ctx, request)
 		if prepareErr != nil {
 			return nil, prepareErr
@@ -415,7 +435,7 @@ func (m *Manager) Prepare(ctx context.Context, request Request) (*Lease, error) 
 	meta := metadata{
 		Schema: 1, UserID: request.UserID, WorkspaceID: request.WorkspaceID, WorkspaceName: request.WorkspaceName,
 		RuntimeID: request.RuntimeID, RuntimeFingerprint: request.RuntimeFingerprint, Language: request.Language, Digest: resolved.fingerprint.Digest,
-		DigestSource: resolved.fingerprint.Source, Manifests: resolved.fingerprint.Manifests, CreatedAt: now, LastUsed: now,
+		DigestSource: resolved.fingerprint.Source, Manifests: resolved.fingerprint.Manifests, OperationID: strings.TrimSpace(request.OperationID), CreatedAt: now, LastUsed: now,
 	}
 	if hit {
 		meta.CreatedAt = stored.CreatedAt

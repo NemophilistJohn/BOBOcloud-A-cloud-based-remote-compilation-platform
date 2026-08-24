@@ -185,9 +185,12 @@ test('environment view switches, persists, localizes, and fits at 180px', async 
       ]);
     }, path.join(workspace, 'main.py'));
     await expect(page.locator('#environment-overall-status')).toHaveText('Issue detected');
-    await expect(page.locator('#environment-health-dependencies-state')).toHaveText('Issue detected');
-    await expect(page.locator('#environment-missing-count')).toHaveText('2');
-    await expect(page.locator('#environment-missing-list')).toContainText('numpy');
+    await expect(page.locator('#environment-health-dependencies-state')).toHaveText('Healthy');
+    await expect(page.locator('#environment-health-dependencies-detail')).toHaveText('Runtime dependencies match');
+    await expect(page.locator('#environment-health-lsp-state')).toHaveText('Needs attention');
+    await expect(page.locator('#environment-health-lsp-detail')).toContainText('1 unresolved dependency import');
+    await expect(page.locator('#environment-missing-count')).toHaveText('1');
+    await expect(page.locator('#environment-missing-list')).not.toContainText('numpy');
     await expect(page.locator('#environment-missing-list')).toContainText('matplotlib');
     await page.screenshot({ path: path.join(os.tmpdir(), 'bobo-environment-live-diagnostics.png'), fullPage: false });
     await page.evaluate(() => {

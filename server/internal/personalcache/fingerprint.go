@@ -37,6 +37,73 @@ type Fingerprint struct {
 	Manifests []string
 }
 
+// DependencyFingerprintFromSnapshot hashes server-reviewed manifest bytes.
+// It is used by transactional package changes so SFTP/rclone writes cannot
+// change the dependency identity between review and container execution.
+func DependencyFingerprintFromSnapshot(language string, setupCommands []string, runtimeFingerprint string, snapshots []ManifestSnapshot) (Fingerprint, error) {
+	if len(snapshots) == 0 || len(snapshots) > maxSetupCommands {
+		return Fingerprint{}, fmt.Errorf("dependency snapshot must contain between 1 and %d manifests", maxSetupCommands)
+	}
+	normalizedCommands := make([]string, 0, len(setupCommands))
+	for _, command := range setupCommands {
+		command = strings.TrimSpace(command)
+		if command == "" {
+			continue
+		}
+		if len([]byte(command)) > maxSetupCommandBytes || strings.ContainsAny(command, "\x00\r\n") {
+			return Fingerprint{}, fmt.Errorf("dependency setup command is invalid")
+		}
+		normalizedCommands = append(normalizedCommands, command)
+	}
+	if len(normalizedCommands) > maxSetupCommands {
+		return Fingerprint{}, fmt.Errorf("dependency setup commands exceed %d entries", maxSetupCommands)
+	}
+	type snapshotItem struct {
+		path    string
+		content []byte
+		lock    bool
+	}
+	items := make([]snapshotItem, 0, len(snapshots))
+	seen := make(map[string]bool, len(snapshots))
+	var total int64
+	for _, snapshot := range snapshots {
+		pathValue := filepath.ToSlash(strings.TrimSpace(snapshot.Path))
+		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(pathValue)))
+		if pathValue == "" || clean != pathValue || filepath.IsAbs(filepath.FromSlash(pathValue)) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || seen[clean] {
+			return Fingerprint{}, fmt.Errorf("dependency snapshot path is invalid")
+		}
+		seen[clean] = true
+		total += int64(len(snapshot.Content))
+		if total > maxFingerprintBytes {
+			return Fingerprint{}, fmt.Errorf("dependency manifests exceed %d bytes", maxFingerprintBytes)
+		}
+		items = append(items, snapshotItem{path: clean, content: snapshot.Content, lock: snapshot.Lock})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].path < items[j].path })
+	hash := sha256.New()
+	paths := make([]string, 0, len(items))
+	hasLock := false
+	for _, item := range items {
+		hash.Write([]byte(item.path))
+		hash.Write([]byte{0})
+		hash.Write(item.content)
+		hash.Write([]byte{0})
+		paths = append(paths, item.path)
+		hasLock = hasLock || item.lock
+	}
+	for _, command := range normalizedCommands {
+		hash.Write([]byte("setup\x00" + command + "\x00"))
+	}
+	if runtimeFingerprint = strings.TrimSpace(runtimeFingerprint); runtimeFingerprint != "" {
+		hash.Write([]byte("runtime\x00" + runtimeFingerprint + "\x00"))
+	}
+	source := "manifest"
+	if hasLock {
+		source = "lock"
+	}
+	return Fingerprint{Digest: hex.EncodeToString(hash.Sum(nil)[:16]), Source: source, Manifests: paths}, nil
+}
+
 func DependencyFingerprint(root, language string, setupCommands []string) (Fingerprint, error) {
 	return DependencyFingerprintWithRuntime(root, language, setupCommands, "")
 }
