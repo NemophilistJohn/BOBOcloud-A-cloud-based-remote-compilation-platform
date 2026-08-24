@@ -1349,6 +1349,12 @@
       return;
     }
 
+<<<<<<< HEAD
+=======
+    var documentRegistration = BOBO.documentViews && BOBO.documentViews.find
+      ? BOBO.documentViews.find(name)
+      : null;
+>>>>>>> 65d098326988a4b019ad1caa2eee0e58a1ae705c
     if (documentRegistration) {
       try {
         var documentView = await BOBO.documentViews.create(filePath, name, documentRegistration);

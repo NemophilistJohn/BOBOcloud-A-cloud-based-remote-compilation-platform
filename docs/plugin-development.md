@@ -286,7 +286,11 @@ Document views use a dedicated API rather than the generic contribution registry
 }
 ```
 
+<<<<<<< HEAD
 The activation entry calls `context.documentViews.register({ id, title })`. The id must match the manifest and use the plugin namespace; the host derives extensions, entry, resources, and priority from the verified manifest rather than trusting runtime data. Once selected, a registered viewer takes precedence over built-in file fallbacks for that extension. Re-register localized titles after `context.i18n.onDidChange` and own every registration through `context.subscriptions`.
+=======
+The activation entry calls `context.documentViews.register({ id, title })`. The id must match the manifest and use the plugin namespace; the host derives extensions, entry, resources, and priority from the verified manifest rather than trusting runtime data. Re-register localized titles after `context.i18n.onDidChange` and own every registration through `context.subscriptions`.
+>>>>>>> 65d098326988a4b019ad1caa2eee0e58a1ae705c
 
 The view entry separately exports `activate(context)`. It receives a DOM root only inside its own opaque-origin iframe, bounded metadata without a local path, plugin localization, host theme variables, verified resource Blob URLs, and `read`, `readAll`, and `readText` for the current document. It does not receive the activation context or any general workbench capability. See [Plugin API: Document Views](./plugin-api.md#document-views) and the SDK declarations for the exact shape.
 

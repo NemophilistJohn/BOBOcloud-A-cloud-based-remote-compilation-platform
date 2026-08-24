@@ -700,6 +700,7 @@ function createWorkspaceController(options) {
     handleWindowClosed,
     clearWatchers,
     resolveWorkspaceFile,
+<<<<<<< HEAD
     notifyExternalFileChanges(files) {
       if (!workspaceRoot || !Array.isArray(files) || files.length === 0) return;
       const rootPath = workspaceRoot;
@@ -720,6 +721,8 @@ function createWorkspaceController(options) {
       }
       scheduleTreeRefresh(rootPath, identity);
     },
+=======
+>>>>>>> 65d098326988a4b019ad1caa2eee0e58a1ae705c
     getIdentity: () => ({ rootPath: workspaceRoot, workspaceIdentity })
   };
 }
