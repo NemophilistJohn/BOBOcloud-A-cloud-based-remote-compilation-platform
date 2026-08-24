@@ -43,8 +43,6 @@ test('project cache view separates dependency writes from analysis leases', asyn
     await page.evaluate(async () => {
       await window.BOBO.i18n.setLocale('en');
       window.__deletedCaches = [];
-      window.__deletedPackages = [];
-      window.__cachePackageRequests = [];
       window.__cacheConfirms = [];
       window.BOBO.confirm = async (options) => {
         window.__cacheConfirms.push(options);
@@ -63,7 +61,7 @@ test('project cache view separates dependency writes from analysis leases', asyn
               inventory_exact: true, inventory_revision: 'inventory-a', packages: [
                 { name: 'matplotlib', version: '3.10.5', imports: ['matplotlib', 'pylab'], size_bytes: 3072, files: 9 },
                 { name: 'numpy', version: '2.2.6', imports: ['numpy'], size_bytes: 1024, files: 3 }
-              ].filter((item) => !window.__deletedPackages.includes(item.name))
+              ]
             },
             { name: 'Active project', path: 'project-dependencies/workspace/runtime/python/digest-active', size_bytes: 1024, files: 4, kind: 'project-dependency', project_name: 'Active project', runtime_id: 'python:3.11', digest: 'fedcba9876543210', digest_source: 'manifest', last_used: Date.now(), active: true },
             { name: 'Active project', path: 'project-dependencies/workspace/runtime/python/digest-writing', size_bytes: 512, files: 2, kind: 'project-dependency', project_name: 'Active project', runtime_id: 'python:3.13', digest: '1122334455667788', digest_source: 'manifest', last_used: Date.now(), active: true, writing: true },
@@ -84,14 +82,6 @@ test('project cache view separates dependency writes from analysis leases', asyn
         }
         if (action === 'deleteCacheModule') {
           window.__deletedCaches.push(data.cachePath);
-          return { success: true };
-        }
-        if (action === 'deleteCachePackage') {
-          window.__cachePackageRequests.push(Object.assign({}, data));
-          if (window.__holdPackageDelete) {
-            return new Promise((resolve) => { window.__resolvePackageDelete = resolve; });
-          }
-          window.__deletedPackages.push(data.cachePackageName);
           return { success: true };
         }
         throw new Error('unexpected storage action: ' + action);
@@ -115,7 +105,7 @@ test('project cache view separates dependency writes from analysis leases', asyn
     await expect(fixtureGroup.locator('.cache-package-row[data-package="numpy"]')).toContainText('Imports: numpy');
     await expect(fixtureGroup.locator('.cache-package-row[data-package="matplotlib"]')).toContainText('3.10.5');
     await expect(fixtureGroup.locator('.cache-package-row[data-package="lodash"]')).toContainText('4.17.21');
-    await expect(fixtureGroup.locator('.cache-package-row[data-package="lodash"] .cache-package-del')).toBeDisabled();
+    await expect(fixtureGroup.locator('.cache-package-del')).toHaveCount(0);
     await expect(fixtureGroup).toContainText('Package inventory is read-only');
 
     const analysisCache = page.locator('.cache-del[data-path="project-dependencies/workspace/runtime/python/digest-active"]');
@@ -125,8 +115,6 @@ test('project cache view separates dependency writes from analysis leases', asyn
     await expect(analysisCache).toHaveAttribute('title', 'Delete cache and stop service');
     await expect(writingCache).toBeDisabled();
     await expect(writingCache).toHaveAttribute('title', 'Cache is being updated');
-    const numpyDelete = fixtureGroup.locator('.cache-package-del[data-package-name="numpy"]');
-    await expect(numpyDelete).toBeEnabled();
     await expect.poll(async () => page.evaluate(() => [...document.querySelectorAll('.cache-snapshot-row')].every((row) => {
       const state = row.querySelector('.cache-snapshot-state').getBoundingClientRect();
       const used = row.querySelector('.cache-snapshot-used').getBoundingClientRect();
@@ -164,28 +152,6 @@ test('project cache view separates dependency writes from analysis leases', asyn
     });
     await page.screenshot({ path: path.join(os.tmpdir(), 'bobo-project-cache-narrow.png'), fullPage: false });
     await page.setViewportSize({ width: 1024, height: 720 });
-
-    await page.evaluate(() => { window.__holdPackageDelete = true; });
-    await numpyDelete.click();
-    await expect(idleCache).toBeDisabled();
-    await expect(page.locator('#projects-refresh')).toBeDisabled();
-    await idleCache.click({ force: true });
-    await expect.poll(() => page.evaluate(() => window.__deletedCaches)).not.toContain('project-dependencies/workspace/runtime/python/digest-a');
-    await page.evaluate(() => {
-      window.__deletedPackages.push('numpy');
-      window.__holdPackageDelete = false;
-      window.__resolvePackageDelete({ success: true });
-    });
-    await expect.poll(() => page.evaluate(() => window.__cachePackageRequests)).toContainEqual({
-      cachePath: 'project-dependencies/workspace/runtime/python/digest-a',
-      cachePackageName: 'numpy',
-      cachePackageVersion: '2.2.6',
-      cacheGeneration: 'generation-a',
-      cacheInventoryRevision: 'inventory-a'
-    });
-    await expect(fixtureGroup.locator('.cache-package-row[data-package="numpy"]')).toHaveCount(0);
-    await expect(fixtureGroup.locator('.cache-package-row[data-package="matplotlib"]')).toHaveCount(1);
-    await expect(fixtureGroup.locator('.cache-snapshot-block[data-cache-path="project-dependencies/workspace/runtime/python/digest-a"]')).toHaveCount(1);
 
     await analysisCache.click();
     await expect.poll(() => page.evaluate(() => window.__deletedCaches)).toContain('project-dependencies/workspace/runtime/python/digest-active');

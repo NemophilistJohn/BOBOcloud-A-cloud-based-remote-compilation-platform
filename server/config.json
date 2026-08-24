@@ -75,6 +75,56 @@
   "personal_persist_cleanup_interval_minutes": 10,
   "_personal_persist_cleanup_interval_minutes": "个人持久化缓存后台清理间隔（分钟）。",
 
+  "_section_package_center": "────────── 第三方库管理中心 ──────────",
+  "package_center_enabled": true,
+  "_package_center_enabled": "启用项目级第三方库目录、变更计划和受控安装链路。首版支持个人项目的 Python requirements。",
+  "package_default_source": "pypi-official",
+  "_package_default_source": "默认安装源 ID。中国区服务器可设为 pypi-tuna 或 pypi-aliyun；用户仍可在库中心切换。",
+  "package_catalog_timeout_seconds": 8,
+  "package_catalog_max_response_bytes": 4194304,
+  "package_runtime_probe_timeout_seconds": 3,
+  "_package_runtime_probe_timeout_seconds": "读取 Docker 镜像不可变 ID 和精确语言版本的单次超时。探测只读镜像元数据，不启动容器。",
+  "package_runtime_metadata_ttl_seconds": 3600,
+  "_package_runtime_metadata_ttl_seconds": "按运行时和镜像标签缓存元数据的时间。到期后重新读取，镜像 ID 改变会自动切换项目依赖缓存摘要。",
+  "package_plan_ttl_seconds": 900,
+  "package_plan_completed_ttl_seconds": 3600,
+  "package_operation_timeout_seconds": 600,
+  "package_operation_max_plans": 512,
+  "package_operation_max_plans_per_user": 32,
+  "package_plan_store_max_bytes": 67108864,
+  "package_plan_store_max_bytes_per_user": 16777216,
+  "package_plan_result_max_bytes": 65536,
+  "package_sources": [
+    {
+      "id": "pypi-official",
+      "ecosystem": "python",
+      "name": "PyPI",
+      "kind": "official",
+      "catalog_url": "https://pypi.org",
+      "install_url": "https://pypi.org/simple/",
+      "equivalence_group": "pypi",
+      "official": true
+    },
+    {
+      "id": "pypi-tuna",
+      "ecosystem": "python",
+      "name": "TUNA",
+      "kind": "mirror",
+      "catalog_url": "https://pypi.tuna.tsinghua.edu.cn",
+      "install_url": "https://pypi.tuna.tsinghua.edu.cn/simple/",
+      "equivalence_group": "pypi"
+    },
+    {
+      "id": "pypi-aliyun",
+      "ecosystem": "python",
+      "name": "Aliyun",
+      "kind": "mirror",
+      "catalog_url": "https://pypi.org",
+      "install_url": "https://mirrors.aliyun.com/pypi/simple/",
+      "equivalence_group": "pypi"
+    }
+  ],
+
   "_section_timeout": "────────── 超时配置 ──────────",
   "compile_timeout_seconds": 30,
   "_compile_timeout_seconds": "默认编译超时（秒），适用于 C/C++/Java 等编译型语言",

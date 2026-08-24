@@ -26,6 +26,8 @@ import (
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/packagecatalog"
+	"bobocloud-server/internal/packageops"
 	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/session"
 	"bobocloud-server/internal/storage"
@@ -67,6 +69,9 @@ type HTTPHandler struct {
 	DependencyViews  *lsp.DependencyRegistry
 	Lifecycle        *lifecycle.Manager // 运行/终端与破坏性存储操作的用户级互斥
 	PersonalCache    *personalcache.Manager
+	PackageCatalog   packagecatalog.Catalog
+	PackagePlans     *packageops.Store
+	RuntimeMetadata  RuntimeMetadataProvider
 	Metrics          *metrics.Registry
 	Readiness        ReadinessProbe // 无认证 /readyz 的依赖检查；由 main 在组件装配后注入
 
@@ -109,6 +114,15 @@ func NewHTTPHandler(
 	rateLimiter *RateLimiter,
 	runHistory storage.RunHistoryStore,
 ) *HTTPHandler {
+	packagePlanTTL := 15 * time.Minute
+	packagePlanLimits := packageops.StoreLimits{MaxPlans: 512, MaxPlansPerUser: 32, MaxBytes: 64 << 20, MaxBytesPerUser: 16 << 20, MaxResultBytes: 64 << 10}
+	if cfg != nil {
+		packagePlanTTL = time.Duration(cfg.PackagePlanTTLSeconds) * time.Second
+		packagePlanLimits = packageops.StoreLimits{
+			MaxPlans: cfg.PackageOperationMaxPlans, MaxPlansPerUser: cfg.PackageOperationMaxPlansPerUser,
+			MaxBytes: cfg.PackagePlanStoreMaxBytes, MaxBytesPerUser: cfg.PackagePlanStoreMaxBytesPerUser, MaxResultBytes: cfg.PackagePlanResultMaxBytes,
+		}
+	}
 	return &HTTPHandler{
 		Config:        cfg,
 		Sessions:      store,
@@ -120,6 +134,7 @@ func NewHTTPHandler(
 		authEnabled:   authEnabled,
 		authenticator: authenticator,
 		diskCache:     newDiskUsageCache(),
+		PackagePlans:  packageops.NewStoreWithLimits(packagePlanTTL, packagePlanLimits),
 	}
 }
 
@@ -306,6 +321,8 @@ func (h *HTTPHandler) routeRequest(w http.ResponseWriter, r *http.Request, req *
 		h.handleDAPInfo(w, r)
 	case "getProjectEnvironment", "planProjectEnvironmentRepair", "applyProjectEnvironmentAction":
 		h.handleProjectEnvironment(w, r, req)
+	case "getPackageCenterContext", "searchPackageCatalog", "getPackageCatalogItem", "planProjectPackageChanges", "applyProjectPackageChanges":
+		h.handlePackageCenter(w, r, req)
 
 	// ── 项目管理与磁盘配额 ──
 	case "listProjects":
@@ -1714,101 +1731,7 @@ func (h *HTTPHandler) handleListCacheModules(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *HTTPHandler) handleDeleteCachePackage(w http.ResponseWriter, r *http.Request, req *model.Request) {
-	if !h.authEnabled || h.PersonalCache == nil {
-		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Package-level cache deletion is unavailable"})
-		return
-	}
-	if strings.TrimSpace(req.CachePath) == "" || strings.TrimSpace(req.CachePackageName) == "" || strings.TrimSpace(req.CachePackageVersion) == "" || strings.TrimSpace(req.CacheGeneration) == "" || strings.TrimSpace(req.CacheInventoryRevision) == "" {
-		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "cachePath, cachePackageName, cachePackageVersion, cacheGeneration, and cacheInventoryRevision are required"})
-		return
-	}
-	userID := auth.UserIDFromContext(r.Context())
-	entry, inventory, exists, inspectErr := h.PersonalCache.InspectEntryPackageInventory(userID, req.CachePath)
-	if inspectErr != nil {
-		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: inspectErr.Error()})
-		return
-	}
-	if !exists {
-		writeJSON(w, http.StatusNotFound, model.Response{Success: false, Error: "Project dependency cache not found"})
-		return
-	}
-	if entry.Writing || inventory.State == "busy" {
-		writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: personalcache.ErrCacheInUse.Error()})
-		return
-	}
-	if entry.Generation != req.CacheGeneration || inventory.Revision != req.CacheInventoryRevision {
-		writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: personalcache.ErrCacheGenerationChanged.Error()})
-		return
-	}
-	if inventory.State != "ready" || !inventory.Exact {
-		writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: "The package inventory is not exact and cannot be edited"})
-		return
-	}
-	packageFound := false
-	for _, item := range inventory.Packages {
-		if strings.EqualFold(item.Name, req.CachePackageName) {
-			packageFound = true
-			if item.Version != req.CachePackageVersion {
-				writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: personalcache.ErrPackageVersionChanged.Error()})
-				return
-			}
-			break
-		}
-	}
-	if !packageFound {
-		writeJSON(w, http.StatusNotFound, model.Response{Success: false, Error: personalcache.ErrPackageNotFound.Error()})
-		return
-	}
-	if entry.Active {
-		folderKey := personalCacheWorkspaceFolderKey(entry.WorkspaceID, userID)
-		var err error
-		if folderKey != "" {
-			err = h.stopUserWorkspaceServices(userID, folderKey)
-		} else {
-			err = h.stopUserOwnerServices(userID, "user", userID, "")
-		}
-		if err != nil {
-			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
-			return
-		}
-	}
-	var release func()
-	if h.Lifecycle != nil {
-		mutation, err := h.Lifecycle.BeginUserMutation(userID)
-		if err != nil {
-			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
-			return
-		}
-		release = mutation.Release
-		defer release()
-	}
-	result, err := h.PersonalCache.DeletePythonDistribution(r.Context(), personalcache.DeletePythonDistributionRequest{
-		UserID: userID, CachePath: req.CachePath, Name: req.CachePackageName, Version: req.CachePackageVersion,
-		ExpectedGeneration: req.CacheGeneration, ExpectedInventoryRevision: req.CacheInventoryRevision,
-		QuotaBytes: userQuotaBytes(h.UserStore, userID),
-	})
-	if err != nil {
-		status := http.StatusConflict
-		if errors.Is(err, personalcache.ErrPackageNotFound) {
-			status = http.StatusNotFound
-		} else if errors.Is(err, personalcache.ErrPackageDeleteUnsupported) {
-			status = http.StatusBadRequest
-		} else if !errors.Is(err, personalcache.ErrCacheGenerationChanged) && !errors.Is(err, personalcache.ErrInventoryRevisionChanged) && !errors.Is(err, personalcache.ErrPackageVersionChanged) && !errors.Is(err, personalcache.ErrCacheInUse) {
-			status = http.StatusInternalServerError
-		}
-		writeJSON(w, status, model.Response{Success: false, Error: err.Error()})
-		return
-	}
-	if h.OnPersonalCacheCleared != nil {
-		h.OnPersonalCacheCleared()
-	}
-	h.diskCache.Set(userID, 0, 1)
-	folderKey := personalCacheWorkspaceFolderKey(entry.WorkspaceID, userID)
-	if h.LSP != nil {
-		h.LSP.RestartDependencyViews(personalDependencyRefreshScope(userID, folderKey, entry.RuntimeID, entry.Language))
-	}
-	h.auditEvent(r, "", "", "deleteCachePackage", req.CachePath, req.CachePackageName+"@"+req.CachePackageVersion, true)
-	writeJSON(w, http.StatusOK, model.Response{Success: true, Message: "Cache package deleted", Data: result})
+	writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: "Package-level deletion would invalidate the project dependency digest; update the project manifest in Library Center or delete the whole cache generation"})
 }
 
 // ---------- deleteCacheModule ----------

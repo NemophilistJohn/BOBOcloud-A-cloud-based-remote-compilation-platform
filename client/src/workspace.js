@@ -371,6 +371,9 @@
     };
     S.workspaceTransitionEditorStates = approval.editorStates;
     try {
+      if (BOBO.packageCenter && BOBO.packageCenter.beforeWorkspaceLeave) {
+        await BOBO.packageCenter.beforeWorkspaceLeave();
+      }
       if (BOBO.terminal && BOBO.terminal.beforeWorkspaceLeave) {
         await BOBO.terminal.beforeWorkspaceLeave();
       }
@@ -1318,7 +1321,10 @@
   // ──── Tabs ────
   async function openFile(filePath, name) {
     if (S.workspaceTransitionLocked) return false;
-    if (BOBO.isImageFile(name)) {
+    var documentRegistration = BOBO.documentViews && BOBO.documentViews.find
+      ? BOBO.documentViews.find(name)
+      : null;
+    if (BOBO.isImageFile(name) && !documentRegistration) {
       if (BOBO.views && BOBO.views.showImagePreview) {
         BOBO.views.showImagePreview(filePath, name);
       }
@@ -1343,9 +1349,6 @@
       return;
     }
 
-    var documentRegistration = BOBO.documentViews && BOBO.documentViews.find
-      ? BOBO.documentViews.find(name)
-      : null;
     if (documentRegistration) {
       try {
         var documentView = await BOBO.documentViews.create(filePath, name, documentRegistration);

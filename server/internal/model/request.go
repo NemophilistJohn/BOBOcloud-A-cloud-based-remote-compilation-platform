@@ -8,21 +8,28 @@ import "time"
 
 // Request 是客户端发送的 HTTP JSON 请求体
 type Request struct {
-	Action            string         `json:"action"`
-	FolderName        string         `json:"folderName"`
-	FolderKey         string         `json:"folderKey,omitempty"` // 路径哈希，避免同名项目冲突；空则回退 folderName
-	FilePath          string         `json:"filePath"`
-	RunID             string         `json:"runId"`
-	Runtime           string         `json:"runtime,omitempty"`       // 如 "python:3.11"，空则本地 Runner
-	SetupCommands     []string       `json:"setupCommands,omitempty"` // 前置命令列表
-	CompileArgs       []string       `json:"compileArgs,omitempty"`   // 用户编译参数（如 ["-O2","-std=c++17"]）
-	RunArgs           []string       `json:"runArgs,omitempty"`       // 用户程序参数（传给被运行程序）
-	BuildTarget       string         `json:"buildTarget,omitempty"`   // 受服务端白名单约束的交叉编译目标
-	Command           string         `json:"command,omitempty"`       // terminal 命令
-	Language          string         `json:"language,omitempty"`      // project environment language
-	Task              *TaskExecution `json:"task,omitempty"`
-	EnvironmentAction string         `json:"environmentAction,omitempty"` // repair / rebuild / clearCache
-	Revision          string         `json:"revision,omitempty"`          // project environment snapshot revision
+	Action              string                 `json:"action"`
+	FolderName          string                 `json:"folderName"`
+	FolderKey           string                 `json:"folderKey,omitempty"` // 路径哈希，避免同名项目冲突；空则回退 folderName
+	FilePath            string                 `json:"filePath"`
+	RunID               string                 `json:"runId"`
+	Runtime             string                 `json:"runtime,omitempty"`       // 如 "python:3.11"，空则本地 Runner
+	SetupCommands       []string               `json:"setupCommands,omitempty"` // 前置命令列表
+	CompileArgs         []string               `json:"compileArgs,omitempty"`   // 用户编译参数（如 ["-O2","-std=c++17"]）
+	RunArgs             []string               `json:"runArgs,omitempty"`       // 用户程序参数（传给被运行程序）
+	BuildTarget         string                 `json:"buildTarget,omitempty"`   // 受服务端白名单约束的交叉编译目标
+	Command             string                 `json:"command,omitempty"`       // terminal 命令
+	Language            string                 `json:"language,omitempty"`      // project environment language
+	Task                *TaskExecution         `json:"task,omitempty"`
+	EnvironmentAction   string                 `json:"environmentAction,omitempty"` // repair / rebuild / clearCache
+	Revision            string                 `json:"revision,omitempty"`          // project environment snapshot revision
+	Query               string                 `json:"query,omitempty"`
+	SourceID            string                 `json:"sourceId,omitempty"`
+	Cursor              string                 `json:"cursor,omitempty"`
+	PackageName         string                 `json:"packageName,omitempty"`
+	PackageManifestPath string                 `json:"manifestPath,omitempty"`
+	PackagePlanID       string                 `json:"packagePlanId,omitempty"`
+	PackageChanges      []ProjectPackageChange `json:"changes,omitempty"`
 
 	// ── 账户系统字段 ──
 	Identity               string `json:"identity,omitempty"`       // login：用户名或邮箱

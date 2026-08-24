@@ -65,6 +65,7 @@ type WSHandler struct {
 	DependencyViews *lsp.DependencyRegistry
 	Lifecycle       *lifecycle.Manager
 	PersonalCache   *personalcache.Manager
+	RuntimeMetadata RuntimeMetadataProvider
 	Metrics         *metrics.Registry
 }
 

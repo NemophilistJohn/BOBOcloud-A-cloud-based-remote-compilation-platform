@@ -36,7 +36,7 @@ func (h *WSHandler) prepareRunPersonalCache(ctx context.Context, sess *model.Run
 	workspaceID := lsp.StableWorkspaceIdentity(sess.UserID, "", "", "", folderKey)
 	request := personalcache.Request{
 		UserID: sess.UserID, WorkspaceID: workspaceID, WorkspaceName: sess.FolderName,
-		RuntimeID: runtime.RuntimeID, RuntimeFingerprint: personalCacheRuntimeFingerprint(runtime.RuntimeID, runtime.DockerImage), Language: language, WorkspaceRoot: workspaceRoot,
+		RuntimeID: runtime.RuntimeID, RuntimeFingerprint: resolvedRuntimeFingerprint(ctx, h.RuntimeMetadata, runtime.RuntimeID, runtime.DockerImage, runtime.Version), Language: language, WorkspaceRoot: workspaceRoot,
 		SetupCommands: sess.SetupCommands, QuotaBytes: userQuotaBytes(h.UserStore, sess.UserID),
 	}
 	if !projectDependencyWriteRequired(language, sess.SetupCommands) {
@@ -66,13 +66,17 @@ func (h *HTTPHandler) environmentCacheRequest(r *http.Request, req *model.Reques
 	userID := auth.UserIDFromContext(r.Context())
 	return personalcache.Request{
 		UserID: userID, WorkspaceID: resolved.workspace.ID, WorkspaceName: resolved.workspace.Name,
-		RuntimeID: runtime.ID, RuntimeFingerprint: personalCacheRuntimeFingerprint(runtime.ID, runtime.Image), Language: language, WorkspaceRoot: resolved.root,
+		RuntimeID: runtime.ID, RuntimeFingerprint: resolvedRuntimeFingerprint(r.Context(), h.RuntimeMetadata, runtime.ID, runtime.Image, runtime.Version), Language: language, WorkspaceRoot: resolved.root,
 		SetupCommands: req.SetupCommands, QuotaBytes: userQuotaBytes(h.UserStore, userID),
 	}
 }
 
-func personalCacheRuntimeFingerprint(runtimeID, image string) string {
-	return strings.TrimSpace(runtimeID) + "\x00" + strings.TrimSpace(image)
+func personalCacheRuntimeFingerprint(runtimeID, image string, imageID ...string) string {
+	resolvedImageID := ""
+	if len(imageID) > 0 {
+		resolvedImageID = imageID[0]
+	}
+	return strings.TrimSpace(runtimeID) + "\x00" + strings.TrimSpace(image) + "\x00" + strings.TrimSpace(resolvedImageID)
 }
 
 func (h *WSHandler) releasePersonalCacheLease(lease *personalcache.Lease, scope lsp.DependencyRefreshScope) {

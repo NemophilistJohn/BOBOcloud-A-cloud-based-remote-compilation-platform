@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func makeDependencyDir(t *testing.T, path string) string {
@@ -155,6 +156,141 @@ func TestDependencyRevisionChangesWithGenerationAndPackageMetadata(t *testing.T)
 	}
 	if first.Revision == third.Revision {
 		t.Fatal("dependency metadata change did not change revision")
+	}
+}
+
+func TestDependencyRevisionStabilizesGenerationBoundExtraReaderAnchors(t *testing.T) {
+	root := t.TempDir()
+	fixedTime := time.Unix(1_700_000_000, 0)
+	makeReader := func(name, relative string) (string, string) {
+		reader := filepath.Join(root, name)
+		packages := makeDependencyDir(t, filepath.Join(reader, relative))
+		marker := filepath.Join(packages, "numpy.pth")
+		if err := os.WriteFile(marker, []byte("numpy\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(marker, fixedTime, fixedTime); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(packages, fixedTime, fixedTime); err != nil {
+			t.Fatal(err)
+		}
+		return reader, packages
+	}
+	readerOne, packagesOne := makeReader("reader-one", "python")
+	readerTwo, packagesTwo := makeReader("reader-two", "python")
+	identityRoot := filepath.Join(root, "canonical-generation")
+	registry := NewDefaultDependencyRegistry()
+	resolve := func(reader, packages, generation, identity string, stable bool) AnalysisDependencyView {
+		t.Helper()
+		paths := AnalysisDependencyPaths{
+			Extra:        map[string][]string{DependencyRolePythonPackages: {packages}},
+			AllowedRoots: []string{root},
+		}
+		if stable {
+			paths.ExtraRevision = &AnalysisDependencyExtraRevision{HostRoot: reader, IdentityRoot: identity}
+		}
+		view, err := registry.Resolve(AnalysisDependencyRequest{
+			OwnerKind: "user", OwnerID: "user-a", UserID: "user-a", WorkspaceID: "workspace-a",
+			RuntimeID: "python:3.10", LanguageID: "python", Generation: generation, Paths: paths,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return view
+	}
+
+	first := resolve(readerOne, packagesOne, "generation-a", identityRoot, true)
+	second := resolve(readerTwo, packagesTwo, "generation-a", identityRoot, true)
+	if first.Revision != second.Revision {
+		t.Fatalf("equivalent pinned readers changed revision: first=%q second=%q", first.Revision, second.Revision)
+	}
+	if len(first.Mounts) != 1 || len(second.Mounts) != 1 || first.Mounts[0].HostPath == second.Mounts[0].HostPath || first.Mounts[0].RevisionIdentity == "" || first.Mounts[0].RevisionIdentity != second.Mounts[0].RevisionIdentity {
+		t.Fatalf("pinned reader identity was not separated from mount paths: first=%+v second=%+v", first.Mounts, second.Mounts)
+	}
+
+	unmappedFirst := resolve(readerOne, packagesOne, "generation-a", "", false)
+	unmappedSecond := resolve(readerTwo, packagesTwo, "generation-a", "", false)
+	if unmappedFirst.Revision == unmappedSecond.Revision {
+		t.Fatal("ordinary Extra mount paths stopped contributing to the revision")
+	}
+	nonGenerationFirst := resolve(readerOne, packagesOne, "", "", false)
+	nonGenerationSecond := resolve(readerTwo, packagesTwo, "", "", false)
+	if nonGenerationFirst.Revision == nonGenerationSecond.Revision {
+		t.Fatal("non-generation Extra mount paths stopped contributing to the revision")
+	}
+	if changed := resolve(readerTwo, packagesTwo, "generation-b", identityRoot, true); changed.Revision == first.Revision {
+		t.Fatal("dependency generation change retained the revision")
+	}
+	if changed := resolve(readerTwo, packagesTwo, "generation-a", filepath.Join(root, "other-canonical-generation"), true); changed.Revision == first.Revision {
+		t.Fatal("canonical dependency identity change retained the revision")
+	}
+	readerThree, packagesThree := makeReader("reader-three", "alternate-python")
+	if changed := resolve(readerThree, packagesThree, "generation-a", identityRoot, true); changed.Revision == first.Revision {
+		t.Fatal("dependency path within the pinned generation retained the revision")
+	}
+	if err := os.WriteFile(filepath.Join(packagesTwo, "scipy.pth"), []byte("scipy\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if changed := resolve(readerTwo, packagesTwo, "generation-a", identityRoot, true); changed.Revision == first.Revision {
+		t.Fatal("dependency content change retained the revision")
+	}
+}
+
+func TestDependencyRevisionRejectsExtraIdentityWithoutGeneration(t *testing.T) {
+	root := t.TempDir()
+	packages := makeDependencyDir(t, filepath.Join(root, "reader", "python"))
+	_, err := NewDefaultDependencyRegistry().Resolve(AnalysisDependencyRequest{
+		OwnerKind: "user", UserID: "user-a", RuntimeID: "python:3.10", LanguageID: "python",
+		Paths: AnalysisDependencyPaths{
+			Extra:         map[string][]string{DependencyRolePythonPackages: {packages}},
+			ExtraRevision: &AnalysisDependencyExtraRevision{HostRoot: filepath.Dir(packages), IdentityRoot: filepath.Join(root, "canonical")},
+			AllowedRoots:  []string{root},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires a generation") {
+		t.Fatalf("generation-free Extra revision identity error = %v", err)
+	}
+}
+
+func TestDependencyRevisionIdentityOnlyAppliesToMappedExtraTree(t *testing.T) {
+	root := t.TempDir()
+	reader := makeDependencyDir(t, filepath.Join(root, "reader"))
+	extra := makeDependencyDir(t, filepath.Join(reader, "go", "pkg", "mod"))
+	ordinary := makeDependencyDir(t, filepath.Join(root, "ordinary"))
+	adapter := testDependencyAdapter{
+		name:      "future",
+		languages: []string{"future"},
+		result: DependencyAdapterResult{Mounts: []DependencyMountSpec{
+			{Role: "future.extra", HostPath: filepath.Join(extra, "nested"), ContainerPath: AnalysisDependenciesRoot + "/future/extra"},
+			{Role: "future.ordinary", HostPath: ordinary, ContainerPath: AnalysisDependenciesRoot + "/future/ordinary"},
+		}},
+	}
+	makeDependencyDir(t, adapter.result.Mounts[0].HostPath)
+	registry, err := NewDependencyRegistry(adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identityRoot := filepath.Join(root, "canonical-generation")
+	view, err := registry.Resolve(AnalysisDependencyRequest{
+		OwnerKind: "user", UserID: "user-a", RuntimeID: "future:1", LanguageID: "future", Generation: "generation-a",
+		Paths: AnalysisDependencyPaths{
+			Extra:         map[string][]string{"future.extra": {extra}},
+			ExtraRevision: &AnalysisDependencyExtraRevision{HostRoot: reader, IdentityRoot: identityRoot},
+			AllowedRoots:  []string{root},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Mounts) != 2 {
+		t.Fatalf("mounts = %+v", view.Mounts)
+	}
+	if want := filepath.Join(identityRoot, "go", "pkg", "mod", "nested"); filepath.Clean(view.Mounts[0].RevisionIdentity) != filepath.Clean(want) {
+		t.Fatalf("nested Extra revision identity = %q, want %q", view.Mounts[0].RevisionIdentity, want)
+	}
+	if view.Mounts[1].RevisionIdentity != "" {
+		t.Fatalf("ordinary mount acquired an Extra revision identity: %+v", view.Mounts[1])
 	}
 }
 

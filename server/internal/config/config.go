@@ -3,11 +3,14 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+const minimumPackagePlanResultBytes int64 = 4 << 10
 
 // UserConfig 是配置文件中预设用户的定义
 type UserConfig struct {
@@ -26,6 +29,20 @@ type RootUserConfig struct {
 	Email    string `json:"email"`
 	Name     string `json:"name"`     // 显示名，默认 "Root Admin"
 	Password string `json:"password"` // 留空则自动生成并打印到日志（仅首次）
+}
+
+// PackageSourceConfig is an administrator-controlled package source. CatalogURL
+// supplies metadata from a trusted equivalent authority; InstallURL is the
+// artifact endpoint selected by users. Request payloads can reference only ID.
+type PackageSourceConfig struct {
+	ID               string `json:"id"`
+	Ecosystem        string `json:"ecosystem"`
+	Name             string `json:"name"`
+	Kind             string `json:"kind"`
+	CatalogURL       string `json:"catalog_url"`
+	InstallURL       string `json:"install_url"`
+	EquivalenceGroup string `json:"equivalence_group"`
+	Official         bool   `json:"official,omitempty"`
 }
 
 // Config 是服务端所有可配置项的集合。
@@ -76,6 +93,25 @@ type Config struct {
 	PersonalPersistScanIntervalMS     int    `json:"personal_persist_scan_interval_ms"`
 	PersonalPersistRetentionDays      int    `json:"personal_persist_retention_days"`
 	PersonalPersistCleanupIntervalMin int    `json:"personal_persist_cleanup_interval_minutes"`
+
+	// The first package-center release supports the public Python ecosystem.
+	// Sources are configured server-side so untrusted requests cannot turn the
+	// catalog or installer into an arbitrary URL fetcher.
+	PackageCenterEnabled              bool                  `json:"package_center_enabled"`
+	PackageDefaultSource              string                `json:"package_default_source"`
+	PackageCatalogTimeoutSeconds      int                   `json:"package_catalog_timeout_seconds"`
+	PackageCatalogMaxResponseBytes    int64                 `json:"package_catalog_max_response_bytes"`
+	PackageRuntimeProbeTimeoutSeconds int                   `json:"package_runtime_probe_timeout_seconds"`
+	PackageRuntimeMetadataTTLSeconds  int                   `json:"package_runtime_metadata_ttl_seconds"`
+	PackagePlanTTLSeconds             int                   `json:"package_plan_ttl_seconds"`
+	PackagePlanCompletedTTLSeconds    int                   `json:"package_plan_completed_ttl_seconds"`
+	PackageOperationTimeoutSeconds    int                   `json:"package_operation_timeout_seconds"`
+	PackageOperationMaxPlans          int                   `json:"package_operation_max_plans"`
+	PackageOperationMaxPlansPerUser   int                   `json:"package_operation_max_plans_per_user"`
+	PackagePlanStoreMaxBytes          int64                 `json:"package_plan_store_max_bytes"`
+	PackagePlanStoreMaxBytesPerUser   int64                 `json:"package_plan_store_max_bytes_per_user"`
+	PackagePlanResultMaxBytes         int64                 `json:"package_plan_result_max_bytes"`
+	PackageSources                    []PackageSourceConfig `json:"package_sources"`
 
 	// 超时配置
 	DefaultCompileTimeout  int `json:"compile_timeout_seconds"`
@@ -180,22 +216,41 @@ func Default() *Config {
 		DockerRegistryMirrors: []string{
 			"https://docker.m.daocloud.io",
 		},
-		DockerPullTimeout:                   600,
-		DockerHardening:                     true,
-		DockerReadOnlyRootfs:                false,
-		DockerContainerResetStrategy:        "verified",
-		DockerQueueSize:                     50,
-		DockerQueueTimeoutSeconds:           60,
-		PerformanceMetricsEnabled:           true,
-		PerformanceMetricsWindow:            512,
-		RunOutputRetainedBytes:              256 << 10,
-		PersonalDependencyScope:             "project-lock",
-		PersonalPersistReservationMB:        256,
-		PersonalPersistMaxFiles:             250_000,
-		PersonalPersistReservationFiles:     10_000,
-		PersonalPersistScanIntervalMS:       250,
-		PersonalPersistRetentionDays:        30,
-		PersonalPersistCleanupIntervalMin:   10,
+		DockerPullTimeout:                 600,
+		DockerHardening:                   true,
+		DockerReadOnlyRootfs:              false,
+		DockerContainerResetStrategy:      "verified",
+		DockerQueueSize:                   50,
+		DockerQueueTimeoutSeconds:         60,
+		PerformanceMetricsEnabled:         true,
+		PerformanceMetricsWindow:          512,
+		RunOutputRetainedBytes:            256 << 10,
+		PersonalDependencyScope:           "project-lock",
+		PersonalPersistReservationMB:      256,
+		PersonalPersistMaxFiles:           250_000,
+		PersonalPersistReservationFiles:   10_000,
+		PersonalPersistScanIntervalMS:     250,
+		PersonalPersistRetentionDays:      30,
+		PersonalPersistCleanupIntervalMin: 10,
+		PackageCenterEnabled:              true,
+		PackageDefaultSource:              "pypi-official",
+		PackageCatalogTimeoutSeconds:      8,
+		PackageCatalogMaxResponseBytes:    4 << 20,
+		PackageRuntimeProbeTimeoutSeconds: 3,
+		PackageRuntimeMetadataTTLSeconds:  60 * 60,
+		PackagePlanTTLSeconds:             15 * 60,
+		PackagePlanCompletedTTLSeconds:    60 * 60,
+		PackageOperationTimeoutSeconds:    10 * 60,
+		PackageOperationMaxPlans:          512,
+		PackageOperationMaxPlansPerUser:   32,
+		PackagePlanStoreMaxBytes:          64 << 20,
+		PackagePlanStoreMaxBytesPerUser:   16 << 20,
+		PackagePlanResultMaxBytes:         64 << 10,
+		PackageSources: []PackageSourceConfig{
+			{ID: "pypi-official", Ecosystem: "python", Name: "PyPI", Kind: "official", CatalogURL: "https://pypi.org", InstallURL: "https://pypi.org/simple/", EquivalenceGroup: "pypi", Official: true},
+			{ID: "pypi-tuna", Ecosystem: "python", Name: "TUNA", Kind: "mirror", CatalogURL: "https://pypi.tuna.tsinghua.edu.cn", InstallURL: "https://pypi.tuna.tsinghua.edu.cn/simple/", EquivalenceGroup: "pypi"},
+			{ID: "pypi-aliyun", Ecosystem: "python", Name: "Aliyun", Kind: "mirror", CatalogURL: "https://pypi.org", InstallURL: "https://mirrors.aliyun.com/pypi/simple/", EquivalenceGroup: "pypi"},
+		},
 		DefaultCompileTimeout:               30,
 		RustCompileTimeout:                  60,
 		DefaultRunTimeout:                   30,
@@ -367,6 +422,90 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.PersonalPersistCleanupIntervalMin <= 0 {
 		cfg.PersonalPersistCleanupIntervalMin = 10
+	}
+	if cfg.PackageCatalogTimeoutSeconds <= 0 {
+		cfg.PackageCatalogTimeoutSeconds = 8
+	}
+	if cfg.PackageCatalogMaxResponseBytes <= 0 {
+		cfg.PackageCatalogMaxResponseBytes = 4 << 20
+	}
+	if cfg.PackageRuntimeProbeTimeoutSeconds <= 0 {
+		cfg.PackageRuntimeProbeTimeoutSeconds = 3
+	}
+	if cfg.PackageRuntimeMetadataTTLSeconds <= 0 {
+		cfg.PackageRuntimeMetadataTTLSeconds = 60 * 60
+	}
+	if cfg.PackagePlanTTLSeconds <= 0 {
+		cfg.PackagePlanTTLSeconds = 15 * 60
+	}
+	if cfg.PackageOperationTimeoutSeconds <= 0 {
+		cfg.PackageOperationTimeoutSeconds = 10 * 60
+	}
+	if cfg.PackagePlanCompletedTTLSeconds <= 0 {
+		cfg.PackagePlanCompletedTTLSeconds = 60 * 60
+	}
+	minimumCompletedTTL := cfg.PackageOperationTimeoutSeconds + 60
+	if cfg.PackagePlanCompletedTTLSeconds < minimumCompletedTTL {
+		cfg.PackagePlanCompletedTTLSeconds = minimumCompletedTTL
+	}
+	if cfg.PackageOperationMaxPlans <= 0 {
+		cfg.PackageOperationMaxPlans = 512
+	}
+	if cfg.PackageOperationMaxPlansPerUser <= 0 {
+		cfg.PackageOperationMaxPlansPerUser = 32
+	}
+	if cfg.PackageOperationMaxPlansPerUser > cfg.PackageOperationMaxPlans {
+		cfg.PackageOperationMaxPlansPerUser = cfg.PackageOperationMaxPlans
+	}
+	if cfg.PackagePlanStoreMaxBytes <= 0 {
+		cfg.PackagePlanStoreMaxBytes = 64 << 20
+	}
+	if cfg.PackagePlanStoreMaxBytesPerUser <= 0 {
+		cfg.PackagePlanStoreMaxBytesPerUser = 16 << 20
+	}
+	if cfg.PackagePlanStoreMaxBytesPerUser > cfg.PackagePlanStoreMaxBytes {
+		cfg.PackagePlanStoreMaxBytesPerUser = cfg.PackagePlanStoreMaxBytes
+	}
+	if cfg.PackagePlanResultMaxBytes <= 0 {
+		cfg.PackagePlanResultMaxBytes = 64 << 10
+	} else if cfg.PackagePlanResultMaxBytes < minimumPackagePlanResultBytes {
+		cfg.PackagePlanResultMaxBytes = minimumPackagePlanResultBytes
+	}
+	if cfg.PackageCenterEnabled {
+		if len(cfg.PackageSources) == 0 {
+			return nil, fmt.Errorf("package_center_enabled requires at least one package source")
+		}
+		seenPackageSources := make(map[string]bool, len(cfg.PackageSources))
+		for index := range cfg.PackageSources {
+			source := &cfg.PackageSources[index]
+			source.ID = strings.TrimSpace(source.ID)
+			source.Ecosystem = strings.ToLower(strings.TrimSpace(source.Ecosystem))
+			source.Kind = strings.ToLower(strings.TrimSpace(source.Kind))
+			source.EquivalenceGroup = strings.TrimSpace(source.EquivalenceGroup)
+			if source.ID == "" || seenPackageSources[source.ID] {
+				return nil, fmt.Errorf("package source IDs must be non-empty and unique")
+			}
+			seenPackageSources[source.ID] = true
+			if source.Ecosystem != "python" {
+				return nil, fmt.Errorf("package source %s uses unsupported ecosystem %q", source.ID, source.Ecosystem)
+			}
+			if source.Kind != "official" && source.Kind != "mirror" {
+				return nil, fmt.Errorf("package source %s kind must be official or mirror", source.ID)
+			}
+			if source.EquivalenceGroup != "pypi" {
+				return nil, fmt.Errorf("package source %s must be an equivalent PyPI source in this release", source.ID)
+			}
+			for field, raw := range map[string]string{"catalog_url": source.CatalogURL, "install_url": source.InstallURL} {
+				parsed, parseErr := url.Parse(strings.TrimSpace(raw))
+				if parseErr != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+					return nil, fmt.Errorf("package source %s has invalid %s", source.ID, field)
+				}
+			}
+		}
+		cfg.PackageDefaultSource = strings.TrimSpace(cfg.PackageDefaultSource)
+		if cfg.PackageDefaultSource == "" || !seenPackageSources[cfg.PackageDefaultSource] {
+			return nil, fmt.Errorf("default package source must reference a configured package source")
+		}
 	}
 	if cfg.LSPMaxSessions <= 0 {
 		cfg.LSPMaxSessions = 8
@@ -562,6 +701,16 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("BOBOCLOUD_PERSONAL_PERSIST_RESERVATION_FILES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			cfg.PersonalPersistReservationFiles = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_PACKAGE_RUNTIME_PROBE_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.PackageRuntimeProbeTimeoutSeconds = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_PACKAGE_RUNTIME_METADATA_TTL_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.PackageRuntimeMetadataTTLSeconds = n
 		}
 	}
 	if v := os.Getenv("BOBOCLOUD_TEAM_CACHE_QUOTA_MB"); v != "" {

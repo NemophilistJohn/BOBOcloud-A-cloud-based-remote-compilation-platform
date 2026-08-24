@@ -60,6 +60,7 @@ import '../src/dap-client.js';
 import './compat/dap-adapter.js';
 import '../src/environment-activity.js';
 import '../src/environment-center.js';
+import '../src/package-center.js';
 import '../src/views.js';
 import '../src/diagnostics-settings.js';
 import '../src/auth.js';

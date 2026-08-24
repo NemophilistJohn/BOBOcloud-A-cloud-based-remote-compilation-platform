@@ -62,6 +62,14 @@ contextBridge.exposeInMainWorld('api', {
   saveBinaryFile: (payload) => ipcRenderer.invoke('save-binary-file', payload),
   saveArtifact: (payload) => ipcRenderer.invoke('save-artifact', payload),
 
+  // Package plans can only mutate dependency manifests selected by the main
+  // process allowlist. Synchronization and server publication remain explicit
+  // workflow stages so either failure can roll this local transaction back.
+  packageCenterApplyLocalChanges: (payload) => ipcRenderer.invoke('package-center:apply-local-changes', payload),
+  packageCenterRollbackLocalChanges: (payload) => ipcRenderer.invoke('package-center:rollback-local-changes', payload),
+  packageCenterCommitLocalChanges: (payload) => ipcRenderer.invoke('package-center:commit-local-changes', payload),
+  onPackageCenterLocalTransaction: (cb) => subscribePayload('package-center:local-transaction', cb),
+
   // FS operations
   createFile: (payload) => ipcRenderer.invoke('create-file', payload),
   createFolder: (payload) => ipcRenderer.invoke('create-folder', payload),

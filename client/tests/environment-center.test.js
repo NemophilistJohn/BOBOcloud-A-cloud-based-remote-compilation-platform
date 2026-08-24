@@ -9,7 +9,12 @@ const {
   normalizeHealth,
   mergeServerSnapshot,
   unresolvedPythonImport,
-  mergeLiveDependencyDiagnostics
+  packageIdentity,
+  dependencyIssueRows,
+  mergeLiveDependencyDiagnostics,
+  localizedDynamicText,
+  healthFallbackDetail,
+  localizedDependencyReason
 } = require('../src/environment-center');
 
 test('recognizes project dependency files while skipping generated dependency trees', () => {
@@ -116,8 +121,8 @@ test('unresolved Python imports supplement unavailable server truth without muta
 
   const merged = mergeLiveDependencyDiagnostics(snapshot, problems);
   assert.equal(merged.consistency.status, 'mismatch');
-  assert.equal(merged.consistency.dependencyRuntime.status, 'mismatch');
-  assert.match(merged.consistency.dependencyRuntime.detail, /^2 unresolved dependency imports/);
+  assert.equal(merged.consistency.dependencyRuntime.status, 'unknown');
+  assert.equal(merged.consistency.dependencyRuntime.detail, 'Package inventory is missing');
   assert.match(merged.consistency.lspDependencies.detail, /^2 unresolved dependency imports/);
   assert.deepEqual(merged.packages.missing.map((item) => item.name), ['numpy', 'matplotlib']);
   assert.equal(merged.actions.repair.supported, false, 'live diagnostics must not invent a repair action');
@@ -144,8 +149,159 @@ test('unresolved Python imports never overwrite exact project inventory truth', 
 	]);
 	assert.deepEqual(merged.packages.missing, []);
 	assert.equal(merged.consistency.dependencyRuntime.status, 'aligned');
-	assert.equal(merged.consistency.lspDependencies.status, 'mixed');
-	assert.equal(merged.consistency.status, 'unknown');
+	assert.equal(merged.consistency.lspDependencies.status, 'ready');
+	assert.equal(merged.consistency.status, 'aligned');
+});
+
+test('cloud package evidence suppresses duplicate LSP fallback in both issue rows and health', () => {
+  const snapshot = {
+    language: { id: 'python' },
+    packages: {
+      declared: [
+        { name: 'NumPy', constraint: '>=2', source: 'requirements.txt' },
+        { name: 'matplotlib', constraint: '>=3', source: 'requirements.txt' }
+      ],
+      installed: [],
+      missing: [],
+      unknown: [
+        { name: 'numpy', reason: 'Inventory verification required' },
+        { name: 'MatPlotLib', reason: 'Inventory verification required' }
+      ]
+    },
+    consistency: {
+      status: 'unknown',
+      dependencyRuntime: { status: 'unknown', detail: 'Inventory verification required' },
+      lspDependencies: { status: 'ready', detail: 'Language service is ready.' }
+    }
+  };
+
+  const merged = mergeLiveDependencyDiagnostics(snapshot, [
+    { severity: 'error', code: 'reportMissingImports', message: 'Import "numpy" could not be resolved' },
+    { severity: 'error', code: 'reportMissingImports', message: 'Import "matplotlib.pyplot" could not be resolved' }
+  ]);
+
+  assert.equal(merged, snapshot, 'fallback diagnostics must leave a represented cloud snapshot unchanged');
+  assert.deepEqual(merged.packages.missing, []);
+  assert.equal(merged.packages.unknown.length, 2);
+  assert.deepEqual(merged.consistency.lspDependencies, { status: 'ready', detail: 'Language service is ready.' });
+  assert.equal(merged.consistency.dependencyRuntime.status, 'unknown');
+});
+
+test('dependency issue rows deduplicate Python package spelling across server status groups', () => {
+  assert.equal(packageIdentity('Example_Package', 'python'), 'example-package');
+  assert.equal(packageIdentity('sklearn', 'python'), 'scikit-learn');
+  assert.equal(packageIdentity('PIL', 'python'), 'pillow');
+  const rows = dependencyIssueRows({
+    missing: [{ name: 'Example_Package', constraint: '==1.0', reason: 'Missing from exact inventory' }],
+    unknown: [
+      { name: 'example.package', reason: 'Inventory verification required' },
+      { name: 'numpy', reason: 'Inventory verification required' },
+      { name: 'NumPy', reason: 'Duplicate fallback' }
+    ]
+  }, 'python');
+
+  assert.deepEqual(rows.map((item) => [item.name, item._status]), [
+    ['Example_Package', 'missing'],
+    ['numpy', 'warning']
+  ]);
+  assert.equal(rows[0].reason, 'Missing from exact inventory', 'verified missing status keeps precedence');
+});
+
+test('Python import aliases do not bypass cloud package evidence', () => {
+  const snapshot = {
+    language: { id: 'python' },
+    packages: {
+      declared: [{ name: 'scikit-learn' }, { name: 'pillow' }],
+      installed: [],
+      missing: [],
+      unknown: [{ name: 'scikit-learn' }, { name: 'pillow' }]
+    },
+    consistency: {
+      status: 'unknown',
+      dependencyRuntime: { status: 'unknown', detail: 'Inventory verification required' },
+      lspDependencies: { status: 'ready', detail: 'Language service is ready.' }
+    }
+  };
+  const merged = mergeLiveDependencyDiagnostics(snapshot, [
+    { severity: 'error', code: 'reportMissingImports', message: 'Import "sklearn" could not be resolved' },
+    { severity: 'error', code: 'reportMissingImports', message: 'Import "PIL.Image" could not be resolved' }
+  ]);
+  assert.equal(merged, snapshot);
+  assert.deepEqual(merged.packages.missing, []);
+  assert.equal(merged.consistency.lspDependencies.status, 'ready');
+});
+
+test('supplemental LSP evidence preserves authoritative dependency health detail', () => {
+  const snapshot = {
+    language: { id: 'python' },
+    packages: {
+      declared: [{ name: 'numpy' }],
+      installed: [],
+      missing: [{ name: 'numpy', reason: 'Missing from exact inventory' }],
+      unknown: []
+    },
+    consistency: {
+      status: 'mismatch',
+      dependencyRuntime: { status: 'mismatch', detail: 'Exact inventory is missing numpy' },
+      lspDependencies: { status: 'ready', detail: 'Language service is ready.' }
+    }
+  };
+  const merged = mergeLiveDependencyDiagnostics(snapshot, [
+    { severity: 'error', code: 'reportMissingImports', message: 'Import "numpy" could not be resolved' },
+    { severity: 'error', code: 'reportMissingImports', message: 'Import "matplotlib" could not be resolved' }
+  ]);
+  assert.deepEqual(merged.packages.missing.map((item) => item.name), ['numpy', 'matplotlib']);
+  assert.deepEqual(merged.consistency.dependencyRuntime, snapshot.consistency.dependencyRuntime);
+  assert.equal(merged.consistency.lspDependencies.status, 'mixed');
+  assert.match(merged.consistency.lspDependencies.detail, /^1 unresolved dependency import/);
+});
+
+test('supplemental LSP evidence changes overall health without downgrading healthy dependency truth', () => {
+  const snapshot = {
+    language: { id: 'python' },
+    packages: {
+      declared: [{ name: 'numpy' }],
+      installed: [{ name: 'numpy', version: '2.2.6', trust: 'runtime-scoped' }],
+      missing: [],
+      unknown: []
+    },
+    consistency: {
+      status: 'aligned',
+      dependencyRuntime: { status: 'ready', detail: 'Runtime dependencies match' },
+      lspDependencies: { status: 'ready', detail: 'Dependency view is current' }
+    }
+  };
+  const merged = mergeLiveDependencyDiagnostics(snapshot, [
+    { severity: 'error', code: 'reportMissingImports', message: 'Import "numpy" could not be resolved' },
+    { severity: 'error', code: 'reportMissingImports', message: 'Import "matplotlib.pyplot" could not be resolved' }
+  ]);
+
+  assert.equal(merged.consistency.status, 'mismatch');
+  assert.deepEqual(merged.consistency.dependencyRuntime, snapshot.consistency.dependencyRuntime);
+  assert.equal(merged.consistency.lspDependencies.status, 'mixed');
+  assert.match(merged.consistency.lspDependencies.detail, /^1 unresolved dependency import/);
+  assert.deepEqual(merged.packages.missing.map((item) => item.name), ['matplotlib']);
+});
+
+test('non-English environment details use localized structured fallbacks', () => {
+  const originalI18n = globalThis.BOBO.i18n;
+  const translations = {
+    'Installed library state still needs verification.': '已安装库状态仍需验证。',
+    'Missing from the verified project environment.': '已验证项目环境中缺少此库。'
+  };
+  globalThis.BOBO.i18n = {
+    getActive: () => 'zh-CN',
+    t: (key) => translations[key] || key
+  };
+  try {
+    assert.equal(localizedDynamicText('Installed state is not trustworthy for runtime python:3.10', '已安装库状态仍需验证。'), '已安装库状态仍需验证。');
+    assert.equal(localizedDynamicText('已检测到 1 个缺失导入', '回退'), '已检测到 1 个缺失导入');
+    assert.equal(healthFallbackDetail('dependencies', 'warning', ''), '已安装库状态仍需验证。');
+    assert.equal(localizedDependencyReason({ _status: 'warning', reason: 'Installed state is not trustworthy' }), '已安装库状态仍需验证。');
+    assert.equal(localizedDependencyReason({ _status: 'missing', reason: 'Missing from exact inventory' }), '已验证项目环境中缺少此库。');
+  } finally {
+    globalThis.BOBO.i18n = originalI18n;
+  }
 });
 
 test('Python import diagnostics require a real unresolved-import signal', () => {

@@ -126,3 +126,30 @@ func TestDependencyFingerprintRejectsOversizedManifestBeforeReadingIt(t *testing
 		t.Fatal("oversized manifest was accepted")
 	}
 }
+
+func TestDependencyFingerprintFromSnapshotUsesReviewedBytes(t *testing.T) {
+	first, err := DependencyFingerprintFromSnapshot("python", nil, "python:3.11\x00sha256:image", []ManifestSnapshot{{
+		Path: "requirements.txt", Content: []byte("numpy==2.1.0\n"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := DependencyFingerprintFromSnapshot("python", nil, "python:3.11\x00sha256:image", []ManifestSnapshot{{
+		Path: "requirements.txt", Content: []byte("numpy==2.2.0\n"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Digest == second.Digest || first.Source != "manifest" || len(first.Manifests) != 1 || first.Manifests[0] != "requirements.txt" {
+		t.Fatalf("reviewed manifest bytes did not define the dependency identity: first=%+v second=%+v", first, second)
+	}
+	if _, err := DependencyFingerprintFromSnapshot("python", nil, "", []ManifestSnapshot{{Path: "../requirements.txt", Content: []byte("x")}}); err == nil {
+		t.Fatal("escaping snapshot path was accepted")
+	}
+	if _, err := DependencyFingerprintFromSnapshot("python", nil, "", []ManifestSnapshot{
+		{Path: "requirements.txt", Content: []byte("x")},
+		{Path: "requirements.txt", Content: []byte("y")},
+	}); err == nil {
+		t.Fatal("duplicate snapshot path was accepted")
+	}
+}

@@ -2,122 +2,279 @@
 
 <p align="right"><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a></p>
 
-BOBOCLOUD is an Electron workbench for local projects that uses a self-hosted Linux service for cloud compilation, project tasks, language intelligence, debugging, team collaboration, and optional AI assistance. Client **2.6.0** and server **2.4.0** are developed together. The editor still works locally before a server is configured.
+BOBOCLOUD is a desktop cloud-development workbench built with Electron and a self-hosted Go service. You keep and edit source code in a local workspace; the service supplies Linux execution, Docker runtimes, project tasks, language intelligence, debugging, dependency environments, team collaboration, and optional AI access. The current source identifies the desktop client as **2.6.1** and the server as **2.5.0**.
 
-## Repository layout
-
-- `client/` is the self-contained Electron desktop project: application code, renderer, tests, packaging, bundled assets, plugin SDK, and examples.
-- `server/` is the Go cloud-compilation service and its Docker/LSP/DAP/cross-toolchain deployment assets.
-- `docs/` remains at the repository root because it documents the contract shared by both sides. Root `package.json` forwards common client commands; run `npm --prefix client <command>` or work directly in `client/`.
+The application can open and edit a folder before a server is configured. Cloud Run, tasks, debugging, terminals, dependency management, and team features require a compatible BOBOCLOUD service.
 
 | I am... | Start here |
 | --- | --- |
-| A desktop user | [Use BOBOCLOUD](#for-desktop-users) |
-| Operating a server | [Run a service](#for-server-operators) |
-| Building a desktop plugin | [Build and publish a plugin](#for-plugin-developers) |
-| Contributing code | [Contribute](#for-contributors) |
+| A desktop user | [For desktop users](#for-desktop-users) |
+| Operating a server | [For server operators](#for-server-operators) |
+| Building a desktop plugin | [For plugin developers](#for-plugin-developers) |
+| Contributing code | [For contributors](#for-contributors) |
 
-![Workbench](docs/screenshots/workbench.png)
+![BOBOCLOUD workbench](docs/screenshots/workbench.png)
+
+## What changed recently
+
+The latest development line is more than a code runner. The following features are implemented in the current source and covered by focused tests:
+
+- **Package Center for personal Python projects.** Search approved PyPI sources, inspect versions and compatibility, review an exact `requirements.txt` change, then add, update, remove, or reinstall a dependency. Publication uses a staged dependency generation and an atomic manifest transaction so a failed install leaves the last good environment available.
+- **Project-scoped dependency snapshots.** Personal Docker projects can reuse immutable, read-only dependency generations keyed by project, runtime, manifests, lock digest, and runtime fingerprint. Quotas, reservation checks, LRU retention, and whole-snapshot cleanup are explicit.
+- **Deeper VS Code file compatibility.** Tasks now support controlled inputs and variable resolution, `reevaluateOnRerun`, richer presentation and problem-matcher behavior, while workspace settings cover selected editor options, language overrides, file associations, and file excludes.
+- **A fuller debug workflow.** Python, Go, and Node launch configurations integrate pre/post tasks, watches, exception filters, conditional breakpoints, hit counts, logpoints, columns, requested-versus-verified locations, and Node child-session routing.
+- **Streaming terminal and hardened transport.** Runs and terminals use authenticated WebSockets; HTTPS/WSS, TLS 1.3 server listeners, self-signed certificate pinning, capability negotiation, health/readiness probes, and bounded operational metrics are part of the same client/server contract.
+- **A verified plugin and marketplace model.** `.boboplugin` archives are integrity checked before isolated Worker execution. The host exposes only declared, revocable permissions and commit-pinned marketplace packages.
+
+These are deliberately bounded compatibility layers. BOBOCLOUD does not claim to implement every VS Code task, setting, debug, or extension API.
+
+## How BOBOCLOUD works
+
+There are three workspace modes worth distinguishing:
+
+| Mode | Source of truth | Where commands execute | Important boundary |
+| --- | --- | --- | --- |
+| Local editing | The folder on this computer | No execution service is required to edit | Cloud-only tools remain unavailable. |
+| Personal cloud project | The local folder, synchronized over SFTP by rclone | A selected Docker runtime, or the server host for `Local` runtime | `Local` means no Docker; it does **not** mean execution on the desktop. |
+| Team project | A server-managed Git worktree and branch | A selected server runtime | Membership, branch state, locks, and team lifecycle rules apply. |
+
+A normal personal-project run follows one observable path:
+
+```text
+save dirty editors
+  -> synchronize the workspace with rclone/SFTP
+  -> POST runCode or runTask to :3100
+  -> attach to the returned run over :3101/ws
+  -> create a server-owned argv execution plan
+  -> execute in Docker or the server-host Local runtime
+  -> stream output, diagnostics, status, and optional artifacts
+  -> write returned artifacts into the workspace
+```
+
+Run identity includes the server, account, workspace, and lifecycle generation. Stopping, signing out, switching workspace, or replacing the active server invalidates late results instead of allowing them to appear in a different context.
 
 ## For desktop users
 
-### First launch and daily workflow
+### First launch
 
-The first-launch guide opens Server settings. Add the server address, SSH account and password used for workspace synchronization. On a multi-user server, sign in from the Account entry. **Use local editor only** dismisses the guide without pretending that a server exists; Server settings can be opened later.
+The first-launch guide opens Server settings. Enter the HTTP(S) service address and the SSH/SFTP account used to synchronize personal workspaces. A multi-user service also requires an application account sign-in. Choosing **Use local editor only** closes the guide without inventing a connection; Server settings remains available later.
 
-1. Open a folder. Explorer renders a cloud-sync rail for each file: local only, queued, syncing, synced, error, or conflict.
-2. Edit files in Monaco. BOBOCLOUD saves dirty buffers before a cloud run, task, or debug launch.
-3. Choose a cloud runtime and use **Run**. The adjacent target menu keeps `Current File` and also groups project Build, Test, Run, and Custom tasks.
-4. Read output, terminal messages, artifacts, and source-linked diagnostics in the bottom panel.
+Server settings and authentication data are stored in the Electron user-data directory on the current OS account. The present implementation uses local JSON files rather than encrypted-at-rest storage. Protect the OS account and profile directory, and never commit or share those files.
 
-Cloud-sync decoration uses icons rather than Git's `M/A/D/U/C` badges, so it occupies a separate visual lane from future source control.
+### A daily editing and run workflow
 
-### Run configuration and cross builds
+1. Open a folder. The Explorer shows separate cloud-sync, source-control, and diagnostic lanes, so synchronization state is not confused with Git status.
+2. Edit with Monaco. The workbench includes tabs, search, Problems, output, settings, keyboard shortcuts, and supported workspace preferences.
+3. Choose a cloud runtime. BOBOCLOUD remembers valid runtime choices per project and language, but revalidates them against the server catalog.
+4. Run the current file or choose a project task. Dirty buffers are saved and personal projects are synchronized before the server handshake.
+5. Follow output and source-linked diagnostics. Build-only targets return their artifact to the workspace; running targets continue through the same output stream.
+6. Stop explicitly when needed. Cancellation propagates through the WebSocket session, process/container lifecycle, and client UI.
 
-The small configuration button beside Run appears only for compiled files. C, C++, and Rust also show a compact **Build target** section. It remembers the selected system and architecture per workspace and language.
+### Languages and runtimes
 
-| Preset | Result |
+Runtime availability is reported by the connected server. The built-in catalog defines:
+
+| Language | Runtime IDs |
 | --- | --- |
-| Linux x86_64 | Native executable; runs in the selected Linux container. |
-| Linux ARM64 | ARM64 Linux artifact returned to the workspace. |
-| Windows x86_64 | GNU/MinGW Windows `.exe` artifact returned to the workspace. |
-| Cortex-M4 (C/C++ only) | Bare-metal/RTOS ELF artifact returned to the workspace. |
+| Python | `python:3.9`, `python:3.10`, `python:3.11`, `python:3.12`, `python:3.13` |
+| Java | `java:11`, `java:17`, `java:21` |
+| C | `c:11`, `c:13` |
+| C++ | `cpp:11`, `cpp:13` |
+| Go | `go:1.21`, `go:1.23` |
+| Rust | `rust:1.75`, `rust:1.82` |
+| Node.js | `node:20`, `node:22` |
 
-Cross targets are intentionally build-only. The panel displays the generated toolchain and output path, and the server validates the compact `buildTarget` identifier before selecting a fixed compiler image. It does not accept client-provided target shell commands and never attempts to execute a foreign binary in the Linux container. Cortex-M Rust is intentionally not advertised as a one-click preset because an embedded crate must provide its own `no_std` and linker setup. Python and Node do not show this configuration; Java and Go keep normal argument configuration without cross presets in this release.
+The server chooses a fixed language plugin and builds an argv-only plan. Compile arguments, run arguments, environment fields, output limits, paths, and build targets are validated as structured data; they are not interpolated into a client-provided shell command.
 
-### Tasks, Debug, AI, and teams
+### Build targets and artifacts
 
-Project tasks merge JSONC files in this order, with a later matching `label` overriding an earlier task:
+Compiled languages expose run arguments and, where supported, a build target selector. Target availability depends on the chosen language/runtime and the toolchain images actually present on the server.
+
+| Target | Languages | Behavior |
+| --- | --- | --- |
+| `linux-x86_64` | C, C++, Go, Rust | Native Linux build; can run in the selected runtime. |
+| `linux-arm64` | C, C++, Go, Rust | Build-only ARM64 Linux artifact. |
+| `windows-x86_64` | C, C++, Go, Rust | Build-only Windows artifact. |
+| `cortex-m4` | C, C++ | Build-only bare-metal/RTOS ELF artifact. |
+
+Cross targets never attempt to run a foreign binary in a Linux container. C/C++ and Rust targets use versioned cross-toolkit images; Go uses its supported cross-compilation environment. Cortex-M Rust is not advertised because an embedded crate needs its own `no_std`, target, and linker configuration. Python, Java, and Node do not expose cross-build presets.
+
+### Project tasks
+
+BOBOCLOUD reads JSONC task files in this order; a later task with the same `label` replaces the earlier one:
 
 1. `.vscode/tasks.json`
 2. `.bobocloud/tasks.json`
 
-The first release executes VS Code Tasks `2.0.0` `shell` and `process` tasks, Linux overrides, dependency graphs, working directories and environments. Extension task types, background/watch readiness, and `${input:*}`, `${command:*}`, `${config:*}` variables remain explicitly unsupported. See [.bobocloud/tasks.json](.bobocloud/tasks.json).
+Supported behavior includes Tasks schema `2.0.0`, `shell` and `process` tasks, Linux overrides, `dependsOn` graphs with parallel or sequence order, `cwd`, `env`, argument arrays, Build/Test/Run/custom groups, problem matchers, reveal/echo/focus/clear presentation choices, rerun, and `reevaluateOnRerun`.
 
-Debug reads `.vscode/launch.json` and `.bobocloud/launch.json`. Use editor gutters for breakpoints and F5/F6/F10/F11/Shift+F11/Shift+F5 for debug control. The Debug panel provides stack frames, variables, watches, and the Debug Console. DAP is independent from LSP and supports Python/debugpy 1.8.16, Go/Delve 1.24.2, and Node.js 20/22 through vscode-js-debug child-session routing. Full constraints are in the [DAP server guide](docs/dap-server.md).
+Variable resolution is controlled rather than extension-driven:
 
-AI chat and completion use independently configured agents, parameters, context budgets, prompts, Skills, and future MCP descriptors. Open chat from the lower-right AI status control and use the application menu for the dedicated AI control center. Team projects add Git-backed branches, invitations, commits, and short renewable file locks.
+- Standard file and workspace variables are resolved from the active workspace.
+- `${input:*}` supports `promptString` (including password input) and `pickString`.
+- `${command:*}` accepts only BOBOCLOUD's allowlisted active-file, relative-file, and workspace-folder commands.
+- `${config:*}` reads only supported editor settings.
+- `${env:*}`, extension task providers, background/watch readiness, automatic `runOn: folderOpen`, and arbitrary commands are not supported.
+
+Cloud project tasks require a Docker runtime. They are not run through the server-host `Local` runtime.
+
+### Workspace settings
+
+The workbench reads `.vscode/settings.json` as JSONC through the Electron main process. The file must stay within the active workspace, cannot be a symlink, and is limited to 256 KiB. Changes are applied live after validation.
+
+Supported settings include `editor.tabSize`, `editor.insertSpaces`, `editor.wordWrap`, `editor.wordWrapColumn`, `editor.rulers`, `editor.renderWhitespace`, `editor.minimap.enabled`, and `editor.bracketPairColorization.enabled`, including language-specific override blocks. Safe `*.extension` entries in `files.associations` and boolean-`true` glob entries in `files.exclude` are also supported. Unsupported settings are ignored and reported; conditional `{ "when": ... }` exclude objects are not interpreted.
+
+### Debugging
+
+Launch configurations merge `.vscode/launch.json` and `.bobocloud/launch.json`; a later configuration with the same `name` wins. Only `request: "launch"` is accepted. The workbench also provides a built-in current-file configuration.
+
+| Language | Runtime | Adapter |
+| --- | --- | --- |
+| Python | 3.9-3.13 | debugpy 1.8.16 |
+| Go | 1.21, 1.23 | Delve 1.24.2 |
+| Node.js | 20, 22 | vscode-js-debug with authenticated child-session routing on `:3102` |
+
+The Debug view includes call stacks, variables, watches, console evaluation, and continue/pause/step/restart/stop controls. Source breakpoints support line and column positions, enable/disable state, conditions, hit counts, log messages, exception filters, and requested-versus-adapter-verified locations where the adapter advertises the capability. `preLaunchTask` and `postDebugTask` use the same project task engine.
+
+Attach requests, compound configurations, launch-time inputs, `${input:*}`/`${command:*}`/`${config:*}`/`${env:*}` inside launch configurations, and debuggee stdin are not implemented. See the [DAP server guide](docs/dap-server.md) for protocol and deployment details.
+
+### Language intelligence
+
+LSP is independent from DAP. A current client prefers `/lsp` on HTTP(S) `:3100`; `:3101/lsp` remains a compatibility route. Depending on the language and server catalog, the editor can operate without a language process, use a standard server, or enable fuller workspace analysis.
+
+The server catalog covers Rust, Go, C/C++, Java, Python, JavaScript/TypeScript, HTML, CSS/SCSS/Less, JSON/JSONC, YAML, and shell files. Language servers run in a dedicated toolkit with a read-only workspace, writable analysis cache, no network, resource limits, bounded messages, and client-facing `bobocloud-lsp` URIs rather than server filesystem paths.
+
+### Terminal
+
+The terminal is an authenticated, main-process-owned WebSocket session exposed as `/terminal`; `/term` remains a compatibility alias. It requires a Docker runtime and creates an isolated `/workspace` snapshot. Terminal file changes are discarded when the terminal closes and are never synchronized back into the local project.
+
+The terminal supports binary output, resize, input, and stop, with confirmation for multiline paste. Idle lifetime, maximum lifetime, message size, bandwidth, and workspace-copy limits are enforced by the server. Installer activity is session-local under the terminal's temporary dependency area: it can help explore a package during that terminal, but it does not publish a project dependency generation or change the project's dependency digest. Use Package Center for durable personal-project dependency changes.
+
+### Environment Center, Package Center, and cloud resources
 
 ![Environment Center](docs/screenshots/environment-center.png)
 
+Environment Center combines the runtime catalog, project manifests, dependency state, and analysis state. It can request a server-generated repair or rebuild plan, refresh the analysis index, and clear environment cache data without silently removing published project dependencies. Mutating plans are revision-bound: if the project changes before confirmation, the stale plan is rejected and must be reviewed again.
+
+Package Center is currently narrow by design:
+
+- It is available only when the server advertises the feature for a **personal Python project** using a Docker runtime and project-lock dependency storage.
+- It searches configured package sources, currently including the official PyPI index and optional TUNA or Aliyun mirrors in the example configuration.
+- It manages a simple, workspace-root `requirements.txt`. Ambiguous multiple manifests, symlinks, path escapes, environment markers, hash continuations, linked local components, and other forms that cannot be changed exactly are rejected.
+- Every add, update, remove, or reinstall operation is presented as a plan before confirmation. The Electron main process applies one compare-and-swap manifest transaction; the server installs into staging, verifies the inventory, and atomically publishes the new generation.
+- A failed install keeps the last good published generation. The local manifest is rolled back unless the user edited it after the operation began. Completed operations can be reconciled after a transport interruption.
+
+Package Center does not yet manage Node, Go, Rust, Java, C/C++, team-project, or server-host Local-runtime dependencies. Exact package labels are shown only when the server has proved the inventory; unknown state is kept visibly unverified.
+
+Cloud resources shows project-scoped cache generations, usage, quotas, activity, and read-only installed-package inventory. Cleanup removes a whole selected environment snapshot rather than pretending that one transitive package can be safely deleted in isolation.
+
+### Accounts and teams
+
+The service can run in single-user or multi-user mode. Multi-user mode supports invitation-based registration, session tokens, user profiles, public IDs, avatars, compile-activity history, and root/admin/member roles. Administrators can manage invitations, quotas, roles, disabled users, resets, deletion rules, and audit records; root-specific safety rules remain enforced by the server.
+
+Team projects add Git-backed server worktrees, invitations and membership, branch creation and history, commit/push, comparison, merge preparation, conflict resolution, and merge completion. Short advisory file locks can be renewed but do not replace Git conflict handling. Branch-mutating operations are serialized and protected by team/project lifecycle checks.
+
+### AI assistance
+
 ![AI Control Center](docs/screenshots/ai-control-center.png)
+
+AI is optional and configured by the user. Chat and inline completion have separate agents, provider profiles, prompts, sampling controls, and context budgets. The transport supports OpenAI-compatible and Anthropic-style profiles, streaming, cancellation, chat/completions/FIM routing, and bounded responses.
+
+Context can include the current selection, active file, project summary, and explicitly referenced files, subject to size and safety limits. Markdown, copied code, and mathematical output are rendered by the host. The Skills and MCP registries in the current control center are descriptive/planning surfaces; they do not execute external skills or MCP tools inside BOBOCLOUD.
+
+### Extensions
+
+Extensions can be installed from the verified marketplace or imported as a local `.boboplugin` archive. Package metadata, exact bytes, manifest structure, engine compatibility, and per-file SHA-256 integrity are validated before promotion. A plugin runs one bundled ESM entry in an opaque sandbox Worker with no DOM, Node.js, Electron, shell, environment, credential, arbitrary filesystem, or general network access.
+
+The host API currently mediates command registration/execution, UI contributions, read-only services, source-control providers, file decorations, and bounded Git read/write operations. Declared permissions start enabled but remain individually revocable. The official marketplace exposes the latest verified release; older versions require explicit local archive import.
+
+## Architecture and trust boundaries
+
+```mermaid
+flowchart LR
+  subgraph Desktop["Electron desktop"]
+    UI["Renderer workbench"] --> IPC["Preload allowlist"] --> Main["Main-process controllers"]
+    Main --> Sync["rclone / SFTP"]
+    Main --> SecureWS["Authenticated WS/WSS clients"]
+  end
+  subgraph Cloud["Go cloud service"]
+    HTTP["HTTP actions :3100"] --> Lifecycle["Identity and lifecycle ownership"]
+    RunWS["Run /ws :3101"] --> Lifecycle
+    TermWS["Terminal /terminal :3101"] --> Lifecycle
+    Lifecycle --> Runtime["Docker pool or Local runner"]
+    LSP["Independent LSP sessions"]
+    DAP["Independent DAP sessions"]
+    Cache["Build and dependency generations"]
+    Team["Teams, Git, and locks"]
+    Data["BoltDB and managed data"]
+  end
+  Sync --> Cloud
+  IPC --> HTTP
+  SecureWS --> RunWS
+  SecureWS --> TermWS
+  Main --> LSP
+  Main --> DAP
+```
+
+The renderer is not an authority boundary. Privileged filesystem, credential, process, network, package transaction, plugin installation, and transport work stays in Electron main behind the explicit preload API. `contextIsolation` is enabled and Node integration is disabled. Navigation is restricted to the packaged/local application; new windows are denied, external HTTP(S) links are opened by the operating system, and webviews and permission requests are blocked.
+
+The server publishes a versioned `serverInfo` descriptor. It includes transports, paths, feature flags, limits, catalog revisions, and LSP/DAP fingerprints. Clients gate features from this descriptor and fail closed on unsupported protocol/schema values rather than inferring support from a version string alone.
 
 ## For server operators
 
-### What to deploy
+### Host requirements and deployment contents
 
-The Go server is a single executable, but a useful deployment is an executable plus configuration, data, and optional toolkits:
+The server module targets the Go version declared in `server/go.mod`. A practical host needs Linux, Docker access, a writable data directory, Git for team workflows, SSH/SFTP reachability for personal-project synchronization, and outbound access only where image pulls or configured package sources require it.
+
+A full deployment can contain:
 
 ```text
-bobocloud-server
-config.json
-compile_rules.json
-lsp_servers.json
-dap_adapters.json
-data/
-deploy/lsp-toolkit/
-deploy/dap-toolkit/
-deploy/cross-toolkit/
+/root/cloudeEditor/
+  bobocloud-server
+  config.json
+  compile_rules.json
+  lsp_servers.json
+  dap_adapters.json
+  data/
+  deploy/lsp-toolkit/
+  deploy/dap-toolkit/
+  deploy/cross-toolkit/
 ```
 
-[`server/config.json`](server/config.json) is a development example; defaults and environment overrides are implemented in [`server/internal/config/config.go`](server/internal/config/config.go). The service host needs Linux, Docker, a writable data directory, and permission to use the Docker daemon.
+`server/config.json` is an example, not a production secret store. Defaults and environment overrides live in `server/internal/config/config.go`. Review authentication mode, storage paths, Docker limits, output and workspace limits, project cache quotas, package sources, LSP/DAP catalogs, metrics, TLS, and listener addresses before starting the service.
+
+### Build and run from source
 
 ```bash
 cd server
 go mod download
 go test ./...
 go build -trimpath -o bobocloud-server ./cmd/bobocloud
-
-# Adapt paths, user, and environment before enabling the sample unit.
-sudo install -m 0644 deploy/bobocloud.service /etc/systemd/system/bobocloud.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now bobocloud
+./bobocloud-server
 ```
 
-Never commit production passwords, tokens, private keys, or user data. For a public service, place HTTP/WebSocket traffic behind TLS. Server settings support TLS and self-signed certificate SHA-256 pinning; do not expose Docker or adapter ports directly.
+The example systemd unit is `server/deploy/bobocloud.service`. Put per-host secrets in the protected environment file described by the [deployment guide](server/deploy/README.md), not in the repository, unit, or sample configuration.
 
-### Ports and toolkits
+### Network endpoints
 
-| Endpoint | Purpose |
-| --- | --- |
-| HTTP `:3100` | `POST /` JSON actions plus `/lsp` and `/dap` WebSocket entry points |
-| WebSocket `:3101/ws` | Run attach, stdin, output, artifacts, cancellation |
-| WebSocket `:3101/term` | Interactive terminal |
-| WebSocket `:3101/lsp` | Compatibility LSP endpoint |
-| WebSocket `:3101/dap` | Compatibility DAP endpoint |
+| Listener | Route | Purpose |
+| --- | --- | --- |
+| HTTP(S) `:3100` | `POST /` | JSON action API, including `serverInfo`, auth, runs, projects, environments, packages, administration, and teams. |
+| HTTP(S) `:3100` | `GET /healthz` | Process health. |
+| HTTP(S) `:3100` | `GET /readyz` | Dependency and service readiness. |
+| WebSocket `:3100/lsp` | `/lsp` | Preferred LSP transport. |
+| WebSocket `:3100/dap` | `/dap` | Preferred DAP transport. |
+| WebSocket `:3101/ws` | `/ws` | Run attach, output, input, artifacts, and cancellation. |
+| WebSocket `:3101/terminal` | `/terminal` | Canonical interactive terminal route; `/term` is retained for compatibility. |
+| WebSocket `:3101/lsp` | `/lsp` | Compatibility LSP route. |
+| WebSocket `:3101/dap` | `/dap` | Compatibility DAP route. |
+| WebSocket `:3102/dap-child` | `/dap-child` | Authenticated, one-use Node debug child-session broker. |
 
-Normal cloud runtime definitions come from `server/internal/model/lang.go`:
+If TLS is enabled, all configured HTTP and WebSocket listeners use TLS with a minimum of TLS 1.3. The desktop supports HTTPS/WSS and one or more SHA-256 certificate pins for controlled self-signed-certificate rotation. Do not expose the Docker daemon, toolkit internals, or data directory.
 
-| Language | Runtime IDs |
-| --- | --- |
-| Python | `python:3.9` through `python:3.13` |
-| Java | `java:11`, `java:17`, `java:21` |
-| C / C++ | `c:11`, `c:13`, `cpp:11`, `cpp:13` |
-| Go | `go:1.21`, `go:1.23` |
-| Rust | `rust:1.75`, `rust:1.82` |
-| Node.js | `node:20`, `node:22` |
+### Runtime and toolkit images
 
-Build optional images on the target Linux server and run their smoke tests before relying on them:
+Build optional toolkits on the target Linux/Docker host and run their verification scripts before advertising them:
 
 ```bash
 cd /path/to/bobocloud/server/deploy/lsp-toolkit && ./build.sh && ./verify.sh
@@ -125,55 +282,69 @@ cd /path/to/bobocloud/server/deploy/dap-toolkit && ./build.sh && ./verify.sh
 cd /path/to/bobocloud/server/deploy/cross-toolkit && ./build.sh && ./verify.sh
 ```
 
-`cross-toolkit` supplies the versioned C/C++ and Rust images used by cross presets. `listBuildTargets` exposes a non-native target only when the exact image for the selected runtime is present locally. DAP final images are only published after their complete adapter smoke tests pass.
+The service only advertises a target or adapter when the required catalog entry and image are available. LSP, DAP, cross-compilation, normal language runtimes, and personal dependency generations have separate images and lifecycle rules; building one toolkit does not imply that another is ready.
 
-When replacing the server in `/root/cloudeEditor`, retain only the current `bobocloud-server`. Delete old binary copies before uploading the next one, and do not create `.bak` or version-number binary snapshots. Rebuild a known revision to roll back.
+### Observability and failure diagnosis
 
-## Architecture and interfaces
+Use `/healthz` to confirm that the process answers, `/readyz` to confirm readiness, and `serverInfo` to verify the exact feature/capability contract seen by clients. An active process alone is not proof that Docker, catalogs, cache storage, or listeners are usable.
 
-```mermaid
-flowchart LR
-  subgraph Desktop["Electron desktop client"]
-    Renderer["Renderer workbench"] --> Preload["Preload IPC"] --> Main["Main controllers"]
-    Renderer --> Sync["rclone / SFTP"]
-  end
-  subgraph Service["Go cloud service"]
-    HTTP["HTTP actions :3100"] --> Sessions["Run lifecycle"] --> Docker["Docker pool"]
-    WS["Run & terminal WebSockets :3101"] --> Sessions
-    LSP["Independent LSP"]
-    DAP["Independent DAP"]
-    Collab["Teams, Git, locks"]
-    Store["BoltDB and project data"]
-  end
-  Sync --> Service
-  Preload --> HTTP
-  Renderer --> WS
-  Main --> LSP
-  Main --> DAP
+Run history stores bounded status, output summaries, truncation state, and stage information. The admin-only performance action reports rolling stage P50/P95/P99 metrics and error information. Server logs, audit records, Docker state, cache inventory, and capability fingerprints should be checked together when diagnosing a workflow.
+
+### Production deployment to the default host
+
+The reviewed Windows PowerShell release path is `server/deploy/Deploy-BoboCloudServer.ps1`. Its default preflight builds Linux/amd64, validates the ELF header and SHA-256, and does not change the server. A real release requires explicit apply and host confirmation:
+
+```powershell
+Set-Location server/deploy
+.\Deploy-BoboCloudServer.ps1 `
+  -Target production-81.70.51.43 `
+  -Build `
+  -Apply `
+  -ConfirmTarget 81.70.51.43
 ```
 
-The normal run path is: save dirty buffers -> rclone workspace sync -> `runCode` or `runTask` handshake -> WebSocket attach -> argv-only language plan -> managed Docker/local execution -> bounded output and artifacts. Stop, workspace changes, identity changes, and late responses are tied to an explicit run context.
+Before each cross-build, the script deletes every prior local `server/release/bobocloud-server*` artifact. During deployment it stops the service, deletes all top-level old `bobocloud-server*` binaries and interrupted replacement files under `/root/cloudeEditor`, then installs exactly one `/root/cloudeEditor/bobocloud-server`. It does not create `.bak`, version-number binaries, or rollback snapshots. A rollback is a rebuild and redeployment of a known source revision.
 
-| Contract | Design |
-| --- | --- |
-| HTTP action API | `POST /` JSON with `action`; stable `success`, `errorCode`, `details`, and action data. |
-| Run API | `runCode` accepts `compileArgs`, `runArgs`, and validated `buildTarget`; `runTask` accepts a resolved task DAG. |
-| LSP | Dedicated catalog, transport, cache and session lifecycle. |
-| DAP | A `dap.start` frame followed by raw DAP JSON; it shares only common auth/workspace/Docker foundations with LSP. |
-| Decorations | Fixed `sync`, `scm`, and `diagnostic` lanes. |
-| Plugins | Extensions browse the official verified marketplace or import a local `.boboplugin` archive. Metadata and package bytes are verified before installation. Declared permissions are enabled by default and remain individually revocable. The online catalog exposes only each package's latest release; older releases require a manual archive import. |
+The release finishes only after systemd start, `/healthz`, `/readyz`, and `serverInfo` verification. See the [server deployment guide](server/deploy/README.md) for one-time host provisioning, locking, staging cleanup, and TLS verification.
 
-Further design references: [Plugin API](docs/plugin-api.md), [DAP server guide](docs/dap-server.md), [`server/internal/model`](server/internal/model), [`server/internal/handler`](server/internal/handler), and [`server/internal/runner`](server/internal/runner).
+## Repository map
+
+```text
+.
+|-- client/                       Electron desktop application
+|   |-- main.js                   composition root and BrowserWindow lifecycle
+|   |-- main/                     privileged controllers and services
+|   |-- preload.js                explicit renderer IPC surface
+|   |-- renderer/entry.js         auditable renderer entry point
+|   |-- src/                      workbench feature modules
+|   |-- language-packs/           en, zh-CN, and ja application strings
+|   |-- plugin-sdk/               public plugin TypeScript contract
+|   |-- scripts/                  builds, release audit, screenshot tooling
+|   `-- tests/                    Node and Playwright coverage
+|-- server/
+|   |-- cmd/bobocloud/            service composition root
+|   |-- internal/handler/         HTTP and WebSocket action handlers
+|   |-- internal/runner/          bounded process/run execution
+|   |-- internal/docker/          runtime pool and workspace lifecycle
+|   |-- internal/personalcache/   project dependency generations
+|   |-- internal/packagecatalog/  package metadata/search catalog
+|   |-- internal/packageops/      staged dependency installation
+|   |-- internal/lsp/             language-server lifecycle
+|   |-- internal/dap/             debug-adapter lifecycle
+|   |-- internal/collab/          teams, Git, branches, and locks
+|   |-- internal/auth/            users, sessions, roles, and invites
+|   |-- internal/storage/         managed persistent data
+|   |-- internal/metrics/         bounded operational metrics
+|   `-- deploy/                   systemd and toolkit/release assets
+|-- docs/                         shared protocol and plugin documentation
+`-- package.json                  convenience forwarding commands
+```
+
+`client/renderer-dist/` is generated from `client/renderer/entry.js`; do not edit generated bundles by hand. Root npm commands forward to the self-contained client project.
 
 ## For plugin developers
 
-BOBOCloud Plugin API `1.2.0` runs one bundled ESM entry in an isolated Worker. A plugin receives only the APIs declared in its manifest; declared permissions are enabled automatically on install and can be revoked later from the extension detail tab. Plugin code has no DOM, Node.js, Electron, arbitrary filesystem, shell, environment, credential, or network access. Use the host-rendered contributions and mediated APIs instead.
-
-The official local source-control plugin is the complete reference project: [BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-](https://github.com/NemophilistJohn/BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-). Third-party plugins should use their own repository; do not add unrelated plugin code to the official source-control repository.
-
-### Repository and package layout
-
-Keep source, tests, private localization, packaging scripts, and versioned artifacts together:
+BOBOCLOUD Plugin API `1.2.0` accepts a ZIP-format `.boboplugin` whose root contains `manifest.json`, one bundled ESM entry, declared locale/data resources, and a SHA-256 entry for every non-manifest file. Recommended repository layout:
 
 ```text
 my-plugin/
@@ -186,85 +357,17 @@ my-plugin/
   locales/zh-CN.json
   locales/ja.json
   scripts/build.mjs
-  scripts/generate-integrity.mjs
-  scripts/package.mjs
   test/extension.test.mjs
   artifacts/publisher.name-1.2.3.boboplugin
 ```
 
-The `.boboplugin` file is a ZIP archive whose root contains `manifest.json`, not an enclosing directory. API `1.2.0` accepts one bundled JavaScript entry plus declared data resources:
+The eight current permission families are command registration, command execution, UI contribution registration, service reads, source-control registration, source-control file decorations, mediated Git reads, and mediated Git writes. Keep permissions minimal, bundle into one entry, regenerate the integrity map after every byte change, and test activation, disable/enable, permission revocation, cleanup, and all three default locales.
 
-```text
-manifest.json
-dist/extension.js
-locales/en.json
-locales/zh-CN.json
-locales/ja.json
-```
-
-Every non-manifest file must appear exactly once in `integrity.files` with the SHA-256 of its exact bytes. Do not package `node_modules`, source maps, development secrets, another JavaScript module, or undeclared files.
-
-### Minimal manifest and entry
-
-```json
-{
-  "schemaVersion": 1,
-  "id": "acme.example",
-  "displayName": "Example Plugin",
-  "description": "A bounded BOBOCloud desktop extension.",
-  "version": "1.2.3",
-  "engines": {
-    "bobocloud": ">=2.6.0 <3.0.0",
-    "pluginApi": "^1.2.0"
-  },
-  "main": "dist/extension.js",
-  "activationEvents": ["onStartupFinished"],
-  "permissions": ["commands.register"],
-  "contributes": {},
-  "localization": {
-    "default": "locales/en.json",
-    "zh-CN": "locales/zh-CN.json",
-    "ja": "locales/ja.json"
-  },
-  "integrity": {
-    "algorithm": "sha256",
-    "files": {
-      "dist/extension.js": "<64 lowercase hexadecimal characters>"
-    }
-  }
-}
-```
-
-```js
-export async function activate(context) {
-  const disposable = await context.commands.register(
-    'acme.example.hello',
-    () => ({ ok: true }),
-    { title: context.i18n.t('command.hello'), category: 'Extensions' }
-  );
-  context.subscriptions.add(disposable);
-}
-
-export async function deactivate() {}
-```
-
-Build a single ESM file, copy only declared locale/data files, regenerate the integrity map, create the archive, then install the `.boboplugin` from the Extensions activity view. Test activation, disable/enable, permission revocation, cleanup, English, Simplified Chinese, and Japanese before publishing.
-
-### Publish to the official marketplace
-
-The client reads [BOBOCloud-Marketplace-Registry](https://github.com/NemophilistJohn/BOBOCloud-Marketplace-Registry). Executable code remains in the plugin's own repository; the registry contains only a hash-linked catalog.
-
-1. Commit the exact `.boboplugin` under `artifacts/`, tag the same semantic version such as `v1.2.3`, and ensure the Raw GitHub URL uses that immutable tag or a commit.
-2. Add `packages/<publisher>/<name>/versions/<version>.json` with the package id/version, engine ranges, artifact URL/SHA-256/size, source repository/ref, permissions, locales, and publication time.
-3. Update `packages/<publisher>/<name>/index.json`: add the immutable version descriptor and set `latest` to the new version.
-4. Update the package entry and SHA-256 in `indexes/<shard>.json`, then update the shard SHA-256/count/date in `registry.json`.
-5. Run `node scripts/validate-registry.mjs` in the registry repository before pushing the change.
-
-The marketplace renders and installs only `latest`. Historical descriptors remain immutable for auditability, but users who deliberately need an older release must download its `.boboplugin` and install it locally. Exact APIs, schemas, lifecycle rules, security limits, packaging commands, and troubleshooting are in [Plugin development](docs/plugin-development.md), [Plugin API](docs/plugin-api.md), and [plugin-sdk/bobocloud-plugin.d.ts](client/plugin-sdk/bobocloud-plugin.d.ts).
+The complete contracts and publishing workflow are in [Plugin development](docs/plugin-development.md), [Plugin API](docs/plugin-api.md), and [the TypeScript SDK](client/plugin-sdk/bobocloud-plugin.d.ts). The official source-control plugin is the reference implementation: [BOBOCLOUD Compiler Git Integration Plugin](https://github.com/NemophilistJohn/BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-). Marketplace metadata is maintained separately in [BOBOCloud Marketplace Registry](https://github.com/NemophilistJohn/BOBOCloud-Marketplace-Registry) and must point to immutable, hash-verified artifacts.
 
 ## For contributors
 
-### Develop and test
+### Set up and test
 
 ```powershell
 Set-Location client
@@ -272,6 +375,8 @@ npm ci
 npm start
 npm test
 npm run test:ui
+npm run test:ui:environment
+npm run test:ui:packages
 npm run build:renderer
 
 Set-Location ../server
@@ -280,18 +385,19 @@ go test ./...
 go vet ./...
 ```
 
-The renderer is built by esbuild into a core bundle and a lazy AI UI bundle. `beforePack` rebuilds production assets, so packaging does not depend on a stale development bundle. Repository Playwright runs Electron with one worker when browser-plugin automation is unavailable.
+The renderer build uses esbuild to produce a core bundle and lazy AI UI bundle. Packaging invokes the production renderer build through `beforePack`. UI tests drive Electron with Playwright and are intentionally serialized where the workbench shares build resources.
 
-### Engineering rules
+### Engineering expectations
 
-- Read the end-to-end client/server flow before changing a workflow.
-- Use structured fields and parsers; never add client-controlled shell interpolation to cloud execution.
-- Add every new visible string to English, Simplified Chinese, and Japanese, including dynamic and accessibility text.
-- Keep LSP and DAP implementations independent. Shared auth, workspace, lifecycle and Docker foundations are allowed only at the composition boundary.
-- Cover cancellation, workspace changes, late responses and failure states in tests.
-- Keep `window.BOBO` as a compatibility facade. New renderer features should prefer explicit imports, registered services, and disposable contributions.
+- Trace the complete client/server data flow before changing a user workflow.
+- Keep privileged parsing, credentials, processes, network clients, package transactions, and plugin installation in Electron main.
+- Use structured fields and real parsers; never introduce client-controlled shell interpolation in cloud execution.
+- Add every visible or accessibility string to English, Simplified Chinese, and Japanese language packs.
+- Keep LSP and DAP implementations independent; share authentication, workspace, lifecycle, and Docker foundations only at composition boundaries.
+- Test success, cancellation, confirmation, workspace or identity changes, transport interruption, late responses, and rollback/recovery states in proportion to risk.
+- Keep `window.BOBO` as a compatibility facade. Prefer explicit renderer imports, registered services, and disposable contributions for new work.
 
-### Package and document
+### Package and refresh documentation
 
 ```powershell
 Set-Location client
@@ -300,8 +406,20 @@ npm run audit:release
 npm run docs:screenshots
 ```
 
-Screenshot generation uses isolated local fixtures, no real server or AI key, visual checks, and atomic promotion to `docs/screenshots/`.
+Screenshot capture uses isolated local fixtures, never reads a real server or AI key, validates every staged PNG, and promotes the complete screenshot set atomically.
+
+## Known boundaries
+
+- Local editor mode is useful for editing only; cloud execution features need a server.
+- The `Local` runtime executes on the server host without Docker and offers less isolation.
+- Project tasks and the interactive terminal require Docker.
+- Terminal workspace and installer changes are disposable.
+- Package Center currently manages only simple Python requirements for eligible personal projects.
+- DAP currently supports Python, Go, and Node launch sessions, not attach or compound sessions.
+- Tasks, settings, launch files, and plugins implement documented subsets, not arbitrary VS Code extension behavior.
+- AI Skills and MCP entries are descriptive only in this release.
+- Desktop credentials are not encrypted at rest in the current implementation.
 
 ## License
 
-See the repository license information before redistributing BOBOCLOUD or its toolkit images.
+The repository root [LICENSE](LICENSE) contains the Apache License 2.0 terms. Review third-party and container-image licenses separately before redistribution.

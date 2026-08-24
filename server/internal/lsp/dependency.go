@@ -53,7 +53,16 @@ type AnalysisDependencyPaths struct {
 	SnapshotRoot    string
 	ToolchainRoots  []string
 	Extra           map[string][]string
-	AllowedRoots    []string
+	// ExtraRevision identifies one generation-bound Extra tree whose live
+	// HostRoot may be an ephemeral read anchor. IdentityRoot is the stable,
+	// server-owned canonical namespace used only when computing revisions.
+	ExtraRevision *AnalysisDependencyExtraRevision
+	AllowedRoots  []string
+}
+
+type AnalysisDependencyExtraRevision struct {
+	HostRoot     string
+	IdentityRoot string
 }
 
 // AnalysisDependencyRequest identifies the runtime dependency view that an
@@ -74,13 +83,14 @@ type AnalysisDependencyRequest struct {
 // AnalysisDependencyMount is a validated, server-issued bind mount. ReadOnly
 // is always true for views returned by DependencyRegistry.Resolve.
 type AnalysisDependencyMount struct {
-	Role          string `json:"role"`
-	HostPath      string `json:"-"`
-	ContainerPath string `json:"containerPath"`
-	ReadOnly      bool   `json:"readOnly"`
-	Legacy        bool   `json:"legacy,omitempty"`
-	Managed       bool   `json:"-"`
-	Pinned        bool   `json:"-"`
+	Role             string `json:"role"`
+	HostPath         string `json:"-"`
+	RevisionIdentity string `json:"-"`
+	ContainerPath    string `json:"containerPath"`
+	ReadOnly         bool   `json:"readOnly"`
+	Legacy           bool   `json:"legacy,omitempty"`
+	Managed          bool   `json:"-"`
+	Pinned           bool   `json:"-"`
 }
 
 type AnalysisDependencySourceMetadata struct {
@@ -357,6 +367,10 @@ func (r *DependencyRegistry) Resolve(request AnalysisDependencyRequest) (Analysi
 	if err != nil {
 		return AnalysisDependencyView{}, err
 	}
+	extraRevision, err := validateDependencyExtraRevision(request.Paths, allowed, request.Generation)
+	if err != nil {
+		return AnalysisDependencyView{}, err
+	}
 	result, err := adapter.Resolve(DependencyAdapterContext{
 		OwnerKind: request.OwnerKind, OwnerID: request.OwnerID, UserID: request.UserID,
 		WorkspaceID: request.WorkspaceID, RuntimeID: request.RuntimeID, LanguageID: request.LanguageID, Paths: request.Paths,
@@ -370,7 +384,7 @@ func (r *DependencyRegistry) Resolve(request AnalysisDependencyRequest) (Analysi
 	if err := validateAdapterEnvironment(result.DockerEnvironment); err != nil {
 		return AnalysisDependencyView{}, err
 	}
-	mounts, sources, err := validateDependencyMounts(result.Mounts, allowed)
+	mounts, sources, err := validateDependencyMounts(result.Mounts, allowed, extraRevision)
 	if err != nil {
 		return AnalysisDependencyView{}, err
 	}
@@ -438,7 +452,67 @@ func secureAllowedRoots(values []string) ([]string, error) {
 	return result, nil
 }
 
-func validateDependencyMounts(specs []DependencyMountSpec, allowed []string) ([]AnalysisDependencyMount, []AnalysisDependencySourceMetadata, error) {
+type dependencyExtraRevision struct {
+	hostRoot, identityRoot string
+	extraRoots             []string
+}
+
+func validateDependencyExtraRevision(paths AnalysisDependencyPaths, allowed []string, generation string) (*dependencyExtraRevision, error) {
+	if paths.ExtraRevision == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(generation) == "" {
+		return nil, fmt.Errorf("dependency Extra revision identity requires a generation")
+	}
+	hostRoot, ok := resolvedDependencyHostPath(paths.ExtraRevision.HostRoot)
+	if !ok || !pathWithinAny(allowed, hostRoot) {
+		return nil, fmt.Errorf("dependency Extra revision root is outside the server allowlist")
+	}
+	identityRoot := strings.TrimSpace(paths.ExtraRevision.IdentityRoot)
+	if identityRoot == "" || strings.ContainsRune(identityRoot, '\x00') || !filepath.IsAbs(identityRoot) {
+		return nil, fmt.Errorf("dependency Extra revision identity must be an absolute server path")
+	}
+	identityRoot, err := filepath.Abs(filepath.Clean(identityRoot))
+	if err != nil {
+		return nil, fmt.Errorf("resolve dependency Extra revision identity: %w", err)
+	}
+	extraRoots := make([]string, 0)
+	for _, candidates := range paths.Extra {
+		for _, candidate := range candidates {
+			resolved, valid := resolvedDependencyHostPath(candidate)
+			if valid && pathWithinAny([]string{hostRoot}, resolved) {
+				extraRoots = append(extraRoots, resolved)
+			}
+		}
+	}
+	if len(extraRoots) == 0 {
+		return nil, fmt.Errorf("dependency Extra revision identity does not cover an explicit Extra path")
+	}
+	return &dependencyExtraRevision{hostRoot: hostRoot, identityRoot: identityRoot, extraRoots: extraRoots}, nil
+}
+
+func (revision *dependencyExtraRevision) identityForMount(hostPath string) (string, bool) {
+	if revision == nil || !pathWithinAny([]string{revision.hostRoot}, hostPath) {
+		return "", false
+	}
+	covered := false
+	for _, root := range revision.extraRoots {
+		if pathWithinAny([]string{root}, hostPath) {
+			covered = true
+			break
+		}
+	}
+	if !covered {
+		return "", false
+	}
+	relative, err := filepath.Rel(revision.hostRoot, hostPath)
+	if err != nil {
+		return "", false
+	}
+	return filepath.Clean(filepath.Join(revision.identityRoot, relative)), true
+}
+
+func validateDependencyMounts(specs []DependencyMountSpec, allowed []string, extraRevision *dependencyExtraRevision) ([]AnalysisDependencyMount, []AnalysisDependencySourceMetadata, error) {
 	if len(specs) > 0 && len(allowed) == 0 {
 		return nil, nil, fmt.Errorf("dependency mounts require an explicit host path allowlist")
 	}
@@ -479,7 +553,8 @@ func validateDependencyMounts(specs []DependencyMountSpec, allowed []string) ([]
 		}
 		targets[target] = true
 		signature := dependencyDirectorySignature(resolved)
-		mounts = append(mounts, AnalysisDependencyMount{Role: spec.Role, HostPath: resolved, ContainerPath: target, ReadOnly: true, Legacy: spec.Legacy, Managed: spec.Managed})
+		revisionIdentity, _ := extraRevision.identityForMount(resolved)
+		mounts = append(mounts, AnalysisDependencyMount{Role: spec.Role, HostPath: resolved, RevisionIdentity: revisionIdentity, ContainerPath: target, ReadOnly: true, Legacy: spec.Legacy, Managed: spec.Managed})
 		sources = append(sources, AnalysisDependencySourceMetadata{Role: spec.Role, Legacy: spec.Legacy, Signature: signature})
 	}
 	return mounts, sources, nil
@@ -633,7 +708,11 @@ func dependencyRevision(request AnalysisDependencyRequest, adapter string, mount
 		if i < len(metadata.Sources) {
 			source = metadata.Sources[i].Signature
 		}
-		_, _ = fmt.Fprintf(hash, "%s\x00%s\x00%s\x00%t\x00%s\x00", mount.Role, mount.HostPath, mount.ContainerPath, mount.Legacy, source)
+		identity := mount.HostPath
+		if mount.RevisionIdentity != "" {
+			identity = mount.RevisionIdentity
+		}
+		_, _ = fmt.Fprintf(hash, "%s\x00%s\x00%s\x00%t\x00%s\x00", mount.Role, identity, mount.ContainerPath, mount.Legacy, source)
 	}
 	return hex.EncodeToString(hash.Sum(nil)[:16])
 }

@@ -66,6 +66,7 @@ const EXPECTED_MODULES = [
   './compat/dap-adapter.js',
   '../src/environment-activity.js',
   '../src/environment-center.js',
+  '../src/package-center.js',
   '../src/views.js',
   '../src/diagnostics-settings.js',
   '../src/auth.js',

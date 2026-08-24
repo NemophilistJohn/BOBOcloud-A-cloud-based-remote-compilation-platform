@@ -358,7 +358,7 @@
     var refresh = $('projects-refresh');
     if (refresh) refresh.disabled = pending;
     if (!path || !$('cache-tree')) return;
-    $('cache-tree').querySelectorAll('.cache-del,.cache-package-del').forEach(function(control) {
+    $('cache-tree').querySelectorAll('.cache-del').forEach(function(control) {
       if (control.dataset.path === path && cacheMutationPaths[path]) control.disabled = true;
     });
   }
@@ -416,18 +416,6 @@
       (writing ? ' disabled' : '') + '>' + cacheIcon('trash', esc(t('Delete'))) + '</button>';
   }
 
-  function cachePackageDeleteButton(entry, packageInfo) {
-    var disabled = Boolean(entry.writing) || !entry.inventory_exact || !entry.generation || !entry.inventory_revision;
-    var title = entry.writing ? t('Cache is being updated')
-      : disabled ? t('Inventory is not exact, so packages cannot be deleted safely.')
-        : t('Delete package {name}', { name: packageInfo.name });
-    return '<button type="button" class="cache-package-del" data-path="' + esc(entry.path) +
-      '" data-package-name="' + esc(packageInfo.name) + '" data-package-version="' + esc(packageInfo.version) +
-      '" data-generation="' + esc(entry.generation || '') + '" data-inventory-revision="' + esc(entry.inventory_revision || '') +
-      '" data-active="' + (entry.active && !entry.writing ? 'true' : 'false') + '" title="' + esc(title) +
-      '" aria-label="' + esc(title) + '"' + (disabled ? ' disabled' : '') + '>' + cacheIcon('trash', esc(t('Delete'))) + '</button>';
-  }
-
   function renderCachePackages(entry) {
     if (entry.kind !== 'project-dependency') return '';
     var packages = Array.isArray(entry.packages) ? entry.packages.slice() : [];
@@ -450,10 +438,9 @@
           (imports.length ? '<small>' + esc(t('Imports: {names}', { names: imports.join(', ') })) + '</small>' : '') + '</span>' +
         '<code class="cache-package-version">' + esc(packageInfo.version || t('Unknown')) + '</code>' +
         '<span class="cache-package-storage"><strong>' + fmt(packageInfo.size_bytes || 0) + '</strong><small>' +
-          esc(t('{count} files', { count: packageInfo.files || 0 })) + '</small></span>' +
-        cachePackageDeleteButton(entry, packageInfo) + '</div>';
+          esc(t('{count} files', { count: packageInfo.files || 0 })) + '</small></span></div>';
     }).join('');
-    var readOnlyNotice = ready ? '' : '<div class="cache-package-notice"><strong>' + esc(t('Package inventory is read-only')) + '</strong>' +
+    var readOnlyNotice = '<div class="cache-package-notice"><strong>' + esc(t('Package inventory is read-only')) + '</strong>' +
       (entry.inventory_detail ? '<small>' + esc(entry.inventory_detail) + '</small>' : '') + '</div>';
     return '<div class="cache-package-section' + (ready ? '' : ' unavailable') + '">' + heading + readOnlyNotice + rows + '</div>';
   }
@@ -608,43 +595,6 @@
       });
     });
 
-    treeEl.querySelectorAll('.cache-package-del').forEach(function(btn) {
-      btn.addEventListener('click', async function(e) {
-        e.stopPropagation();
-        var name = btn.dataset.packageName;
-        var version = btn.dataset.packageVersion;
-        var message = '"' + name + ' ' + version + '"\n' + t('This removes only this package from the selected project dependency snapshot.');
-        if (btn.dataset.active === 'true') message += '\n' + t('Deleting this cache will stop the service that is using it.');
-        var ok = await BOBO.confirm({
-          title: t('Delete package {name}', { name: name }),
-          message: message,
-          confirmLabel: t('Delete'),
-          danger: true
-        });
-        if (!ok) return;
-        var selectorPath = btn.dataset.path;
-        if (!beginCacheMutation(selectorPath)) return;
-        btn.classList.add('busy');
-        try {
-          var response = await BOBO.sendToServer('deleteCachePackage', {
-            cachePath: selectorPath,
-            cachePackageName: name,
-            cachePackageVersion: version,
-            cacheGeneration: btn.dataset.generation,
-            cacheInventoryRevision: btn.dataset.inventoryRevision
-          }, { quiet: true });
-          if (response && response.success) {
-            return;
-          }
-          global.alert((response && response.error) || t('Package deletion changed the dependency snapshot. Refresh and try again.'));
-        } catch (err) {
-          global.alert((err && err.message) || t('Package deletion changed the dependency snapshot. Refresh and try again.'));
-        } finally {
-          btn.classList.remove('busy');
-          if (finishCacheMutation(selectorPath)) await loadAll();
-        }
-      });
-    });
   }
 
   // ──── UI binding ────

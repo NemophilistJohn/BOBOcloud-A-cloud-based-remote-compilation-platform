@@ -195,7 +195,7 @@ Document viewers require package schema 2 and both `documentViews.register` and 
 }
 ```
 
-A package may declare at most 16 viewers. Viewer ids are unique and namespaced; each viewer has 1 to 32 unique lowercase extensions, one included `.js` or `.mjs` entry, up to 16 included text resources, and an integer priority from -1000 to 1000. The host selects the longest matching extension, then the highest priority. A view entry or resource is limited to 8 MiB and the combined loaded view is limited to 24 MiB. Every file remains covered by the package integrity map and is SHA-256 verified at load time.
+A package may declare at most 16 viewers. Viewer ids are unique and namespaced; each viewer has 1 to 32 unique lowercase extensions, one included `.js` or `.mjs` entry, up to 16 included text resources, and an integer priority from -1000 to 1000. The host selects the longest matching extension, then the highest priority. A selected registered viewer takes precedence over built-in file fallbacks such as the image preview; built-in handling remains available when no registered viewer matches. A view entry or resource is limited to 8 MiB and the combined loaded view is limited to 24 MiB. Every file remains covered by the package integrity map and is SHA-256 verified at load time.
 
 The activation Worker registers only a manifest-declared viewer id and a localized title:
 

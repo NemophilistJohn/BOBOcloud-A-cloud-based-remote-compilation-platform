@@ -191,7 +191,7 @@ func TestProjectDependencyCacheCRUDAndProjectCleanup(t *testing.T) {
 	}
 }
 
-func TestProjectDependencyCacheListsAndDeletesExactPythonDistribution(t *testing.T) {
+func TestProjectDependencyCacheListsExactPythonDistributionAndRejectsDigestMutation(t *testing.T) {
 	handler, _, user := newAuthenticatedLifecycleHandler(t)
 	handler.PersonalCache = personalcache.NewManager(handler.Config.DataDir, personalcache.Options{ReservationBytes: 8})
 	cleared := 0
@@ -233,21 +233,12 @@ func TestProjectDependencyCacheListsAndDeletesExactPythonDistribution(t *testing
 		t.Fatalf("package inventory = %+v", module.Packages)
 	}
 
-	stalePayload, _ := json.Marshal(&model.Request{
-		Action: "deleteCachePackage", CachePath: module.Path, CachePackageName: "numpy", CachePackageVersion: "2.1.0",
-		CacheGeneration: strings.Repeat("0", 32), CacheInventoryRevision: module.InventoryRevision,
-	})
-	stale := serveAuthenticatedAction(t, handler, user.APIKey, string(stalePayload))
-	if stale.Code != http.StatusConflict {
-		t.Fatalf("stale delete status=%d body=%s", stale.Code, stale.Body.String())
-	}
-
 	deletePayload, _ := json.Marshal(&model.Request{
 		Action: "deleteCachePackage", CachePath: module.Path, CachePackageName: "numpy", CachePackageVersion: "2.1.0",
 		CacheGeneration: module.Generation, CacheInventoryRevision: module.InventoryRevision,
 	})
 	deleted := serveAuthenticatedAction(t, handler, user.APIKey, string(deletePayload))
-	if deleted.Code != http.StatusOK || cleared != 1 {
+	if deleted.Code != http.StatusConflict || cleared != 0 || !strings.Contains(deleted.Body.String(), "invalidate the project dependency digest") {
 		t.Fatalf("delete status=%d body=%s cleared=%d", deleted.Code, deleted.Body.String(), cleared)
 	}
 
@@ -257,8 +248,8 @@ func TestProjectDependencyCacheListsAndDeletesExactPythonDistribution(t *testing
 		t.Fatal(err)
 	}
 	afterModules := cacheModules(after)
-	if afterRecorder.Code != http.StatusOK || len(afterModules) != 1 || afterModules[0].Generation == module.Generation || afterModules[0].InventoryRevision == module.InventoryRevision || len(afterModules[0].Packages) != 1 || afterModules[0].Packages[0].Name != "matplotlib" {
-		t.Fatalf("after delete cache truth: status=%d modules=%+v", afterRecorder.Code, afterModules)
+	if afterRecorder.Code != http.StatusOK || len(afterModules) != 1 || afterModules[0].Generation != module.Generation || afterModules[0].InventoryRevision != module.InventoryRevision || len(afterModules[0].Packages) != 2 {
+		t.Fatalf("rejected package delete changed cache truth: status=%d modules=%+v", afterRecorder.Code, afterModules)
 	}
 }
 

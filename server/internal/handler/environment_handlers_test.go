@@ -23,9 +23,10 @@ import (
 )
 
 type projectEnvironmentEnvelope struct {
-	Success bool            `json:"success"`
-	Error   string          `json:"error"`
-	Data    json.RawMessage `json:"data"`
+	Success   bool            `json:"success"`
+	Error     string          `json:"error"`
+	ErrorCode string          `json:"errorCode"`
+	Data      json.RawMessage `json:"data"`
 }
 
 type recordingEnvironmentDependencyAdapter struct {
@@ -908,6 +909,176 @@ func TestProjectEnvironmentApplyRejectsStaleRevisionBeforeExecution(t *testing.T
 	}
 	if current.Revision == "" || current.Revision == "stale-revision" {
 		t.Fatalf("stale response omitted current snapshot: %+v", current)
+	}
+}
+
+func TestEnvironmentRevisionIgnoresObservationTimestamps(t *testing.T) {
+	baseline := projectEnvironmentRevisionFixture()
+	want := environmentRevision(baseline, "dependency-tree-a")
+
+	observedLater := projectEnvironmentRevisionFixture()
+	observedLater.Revision = "previous-response-revision"
+	observedLater.CheckedAt = 9001
+	observedLater.Activity = model.ProjectEnvironmentActivity{
+		LastIndexedAt: 9002, LastInstalledAt: 9003, LastCompiledAt: 9004,
+	}
+	observedLater.DependencyCache.LastUsedAt = 9005
+	observedLater.DependencyCache.InventoryCheckedAt = 9006
+
+	if got := environmentRevision(observedLater, "dependency-tree-a"); got != want {
+		t.Fatalf("observation timestamps changed revision: got %q, want %q", got, want)
+	}
+}
+
+func TestEnvironmentRevisionStableAcrossPinnedDependencyReaderAnchors(t *testing.T) {
+	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
+	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{})
+	handler.DependencyViews = lsp.NewDefaultDependencyRegistry()
+	workspace := filepath.Join(serverRoot, "project-key")
+	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
+	fixedTime := time.Unix(1_700_000_000, 0)
+	makeReader := func(name string) string {
+		root := filepath.Join(dataRoot, "injected-pins", name)
+		packages := filepath.Join(root, "python")
+		writeEnvironmentFile(t, filepath.Join(packages, "numpy.pth"), "numpy\n")
+		if err := os.Chtimes(filepath.Join(packages, "numpy.pth"), fixedTime, fixedTime); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(packages, fixedTime, fixedTime); err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+	readerOne, readerTwo := makeReader("reader-one"), makeReader("reader-two")
+	canonicalRoot := filepath.Join(dataRoot, "users", "default", "persist", "dependencies", "canonical-generation")
+	if err := os.MkdirAll(canonicalRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	resolved := environmentResolved{root: workspace, folderKey: "project-key", workspace: model.ProjectEnvironmentWorkspace{
+		Kind: "personal", ID: "workspace-a", Name: "Project", Key: "project-key",
+	}}
+	runtime := model.ProjectEnvironmentRuntime{ID: "python:3.10", Language: "python", Status: "ready"}
+	request := httptest.NewRequest(http.MethodPost, "/api", nil)
+	packageRequest := &model.Request{FolderName: "Project", FolderKey: "project-key", Runtime: "python:3.10", Language: "python"}
+	statusFor := func(readerRoot, generation string) environmentDependencyStatus {
+		t.Helper()
+		status, _ := handler.resolveEnvironmentDependencyStatus(request, packageRequest, resolved, runtime, "python", &environmentDependencySnapshot{
+			managed: true, exists: true,
+			reader: &personalcache.ReadLease{HostRoot: readerRoot, Generation: generation},
+			entry:  personalcache.Entry{Digest: "requirements-digest-a", HostPath: canonicalRoot},
+		})
+		return status
+	}
+
+	first, second := statusFor(readerOne, "generation-a"), statusFor(readerTwo, "generation-a")
+	if first.Revision == "" || first.Revision != second.Revision {
+		t.Fatalf("equivalent pinned readers changed dependency revision: first=%+v second=%+v", first, second)
+	}
+	if firstPackage, secondPackage := environmentRevision(projectEnvironmentRevisionFixture(), first.Revision), environmentRevision(projectEnvironmentRevisionFixture(), second.Revision); firstPackage != secondPackage {
+		t.Fatalf("equivalent pinned readers changed package context revision: first=%q second=%q", firstPackage, secondPackage)
+	}
+	if changed := statusFor(readerTwo, "generation-b"); changed.Revision == first.Revision {
+		t.Fatal("published dependency generation change retained the environment revision")
+	}
+}
+
+func TestEnvironmentRevisionTracksPackagePlanInputs(t *testing.T) {
+	baseline := environmentRevision(projectEnvironmentRevisionFixture(), "dependency-tree-a")
+	tests := map[string]struct {
+		dependencyRevision string
+		mutate             func(*model.ProjectEnvironment)
+	}{
+		"manifest": {
+			dependencyRevision: "dependency-tree-a",
+			mutate: func(environment *model.ProjectEnvironment) {
+				environment.Manifests[0].Path = "constraints.txt"
+			},
+		},
+		"runtime": {
+			dependencyRevision: "dependency-tree-a",
+			mutate: func(environment *model.ProjectEnvironment) {
+				environment.Runtime.Image = "python:3.10.22-slim"
+			},
+		},
+		"package source": {
+			dependencyRevision: "dependency-tree-a",
+			mutate: func(environment *model.ProjectEnvironment) {
+				environment.Packages.Declared[0].Source = "pyproject.toml"
+			},
+		},
+		"package tree": {
+			dependencyRevision: "dependency-tree-a",
+			mutate: func(environment *model.ProjectEnvironment) {
+				environment.Packages.Installed[0].Version = "2.2.0"
+			},
+		},
+		"configuration capability": {
+			dependencyRevision: "dependency-tree-a",
+			mutate: func(environment *model.ProjectEnvironment) {
+				environment.Actions.Repair.Supported = false
+				environment.Actions.Repair.Reason = "environment-setup-unavailable"
+			},
+		},
+		"cache digest": {
+			dependencyRevision: "dependency-tree-a",
+			mutate: func(environment *model.ProjectEnvironment) {
+				environment.DependencyCache.Digest = "requirements-digest-b"
+			},
+		},
+		"dependency view": {
+			dependencyRevision: "dependency-tree-b",
+			mutate:             func(*model.ProjectEnvironment) {},
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			environment := projectEnvironmentRevisionFixture()
+			test.mutate(environment)
+			if got := environmentRevision(environment, test.dependencyRevision); got == baseline {
+				t.Fatalf("changed %s retained revision %q", name, got)
+			}
+		})
+	}
+}
+
+func projectEnvironmentRevisionFixture() *model.ProjectEnvironment {
+	return &model.ProjectEnvironment{
+		Schema:    projectEnvironmentSchema,
+		Revision:  "ignored-response-revision",
+		CheckedAt: 101,
+		Workspace: model.ProjectEnvironmentWorkspace{Kind: "personal", ID: "workspace-a", Name: "Project", Key: "project-key"},
+		Language:  model.ProjectEnvironmentLanguage{ID: "python", Source: "request"},
+		Runtime: model.ProjectEnvironmentRuntime{
+			ID: "python:3.10", Language: "python", Version: "3.10", ResolvedVersion: "3.10.21",
+			ResolvedVersionSource: "image", ResolvedVersionTrust: "exact", Image: "python:3.10-slim", DisplayName: "Python 3.10", Status: "ready",
+		},
+		Manifests: []model.ProjectEnvironmentManifest{{
+			Path: "requirements.txt", Kind: "requirements", Manager: "pip", Language: "python", Parsed: true, Status: "ready",
+		}},
+		Packages: model.ProjectEnvironmentPackages{
+			Declared:  []model.ProjectEnvironmentPackage{{Name: "numpy", Constraint: "==2.1.0", Source: "requirements.txt", Trust: "declared"}},
+			Installed: []model.ProjectEnvironmentPackage{{Name: "numpy", Version: "2.1.0", Scope: "project", Source: "project-lock-python", Trust: "exact"}},
+			Missing:   []model.ProjectEnvironmentPackage{},
+			Unknown:   []model.ProjectEnvironmentPackage{},
+		},
+		Consistency: model.ProjectEnvironmentConsistency{
+			Status:            "aligned",
+			LanguageRuntime:   model.ProjectEnvironmentCheck{Status: "aligned", Detail: "language matches runtime"},
+			DependencyRuntime: model.ProjectEnvironmentCheck{Status: "aligned", Detail: "exact inventory contains declarations"},
+			LSPDependencies:   model.ProjectEnvironmentCheck{Status: "ready", Detail: "validated dependency sources"},
+		},
+		Activity: model.ProjectEnvironmentActivity{LastIndexedAt: 201, LastInstalledAt: 202, LastCompiledAt: 203},
+		Actions: model.ProjectEnvironmentActions{
+			RefreshIndex: model.ProjectEnvironmentCapability{Supported: true},
+			ClearCache:   model.ProjectEnvironmentCapability{Supported: true, RequiresConfirmation: true, Scope: "workspace"},
+			Repair:       model.ProjectEnvironmentCapability{Supported: true, RequiresConfirmation: true},
+			Rebuild:      model.ProjectEnvironmentCapability{Supported: true, RequiresConfirmation: true},
+		},
+		DependencyCache: model.ProjectEnvironmentDependencyCache{
+			Scope: "project-lock", Digest: "requirements-digest-a", Source: "requirements-lock", Status: "hit", SizeBytes: 4096,
+			LastUsedAt: 301, InventoryStatus: "ready", InventoryDetail: "inventory matches dependency digest", InventoryCheckedAt: 302,
+		},
 	}
 }
 

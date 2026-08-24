@@ -27,14 +27,14 @@ function pngMetadata(filePath) {
 }
 
 test('README documents current client/server contracts, language navigation, and deployment assets', () => {
-  assert.match(README, /Client \*\*2\.6\.0\*\* and server \*\*2\.4\.0\*\*/);
+  assert.match(README, /client as \*\*2\.6\.1\*\* and the server as \*\*2\.5\.0\*\*/);
   assert.match(README, /README\.zh-CN\.md/);
   assert.match(README, /For desktop users/);
   assert.match(README, /For server operators/);
   assert.match(README, /For contributors/);
   assert.match(README, /WebSocket `:3101\/ws`/);
-  assert.match(README, /WebSocket `:3101\/term`/);
-  assert.match(README, /HTTP `:3100`/);
+  assert.match(README, /WebSocket `:3101\/terminal`/);
+  assert.match(README, /HTTP\(S\) `:3100`/);
   assert.match(README, /WebSocket `:3101\/dap`/);
   assert.match(README, /debugpy 1\.8\.16/);
   assert.match(README, /Delve 1\.24\.2/);
@@ -44,19 +44,25 @@ test('README documents current client/server contracts, language navigation, and
   assert.match(README, /\[Plugin API\]\(docs\/plugin-api\.md\)/);
   assert.match(README, /Python[\s\S]*`python:3\.13`/);
   assert.match(README, /Go[\s\S]*`go:1\.23`/);
-  assert.match(README, /retain only the current `bobocloud-server`/);
-  assert.match(README, /do not create `\.bak` or version-number binary snapshots/);
+  assert.match(README, /installs exactly one `\/root\/cloudeEditor\/bobocloud-server`/);
+  assert.match(README, /does not create `\.bak`, version-number binaries, or rollback snapshots/);
   assert.match(README, /cross-toolkit/);
-  assert.match(README, /Cortex-M4/);
+  assert.match(README, /`cortex-m4`/);
+  assert.match(README, /Package Center for personal Python projects/);
+  assert.match(README, /project-lock dependency storage/);
+  assert.match(README, /`serverInfo` descriptor/);
+  assert.match(README, /`\$\{input:\*\}` supports `promptString`/);
   assert.doesNotMatch(README, /renderer\.js/);
   assert.doesNotMatch(README, /Expect: \{"success":true,"authMode":"multi","version":"2\.1\.0"\}/);
 });
 
 test('Chinese README mirrors the three audience paths and links back to English', () => {
   assert.match(README_ZH, /README\.md/);
+  assert.match(README_ZH, /客户端版本为 \*\*2\.6\.1\*\*，服务端版本为 \*\*2\.5\.0\*\*/);
   assert.match(README_ZH, /用户端使用者/);
   assert.match(README_ZH, /服务器运维者/);
   assert.match(README_ZH, /贡献者/);
+  assert.match(README_ZH, /软件包中心/);
   assert.match(README_ZH, /cross-toolkit/);
 });
 

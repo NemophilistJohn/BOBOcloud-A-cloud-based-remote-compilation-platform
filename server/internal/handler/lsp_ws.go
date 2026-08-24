@@ -227,10 +227,11 @@ func trustedDependencyChild(base, child string) (string, error) {
 }
 
 type personalProjectDependencyView struct {
-	Root       string
-	Generation string
-	Extra      map[string][]string
-	Release    func()
+	Root         string
+	RevisionRoot string
+	Generation   string
+	Extra        map[string][]string
+	Release      func()
 }
 
 func projectLockDependencyLanguage(languageID string) bool {
@@ -276,6 +277,9 @@ func (h *WSHandler) resolveAnalysisDependencies(userID, teamID, runtimeID, langu
 	if project.Root != "" {
 		request.Paths.Extra = project.Extra
 		request.Paths.AllowedRoots = appendExistingDependencyRoot(request.Paths.AllowedRoots, project.Root)
+		if project.Generation != "" && project.Generation == generation && project.RevisionRoot != "" {
+			request.Paths.ExtraRevision = &lsp.AnalysisDependencyExtraRevision{HostRoot: project.Root, IdentityRoot: project.RevisionRoot}
+		}
 	}
 	request.Paths.AllowedRoots = appendExistingDependencyRoot(request.Paths.AllowedRoots, sharedHost)
 	request.Paths.AllowedRoots = appendExistingDependencyRoot(request.Paths.AllowedRoots, snapshotRoot)
@@ -298,7 +302,7 @@ func (h *WSHandler) resolvePersonalProjectDependencies(userID, workspaceID, work
 	language := canonicalRuntimeLanguage(languageID)
 	return acquirePersonalProjectDependencyView(h.PersonalCache, personalcache.Request{
 		UserID: userID, WorkspaceID: workspaceID, WorkspaceName: workspaceName,
-		RuntimeID: runtimeID, RuntimeFingerprint: personalCacheRuntimeFingerprint(runtimeID, runtimeImage), Language: language, WorkspaceRoot: remoteRoot,
+		RuntimeID: runtimeID, RuntimeFingerprint: resolvedRuntimeFingerprint(context.Background(), h.RuntimeMetadata, runtimeID, runtimeImage, configuredRuntimeVersion(runtimeID)), Language: language, WorkspaceRoot: remoteRoot,
 		SetupCommands: setupCommands, QuotaBytes: userQuotaBytes(h.UserStore, userID),
 	})
 }
@@ -328,7 +332,7 @@ func acquirePersonalProjectDependencyView(cache *personalcache.Manager, request 
 			return personalProjectDependencyView{}
 		}
 		return personalProjectDependencyView{
-			Root: reader.HostRoot, Generation: generation,
+			Root: reader.HostRoot, RevisionRoot: entry.HostPath, Generation: generation,
 			Extra: map[string][]string{lsp.DependencyRolePythonPackages: {root}}, Release: reader.Release,
 		}
 	}
@@ -337,7 +341,7 @@ func acquirePersonalProjectDependencyView(cache *personalcache.Manager, request 
 		reader.Release()
 		return personalProjectDependencyView{}
 	}
-	return personalProjectDependencyView{Root: reader.HostRoot, Generation: generation, Extra: extra, Release: reader.Release}
+	return personalProjectDependencyView{Root: reader.HostRoot, RevisionRoot: entry.HostPath, Generation: generation, Extra: extra, Release: reader.Release}
 }
 
 func personalProjectDependencyPaths(root, language string) map[string][]string {

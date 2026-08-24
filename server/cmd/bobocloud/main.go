@@ -29,6 +29,8 @@ import (
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/packagecatalog"
+	"bobocloud-server/internal/packageops"
 	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/runner"
 	"bobocloud-server/internal/security"
@@ -467,6 +469,13 @@ func main() {
 		slog.Info("Login rate limiter enabled", "rate_per_minute", cfg.LoginRateLimit)
 	}
 
+	// Mutable runtime tags are resolved to immutable image identities once and
+	// shared by run, terminal, LSP, DAP, and package-center cache requests.
+	runtimeMetadata := handler.NewDockerImageRuntimeMetadataProvider(
+		time.Duration(cfg.PackageRuntimeMetadataTTLSeconds)*time.Second,
+		time.Duration(cfg.PackageRuntimeProbeTimeoutSeconds)*time.Second,
+	)
+
 	// ──── 11. 创建处理器 ────
 	httpHandler := handler.NewHTTPHandler(
 		cfg,
@@ -492,6 +501,30 @@ func main() {
 	httpHandler.DependencyViews = dependencyViews
 	httpHandler.Lifecycle = resourceLifecycle
 	httpHandler.PersonalCache = personalCache
+	httpHandler.RuntimeMetadata = runtimeMetadata
+	packagePlans, planStoreErr := packageops.NewPersistentStoreWithLimits(
+		time.Duration(cfg.PackagePlanTTLSeconds)*time.Second,
+		time.Duration(cfg.PackagePlanCompletedTTLSeconds)*time.Second,
+		packageops.StoreLimits{
+			MaxPlans: cfg.PackageOperationMaxPlans, MaxPlansPerUser: cfg.PackageOperationMaxPlansPerUser,
+			MaxBytes: cfg.PackagePlanStoreMaxBytes, MaxBytesPerUser: cfg.PackagePlanStoreMaxBytesPerUser,
+			MaxResultBytes: cfg.PackagePlanResultMaxBytes,
+		},
+		filepath.Join(cfg.DataDir, "package-plans", "completed"),
+	)
+	if planStoreErr != nil {
+		slog.Error("Failed to initialize package operation persistence", "error", planStoreErr)
+		os.Exit(1)
+	}
+	httpHandler.PackagePlans = packagePlans
+	if cfg.PackageCenterEnabled {
+		httpHandler.PackageCatalog = packagecatalog.New(
+			cfg.PackageSources,
+			cfg.PackageDefaultSource,
+			time.Duration(cfg.PackageCatalogTimeoutSeconds)*time.Second,
+			cfg.PackageCatalogMaxResponseBytes,
+		)
+	}
 	httpHandler.Metrics = performanceMetrics
 	httpHandler.Readiness = serverReadinessProbe(db, dockerPool, cfg, lspManager, dapManager)
 	httpHandler.EnvironmentSetup = makeEnvironmentSetupExecutor(dockerPool, sec)
@@ -531,6 +564,9 @@ func main() {
 		} else {
 			slog.Info("User data directory deleted", "user_id", userID, "path", userDir)
 		}
+		if err := httpHandler.PackagePlans.DeleteUser(userID); err != nil {
+			return fmt.Errorf("delete package operation records: %w", err)
+		}
 		return nil
 	}
 	// Cleanup jobs survive process restarts and are retried only after every
@@ -555,13 +591,14 @@ func main() {
 		DependencyViews: dependencyViews,
 		Lifecycle:       resourceLifecycle,
 		PersonalCache:   personalCache,
+		RuntimeMetadata: runtimeMetadata,
 		Metrics:         performanceMetrics,
 	}
 	dapHandler := &handler.DAPHandler{
 		Config: cfg, Manager: dapManager, AuthEnabled: multiUser,
 		Authenticator: authenticator, UserStore: userStore, AuthSessions: authSessions,
 		Collaboration: collaborationManager, Lifecycle: resourceLifecycle, ChildTickets: dap.NewChildTicketBroker(),
-		PersonalCache: personalCache,
+		PersonalCache: personalCache, RuntimeMetadata: runtimeMetadata,
 	}
 
 	// ──── 12. 后台任务 ────
