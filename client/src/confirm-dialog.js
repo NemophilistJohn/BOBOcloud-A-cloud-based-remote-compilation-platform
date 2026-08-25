@@ -1,5 +1,6 @@
 // src/confirm-dialog.js - Custom confirm dialog replacing native confirm()
-// Returns a Promise<boolean>: true = confirm, false = cancel.
+// Returns a Promise<boolean> by default. Set returnDetails to receive
+// { confirmed, checkboxChecked } when an optional checkboxLabel is supplied.
 // Usage: var ok = await BOBO.confirm({ title, message, confirmLabel, danger });
 (function(global) {
   var BOBO = global.BOBO || {};
@@ -7,10 +8,14 @@
   var overlay = null;
   var titleEl = null;
   var messageEl = null;
+  var optionEl = null;
+  var optionInput = null;
+  var optionText = null;
   var confirmBtn = null;
   var cancelBtn = null;
   var resolveFn = null;
   var previouslyFocused = null;
+  var activeOptions = null;
 
   function ensureDOM() {
     if (overlay) return;
@@ -37,8 +42,18 @@
     messageEl.className = 'confirm-message';
     messageEl.id = 'confirm-dialog-message';
 
+    optionEl = document.createElement('label');
+    optionEl.className = 'confirm-option';
+    optionEl.hidden = true;
+    optionInput = document.createElement('input');
+    optionInput.type = 'checkbox';
+    optionText = document.createElement('span');
+    optionEl.appendChild(optionInput);
+    optionEl.appendChild(optionText);
+
     body.appendChild(titleEl);
     body.appendChild(messageEl);
+    body.appendChild(optionEl);
 
     var foot = document.createElement('div');
     foot.className = 'confirm-foot';
@@ -64,15 +79,15 @@
     });
     overlay.addEventListener('keydown', function(e) {
       if (e.key === 'Tab') {
-        var focusable = [cancelBtn, confirmBtn];
+        var focusable = optionEl.hidden ? [cancelBtn, confirmBtn] : [optionInput, cancelBtn, confirmBtn];
         var current = document.activeElement;
         var index = focusable.indexOf(current);
-        if (e.shiftKey && (index <= 0 || current !== cancelBtn)) {
+        if (e.shiftKey && index <= 0) {
           e.preventDefault();
-          confirmBtn.focus();
-        } else if (!e.shiftKey && (index === -1 || current === confirmBtn)) {
+          focusable[focusable.length - 1].focus();
+        } else if (!e.shiftKey && (index === -1 || index === focusable.length - 1)) {
           e.preventDefault();
-          cancelBtn.focus();
+          focusable[0].focus();
         }
       }
       if (e.key === 'Escape') { e.preventDefault(); close(false); }
@@ -84,15 +99,26 @@
 
   function close(result) {
     if (!overlay || !resolveFn) return;
+    var response = result;
+    if (activeOptions && activeOptions.returnDetails === true) {
+      response = {
+        confirmed: result === true,
+        checkboxChecked: Boolean(!optionEl.hidden && optionInput.checked)
+      };
+    }
     overlay.classList.remove('open');
     overlay.setAttribute('aria-hidden', 'true');
     var fn = resolveFn;
     resolveFn = null;
+    activeOptions = null;
+    optionEl.hidden = true;
+    optionInput.checked = false;
+    optionText.textContent = '';
     // Wait for the exit animation, then resolve
     setTimeout(function() {
       if (previouslyFocused && typeof previouslyFocused.focus === 'function') previouslyFocused.focus();
       previouslyFocused = null;
-      fn(result);
+      fn(response);
     }, 150);
   }
 
@@ -103,6 +129,11 @@
     titleEl.textContent = options.title || 'Confirm';
     messageEl.textContent = options.message || '';
 
+    var checkboxLabel = String(options.checkboxLabel || '').trim();
+    optionEl.hidden = !checkboxLabel;
+    optionInput.checked = Boolean(checkboxLabel && options.checkboxChecked === true);
+    optionText.textContent = checkboxLabel;
+
     confirmBtn.textContent = options.confirmLabel || 'Confirm';
     cancelBtn.textContent = options.cancelLabel || 'Cancel';
 
@@ -110,6 +141,7 @@
       (options.danger ? 'confirm-btn-danger' : 'confirm-btn-primary');
 
     previouslyFocused = document.activeElement;
+    activeOptions = options;
     overlay.setAttribute('aria-hidden', 'false');
     overlay.classList.add('open');
     setTimeout(function() { confirmBtn.focus(); }, 50);

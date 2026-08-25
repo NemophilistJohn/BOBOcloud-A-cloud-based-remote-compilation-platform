@@ -3,6 +3,8 @@
 // MessagePort inside a sandboxed iframe.
 
 export const EXTENSION_PROTOCOL_VERSION = 1;
+export const PLUGIN_RPC_RESULT_MARKER = '__bobocloudPluginRpcResult';
+export const PLUGIN_RPC_RESULT_VERSION = 1;
 
 export const ExtensionMessageType = Object.freeze({
   CONNECT: 'bobocloud.extension.connect',
@@ -62,6 +64,8 @@ export const ExtensionErrorCode = Object.freeze({
 const MAX_DEPTH = 24;
 const MAX_ITEMS = 4096;
 const MAX_STRING_LENGTH = 512 * 1024;
+const MAX_PLUGIN_RPC_ERROR_CODE_LENGTH = 160;
+const MAX_PLUGIN_RPC_ERROR_MESSAGE_LENGTH = 8 * 1024;
 
 export function createExtensionError(code, message) {
   const error = new Error(message);
@@ -87,6 +91,26 @@ export function deserializeExtensionError(value, fallbackCode = ExtensionErrorCo
     );
   }
   return createExtensionError(fallbackCode, 'Extension operation failed.');
+}
+
+export function unwrapPluginRpcResult(result) {
+  if (!isPlainObject(result) ||
+      result[PLUGIN_RPC_RESULT_MARKER] !== PLUGIN_RPC_RESULT_VERSION ||
+      typeof result.ok !== 'boolean') {
+    throw createExtensionError(ExtensionErrorCode.PROTOCOL, 'Plugin RPC returned an invalid response.');
+  }
+  if (result.ok) return result.value;
+  const failure = result.error;
+  if (!isPlainObject(failure) ||
+      typeof failure.code !== 'string' ||
+      !/^[A-Za-z][A-Za-z0-9._-]*$/.test(failure.code) ||
+      failure.code.length > MAX_PLUGIN_RPC_ERROR_CODE_LENGTH ||
+      typeof failure.message !== 'string' ||
+      !failure.message ||
+      failure.message.length > MAX_PLUGIN_RPC_ERROR_MESSAGE_LENGTH) {
+    throw createExtensionError(ExtensionErrorCode.PROTOCOL, 'Plugin RPC returned an invalid failure.');
+  }
+  throw createExtensionError(failure.code, failure.message);
 }
 
 export function isPlainObject(value) {

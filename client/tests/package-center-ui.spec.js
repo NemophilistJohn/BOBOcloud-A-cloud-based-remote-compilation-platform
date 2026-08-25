@@ -738,9 +738,10 @@ test('Node dependency center adapts npm metadata and pnpm project workflow', asy
       window.BOBO.state.auth = { mode: 'multi', token: 'node-fixture-token', user: { id: 'node-user', username: 'node-user' } };
       window.BOBO.state.selectedRuntime = 'node:22';
       window.__nodePackageFixture = { calls: [], confirmations: 0, syncCount: 0, events: [] };
-      window.BOBO.confirm = async () => {
+      const nativeConfirm = window.BOBO.confirm;
+      window.BOBO.confirm = async options => {
         window.__nodePackageFixture.confirmations += 1;
-        return true;
+        return nativeConfirm(options);
       };
       window.BOBO.runner.manualSyncWithServer = async () => {
         window.__nodePackageFixture.syncCount += 1;
@@ -824,10 +825,30 @@ test('Node dependency center adapts npm metadata and pnpm project workflow', asy
     await expect(installedReact.locator('.package-remove')).toBeEnabled();
     await expect(installedScheduler.locator('.package-remove')).toHaveCount(0);
     await installedReact.locator('.package-remove').click();
+    const removalDialog = page.locator('#confirm-dialog');
+    const removalOption = removalDialog.locator('.confirm-option input');
+    await expect(removalDialog).toBeVisible();
+    await expect(removalDialog.locator('.confirm-option')).toHaveText("Don't ask again this session");
+    await expect(removalOption).not.toBeChecked();
+    await removalOption.check();
+    await removalDialog.locator('.confirm-btn-ghost').click();
+    await expect(removalDialog).toBeHidden();
+    expect(await page.evaluate(() => window.__nodePackageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').length)).toBe(0);
+
+    await installedReact.locator('.package-remove').click();
+    await expect(removalDialog).toBeVisible();
+    await expect(removalOption).not.toBeChecked();
+    await removalOption.check();
+    await removalDialog.locator('.confirm-btn-danger').click();
     await expect.poll(() => page.evaluate(() => window.__nodePackageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').length)).toBe(1);
     expect(await page.evaluate(() => window.__nodePackageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').at(-1).data.changes[0])).toEqual({
       operation: 'remove', name: 'react', version: '', scope: 'runtime'
     });
+    await expect(installedReact.locator('.package-remove')).toBeEnabled();
+    await installedReact.locator('.package-remove').click();
+    await expect(removalDialog).toBeHidden();
+    await expect.poll(() => page.evaluate(() => window.__nodePackageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').length)).toBe(2);
+    expect(await page.evaluate(() => window.__nodePackageFixture.confirmations)).toBe(2);
 
     await page.locator('#package-mode-discover').click();
     await page.locator('#package-search-input').fill('old-package');
@@ -860,8 +881,8 @@ test('Node dependency center adapts npm metadata and pnpm project workflow', asy
     expect(captured).toEqual({
       change: { operation: 'add', name: 'old-package', version: '2.1.0', scope: 'dev' },
       manifestPath: 'package.json',
-      confirmations: 1,
-      syncCount: 2,
+      confirmations: 2,
+      syncCount: 3,
       planningOrder: ['sync', 'getPackageCenterContext', 'planProjectPackageChanges']
     });
     expect(errors).toEqual([]);

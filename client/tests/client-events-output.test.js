@@ -7,6 +7,23 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const projectRoot = path.resolve(__dirname, '..');
+const pluginRpcTransport = require('../main/plugin-rpc-transport');
+
+function loadPreloadApi(ipcRenderer) {
+  let exposedApi = null;
+  const contextBridge = {
+    exposeInMainWorld(_name, value) { exposedApi = value; }
+  };
+  const source = fs.readFileSync(path.join(projectRoot, 'preload.js'), 'utf8');
+  vm.runInNewContext(source, {
+    require(id) {
+      if (id === 'electron') return { contextBridge, ipcRenderer };
+      throw new Error('Unexpected preload dependency: ' + id);
+    }
+  }, { filename: 'preload.js' });
+  assert.ok(exposedApi);
+  return exposedApi;
+}
 
 function loadScript(relativePath, windowObject, extras) {
   const source = fs.readFileSync(path.join(projectRoot, relativePath), 'utf8');
@@ -82,7 +99,6 @@ function createDocument(elements) {
 
 test('preload subscriptions return exact disposers and scope rclone progress', () => {
   const subscriptions = new Map();
-  let exposedApi = null;
   const ipcRenderer = {
     on(channel, listener) {
       if (!subscriptions.has(channel)) subscriptions.set(channel, []);
@@ -98,16 +114,7 @@ test('preload subscriptions return exact disposers and scope rclone progress', (
     invoke() { return Promise.resolve(); },
     send() {}
   };
-  const contextBridge = {
-    exposeInMainWorld(_name, value) { exposedApi = value; }
-  };
-  const source = fs.readFileSync(path.join(projectRoot, 'preload.js'), 'utf8');
-  vm.runInNewContext(source, {
-    require(id) {
-      assert.equal(id, 'electron');
-      return { contextBridge, ipcRenderer };
-    }
-  }, { filename: 'preload.js' });
+  const exposedApi = loadPreloadApi(ipcRenderer);
 
   const first = [];
   const second = [];
@@ -144,6 +151,39 @@ test('preload subscriptions return exact disposers and scope rclone progress', (
   assert.equal(workspacePayload.rootPath, 'demo');
   disposeWorkspace();
   assert.equal(subscriptions.get('workspace-opened').length, 0);
+});
+
+test('preload plugin RPC forwards structured main-process results unchanged', async () => {
+  const invocations = [];
+  let response = pluginRpcTransport.pluginRpcSuccess({ repositories: [] });
+  const ipcRenderer = {
+    on() {},
+    removeListener() {},
+    invoke(channel, payload) {
+      invocations.push({ channel, payload });
+      return Promise.resolve(response);
+    },
+    send() {}
+  };
+  const exposedApi = loadPreloadApi(ipcRenderer);
+
+  assert.equal(
+    await exposedApi.plugins.rpc('bobocloud.local-scm', 'scm.git.detect', { includeNested: false }),
+    response
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(invocations[0])), {
+    channel: 'plugins:rpc',
+    payload: {
+      pluginId: 'bobocloud.local-scm',
+      method: 'scm.git.detect',
+      args: { includeNested: false }
+    }
+  });
+
+  const source = new Error('Open a local workspace before using source control.');
+  source.code = 'SCM_GIT_NO_WORKSPACE';
+  response = pluginRpcTransport.pluginRpcFailure(source);
+  assert.equal(await exposedApi.plugins.rpc('bobocloud.local-scm', 'scm.git.detect', {}), response);
 });
 
 test('rclone operations isolate progress by operation id and dispose exactly one subscription', async () => {

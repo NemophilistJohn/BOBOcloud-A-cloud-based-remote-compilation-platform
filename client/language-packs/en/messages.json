@@ -1930,6 +1930,7 @@
   "Update {name}": "Update {name}",
   "Install {name}": "Install {name}",
   "Remove {name}?": "Remove {name}?",
+  "Don't ask again this session": "Don't ask again this session",
   "This removes {name} from the project dependency file and rebuilds the project environment.": "This removes {name} from the project dependency file and rebuilds the project environment.",
   "Finding the best version for {runtime}...": "Finding the best version for {runtime}...",
   "The project changed before a compatible library version was selected.": "The project changed before a compatible library version was selected.",

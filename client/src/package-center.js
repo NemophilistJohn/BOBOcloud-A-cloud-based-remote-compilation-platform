@@ -25,6 +25,7 @@
   var searchTimer = null;
   var searchRequestController = null;
   var activityUnsubscribe = null;
+  var skipRemovalConfirmationsForSession = false;
   var PACKAGE_QUERY_TIMEOUT_MS = 15000;
   var PACKAGE_QUERY_GRACE_MS = 7000;
   var PACKAGE_PLAN_TIMEOUT_MS = 30000;
@@ -1416,6 +1417,27 @@
     return preferredPackageVersion(normalizePackageVersions(item, false), item.version, '');
   }
 
+  async function confirmPackageRemoval(options) {
+    if (skipRemovalConfirmationsForSession || typeof BOBO.confirm !== 'function') {
+      return { confirmed: true, suppressForSession: false };
+    }
+    var result = await BOBO.confirm(Object.assign({}, options || {}, {
+      checkboxLabel: t("Don't ask again this session"),
+      returnDetails: true
+    }));
+    var confirmed = result === true || Boolean(result && result.confirmed === true);
+    return {
+      confirmed: confirmed,
+      suppressForSession: Boolean(confirmed && result && result.checkboxChecked === true)
+    };
+  }
+
+  function rememberRemovalConfirmation(choice) {
+    if (choice && choice.confirmed === true && choice.suppressForSession === true) {
+      skipRemovalConfirmationsForSession = true;
+    }
+  }
+
   async function runPackageAction(item, options) {
     options = options || {};
     if (busyOperation || !item || !item.name || !packageMutationAvailable()) {
@@ -1430,14 +1452,15 @@
       return packageKey(candidate && candidate.name) === packageKey(item.name);
     });
     var operationContext = captureOperationContext();
-    if (operation === 'remove' && BOBO.confirm) {
-      var confirmed = await BOBO.confirm({
+    if (operation === 'remove') {
+      var removalChoice = await confirmPackageRemoval({
         title: t('Remove {name}?', { name: item.name }),
         message: t('This removes {name} from the project dependency file and rebuilds the project environment.', { name: item.name }),
         confirmLabel: t('Remove'),
         danger: true
       });
-      if (!confirmed || !operationContextMatches(operationContext)) return false;
+      if (!removalChoice.confirmed || !operationContextMatches(operationContext)) return false;
+      rememberRemovalConfirmation(removalChoice);
     }
 
     var resolvedItem = normalizeResult(item && item.raw ? item.raw : item);
@@ -2205,19 +2228,20 @@
       if (!operationContextMatches(operationContext)) throw new Error(t('The project changed after the library plan was created.'));
 
       var includesRemoval = pendingChanges.some(function(change) { return change.operation === 'remove'; });
-      if (includesRemoval && options.removalConfirmed !== true && BOBO.confirm) {
-        var confirmed = await BOBO.confirm({
+      if (includesRemoval && options.removalConfirmed !== true) {
+        var removalChoice = await confirmPackageRemoval({
           title: t('Remove library?'),
           message: t('This updates the dependency file and rebuilds the project environment.'),
           confirmLabel: t('Remove'),
           danger: true
         });
-        if (!confirmed) {
+        if (!removalChoice.confirmed) {
           setOperation('', '');
           return false;
         }
       }
       if (!operationContextMatches(operationContext)) throw new Error(t('The project changed before dependency files were updated.'));
+      if (includesRemoval && options.removalConfirmed !== true) rememberRemovalConfirmation(removalChoice);
 
       setOperation('loading', plan.reinstall === true ? t('Verifying dependency file...') : t('Updating dependency files...'));
       var api = localTransactionApi();

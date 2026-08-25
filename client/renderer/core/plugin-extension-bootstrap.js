@@ -1,5 +1,6 @@
 import { rendererPlatform } from './bootstrap.js';
 import { PluginExtensionHost } from './plugin-extension-host.js';
+import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
 
 function resolvePluginApi() {
   const api = globalThis.window && window.api && window.api.plugins;
@@ -24,7 +25,7 @@ export const rendererExtensionHost = pluginApi
         ? (id, locale) => pluginApi.loadLocalization(id, locale)
         : undefined,
       broker: typeof pluginApi.rpc === 'function'
-        ? (id, method, args) => pluginApi.rpc(id, method, args)
+        ? (id, method, args) => Promise.resolve(pluginApi.rpc(id, method, args)).then(unwrapPluginRpcResult)
         : null,
       localize: (key) => {
         const i18n = window.BOBO && window.BOBO.i18n;

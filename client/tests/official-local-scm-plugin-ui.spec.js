@@ -6,8 +6,11 @@ const path = require('node:path');
 const { createPluginController } = require('../main/plugins');
 
 const PLUGIN_ID = 'bobocloud.local-scm';
-const ARTIFACT = path.join(
-  process.cwd(),
+const ARTIFACT = process.env.BOBO_LOCAL_SCM_PLUGIN_ARTIFACT || path.resolve(
+  __dirname,
+  '..',
+  '..',
+  '..',
   'official-local-scm-plugin',
   'artifacts',
   'bobocloud.local-scm-1.2.1.boboplugin'
@@ -305,6 +308,7 @@ test('a preinstalled source-control plugin cannot block built-in sidebars after 
   // --user-data-dir is the Electron userData root in this isolated test.
   await installEnabledPluginBeforeLaunch(path.join(sandbox, 'chromium'), workspace);
   let app;
+  const stderr = [];
 
   try {
     app = await electron.launch({
@@ -319,15 +323,34 @@ test('a preinstalled source-control plugin cannot block built-in sidebars after 
         ELECTRON_DISABLE_SECURITY_WARNINGS: 'true'
       })
     });
+    const appProcess = app.process();
+    if (appProcess.stderr) appProcess.stderr.on('data', (chunk) => stderr.push(String(chunk)));
     const page = await app.firstWindow();
     const pageErrors = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
     await page.waitForFunction(() => document.documentElement.dataset.boboReady === 'true', null, { timeout: 25000 });
     await page.waitForFunction(() => Boolean(document.querySelector('.source-control-activity')), null, { timeout: 20000 });
+    await page.waitForFunction(() => {
+      const record = window.BOBO.platform.sourceControl.get('bobocloud.local-scm.view');
+      return record && record.state && ['empty', 'error'].includes(record.state.phase);
+    }, null, { timeout: 20000 });
+    const initialState = await page.evaluate(() => {
+      const record = window.BOBO.platform.sourceControl.get('bobocloud.local-scm.view');
+      return record && record.state;
+    });
+    expect(initialState.phase, JSON.stringify({ initialState, stderr, pageErrors }, null, 2)).toBe('empty');
+    expect(initialState.actions || []).toEqual([]);
+    expect(stderr.join('')).not.toContain("Error occurred in handler for 'plugins:rpc'");
+    expect(stderr.join('')).not.toContain('SCM_GIT_NO_WORKSPACE');
     await page.evaluate(async (workspacePath) => {
       const opened = await window.api.pickWorkspace(workspacePath);
       await window.BOBO.workspace.applyWorkspace(opened.rootPath, opened.tree, opened.workspaceIdentity, opened.leaveToken);
+      await window.BOBO.platform.commands.execute('bobocloud.local-scm.refresh');
     }, workspace);
+    await page.waitForFunction(() => {
+      const record = window.BOBO.platform.sourceControl.get('bobocloud.local-scm.view');
+      return record && record.state && record.state.phase === 'ready';
+    }, null, { timeout: 20000 });
 
     await page.locator('.source-control-activity').click();
     await expect(page.locator('.source-control-sidebar.active')).toBeVisible();

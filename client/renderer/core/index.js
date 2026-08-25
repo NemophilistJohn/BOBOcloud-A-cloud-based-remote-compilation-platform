@@ -54,12 +54,15 @@ export {
 } from './plugin-runtime.js';
 export {
   EXTENSION_PROTOCOL_VERSION,
+  PLUGIN_RPC_RESULT_MARKER,
+  PLUGIN_RPC_RESULT_VERSION,
   ExtensionErrorCode,
   ExtensionHostMethod,
   ExtensionMessageType,
   ExtensionSandboxMethod,
   cloneExtensionData,
-  createExtensionError
+  createExtensionError,
+  unwrapPluginRpcResult
 } from './plugin-extension-protocol.js';
 export { DeclarativeContributionPoint, PluginExtensionHost } from './plugin-extension-host.js';
 export {

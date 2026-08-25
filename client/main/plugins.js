@@ -11,6 +11,7 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 const { SCM_GIT_METHODS, createScmGitBroker } = require('./scm-git');
 const { createPluginDocumentBroker } = require('./plugin-documents');
+const { capturePluginRpcResult } = require('./plugin-rpc-transport');
 
 const PLUGIN_API_VERSION = '1.5.0';
 const PACKAGE_SCHEMA_VERSIONS = new Set([1, 2]);
@@ -1695,7 +1696,11 @@ function createPluginController(options) {
     });
     ipcMain.handle('plugins:rpc', async (event, payload) => {
       trustedSender(event);
-      return rpc(payload && payload.pluginId, payload && payload.method, payload && payload.args);
+      return capturePluginRpcResult(() => rpc(
+        payload && payload.pluginId,
+        payload && payload.method,
+        payload && payload.args
+      ));
     });
     ipcMain.handle('plugins:agent-approval-describe', async (event, payload) => { trustedSender(event); return describeAgentApproval(payload); });
     ipcMain.handle('plugins:agent-approval-decide', async (event, payload) => { trustedSender(event); return decideAgentApproval(payload); });

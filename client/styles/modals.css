@@ -264,6 +264,20 @@
   font-size: var(--text-base); color: var(--text-secondary);
   line-height: var(--leading-normal); white-space: pre-wrap;
 }
+.confirm-option {
+  display: flex; align-items: center; gap: var(--space-2);
+  margin-top: var(--space-4); color: var(--text-secondary);
+  font-size: var(--text-sm); line-height: var(--leading-normal);
+  cursor: pointer; user-select: none;
+}
+.confirm-option[hidden] { display: none; }
+.confirm-option input {
+  width: 16px; height: 16px; margin: 0; flex: 0 0 auto;
+  accent-color: var(--brand); cursor: pointer;
+}
+.confirm-option input:focus-visible {
+  outline: 2px solid var(--focus-ring); outline-offset: 2px;
+}
 .confirm-foot {
   display: flex; justify-content: flex-end; gap: var(--space-2);
   padding: var(--space-3) var(--space-5); border-top: 1px solid var(--border-default);

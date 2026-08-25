@@ -1930,6 +1930,7 @@
   "Update {name}": "更新 {name}",
   "Install {name}": "安装 {name}",
   "Remove {name}?": "移除 {name}？",
+  "Don't ask again this session": "本次使用不再提醒",
   "This removes {name} from the project dependency file and rebuilds the project environment.": "这将从项目依赖文件中移除 {name}，并重新构建项目环境。",
   "Finding the best version for {runtime}...": "正在为 {runtime} 匹配最佳版本...",
   "The project changed before a compatible library version was selected.": "选择兼容版本前项目已发生变化。",

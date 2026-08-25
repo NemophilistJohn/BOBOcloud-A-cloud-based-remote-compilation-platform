@@ -720,10 +720,19 @@ test('SCM and static source-control permissions remain main-process authorized',
 
   await harness.controller.installFromPath(source);
   await harness.controller.setEnabled('acme.sample-plugin', true);
+  const trustedEvent = { sender: harness.window.webContents };
+  const rpcHandler = harness.handlers.get('plugins:rpc');
   assert.deepEqual(
     await harness.controller.rpc('acme.sample-plugin', 'scm.git.detect', { includeNested: false }),
     { repositories: [] }
   );
+  const success = await rpcHandler(trustedEvent, {
+    pluginId: 'acme.sample-plugin',
+    method: 'scm.git.detect',
+    args: { includeNested: false }
+  });
+  assert.equal(success.ok, true);
+  assert.deepEqual(success.value, { repositories: [] });
   assert.deepEqual(
     await harness.controller.rpc('acme.sample-plugin', 'sourceControl.register', {
       id: 'acme.sample-plugin.source-control',
@@ -744,5 +753,29 @@ test('SCM and static source-control permissions remain main-process authorized',
   await assert.rejects(
     () => harness.controller.rpc('acme.sample-plugin', 'fileDecorations.scm.set', {}),
     { code: 'plugins.rpc.denied' }
+  );
+
+  harness.workspaceState.rootPath = null;
+  await assert.rejects(
+    () => harness.controller.rpc('acme.sample-plugin', 'scm.git.detect', { includeNested: false }),
+    { code: 'SCM_GIT_NO_WORKSPACE' }
+  );
+  const failure = await rpcHandler(trustedEvent, {
+    pluginId: 'acme.sample-plugin',
+    method: 'scm.git.detect',
+    args: { includeNested: false }
+  });
+  assert.equal(failure.ok, false);
+  assert.deepEqual(failure.error, {
+    code: 'SCM_GIT_NO_WORKSPACE',
+    message: 'Open a local workspace before using source control.'
+  });
+  await assert.rejects(
+    () => rpcHandler({ sender: {} }, {
+      pluginId: 'acme.sample-plugin',
+      method: 'scm.git.detect',
+      args: { includeNested: false }
+    }),
+    { code: 'plugins.ipc.sender' }
   );
 });

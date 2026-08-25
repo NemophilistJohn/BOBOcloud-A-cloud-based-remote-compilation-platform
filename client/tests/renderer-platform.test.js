@@ -8,6 +8,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 const esbuild = require('esbuild');
+const pluginRpcTransport = require('../main/plugin-rpc-transport');
 
 const ROOT = path.resolve(__dirname, '..');
 let temporaryDirectory;
@@ -85,6 +86,34 @@ test.before(async () => {
     logLevel: 'silent'
   });
   compatibilityBundle = compatibilityBuild.outputFiles[0].text;
+});
+
+test('plugin RPC envelopes restore failures in the renderer realm', () => {
+  assert.equal(core.PLUGIN_RPC_RESULT_MARKER, pluginRpcTransport.PLUGIN_RPC_RESULT_MARKER);
+  assert.equal(core.PLUGIN_RPC_RESULT_VERSION, pluginRpcTransport.PLUGIN_RPC_RESULT_VERSION);
+  const success = {
+    [core.PLUGIN_RPC_RESULT_MARKER]: core.PLUGIN_RPC_RESULT_VERSION,
+    ok: true,
+    value: { repositories: [] }
+  };
+  assert.deepEqual(core.unwrapPluginRpcResult(success), { repositories: [] });
+
+  const failure = {
+    [core.PLUGIN_RPC_RESULT_MARKER]: core.PLUGIN_RPC_RESULT_VERSION,
+    ok: false,
+    error: {
+      code: 'SCM_GIT_NO_WORKSPACE',
+      message: 'Open a local workspace before using source control.'
+    }
+  };
+  assert.throws(
+    () => core.unwrapPluginRpcResult(failure),
+    (error) => error.code === failure.error.code && error.message === failure.error.message
+  );
+  assert.throws(
+    () => core.unwrapPluginRpcResult({ ok: true, value: 'unmarked' }),
+    { code: core.ExtensionErrorCode.PROTOCOL }
+  );
 });
 
 test.after(() => {

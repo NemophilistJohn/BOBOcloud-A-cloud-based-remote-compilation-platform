@@ -1930,6 +1930,7 @@
   "Update {name}": "{name} を更新",
   "Install {name}": "{name} をインストール",
   "Remove {name}?": "{name} を削除しますか？",
+  "Don't ask again this session": "このセッションでは再確認しない",
   "This removes {name} from the project dependency file and rebuilds the project environment.": "プロジェクトの依存関係ファイルから {name} を削除し、プロジェクト環境を再構築します。",
   "Finding the best version for {runtime}...": "{runtime} に最適なバージョンを選択しています...",
   "The project changed before a compatible library version was selected.": "互換バージョンを選択する前にプロジェクトが変更されました。",
