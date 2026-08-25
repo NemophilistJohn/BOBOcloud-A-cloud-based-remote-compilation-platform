@@ -331,7 +331,7 @@ func addCatalogRecord(snapshot *catalogSnapshot, record catalogRecord) error {
 }
 
 func packageInventorySummary(root string, meta metadata) *cachev2.PackageInventorySummary {
-	if !strings.EqualFold(meta.Language, "python") {
+	if !exactPackageInventoryLanguage(meta.Language) {
 		return &cachev2.PackageInventorySummary{State: "unsupported"}
 	}
 	info, err := os.Lstat(filepath.Join(root, packageInventoryFile))

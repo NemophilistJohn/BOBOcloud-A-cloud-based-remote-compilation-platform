@@ -19,7 +19,7 @@ const APPROVAL_RESULT_FIELDS = new Set([
 ]);
 const ALLOWED_DESCRIPTOR_FIELDS = new Set(['id', 'title', 'description', 'icon', 'order', 'commands', 'capabilities']);
 const ALLOWED_COMMAND_FIELDS = new Set(['create', 'select', 'delete', 'send', 'cancel', 'approve', 'reject', 'preferences', 'configure']);
-const ALLOWED_CAPABILITY_FIELDS = new Set(['modes', 'reasoningEfforts', 'skills', 'localTools']);
+const ALLOWED_CAPABILITY_FIELDS = new Set(['modes', 'reasoningEfforts', 'accessModes', 'skills', 'localTools']);
 const ALLOWED_STATE_FIELDS = new Set(['phase', 'message', 'activeSessionId', 'sessions', 'models', 'skills', 'activeSession']);
 
 function isPlainObject(value) {
@@ -169,9 +169,10 @@ export const AgentSessionStatus = Object.freeze({
 const PHASES = new Set(Object.values(AgentPhase));
 const SESSION_STATUSES = new Set(Object.values(AgentSessionStatus));
 const MODES = new Set(['chat', 'goal']);
-const EFFORTS = new Set(['low', 'medium', 'high', 'max']);
+const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+const ACCESS_MODES = new Set(['ask', 'auto', 'full']);
 const ROLES = new Set(['user', 'assistant', 'system']);
-const TIMELINE_KINDS = new Set(['thought', 'tool', 'status', 'skill', 'error']);
+const TIMELINE_KINDS = new Set(['thought', 'tool', 'status', 'skill', 'compaction', 'error']);
 const TIMELINE_STATUSES = new Set(['pending', 'running', 'waiting', 'completed', 'failed', 'rejected']);
 const STEP_STATUSES = new Set(['pending', 'in-progress', 'completed', 'blocked']);
 
@@ -202,6 +203,7 @@ export function validateAgentDescriptor(value, owner) {
     capabilities: {
       modes: stringSet(capabilities.modes, MODES, ['chat']),
       reasoningEfforts: stringSet(capabilities.reasoningEfforts, EFFORTS, ['medium']),
+      accessModes: stringSet(capabilities.accessModes, ACCESS_MODES, ['ask']),
       skills: capabilities.skills === true,
       localTools: capabilities.localTools === true
     }
@@ -292,9 +294,22 @@ function approval(value) {
   });
 }
 
+function compaction(value) {
+  if (value === undefined || value === null) return null;
+  fields(value, new Set(['count', 'compactedMessages', 'estimatedTokensBefore', 'estimatedTokensAfter', 'compactedAt']), 'Agent compaction');
+  const boundedCount = (input) => Number.isSafeInteger(input) && input >= 0 && input <= 1_000_000_000 ? input : 0;
+  return Object.freeze({
+    count: boundedCount(value.count),
+    compactedMessages: boundedCount(value.compactedMessages),
+    estimatedTokensBefore: boundedCount(value.estimatedTokensBefore),
+    estimatedTokensAfter: boundedCount(value.estimatedTokensAfter),
+    compactedAt: optionalText(value.compactedAt, 'Agent compaction timestamp', 64)
+  });
+}
+
 function activeSession(value) {
   if (value === undefined || value === null) return null;
-  fields(value, new Set(['id', 'title', 'status', 'mode', 'reasoningEffort', 'modelRef', 'messages', 'timeline', 'goal', 'approval']), 'Active Agent session');
+  fields(value, new Set(['id', 'title', 'status', 'mode', 'reasoningEffort', 'accessMode', 'modelRef', 'messages', 'timeline', 'goal', 'approval', 'compacting', 'compaction']), 'Active Agent session');
   const messages = Array.isArray(value.messages) ? value.messages.slice(-MAX_MESSAGES).map(message) : [];
   const timeline = Array.isArray(value.timeline) ? value.timeline.slice(-MAX_TIMELINE).map(timelineItem) : [];
   return freeze({
@@ -303,11 +318,14 @@ function activeSession(value) {
     status: SESSION_STATUSES.has(value.status) ? value.status : 'idle',
     mode: MODES.has(value.mode) ? value.mode : 'chat',
     reasoningEffort: EFFORTS.has(value.reasoningEffort) ? value.reasoningEffort : 'medium',
+    accessMode: ACCESS_MODES.has(value.accessMode) ? value.accessMode : 'ask',
     modelRef: optionalText(value.modelRef, 'Agent model reference', MAX_ID),
     messages,
     timeline,
     goal: goal(value.goal),
-    approval: approval(value.approval)
+    approval: approval(value.approval),
+    compacting: value.compacting === true,
+    compaction: compaction(value.compaction)
   });
 }
 
@@ -339,7 +357,7 @@ export function validateAgentState(value) {
 export function createAgentCommandPayload(providerId, action, values = {}) {
   const payload = { providerId: namespacedId(providerId, 'Agent provider id'), action: scopedId(action, 'Agent action', 48) };
   if (!isPlainObject(values)) throw new TypeError('Agent command values must be a plain object.');
-  const allowed = new Set(['sessionId', 'text', 'mode', 'reasoningEffort', 'modelRef', 'skillIds', 'approvalId', 'approvalResult']);
+  const allowed = new Set(['sessionId', 'text', 'mode', 'reasoningEffort', 'accessMode', 'modelRef', 'skillIds', 'approvalId', 'approvalResult']);
   for (const key of Object.keys(values)) {
     if (!allowed.has(key)) continue;
     if (key === 'skillIds') {
@@ -350,6 +368,8 @@ export function createAgentCommandPayload(providerId, action, values = {}) {
       payload.mode = MODES.has(values.mode) ? values.mode : 'chat';
     } else if (key === 'reasoningEffort') {
       payload.reasoningEffort = EFFORTS.has(values.reasoningEffort) ? values.reasoningEffort : 'medium';
+    } else if (key === 'accessMode') {
+      payload.accessMode = ACCESS_MODES.has(values.accessMode) ? values.accessMode : 'ask';
     } else if (key === 'approvalResult') {
       payload.approvalResult = normalizeApprovalResult(values.approvalResult);
     } else {

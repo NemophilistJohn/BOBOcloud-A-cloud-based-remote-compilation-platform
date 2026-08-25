@@ -2,7 +2,7 @@
 
 <p align="right"><a href="README.md">English</a> | <strong>简体中文</strong></p>
 
-BOBOCLOUD 是一套由 Electron 桌面端和自托管 Go 服务组成的云开发工作台。源码保留并编辑在本地工作区；Linux 执行、Docker 运行时、项目任务、语言智能、断点调试、依赖环境、团队协作和可选 AI 能力由服务端提供。当前源码中的桌面客户端版本为 **2.7.0**，服务端版本为 **2.5.0**。
+BOBOCLOUD 是一套由 Electron 桌面端和自托管 Go 服务组成的云开发工作台。源码保留并编辑在本地工作区；Linux 执行、Docker 运行时、项目任务、语言智能、断点调试、依赖环境、团队协作和可选 AI 能力由服务端提供。当前源码中的桌面客户端版本为 **2.8.0**，服务端版本为 **2.5.0**。
 
 没有配置服务器时，应用仍然可以打开目录并编辑文件；云端运行、任务、调试、终端、依赖管理和团队功能则需要连接兼容的 BOBOCLOUD 服务。
 
@@ -180,7 +180,7 @@ LSP 与 DAP 相互独立。新客户端优先连接 HTTP(S) `:3100` 上的 `/lsp
 
 AI 是可选能力，完全由用户自行配置。内置 Chat 与行内补全仍是相互独立的能力，分别拥有 Provider 配置、提示词、采样参数和上下文预算。传输层支持 OpenAI-compatible 和 Anthropic 风格配置、流式输出、取消、chat/completions/FIM 路由及响应上限。
 
-BOBOCLOUD 2.7 新增了独立的 Plugin API 1.4 Agent 界面。[官方 AI Agent 插件](https://github.com/NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical)以编辑器同级选项卡和左侧会话栏呈现，支持 Chat/Goal 模式、四档思考强度、用户选择的本地 `SKILL.md`、只读/搜索工具，以及必须显式审批的工作区写入和本机进程。它通过不透明引用复用用户的 Chat 模型配置，但不共享 Chat 历史，也不替代行内补全。
+BOBOCLOUD 2.8 新增了独立的 Plugin API 1.5 Agent 界面。[官方 AI Agent 插件](https://github.com/NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical)以编辑器同级选项卡和左侧会话栏呈现，支持 Chat/Goal 模式、低/中/高/极高/最高五档思考强度、用户选择的本地 `SKILL.md`、自动上下文压缩、安全 Markdown 渲染和结构化本机工具。访问模式按会话分为“请求批准”“帮我批准”（仅自动放行低/中风险）和“无限制访问”；最后一种模式仍受插件权限、工作区边界、命令白名单和进程限制约束。它通过不透明引用复用用户的 Chat 模型配置，但不共享 Chat 历史，也不替代行内补全。
 
 Agent 完全属于桌面用户端，不新增任何 Go 服务端接口。下载的 Agent 代码只在隔离 Worker 中运行；模型密钥、真实审批详情、工作区路径、文件操作和结构化 `shell: false` 进程全部由 Electron 主进程持有。完整 API、生命周期、安全和跨平台契约见[本地 AI Agent 插件架构](docs/ai-agent-plugin-architecture.md)。本版本不提供通用 MCP 运行时。
 

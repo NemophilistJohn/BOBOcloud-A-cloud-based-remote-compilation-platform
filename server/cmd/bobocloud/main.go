@@ -29,10 +29,12 @@ import (
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/nodetoolchain"
 	"bobocloud-server/internal/packagecatalog"
 	"bobocloud-server/internal/packageops"
 	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/runner"
+	"bobocloud-server/internal/safefile"
 	"bobocloud-server/internal/security"
 	"bobocloud-server/internal/session"
 	"bobocloud-server/internal/storage"
@@ -240,15 +242,16 @@ func main() {
 	dockerPool.SetMetrics(performanceMetrics)
 	dockerPool.SetOutputRetentionLimit(cfg.RunOutputRetainedBytes)
 	personalCache := personalcache.NewManager(cfg.DataDir, personalcache.Options{
-		ReservationBytes:    int64(cfg.PersonalPersistReservationMB) * 1_000_000,
-		MaxFiles:            cfg.PersonalPersistMaxFiles,
-		ReservationFiles:    cfg.PersonalPersistReservationFiles,
-		MaxGenerations:      cfg.PersonalCacheMaxGenerations,
-		ScanInterval:        cfg.PersonalPersistScanInterval(),
-		Retention:           cfg.PersonalPersistRetention(),
-		Metrics:             performanceMetrics,
-		OnEvicted:           dockerPool.InvalidateIdleBuildCacheContainers,
-		OnGenerationChanged: dockerPool.InvalidateIdlePersonalDependencyContainers,
+		ReservationBytes:          int64(cfg.PersonalPersistReservationMB) * 1_000_000,
+		MaxFiles:                  cfg.PersonalPersistMaxFiles,
+		ReservationFiles:          cfg.PersonalPersistReservationFiles,
+		MaxGenerations:            cfg.PersonalCacheMaxGenerations,
+		ScanInterval:              cfg.PersonalPersistScanInterval(),
+		Retention:                 cfg.PersonalPersistRetention(),
+		NodeMaterializationPolicy: personalcache.NodeDependencyMaterializationPolicy(cfg.PackageNodeInstallScripts, cfg.PackageNodePNPMVersion),
+		Metrics:                   performanceMetrics,
+		OnEvicted:                 dockerPool.InvalidateIdleBuildCacheContainers,
+		OnGenerationChanged:       dockerPool.InvalidateIdlePersonalDependencyContainers,
 	})
 	// Recovery can rename or delete transaction directories. It is safe only
 	// after every old writer/reader container is confirmed absent and every
@@ -496,9 +499,9 @@ func main() {
 	}
 	httpHandler.PackagePlans = packagePlans
 	if cfg.PackageCenterEnabled {
-		httpHandler.PackageCatalog = packagecatalog.New(
+		httpHandler.PackageCatalog = packagecatalog.NewWithDefaults(
 			cfg.PackageSources,
-			cfg.PackageDefaultSource,
+			cfg.PackageDefaultSources,
 			time.Duration(cfg.PackageCatalogTimeoutSeconds)*time.Second,
 			cfg.PackageCatalogMaxResponseBytes,
 		)
@@ -506,6 +509,7 @@ func main() {
 	httpHandler.Metrics = performanceMetrics
 	httpHandler.Readiness = serverReadinessProbe(db, dockerPool, cfg, lspManager, dapManager)
 	httpHandler.EnvironmentSetup = makeEnvironmentSetupExecutor(dockerPool, sec)
+	httpHandler.PackageLockResolver = makePackageLockResolver(dockerPool, sec, cfg.PackageNodePNPMVersion)
 	httpHandler.OnBuildCacheCleared = dockerPool.InvalidateIdleBuildCacheContainers
 	httpHandler.OnPersonalCacheCleared = dockerPool.InvalidateIdleBuildCacheContainers
 	httpHandler.SetUserLimit = func(userID string, limit int) {
@@ -956,7 +960,7 @@ func makeEnvironmentSetupExecutor(pool *docker.Pool, policy security.Policy) han
 		if rt == nil {
 			return "", "", 0, fmt.Errorf("unknown runtime: %s", runtimeID)
 		}
-		if rt.Language != "python" {
+		if rt.Language != "python" && rt.Language != "node" {
 			return "", "", 0, fmt.Errorf("controlled environment setup is not available for %s", rt.Language)
 		}
 		if len(commands) == 0 || len(commands) > 4 {
@@ -967,24 +971,49 @@ func makeEnvironmentSetupExecutor(pool *docker.Pool, policy security.Policy) han
 			return "", "", 0, fmt.Errorf("create environment workspace: %w", tempErr)
 		}
 		defer os.RemoveAll(isolatedRoot)
-		if copyErr := files.CopyProjectToTemp(workspaceRoot, isolatedRoot); copyErr != nil {
-			return "", "", 0, fmt.Errorf("copy isolated environment workspace: %w", copyErr)
+		if !handler.IsManagedPackageOperation(ctx) {
+			if copyErr := files.CopyProjectToTemp(workspaceRoot, isolatedRoot); copyErr != nil {
+				return "", "", 0, fmt.Errorf("copy isolated environment workspace: %w", copyErr)
+			}
+		}
+		dependencyLease := personalcache.LeaseFromContext(ctx)
+		toolchainLeases := personalcache.ToolchainLeasesFromContext(ctx)
+		cacheKeys := make([]string, 0, 1+len(toolchainLeases))
+		cacheMounts := make(map[string]string)
+		cacheEnvironment := make(map[string]string)
+		if dependencyLease != nil {
+			cacheKeys = append(cacheKeys, dependencyLease.ContainerKey)
+			for host, target := range dependencyLease.DockerMounts {
+				cacheMounts[host] = target
+			}
+			for key, value := range dependencyLease.DockerEnv {
+				cacheEnvironment[key] = value
+			}
+		}
+		for _, toolchainLease := range toolchainLeases {
+			if toolchainLease == nil {
+				continue
+			}
+			cacheKeys = append(cacheKeys, toolchainLease.ContainerKey)
+			for host, target := range toolchainLease.DockerMounts {
+				cacheMounts[host] = target
+			}
+			for key, value := range toolchainLease.DockerEnv {
+				cacheEnvironment[key] = value
+			}
 		}
 		var containerID string
-		if lease := personalcache.LeaseFromContext(ctx); lease != nil {
-			containerID, err = pool.AcquireForUserWithContext(ctx, userID, rt.DockerImage, lease.ContainerKey, lease.DockerMounts, lease.DockerEnv, nil)
+		if len(cacheKeys) > 0 {
+			containerID, err = pool.AcquireForUserWithContext(ctx, userID, rt.DockerImage, strings.Join(cacheKeys, "+"), cacheMounts, cacheEnvironment, nil)
 		} else {
 			containerID, err = pool.AcquireForUser(ctx, userID, rt.DockerImage, nil)
 		}
 		if err != nil {
 			return "", "", 0, fmt.Errorf("failed to acquire container: %w", err)
 		}
-		writableDependencyLease := false
-		if lease := personalcache.LeaseFromContext(ctx); lease != nil {
-			writableDependencyLease = lease.Writable()
-		}
+		writableCacheLease := dependencyLease != nil && dependencyLease.Writable() || len(toolchainLeases) > 0
 		defer func() {
-			if writableDependencyLease || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
+			if writableCacheLease || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
 				if cleanupErr := pool.DiscardForUserAndWait(containerID, userID); cleanupErr != nil {
 					retainContainerResourcesUntilRemoved(ctx, pool, containerID, userID)
 					err = errors.Join(err, fmt.Errorf("destroy environment setup container: %w", cleanupErr))
@@ -1015,6 +1044,98 @@ func makeEnvironmentSetupExecutor(pool *docker.Pool, policy security.Policy) han
 			}
 		}
 		return stdoutBuilder.String(), stderrBuilder.String(), 0, nil
+	}
+}
+
+func shellQuotePackageValue(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func makePackageLockResolver(pool *docker.Pool, policy security.Policy, pnpmVersion string) handler.PackageLockResolver {
+	pnpmExecutable, pnpmExecutableErr := nodetoolchain.PNPMExecutable(pnpmVersion)
+	return func(ctx context.Context, request handler.PackageLockResolutionRequest) (result handler.PackageLockResolutionResult, err error) {
+		runtime := model.GetRuntimeDef(strings.TrimSpace(request.RuntimeID))
+		if runtime == nil || runtime.Language != "node" {
+			return result, fmt.Errorf("a managed Node runtime is required for lockfile resolution")
+		}
+		manager := strings.ToLower(strings.TrimSpace(request.Manager))
+		if manager != "npm" && manager != "pnpm" {
+			return result, fmt.Errorf("unsupported Node package manager: %s", manager)
+		}
+		manifestPath := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(request.ManifestPath))))
+		lockfilePath := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(request.LockfilePath))))
+		if manifestPath != "package.json" || (manager == "npm" && lockfilePath != "package-lock.json") || (manager == "pnpm" && lockfilePath != "pnpm-lock.yaml") {
+			return result, fmt.Errorf("managed Node lockfile resolution currently requires a project-root manifest")
+		}
+		if len(request.ManifestContent) == 0 || len(request.ManifestContent) > 8<<20 {
+			return result, fmt.Errorf("Node package manifest exceeds the resolution limit")
+		}
+
+		isolatedRoot, tempErr := os.MkdirTemp("", "package-lock-resolution-")
+		if tempErr != nil {
+			return result, fmt.Errorf("create lockfile workspace: %w", tempErr)
+		}
+		defer os.RemoveAll(isolatedRoot)
+		if writeErr := safefile.WriteAtomic(isolatedRoot, "package.json", request.ManifestContent, 0600); writeErr != nil {
+			return result, fmt.Errorf("stage planned package.json: %w", writeErr)
+		}
+		if existingLock, readErr := safefile.ReadSmallRegular(request.WorkspaceRoot, filepath.Base(lockfilePath), 8<<20); readErr == nil {
+			if writeErr := safefile.WriteAtomic(isolatedRoot, filepath.Base(lockfilePath), existingLock, 0600); writeErr != nil {
+				return result, fmt.Errorf("stage existing Node lockfile: %w", writeErr)
+			}
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			return result, fmt.Errorf("read existing Node lockfile: %w", readErr)
+		}
+
+		containerID, acquireErr := pool.AcquireForUser(ctx, request.UserID, runtime.DockerImage, nil)
+		if acquireErr != nil {
+			return result, fmt.Errorf("acquire lockfile container: %w", acquireErr)
+		}
+		defer pool.ReleaseForUser(containerID, request.UserID)
+		if _, _, _, prepareErr := pool.Exec(ctx, containerID, []string{"mkdir", "-p", "/workspace"}, "/"); prepareErr != nil {
+			return result, fmt.Errorf("prepare lockfile container: %w", prepareErr)
+		}
+		copyCommand := exec.CommandContext(ctx, "docker", "cp", filepath.Clean(isolatedRoot)+string(os.PathSeparator)+".", containerID+":/workspace")
+		if output, copyErr := copyCommand.CombinedOutput(); copyErr != nil {
+			return result, fmt.Errorf("copy lockfile workspace into container: %w: %s", copyErr, strings.TrimSpace(string(output)))
+		}
+
+		registry := shellQuotePackageValue(strings.TrimSpace(request.RegistryURL))
+		command := "npm install --package-lock-only --ignore-scripts --no-audit --no-fund --workspaces=false --registry=" + registry
+		if manager == "pnpm" {
+			if pnpmExecutableErr != nil {
+				return result, fmt.Errorf("invalid server pnpm policy: %w", pnpmExecutableErr)
+			}
+			command = pnpmExecutable + " install --lockfile-only --frozen-lockfile=false --ignore-scripts --registry=" + registry
+		}
+		if !policy.AllowCommand(command) {
+			return result, fmt.Errorf("lockfile resolution command was rejected by policy")
+		}
+		stdout, stderr, exitCode, execErr := pool.Exec(ctx, containerID, []string{"sh", "-c", policy.FilterCommand(command)}, "/workspace")
+		result.Stdout, result.Stderr = stdout, stderr
+		if execErr != nil || exitCode != 0 {
+			if execErr == nil {
+				execErr = fmt.Errorf("%s lockfile resolution exited with code %d", manager, exitCode)
+			}
+			return result, execErr
+		}
+
+		outputRoot := filepath.Join(isolatedRoot, ".bobocloud-lock-output")
+		if mkdirErr := os.Mkdir(outputRoot, 0700); mkdirErr != nil {
+			return result, fmt.Errorf("prepare lockfile output: %w", mkdirErr)
+		}
+		outputPath := filepath.Join(outputRoot, filepath.Base(lockfilePath))
+		copyLock := exec.CommandContext(ctx, "docker", "cp", containerID+":/workspace/"+lockfilePath, outputPath)
+		if output, copyErr := copyLock.CombinedOutput(); copyErr != nil {
+			return result, fmt.Errorf("copy generated lockfile: %w: %s", copyErr, strings.TrimSpace(string(output)))
+		}
+		content, readErr := safefile.ReadSmallRegular(outputRoot, filepath.Base(lockfilePath), 8<<20)
+		if readErr != nil {
+			return result, fmt.Errorf("read generated lockfile: %w", readErr)
+		}
+		result.LockfilePath = lockfilePath
+		result.Content = content
+		return result, nil
 	}
 }
 

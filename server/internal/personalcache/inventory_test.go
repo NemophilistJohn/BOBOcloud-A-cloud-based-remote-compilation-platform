@@ -314,6 +314,32 @@ func TestPythonInventoryDetectsMutationAfterSnapshot(t *testing.T) {
 	}
 }
 
+func TestPackageInventoryPreviewIsTheReleasePublicationBoundary(t *testing.T) {
+	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	request, _ := inventoryTestRequest(t, manager)
+	lease, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeInventoryDistInfo(t, filepath.Join(lease.HostRoot, "python"), "numpy", "2.1.0")
+	preview := lease.PreviewPackageInventory()
+	if preview.State != "ready" || !preview.Exact || preview.GeneratedAt.IsZero() {
+		lease.Abort()
+		lease.Release()
+		t.Fatalf("preview = %+v", preview)
+	}
+	time.Sleep(2 * time.Millisecond)
+	lease.Release()
+
+	document, err := readPackageInventory(lease.HostRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !document.GeneratedAt.Equal(preview.GeneratedAt) || document.TreeRevision != preview.Revision || len(document.Packages) != 1 {
+		t.Fatalf("release rescanned or changed the sealed preview: document=%+v preview=%+v", document, preview)
+	}
+}
+
 func TestPythonInventoryDetectsMissingPackageFilesBehindIntactDistInfo(t *testing.T) {
 	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)

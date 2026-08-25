@@ -52,6 +52,60 @@ func TestPlanStoreExpiresIdlePlans(t *testing.T) {
 	}
 }
 
+func TestPlanStoreDeleteWorkspaceIsUserBoundAndReleasesCapacity(t *testing.T) {
+	store := NewStoreWithLimits(time.Minute, StoreLimits{
+		MaxPlans: 4, MaxPlansPerUser: 3, MaxBytes: 1 << 20, MaxBytesPerUser: 1 << 20, MaxResultBytes: 4 << 10,
+	})
+	put := func(userID, workspaceID string) ExecutionPlan {
+		t.Helper()
+		plan, err := store.Put(ExecutionPlan{UserID: userID, WorkspaceID: workspaceID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plan
+	}
+	target := put("alice", "workspace-a")
+	sameUser := put("alice", "workspace-b")
+	sameWorkspace := put("bob", "workspace-a")
+
+	if err := store.DeleteWorkspace("", "workspace-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteWorkspace("alice", ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.plans) != 3 {
+		t.Fatalf("empty binding deleted plans: %+v", store.plans)
+	}
+	if _, err := store.Claim(target.Public.PlanID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	wantBytes := store.plans[sameUser.Public.PlanID].bytes + store.plans[sameWorkspace.Public.PlanID].bytes
+	if err := store.DeleteWorkspace("alice", "workspace-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(target.Public.PlanID, "alice"); !errors.Is(err, ErrPlanNotFound) {
+		t.Fatalf("deleted workspace plan claim = %v", err)
+	}
+	for _, survivor := range []struct {
+		plan   ExecutionPlan
+		userID string
+	}{{sameUser, "alice"}, {sameWorkspace, "bob"}} {
+		if _, err := store.Claim(survivor.plan.Public.PlanID, survivor.userID); err != nil {
+			t.Fatalf("surviving plan %s claim = %v", survivor.plan.Public.PlanID, err)
+		}
+	}
+	if len(store.plans) != 2 || store.planCounts["alice"] != 1 || store.planCounts["bob"] != 1 ||
+		store.planBytes["alice"] != store.plans[sameUser.Public.PlanID].bytes ||
+		store.planBytes["bob"] != store.plans[sameWorkspace.Public.PlanID].bytes || store.totalPlanBytes != wantBytes {
+		t.Fatalf("workspace cleanup retained incorrect capacity: plans=%d bytes=%d counts=%v userBytes=%v", len(store.plans), store.totalPlanBytes, store.planCounts, store.planBytes)
+	}
+	if err := store.DeleteWorkspace("alice", "workspace-a"); err != nil {
+		t.Fatalf("idempotent workspace cleanup = %v", err)
+	}
+}
+
 func TestPlanStoreEnforcesPerUserBudgetWithoutCrossUserEviction(t *testing.T) {
 	store := NewStoreWithLimits(time.Minute, StoreLimits{MaxPlans: 3, MaxPlansPerUser: 1, MaxBytes: 1 << 20, MaxBytesPerUser: 1 << 20, MaxResultBytes: 4 << 10})
 	alice, err := store.Put(ExecutionPlan{UserID: "alice", WorkspaceID: "alice-workspace"})

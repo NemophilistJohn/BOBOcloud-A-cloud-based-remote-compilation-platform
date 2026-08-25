@@ -930,7 +930,7 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 	defer os.RemoveAll(tempDir)
 	if packageIntentsEnabled {
 		packageFrameNonce = auth.GenerateToken()
-		if shimErr := installTerminalPackageShim(ctx, containerID, packageFrameNonce); shimErr != nil {
+		if shimErr := installTerminalPackageShim(ctx, containerID, packageFrameNonce, runtime.Language); shimErr != nil {
 			packageIntentsEnabled = false
 			packageFrameNonce = ""
 			slog.Warn("Terminal package intent shim is unavailable; installs remain session-local", "user_id", user.ID, "runtime", runtimeID, "error", shimErr)
@@ -938,9 +938,10 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 	}
 
 	usePTY := terminalPTYAvailable(ctx, containerID)
-	// The pip/pip3 shim emits a nonce-bound structured intent. It never executes
-	// pip and therefore cannot mutate a read-only generation or bypass Package
-	// Center's manifest CAS and exact-generation transaction.
+	// The runtime-specific pip/npm/pnpm shim emits a nonce-bound structured
+	// intent for dependency mutations. It never executes those mutations and
+	// therefore cannot bypass Package Center's manifest CAS and generation
+	// transaction; ordinary package-manager queries still reach the real tool.
 	shell := terminalShellCommand(ctx, containerID, terminalWorkspaceDir, start.Cols, start.Rows, usePTY, packageIntentsEnabled)
 	stdin, err := shell.StdinPipe()
 	if err != nil {
@@ -984,7 +985,7 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 	var outputWG sync.WaitGroup
 	var packageIntentState terminalPackageIntentState
 	handlePackageFrame := func(encoded []byte) error {
-		intent, parseErr := packagePolicy.parseFrame(encoded, packageFrameNonce)
+		intent, parseErr := packagePolicy.parseFrame(encoded, packageFrameNonce, runtime.Language)
 		if parseErr != nil {
 			code := terminalPackageErrorCode(parseErr)
 			slog.Info("Terminal package intent rejected", "session_id", sessionID, "user_id", user.ID, "runtime", runtimeID, "code", code)

@@ -83,9 +83,14 @@ func recoverableDependencyTarget(persistRoot, userID, candidate string) (string,
 	if _, err := hex.DecodeString(meta.Digest); err != nil {
 		return "", false
 	}
-	if strings.EqualFold(meta.Language, "python") {
+	if exactPackageInventoryLanguage(meta.Language) {
 		document, readErr := readPackageInventory(candidate)
-		if readErr != nil || document.State != "ready" || document.Digest != meta.Digest {
+		if readErr != nil || document.Schema != packageInventorySchema || document.State != "ready" ||
+			document.Digest != meta.Digest || !strings.EqualFold(document.Language, meta.Language) {
+			return "", false
+		}
+		_, revision, _, scanErr := scanManagedPackageTree(candidate, meta.Language)
+		if scanErr != nil || revision != document.TreeRevision {
 			return "", false
 		}
 	}

@@ -89,16 +89,39 @@ function cleanPackageIntent(value, activeSessionId) {
   if (!intentId || !sessionId || sessionId !== String(activeSessionId || '') || !runtimeId) {
     throw terminalError('invalid_package_intent', 'Terminal package intent identity is invalid');
   }
+  const ecosystem = cleanEnvironmentField(source.ecosystem).toLowerCase();
+  const manager = cleanEnvironmentField(source.manager).toLowerCase();
+  if (!((ecosystem === 'python' && manager === 'pip') ||
+        (ecosystem === 'node' && (manager === 'npm' || manager === 'pnpm')))) {
+    throw terminalError('invalid_package_intent', 'Terminal package intent manager is invalid');
+  }
+  if (source.operation !== 'install' && source.operation !== 'remove') {
+    throw terminalError('invalid_package_intent', 'Terminal package intent operation is invalid');
+  }
   const rawPackages = Array.isArray(source.packages) ? source.packages : [];
   if (rawPackages.length < 1 || rawPackages.length > 64) throw terminalError('invalid_package_intent', 'Terminal package intent has invalid packages');
+  const seenPackages = new Set();
   const packages = rawPackages.map((entry) => {
     const item = entry && typeof entry === 'object' ? entry : {};
     const name = cleanEnvironmentField(item.name);
     const version = cleanEnvironmentField(item.version);
     if (!name || /[\0\r\n]/.test(name)) throw terminalError('invalid_package_intent', 'Terminal package intent has an invalid package');
-    const result = { name };
+    const packageKey = ecosystem === 'python' ? name.toLowerCase().replace(/[-_.]+/g, '-') : name.toLowerCase();
+    if (seenPackages.has(packageKey)) throw terminalError('invalid_package_intent', 'Terminal package intent contains duplicate packages');
+    seenPackages.add(packageKey);
+    const scope = cleanEnvironmentField(item.scope || 'runtime').toLowerCase();
+    if ((ecosystem === 'python' && scope !== 'runtime') ||
+        (ecosystem === 'node' && !['runtime', 'dev', 'optional'].includes(scope))) {
+      throw terminalError('invalid_package_intent', 'Terminal package intent scope is invalid');
+    }
+    const result = { name, scope };
     if (version) result.version = version;
-    if (Array.isArray(item.features)) result.features = item.features.slice(0, 64).map(cleanEnvironmentField).filter(Boolean);
+    if (Array.isArray(item.features)) {
+      result.features = item.features.slice(0, 64).map(cleanEnvironmentField).filter(Boolean);
+      if (ecosystem === 'node' && result.features.length) {
+        throw terminalError('invalid_package_intent', 'Terminal Node package intent cannot contain Python features');
+      }
+    }
     return result;
   });
   return {
@@ -107,9 +130,9 @@ function cleanPackageIntent(value, activeSessionId) {
     sessionId,
     runtimeId,
     workspace: cleanWorkspace(source.workspace),
-    ecosystem: cleanEnvironmentField(source.ecosystem),
-    manager: cleanEnvironmentField(source.manager),
-    operation: source.operation === 'remove' ? 'remove' : 'install',
+    ecosystem,
+    manager,
+    operation: source.operation,
     packages,
     sourceId: cleanEnvironmentField(source.sourceId || source.source_id),
     requiresTerminalClose: source.requiresTerminalClose === true || source.requires_terminal_close === true
@@ -360,7 +383,14 @@ class TerminalTransport {
         if (message.type === 'terminal.packageIntent') {
           if (this.state !== 'ready') return;
           try {
-            this.emit('package-intent', Object.assign(cleanPackageIntent(message, this.sessionId), {
+            const intent = cleanPackageIntent(message, this.sessionId);
+            if (this.environment && this.environment.runtimeId && intent.runtimeId !== this.environment.runtimeId) {
+              throw terminalError('invalid_package_intent', 'Terminal package intent runtime is invalid');
+            }
+            if (this.environment && this.environment.language && intent.ecosystem !== this.environment.language.toLowerCase()) {
+              throw terminalError('invalid_package_intent', 'Terminal package intent ecosystem is invalid');
+            }
+            this.emit('package-intent', Object.assign(intent, {
               contextToken: this.contextToken && Object.assign({}, this.contextToken)
             }));
           } catch (error) {

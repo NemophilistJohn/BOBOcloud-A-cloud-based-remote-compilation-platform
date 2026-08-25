@@ -183,7 +183,7 @@ test('negotiates managed package intents and preserves the cleanup gate on exit'
   }));
   const accepted = events.find((event) => event.channel === 'package-intent');
   assert.equal(accepted.payload.intentId, 'intent-1');
-  assert.deepEqual(accepted.payload.packages, [{ name: 'numpy', version: '2.3.1' }]);
+  assert.deepEqual(accepted.payload.packages, [{ name: 'numpy', scope: 'runtime', version: '2.3.1' }]);
 
   assert.deepEqual(transport.decidePackageIntent('intent-1', true, 'managed'), { accepted: true, intentId: 'intent-1' });
   assert.deepEqual(socket.sent.at(-1), {
@@ -207,6 +207,66 @@ test('negotiates managed package intents and preserves the cleanup gate on exit'
   assert.equal(closed.packageIntentPending, true);
   assert.equal(closed.packageIntentId, 'intent-1');
   assert.equal(closed.dependenciesChanged, false);
+});
+
+test('validates Node package intents and preserves dependency scope', async () => {
+  const events = [];
+  let socket;
+  const transport = new TerminalTransport({
+    webSocketFactory: () => (socket = new MockSocket()),
+    getCredential: () => 'token',
+    emit: (channel, payload) => events.push({ channel, payload }),
+    pingIntervalMs: 0
+  });
+  const starting = transport.start({
+    serverHost: 'cloud.example', runtimeId: 'node:22', packageIntents: true,
+    workspace: { kind: 'personal', folderName: 'demo', folderKey: 'demo-key' }
+  });
+  socket.open();
+  await new Promise((resolve) => setImmediate(resolve));
+  socket.fire('message', JSON.stringify({
+    type: 'terminal.ready', sessionId: 'term-node', runtimeId: 'node:22',
+    capabilities: { packageIntents: true },
+    environment: { runtimeId: 'node:22', language: 'node' }
+  }));
+  await starting;
+
+  socket.fire('message', JSON.stringify({
+    type: 'terminal.packageIntent', schema: 1, intentId: 'intent-node', sessionId: 'term-node',
+    runtimeId: 'node:22', workspace: { kind: 'personal', folderName: 'demo', folderKey: 'demo-key' },
+    ecosystem: 'node', manager: 'pnpm', operation: 'install',
+    packages: [{ name: '@types/node', version: '22.10.2', scope: 'dev' }],
+    sourceId: 'npm-official', requiresTerminalClose: true
+  }));
+  const accepted = events.find((event) => event.channel === 'package-intent');
+  assert.deepEqual(accepted.payload.packages, [{ name: '@types/node', scope: 'dev', version: '22.10.2' }]);
+  assert.equal(accepted.payload.manager, 'pnpm');
+
+  socket.fire('message', JSON.stringify({
+    type: 'terminal.packageIntent', schema: 1, intentId: 'intent-invalid-scope', sessionId: 'term-node',
+    runtimeId: 'node:22', workspace: { kind: 'personal', folderName: 'demo', folderKey: 'demo-key' },
+    ecosystem: 'node', manager: 'npm', operation: 'install',
+    packages: [{ name: 'chalk', version: '5.4.1', scope: 'peer' }],
+    sourceId: 'npm-official', requiresTerminalClose: true
+  }));
+  socket.fire('message', JSON.stringify({
+    type: 'terminal.packageIntent', schema: 1, intentId: 'intent-invalid-manager', sessionId: 'term-node',
+    runtimeId: 'node:22', workspace: { kind: 'personal', folderName: 'demo', folderKey: 'demo-key' },
+    ecosystem: 'node', manager: 'yarn', operation: 'install',
+    packages: [{ name: 'chalk', version: '5.4.1', scope: 'runtime' }],
+    sourceId: 'npm-official', requiresTerminalClose: true
+  }));
+  socket.fire('message', JSON.stringify({
+    type: 'terminal.packageIntent', schema: 1, intentId: 'intent-cross-ecosystem', sessionId: 'term-node',
+    runtimeId: 'node:22', workspace: { kind: 'personal', folderName: 'demo', folderKey: 'demo-key' },
+    ecosystem: 'python', manager: 'pip', operation: 'install',
+    packages: [{ name: 'requests', version: '2.32.3', scope: 'runtime' }],
+    sourceId: 'pypi-official', requiresTerminalClose: true
+  }));
+  const rejected = events.filter((event) => event.channel === 'package-intent-rejected');
+  assert.deepEqual(rejected.map((event) => event.payload.intentId), ['intent-invalid-scope', 'intent-invalid-manager', 'intent-cross-ecosystem']);
+  assert.ok(rejected.every((event) => event.payload.code === 'invalid_package_intent'));
+  await stopWithServerExit(transport, socket);
 });
 
 test('uses the server byte limit for multibyte terminal input', async () => {

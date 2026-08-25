@@ -2,7 +2,7 @@
 
 <p align="right"><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a></p>
 
-BOBOCLOUD is a desktop cloud-development workbench built with Electron and a self-hosted Go service. You keep and edit source code in a local workspace; the service supplies Linux execution, Docker runtimes, project tasks, language intelligence, debugging, dependency environments, team collaboration, and optional AI access. The current source identifies the desktop client as **2.7.0** and the server as **2.5.0**.
+BOBOCLOUD is a desktop cloud-development workbench built with Electron and a self-hosted Go service. You keep and edit source code in a local workspace; the service supplies Linux execution, Docker runtimes, project tasks, language intelligence, debugging, dependency environments, team collaboration, and optional AI access. The current source identifies the desktop client as **2.8.0** and the server as **2.5.0**.
 
 The application can open and edit a folder before a server is configured. Cloud Run, tasks, debugging, terminals, dependency management, and team features require a compatible BOBOCLOUD service.
 
@@ -180,7 +180,7 @@ Team projects add Git-backed server worktrees, invitations and membership, branc
 
 AI is optional and configured by the user. Built-in Chat and inline completion remain independent features with separate provider profiles, prompts, sampling controls, and context budgets. The transport supports OpenAI-compatible and Anthropic-style profiles, streaming, cancellation, chat/completions/FIM routing, and bounded responses.
 
-BOBOCLOUD 2.7 adds a separate Plugin API 1.4 Agent surface. The [official AI Agent plugin](https://github.com/NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical) opens as an editor-sized tab with a session sidebar and supports Chat/Goal modes, four reasoning levels, selected local `SKILL.md` files, read/search tools, and approval-gated workspace writes or local processes. It reuses opaque references to the user's Chat model profiles but does not share Chat history or replace inline completion.
+BOBOCLOUD 2.8 adds a separate Plugin API 1.5 Agent surface. The [official AI Agent plugin](https://github.com/NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical) opens as an editor-sized tab with a session sidebar and supports Chat/Goal modes, five reasoning levels (`low` through `max`), selected local `SKILL.md` files, automatic context compaction, safe Markdown rendering, and structured local tools. Its session-scoped access modes are Request approval, Help me approve (automatic only for low/medium risk), and Unrestricted access; the last mode still remains inside plugin permissions, workspace confinement, command allowlists, and process limits. The Agent reuses opaque references to the user's Chat model profiles but does not share Chat history or replace inline completion.
 
 Agent execution is entirely a desktop-client capability; it adds no Go service endpoint. Downloaded Agent code remains in an isolated Worker, while model credentials, canonical approval details, workspace paths, file operations, and structured `shell: false` processes stay in the Electron main process. See [Local AI Agent plugin architecture](docs/ai-agent-plugin-architecture.md) for the API, lifecycle, security, and cross-platform contract. A general MCP runtime is not part of this release.
 

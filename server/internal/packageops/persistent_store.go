@@ -40,6 +40,7 @@ type persistentPlanRecord struct {
 	RuntimeID          string                                `json:"runtimeId"`
 	RuntimeFingerprint string                                `json:"runtimeFingerprint,omitempty"`
 	Language           string                                `json:"language"`
+	Manager            string                                `json:"manager,omitempty"`
 	SourceID           string                                `json:"sourceId"`
 	ManifestBindings   []model.ProjectPackageManifestBinding `json:"manifestBindings"`
 	CreatedAt          int64                                 `json:"createdAt"`
@@ -92,7 +93,7 @@ func (s *Store) persistStateLocked(plan ExecutionPlan, recordedAt time.Time, sta
 	record := persistentPlanRecord{
 		Schema: persistentPlanSchema, State: state, PlanID: plan.Public.PlanID,
 		UserID: plan.UserID, WorkspaceID: plan.WorkspaceID, FolderKey: plan.FolderKey,
-		RuntimeID: plan.RuntimeID, RuntimeFingerprint: plan.RuntimeFingerprint, Language: plan.Language, SourceID: plan.Public.Source.ID,
+		RuntimeID: plan.RuntimeID, RuntimeFingerprint: plan.RuntimeFingerprint, Language: plan.Language, Manager: plan.Public.Manager.ID, SourceID: plan.Public.Source.ID,
 		ManifestBindings: append([]model.ProjectPackageManifestBinding(nil), plan.Public.ManifestBindings...),
 		CreatedAt:        plan.CreatedAt.UTC().UnixMilli(), RecordedAt: recordedAt.UTC().UnixMilli(), ExpiresAt: plan.ExpiresAt.UTC().UnixMilli(),
 	}
@@ -257,8 +258,27 @@ func validatePersistentPlanRecord(record persistentPlanRecord, ttl time.Duration
 	if !validPersistentRuntimeFingerprint(record.RuntimeFingerprint, record.RuntimeID) {
 		return fmt.Errorf("invalid package completion runtime fingerprint")
 	}
-	if len(record.ManifestBindings) != 1 || !validPersistentManifestBinding(record.ManifestBindings[0]) {
+	if len(record.ManifestBindings) < 1 || len(record.ManifestBindings) > 8 {
 		return fmt.Errorf("invalid package completion manifest binding")
+	}
+	language := strings.ToLower(strings.TrimSpace(record.Language))
+	manager := strings.ToLower(strings.TrimSpace(record.Manager))
+	if language == "python" && manager == "" {
+		manager = "pip"
+	}
+	seenBindings := make(map[string]struct{}, len(record.ManifestBindings))
+	for _, binding := range record.ManifestBindings {
+		if !validPersistentManifestBinding(language, manager, binding) {
+			return fmt.Errorf("invalid package completion manifest binding")
+		}
+		key := strings.ToLower(strings.TrimSpace(binding.Path))
+		if _, exists := seenBindings[key]; exists {
+			return fmt.Errorf("duplicate package completion manifest binding")
+		}
+		seenBindings[key] = struct{}{}
+	}
+	if !validPersistentManifestSet(language, manager, seenBindings) {
+		return fmt.Errorf("invalid package completion manifest binding set")
 	}
 	createdAt, recordedAt, expiresAt := time.UnixMilli(record.CreatedAt), time.UnixMilli(record.RecordedAt), time.UnixMilli(record.ExpiresAt)
 	if record.CreatedAt <= 0 || record.RecordedAt <= 0 || record.ExpiresAt <= 0 || createdAt.After(recordedAt) || !expiresAt.After(recordedAt) || expiresAt.After(recordedAt.Add(ttl+time.Second)) || recordedAt.After(now.Add(5*time.Minute)) {
@@ -313,13 +333,49 @@ func validPersistentRuntimeFingerprint(value, runtimeID string) bool {
 	return true
 }
 
-func validPersistentManifestBinding(binding model.ProjectPackageManifestBinding) bool {
+func validPersistentManifestBinding(language, manager string, binding model.ProjectPackageManifestBinding) bool {
 	clean := path.Clean(strings.TrimSpace(binding.Path))
-	if clean == "." || clean != binding.Path || strings.HasPrefix(clean, "/") || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "\\") || len(clean) > 512 || !isRequirementsManifest(clean) {
+	if clean == "." || clean != binding.Path || strings.HasPrefix(clean, "/") || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "\\") || len(clean) > 512 {
+		return false
+	}
+	switch language {
+	case "python":
+		if manager != "pip" || !isRequirementsManifest(clean) {
+			return false
+		}
+	case "node":
+		if (manager != "npm" && manager != "pnpm") || (clean != "package.json" && clean != "package-lock.json" && clean != "pnpm-lock.yaml") {
+			return false
+		}
+	default:
 		return false
 	}
 	decoded, err := hex.DecodeString(binding.SHA256)
 	return err == nil && len(decoded) == 32 && binding.SHA256 == strings.ToLower(binding.SHA256)
+}
+
+func validPersistentManifestSet(language, manager string, bindings map[string]struct{}) bool {
+	switch language {
+	case "python":
+		return manager == "pip" && len(bindings) >= 1
+	case "node":
+		if len(bindings) != 2 {
+			return false
+		}
+		if _, ok := bindings["package.json"]; !ok {
+			return false
+		}
+		lockfile := "package-lock.json"
+		if manager == "pnpm" {
+			lockfile = "pnpm-lock.yaml"
+		} else if manager != "npm" {
+			return false
+		}
+		_, ok := bindings[lockfile]
+		return ok
+	default:
+		return false
+	}
 }
 
 func executionPlanFromPersistentRecord(record persistentPlanRecord) ExecutionPlan {
@@ -327,6 +383,7 @@ func executionPlanFromPersistentRecord(record persistentPlanRecord) ExecutionPla
 	return ExecutionPlan{
 		Public: model.ProjectPackageChangePlan{
 			PlanID: record.PlanID, ExpiresAt: record.ExpiresAt, Source: model.PackageCenterSource{ID: record.SourceID},
+			Manager:          model.ProjectPackageManager{ID: record.Manager, Name: record.Manager},
 			ManifestBindings: append([]model.ProjectPackageManifestBinding(nil), record.ManifestBindings...),
 		},
 		UserID: record.UserID, WorkspaceID: record.WorkspaceID, FolderKey: record.FolderKey,

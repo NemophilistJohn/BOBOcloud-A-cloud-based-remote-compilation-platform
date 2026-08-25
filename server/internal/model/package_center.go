@@ -18,6 +18,26 @@ type PackageCenterCapability struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
+type ProjectPackageManager struct {
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	ManifestPath    string   `json:"manifestPath,omitempty"`
+	LockfilePath    string   `json:"lockfilePath,omitempty"`
+	DetectedBy      string   `json:"detectedBy,omitempty"`
+	LockfilePresent bool     `json:"lockfilePresent"`
+	Scopes          []string `json:"scopes"`
+}
+
+type ProjectPackageCenterCapabilities struct {
+	Browse             bool `json:"browse"`
+	Inspect            bool `json:"inspect"`
+	Mutate             bool `json:"mutate"`
+	ExactInventory     bool `json:"exactInventory"`
+	Scopes             bool `json:"scopes"`
+	Prereleases        bool `json:"prereleases"`
+	TransitivePackages bool `json:"transitivePackages"`
+}
+
 type ProjectPackageInventory struct {
 	Status           string `json:"status"`
 	Detail           string `json:"detail,omitempty"`
@@ -44,30 +64,34 @@ type ProjectPackageCenterPackages struct {
 }
 
 type ProjectPackageCenterContext struct {
-	Schema                  string                       `json:"schema"`
-	Revision                string                       `json:"revision"`
-	Workspace               ProjectEnvironmentWorkspace  `json:"workspace"`
-	Language                ProjectEnvironmentLanguage   `json:"language"`
-	Runtime                 ProjectEnvironmentRuntime    `json:"runtime"`
-	Sources                 []PackageCenterSource        `json:"sources"`
-	DefaultSource           string                       `json:"defaultSource,omitempty"`
-	SearchMode              string                       `json:"searchMode"`
-	CatalogTimeoutSeconds   int                          `json:"catalogTimeoutSeconds"`
-	OperationTimeoutSeconds int                          `json:"operationTimeoutSeconds"`
-	DefaultManifestPath     string                       `json:"defaultManifestPath,omitempty"`
-	Manifests               []ProjectEnvironmentManifest `json:"manifests"`
-	Packages                ProjectPackageCenterPackages `json:"packages"`
-	Inventory               ProjectPackageInventory      `json:"inventory"`
-	CanPlanChanges          PackageCenterCapability      `json:"canPlanChanges"`
+	Schema                  string                           `json:"schema"`
+	Revision                string                           `json:"revision"`
+	Workspace               ProjectEnvironmentWorkspace      `json:"workspace"`
+	Language                ProjectEnvironmentLanguage       `json:"language"`
+	Runtime                 ProjectEnvironmentRuntime        `json:"runtime"`
+	Manager                 ProjectPackageManager            `json:"manager"`
+	Capabilities            ProjectPackageCenterCapabilities `json:"capabilities"`
+	Sources                 []PackageCenterSource            `json:"sources"`
+	DefaultSource           string                           `json:"defaultSource,omitempty"`
+	SearchMode              string                           `json:"searchMode"`
+	CatalogTimeoutSeconds   int                              `json:"catalogTimeoutSeconds"`
+	OperationTimeoutSeconds int                              `json:"operationTimeoutSeconds"`
+	DefaultManifestPath     string                           `json:"defaultManifestPath,omitempty"`
+	Manifests               []ProjectEnvironmentManifest     `json:"manifests"`
+	Packages                ProjectPackageCenterPackages     `json:"packages"`
+	Inventory               ProjectPackageInventory          `json:"inventory"`
+	CanPlanChanges          PackageCenterCapability          `json:"canPlanChanges"`
 }
 
 type PackageCatalogVersion struct {
-	Version          string `json:"version"`
-	RequiresLanguage string `json:"requiresLanguage,omitempty"`
-	Yanked           bool   `json:"yanked,omitempty"`
-	PublishedAt      string `json:"publishedAt,omitempty"`
-	Compatibility    string `json:"compatibility"`
-	Reason           string `json:"reason,omitempty"`
+	Version            string `json:"version"`
+	RequiresLanguage   string `json:"requiresLanguage,omitempty"`
+	Yanked             bool   `json:"yanked,omitempty"`
+	PublishedAt        string `json:"publishedAt,omitempty"`
+	Compatibility      string `json:"compatibility"`
+	Reason             string `json:"reason,omitempty"`
+	Deprecated         bool   `json:"deprecated,omitempty"`
+	DeprecationMessage string `json:"deprecationMessage,omitempty"`
 }
 
 type PackageCatalogItem struct {
@@ -81,6 +105,9 @@ type PackageCatalogItem struct {
 	Homepage            string                  `json:"homepage,omitempty"`
 	RequiresLanguage    string                  `json:"requiresLanguage,omitempty"`
 	CatalogAuthority    string                  `json:"catalogAuthority"`
+	Deprecated          bool                    `json:"deprecated,omitempty"`
+	DeprecationMessage  string                  `json:"deprecationMessage,omitempty"`
+	DistTags            map[string]string       `json:"distTags,omitempty"`
 	Versions            []PackageCatalogVersion `json:"versions,omitempty"`
 }
 
@@ -133,6 +160,7 @@ type ProjectPackageChangePlan struct {
 	Workspace            ProjectEnvironmentWorkspace     `json:"workspace"`
 	Runtime              ProjectEnvironmentRuntime       `json:"runtime"`
 	Language             ProjectEnvironmentLanguage      `json:"language"`
+	Manager              ProjectPackageManager           `json:"manager"`
 	Source               PackageCenterSource             `json:"source"`
 	Changes              []ProjectPackageChange          `json:"changes"`
 	LocalChanges         []ProjectPackageLocalChange     `json:"localChanges"`

@@ -407,6 +407,29 @@ func (s *Store) cleanupLocked() {
 	}
 }
 
+// DeleteWorkspace removes active plans and durable completion records owned by
+// one project. It is idempotent and requires both bindings so a workspace ID
+// reused by another account cannot cross the user boundary.
+func (s *Store) DeleteWorkspace(userID, workspaceID string) error {
+	if s == nil || userID == "" || workspaceID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var cleanupErrors []error
+	for id, stored := range s.plans {
+		if stored.plan.UserID != userID || stored.plan.WorkspaceID != workspaceID {
+			continue
+		}
+		if err := s.removePersistentLocked(id); err != nil {
+			cleanupErrors = append(cleanupErrors, err)
+			continue
+		}
+		s.deleteLocked(id)
+	}
+	return errors.Join(cleanupErrors...)
+}
+
 // DeleteUser removes active plans and durable completion records owned by a
 // deleted account. It is idempotent and never crosses the user binding.
 func (s *Store) DeleteUser(userID string) error {
@@ -422,6 +445,7 @@ func (s *Store) DeleteUser(userID string) error {
 		}
 		if err := s.removePersistentLocked(id); err != nil {
 			cleanupErrors = append(cleanupErrors, err)
+			continue
 		}
 		s.deleteLocked(id)
 	}
@@ -478,6 +502,7 @@ func completedPlanIdentity(plan ExecutionPlan, expiresAt time.Time) ExecutionPla
 			PlanID:           plan.Public.PlanID,
 			ExpiresAt:        expiresAt.UnixMilli(),
 			Source:           plan.Public.Source,
+			Manager:          model.ProjectPackageManager{ID: plan.Public.Manager.ID, Name: plan.Public.Manager.Name},
 			ManifestBindings: append([]model.ProjectPackageManifestBinding(nil), plan.Public.ManifestBindings...),
 		},
 		UserID:             plan.UserID,

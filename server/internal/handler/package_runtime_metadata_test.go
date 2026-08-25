@@ -20,6 +20,17 @@ func TestDockerImageRuntimeMetadataUsesExactPythonVersionAndImmutableImageID(t *
 	}
 }
 
+func TestDockerImageRuntimeMetadataUsesExactNodeVersion(t *testing.T) {
+	metadata, ok := parseDockerImageRuntimeMetadata([]byte(`[{"Id":"sha256:node-20","Config":{"Env":["PATH=/usr/local/bin","NODE_VERSION=20.20.2"]}}]`), "node:20", "20")
+	if !ok || metadata.ImageID != "sha256:node-20" || metadata.Version != "20.20.2" || metadata.VersionSource != "docker-image-env" || metadata.VersionTrust != "exact" {
+		t.Fatalf("Node runtime metadata = %+v ok=%v", metadata, ok)
+	}
+	mismatch, ok := parseDockerImageRuntimeMetadata([]byte(`[{"Id":"sha256:node-22","Config":{"Env":["NODE_VERSION=22.23.2"]}}]`), "node:20", "20")
+	if !ok || mismatch.ImageID != "sha256:node-22" || mismatch.Version != "20" || mismatch.VersionTrust != "series" {
+		t.Fatalf("mismatched Node image version did not fail closed: %+v ok=%v", mismatch, ok)
+	}
+}
+
 func TestRuntimeMetadataCacheRefreshChangesDependencyFingerprintForMutableTag(t *testing.T) {
 	provider := NewDockerImageRuntimeMetadataProvider(time.Minute, time.Second)
 	current := time.Unix(100, 0)

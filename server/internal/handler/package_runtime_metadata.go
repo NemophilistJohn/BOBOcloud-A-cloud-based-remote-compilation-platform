@@ -14,7 +14,7 @@ import (
 
 const runtimeMetadataFailureTTL = 5 * time.Second
 
-var exactPythonRuntimeVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+var exactRuntimeVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 
 type RuntimeMetadata struct {
 	ImageID       string
@@ -150,20 +150,25 @@ func parseDockerImageRuntimeMetadata(data []byte, runtimeID, configuredVersion s
 	}
 	metadata := fallbackRuntimeMetadata(configuredVersion)
 	metadata.ImageID = strings.TrimSpace(images[0].ID)
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(runtimeID)), "python:") {
-		for _, entry := range images[0].Config.Env {
-			if !strings.HasPrefix(entry, "PYTHON_VERSION=") {
-				continue
-			}
-			version := strings.TrimSpace(strings.TrimPrefix(entry, "PYTHON_VERSION="))
-			series := strings.TrimSpace(configuredVersion)
-			if exactPythonRuntimeVersionPattern.MatchString(version) && (series == "" || version == series || strings.HasPrefix(version, series+".")) {
-				metadata.Version = version
-				metadata.VersionSource = "docker-image-env"
-				metadata.VersionTrust = "exact"
-			}
-			break
+	versionEnvironment := ""
+	switch {
+	case strings.HasPrefix(strings.ToLower(strings.TrimSpace(runtimeID)), "python:"):
+		versionEnvironment = "PYTHON_VERSION="
+	case strings.HasPrefix(strings.ToLower(strings.TrimSpace(runtimeID)), "node:"):
+		versionEnvironment = "NODE_VERSION="
+	}
+	for _, entry := range images[0].Config.Env {
+		if versionEnvironment == "" || !strings.HasPrefix(entry, versionEnvironment) {
+			continue
 		}
+		version := strings.TrimSpace(strings.TrimPrefix(entry, versionEnvironment))
+		series := strings.TrimSpace(configuredVersion)
+		if exactRuntimeVersionPattern.MatchString(version) && (series == "" || version == series || strings.HasPrefix(version, series+".")) {
+			metadata.Version = version
+			metadata.VersionSource = "docker-image-env"
+			metadata.VersionTrust = "exact"
+		}
+		break
 	}
 	return metadata, true
 }

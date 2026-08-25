@@ -107,6 +107,9 @@ const EXPECTED_IPC = new Map([
   ['plugins:agent-approval-describe', 'handle'],
   ['plugins:agent-approval-decide', 'handle'],
   ['plugins:agent-approval-cancel', 'handle'],
+  ['plugins:agent-access-get', 'handle'],
+  ['plugins:agent-access-set', 'handle'],
+  ['plugins:agent-access-clear', 'handle'],
   ['plugins:open-folder', 'handle'],
   ['plugins:refresh', 'handle'],
   ['tasks:list', 'handle'],
@@ -127,7 +130,9 @@ const EXPECTED_IPC = new Map([
   ['terminal:status', 'handle'],
   ['package-center:apply-local-changes', 'handle'],
   ['package-center:rollback-local-changes', 'handle'],
-  ['package-center:commit-local-changes', 'handle']
+  ['package-center:commit-local-changes', 'handle'],
+  ['package-center:list-pending-recoveries', 'handle'],
+  ['package-center:resolve-pending-recovery', 'handle']
 ]);
 
 const LEGACY_RENDERER_MODULES = [

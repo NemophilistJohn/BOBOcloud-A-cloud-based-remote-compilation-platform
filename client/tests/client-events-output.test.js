@@ -308,6 +308,12 @@ test('terminal rendering stays behind the sender-bound main-process bridge', () 
   assert.match(source, /global\.api\.onTerminalStatus\(handleTerminalStatus\)/);
   assert.match(source, /global\.api\.onTerminalPackageIntent\(handleTerminalPackageIntent\)/);
   assert.match(source, /applyManagedPackageChanges\(terminalIntentChanges\(event\)/);
+  assert.match(source, /manager:\s*String\(event\.manager \|\| ''\)/);
+  assert.match(source, /\['runtime', 'dev', 'optional'\]\.indexOf\(requestedScope\) >= 0/);
+  assert.match(source, /scope: validScope \? requestedScope : 'runtime'/);
+  assert.match(source, /case 'unsupported_option':[\s\S]*?This terminal library command cannot be managed automatically\. Use Package Center instead\./);
+  assert.match(source, /case 'unsupported_command':[\s\S]*?This terminal library command cannot be managed automatically\. Use Package Center instead\./);
+  assert.doesNotMatch(source, /This pip (?:option|command)/);
   assert.doesNotMatch(source, /sendToServer\(['"]terminal['"]/);
   assert.doesNotMatch(source, /getElementById\(['"]terminal-input['"]\)/);
   assert.doesNotMatch(source, /getElementById\(['"]terminal-output['"]\)/);

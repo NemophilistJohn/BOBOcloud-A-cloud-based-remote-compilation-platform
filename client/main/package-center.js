@@ -4,15 +4,30 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-// The first managed adapter changes one requirements manifest. Keeping the
-// transaction single-file also gives a process crash one unambiguous durable
-// truth: either the old file or the reviewed replacement.
-const MAX_CHANGE_COUNT = 1;
-const MAX_BINDING_COUNT = 1;
+// Package-manager transactions may bind a manifest and its lock file. Keep the
+// set deliberately small so every file can be inspected, CAS-written, and
+// rolled back as one user operation.
+const MAX_CHANGE_COUNT = 8;
+const MAX_BINDING_COUNT = 8;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
+const MAX_JOURNAL_BYTES = 64 * 1024;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9._:@/-]{1,256}$/;
+const TRANSACTION_ID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+const JOURNAL_SCHEMA = 'bobocloud-package-local-journal/v1';
+const JOURNAL_DIRECTORY_NAME = 'package-center-transactions';
+const JOURNAL_FILE_NAME = 'journal.json';
+const JOURNAL_STATES = new Set([
+  'prepared',
+  'applied',
+  'server-applied',
+  'rollback-reconciliation-required',
+  'commit-reconciliation-required',
+  'committed',
+  'rolled-back',
+  'preserved'
+]);
 
 const MANIFEST_NAMES = Object.freeze({
   python: new Set([
@@ -100,6 +115,21 @@ function transactionKey(identity) {
   return (process.platform === 'win32' ? root.toLowerCase() : root) + ':' + identity.workspaceIdentity;
 }
 
+function pathKey(value) {
+  const resolved = path.resolve(value);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function isAllowedDependencyPath(relativePath) {
+  for (const language of Object.keys(MANIFEST_NAMES)) {
+    try {
+      normalizeRelativeManifestPath(relativePath, language);
+      return true;
+    } catch (_) {}
+  }
+  return false;
+}
+
 function serializedError(error) {
   const result = {
     code: error && error.code || 'PACKAGE_LOCAL_TRANSACTION_FAILED',
@@ -107,6 +137,8 @@ function serializedError(error) {
   };
   if (error && Array.isArray(error.conflicts)) result.conflicts = error.conflicts;
   if (error && error.relativePath) result.relativePath = error.relativePath;
+  if (error && error.transactionId) result.transactionId = error.transactionId;
+  if (error && error.reconciliationRequired === true) result.reconciliationRequired = true;
   return result;
 }
 
@@ -132,6 +164,14 @@ async function atomicWrite(filePath, content, mode, beforeReplace) {
   }
 }
 
+async function atomicWriteJSON(filePath, value) {
+  const serialized = Buffer.from(JSON.stringify(value), 'utf8');
+  if (serialized.length > MAX_JOURNAL_BYTES) {
+    throw packageCenterError('PACKAGE_JOURNAL_TOO_LARGE', 'Package transaction journal exceeds its size limit');
+  }
+  await atomicWrite(filePath, serialized, 0o600);
+}
+
 async function readRegularFile(target, maximumBytes) {
   let stat;
   try {
@@ -155,13 +195,23 @@ function createPackageCenterController(options) {
   const getWindow = options.getWindow;
   const getWorkspaceIdentity = options.getWorkspaceIdentity;
   const onFilesChanged = options.onFilesChanged || (() => {});
+  const configuredUserDataPath = String(options.userDataPath || '').trim();
+  if (!configuredUserDataPath || !path.isAbsolute(configuredUserDataPath)) {
+    throw packageCenterError('PACKAGE_JOURNAL_PATH_INVALID', 'Package transaction recovery requires an absolute Electron user data path');
+  }
+  const journalRoot = path.join(path.resolve(configuredUserDataPath), JOURNAL_DIRECTORY_NAME);
   const transactions = new Map();
   const activeByWorkspace = new Map();
   const finalized = new Map();
+  const pendingRecoveries = new Map();
   const beforeCompareAndSwap = typeof options.beforeCompareAndSwap === 'function'
     ? options.beforeCompareAndSwap
     : null;
+  const onJournalCheckpoint = typeof options.onJournalCheckpoint === 'function'
+    ? options.onJournalCheckpoint
+    : null;
   let mutationQueue = Promise.resolve();
+  let journalRootRealPath = '';
   let workspaceTransitionDepth = 0;
 
   function enqueue(task) {
@@ -195,6 +245,185 @@ function createPackageCenterController(options) {
     try { onFilesChanged(files); } catch (_) {}
   }
 
+  function publicRecoveryConflict(conflict) {
+    return {
+      path: String(conflict && conflict.path || ''),
+      expectedSha256: DIGEST_PATTERN.test(String(conflict && conflict.expectedSha256 || ''))
+        ? String(conflict.expectedSha256).toLowerCase()
+        : null,
+      actualSha256: DIGEST_PATTERN.test(String(conflict && conflict.actualSha256 || ''))
+        ? String(conflict.actualSha256).toLowerCase()
+        : null,
+      source: conflict && conflict.source === 'journal-backup' ? 'journal-backup' : 'workspace'
+    };
+  }
+
+  async function rememberPendingRecovery(transaction, state, conflicts) {
+    const files = [];
+    for (const change of transaction.changes || []) {
+      let current = null;
+      try { current = await readRegularFile(change.target, MAX_FILE_BYTES); } catch (_) {}
+      files.push({
+        path: change.relativePath,
+        exists: Boolean(current && current.exists),
+        sha256: current && current.exists ? current.digest : null
+      });
+    }
+    pendingRecoveries.set(transaction.id, {
+      id: transaction.id,
+      directory: transaction.journal && transaction.journal.directory || '',
+      rootPath: transaction.rootPath,
+      state,
+      files,
+      conflicts: (conflicts || []).slice(0, MAX_CHANGE_COUNT).map(publicRecoveryConflict)
+    });
+  }
+
+  function publicPendingRecovery(entry) {
+    return {
+      schema: 'project-package-local-recovery/v1',
+      transactionId: entry.id,
+      state: 'reconciliation-required',
+      files: entry.files.map(file => ({ path: file.path, exists: file.exists, sha256: file.sha256 })),
+      conflicts: entry.conflicts.map(publicRecoveryConflict)
+    };
+  }
+
+  function pendingRecoveriesForRoot(rootPath) {
+    return [...pendingRecoveries.values()].filter(entry => sameRoot(entry.rootPath, rootPath));
+  }
+
+  async function journalCheckpoint(phase, transaction, change) {
+    if (!onJournalCheckpoint) return;
+    await Promise.resolve(onJournalCheckpoint({
+      phase,
+      transactionId: transaction && transaction.id || '',
+      journalDirectory: transaction && transaction.journal && transaction.journal.directory || '',
+      path: change && change.target || '',
+      relativePath: change && change.relativePath || ''
+    }));
+  }
+
+  function simulatedProcessCrash(error) {
+    return Boolean(error && error.simulateProcessCrash === true);
+  }
+
+  async function ensureJournalRoot() {
+    if (journalRootRealPath) return journalRootRealPath;
+    await fs.promises.mkdir(journalRoot, { recursive: true, mode: 0o700 });
+    const stat = await fs.promises.lstat(journalRoot);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw packageCenterError('PACKAGE_JOURNAL_PATH_INVALID', 'Package transaction journal directory is not a private real directory');
+    }
+    journalRootRealPath = await fs.promises.realpath(journalRoot);
+    try { await fs.promises.chmod(journalRootRealPath, 0o700); } catch (_) {}
+    return journalRootRealPath;
+  }
+
+  function assertJournalDirectory(directory, rootRealPath) {
+    const resolved = path.resolve(directory);
+    const id = path.basename(resolved);
+    if (!TRANSACTION_ID_PATTERN.test(id) || !sameRoot(path.dirname(resolved), rootRealPath)) {
+      throw packageCenterError('PACKAGE_JOURNAL_PATH_INVALID', 'Package transaction journal path is invalid');
+    }
+    return { directory: resolved, id };
+  }
+
+  async function removeJournalDirectory(directory) {
+    const rootRealPath = await ensureJournalRoot();
+    const validated = assertJournalDirectory(directory, rootRealPath);
+    let stat;
+    try {
+      stat = await fs.promises.lstat(validated.directory);
+    } catch (error) {
+      if (error && error.code === 'ENOENT') {
+        pendingRecoveries.delete(validated.id);
+        return;
+      }
+      throw error;
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw packageCenterError('PACKAGE_JOURNAL_PATH_INVALID', 'Package transaction journal entry is not a real directory');
+    }
+    await fs.promises.rm(validated.directory, { recursive: true, force: true });
+    pendingRecoveries.delete(validated.id);
+  }
+
+  function journalRecord(transaction, state) {
+    return {
+      schema: JOURNAL_SCHEMA,
+      transactionId: transaction.id,
+      state,
+      workspaceRoot: transaction.rootPath,
+      files: transaction.changes.map(change => ({
+        target: change.target,
+        oldExists: change.existed,
+        oldSha256: change.oldDigest,
+        newSha256: change.newDigest
+      }))
+    };
+  }
+
+  async function createTransactionJournal(transaction) {
+    if (!transaction.changes.length) return;
+    if (!pathIsOutside(transaction.rootPath, journalRoot)) {
+      throw packageCenterError('PACKAGE_JOURNAL_PATH_INVALID', 'Package transaction journal must be outside the workspace');
+    }
+    const rootRealPath = await ensureJournalRoot();
+    if (!pathIsOutside(transaction.rootPath, rootRealPath)) {
+      throw packageCenterError('PACKAGE_JOURNAL_PATH_INVALID', 'Package transaction journal must be outside the workspace');
+    }
+    const directory = path.join(rootRealPath, transaction.id);
+    assertJournalDirectory(directory, rootRealPath);
+    await fs.promises.mkdir(directory, { mode: 0o700 });
+    try {
+      const directoryStat = await fs.promises.lstat(directory);
+      if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
+        throw packageCenterError('PACKAGE_JOURNAL_PATH_INVALID', 'Package transaction journal entry is not a real directory');
+      }
+      try { await fs.promises.chmod(directory, 0o700); } catch (_) {}
+      for (let index = 0; index < transaction.changes.length; index += 1) {
+        const change = transaction.changes[index];
+        if (!change.existed) continue;
+        const backupPath = path.join(directory, `before-${index}.bin`);
+        await atomicWrite(backupPath, change.oldContent, 0o600);
+        const backup = await readRegularFile(backupPath, MAX_FILE_BYTES);
+        if (!backup.exists || backup.digest !== change.oldDigest) {
+          throw packageCenterError('PACKAGE_JOURNAL_BACKUP_INVALID', 'Package transaction backup could not be verified', { relativePath: change.relativePath });
+        }
+      }
+      const record = journalRecord(transaction, 'prepared');
+      const filePath = path.join(directory, JOURNAL_FILE_NAME);
+      await atomicWriteJSON(filePath, record);
+      transaction.journal = { directory, filePath, record };
+      await journalCheckpoint('prepared', transaction);
+    } catch (error) {
+      if (!simulatedProcessCrash(error)) {
+        try { await removeJournalDirectory(directory); } catch (_) {}
+      }
+      throw error;
+    }
+  }
+
+  async function updateTransactionJournalState(transaction, state) {
+    if (!transaction.journal) return;
+    if (!JOURNAL_STATES.has(state)) {
+      throw packageCenterError('PACKAGE_JOURNAL_STATE_INVALID', 'Package transaction journal state is invalid');
+    }
+    transaction.journal.record.state = state;
+    await atomicWriteJSON(transaction.journal.filePath, transaction.journal.record);
+    await journalCheckpoint(state, transaction);
+  }
+
+  async function finalizeTransactionJournal(transaction, state, preserve) {
+    if (!transaction.journal) return;
+    await updateTransactionJournalState(transaction, state);
+    if (!preserve) {
+      await removeJournalDirectory(transaction.journal.directory);
+      transaction.journal = null;
+    }
+  }
+
   function currentIdentity(payload) {
     const current = getWorkspaceIdentity();
     const requestedRoot = payload && (payload.workspaceRoot || payload.context && payload.context.workspaceRoot);
@@ -218,8 +447,8 @@ function createPackageCenterController(options) {
   }
 
   async function inspectChanges(rootPath, rootRealPath, language, rawChanges) {
-    if (!Array.isArray(rawChanges) || rawChanges.length !== MAX_CHANGE_COUNT) {
-      throw packageCenterError('PACKAGE_CHANGE_SET_INVALID', 'The current package adapter requires exactly one dependency file change');
+    if (!Array.isArray(rawChanges) || rawChanges.length < 1 || rawChanges.length > MAX_CHANGE_COUNT) {
+      throw packageCenterError('PACKAGE_CHANGE_SET_INVALID', `A package transaction requires between 1 and ${MAX_CHANGE_COUNT} dependency file changes`);
     }
     const seen = new Set();
     const changes = [];
@@ -300,15 +529,21 @@ function createPackageCenterController(options) {
   }
 
   async function inspectManifestBindings(rootPath, rootRealPath, language, rawBindings) {
-    if (!Array.isArray(rawBindings) || rawBindings.length !== MAX_BINDING_COUNT) {
-      throw packageCenterError('PACKAGE_BINDING_SET_INVALID', 'A reinstall plan requires exactly one dependency manifest binding');
+    if (!Array.isArray(rawBindings) || rawBindings.length < 1 || rawBindings.length > MAX_BINDING_COUNT) {
+      throw packageCenterError('PACKAGE_BINDING_SET_INVALID', `A package plan requires between 1 and ${MAX_BINDING_COUNT} dependency manifest bindings`);
     }
+    const seen = new Set();
     const bindings = [];
     for (const raw of rawBindings) {
       if (!isRecord(raw) || !DIGEST_PATTERN.test(String(raw.sha256 || ''))) {
         throw packageCenterError('PACKAGE_BINDING_INVALID', 'The reinstall plan contains an invalid dependency manifest binding');
       }
       const relativePath = normalizeRelativeManifestPath(raw.path, language);
+      const collisionKey = process.platform === 'win32' ? relativePath.toLowerCase() : relativePath;
+      if (seen.has(collisionKey)) {
+        throw packageCenterError('PACKAGE_BINDING_DUPLICATE', 'The reinstall plan binds the same dependency file more than once', { relativePath });
+      }
+      seen.add(collisionKey);
       const lexicalTarget = path.resolve(rootPath, ...relativePath.split('/'));
       if (pathIsOutside(rootPath, lexicalTarget) || lexicalTarget === rootPath) {
         throw packageCenterError('PACKAGE_CHANGE_PATH_INVALID', 'Dependency file escapes the workspace', { relativePath });
@@ -339,8 +574,22 @@ function createPackageCenterController(options) {
     return bindings;
   }
 
-  function validatePlanShape(plan) {
+  function validatePlanShape(plan, language) {
     const localChanges = Array.isArray(plan.localChanges) ? plan.localChanges : null;
+    if (!Array.isArray(plan.manifestBindings) || plan.manifestBindings.length < 1 || plan.manifestBindings.length > MAX_BINDING_COUNT) {
+      throw packageCenterError('PACKAGE_BINDING_SET_INVALID', `The package plan must bind between 1 and ${MAX_BINDING_COUNT} dependency files`);
+    }
+    const bindingDigests = new Map();
+    for (const binding of plan.manifestBindings) {
+      if (!isRecord(binding)) throw packageCenterError('PACKAGE_BINDING_INVALID', 'The package plan contains an invalid dependency manifest binding');
+      const relativePath = normalizeRelativeManifestPath(binding.path, language);
+      const collisionKey = process.platform === 'win32' ? relativePath.toLowerCase() : relativePath;
+      const digest = String(binding.sha256 || '').toLowerCase();
+      if (!DIGEST_PATTERN.test(digest) || bindingDigests.has(collisionKey)) {
+        throw packageCenterError('PACKAGE_BINDING_INVALID', 'The package plan contains an invalid dependency manifest binding');
+      }
+      bindingDigests.set(collisionKey, digest);
+    }
     if (plan.reinstall === true) {
       const operations = Array.isArray(plan.changes) ? plan.changes : [];
       if (!localChanges || localChanges.length !== 0 || operations.length !== 1 ||
@@ -348,18 +597,23 @@ function createPackageCenterController(options) {
           !String(operations[0].name || '').trim() || !String(operations[0].version || '').trim()) {
         throw packageCenterError('PACKAGE_REINSTALL_PLAN_INVALID', 'The reinstall plan must contain one exact package update and no local file changes');
       }
-      if (!Array.isArray(plan.manifestBindings) || plan.manifestBindings.length !== MAX_BINDING_COUNT) {
-        throw packageCenterError('PACKAGE_BINDING_SET_INVALID', 'The reinstall plan must bind one dependency manifest');
-      }
       return;
     }
-    if (!localChanges || localChanges.length !== MAX_CHANGE_COUNT) {
-      throw packageCenterError('PACKAGE_CHANGE_SET_INVALID', 'The current package adapter requires exactly one dependency file change');
+    if (!localChanges || localChanges.length < 1 || localChanges.length > MAX_CHANGE_COUNT) {
+      throw packageCenterError('PACKAGE_CHANGE_SET_INVALID', `The package adapter must return between 1 and ${MAX_CHANGE_COUNT} dependency file changes`);
+    }
+    for (const change of localChanges) {
+      if (!isRecord(change)) throw packageCenterError('PACKAGE_CHANGE_INVALID', 'Package plan contains an invalid local file change');
+      const relativePath = normalizeRelativeManifestPath(change.path, language);
+      const collisionKey = process.platform === 'win32' ? relativePath.toLowerCase() : relativePath;
+      if (bindingDigests.get(collisionKey) !== String(change.newSha256 || '').toLowerCase()) {
+        throw packageCenterError('PACKAGE_CHANGE_UNBOUND', 'Every dependency file change must match a reviewed manifest binding', { relativePath });
+      }
     }
   }
 
   function requestFingerprint(planId, revision, language, plan) {
-    validatePlanShape(plan);
+    validatePlanShape(plan, language);
     const rawChanges = plan.localChanges;
     const digest = crypto.createHash('sha256');
     digest.update(planId + '\0' + revision + '\0' + language + '\0' + String(plan.reinstall === true) + '\0');
@@ -380,12 +634,11 @@ function createPackageCenterController(options) {
     if (plan.reinstall === true) {
       const operation = plan.changes[0];
       digest.update(String(operation.operation).toLowerCase() + '\0' + String(operation.name).trim().toLowerCase() + '\0' + String(operation.version).trim() + '\0');
-      for (const binding of plan.manifestBindings) {
-        const relativePath = normalizeRelativeManifestPath(binding && binding.path, language);
-        const bindingDigest = String(binding && binding.sha256 || '').toLowerCase();
-        if (!DIGEST_PATTERN.test(bindingDigest)) throw packageCenterError('PACKAGE_BINDING_INVALID', 'The reinstall plan contains an invalid dependency manifest binding');
-        digest.update(relativePath + '\0' + bindingDigest + '\0');
-      }
+    }
+    for (const binding of plan.manifestBindings) {
+      const relativePath = normalizeRelativeManifestPath(binding && binding.path, language);
+      const bindingDigest = String(binding && binding.sha256 || '').toLowerCase();
+      digest.update(relativePath + '\0' + bindingDigest + '\0');
     }
     return digest.digest('hex');
   }
@@ -464,6 +717,259 @@ function createPackageCenterController(options) {
     }
   }
 
+  function hasOnlyKeys(value, allowed) {
+    return Object.keys(value).every(key => allowed.has(key));
+  }
+
+  async function loadRecoveryJournal(directory) {
+    const rootRealPath = await ensureJournalRoot();
+    const validatedDirectory = assertJournalDirectory(directory, rootRealPath);
+    const directoryStat = await fs.promises.lstat(validatedDirectory.directory);
+    if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
+      throw packageCenterError('PACKAGE_JOURNAL_INVALID', 'Package transaction journal entry is not a real directory');
+    }
+    const directoryRealPath = await fs.promises.realpath(validatedDirectory.directory);
+    if (!sameRoot(directoryRealPath, validatedDirectory.directory)) {
+      throw packageCenterError('PACKAGE_JOURNAL_INVALID', 'Package transaction journal entry resolves outside its private directory');
+    }
+    const filePath = path.join(directoryRealPath, JOURNAL_FILE_NAME);
+    const journalFile = await readRegularFile(filePath, MAX_JOURNAL_BYTES);
+    if (!journalFile.exists) throw packageCenterError('PACKAGE_JOURNAL_INVALID', 'Package transaction journal is missing');
+    let record;
+    try {
+      record = JSON.parse(journalFile.content.toString('utf8'));
+    } catch (_) {
+      throw packageCenterError('PACKAGE_JOURNAL_INVALID', 'Package transaction journal is not valid JSON');
+    }
+    const topLevelKeys = new Set(['schema', 'transactionId', 'state', 'workspaceRoot', 'files']);
+    if (!isRecord(record) || !hasOnlyKeys(record, topLevelKeys) || record.schema !== JOURNAL_SCHEMA ||
+        record.transactionId !== validatedDirectory.id || !JOURNAL_STATES.has(record.state) ||
+        typeof record.workspaceRoot !== 'string' || !path.isAbsolute(record.workspaceRoot) ||
+        !Array.isArray(record.files) || record.files.length < 1 || record.files.length > MAX_CHANGE_COUNT) {
+      throw packageCenterError('PACKAGE_JOURNAL_INVALID', 'Package transaction journal metadata is invalid');
+    }
+    const workspaceRoot = path.resolve(record.workspaceRoot);
+    if (!sameRoot(workspaceRoot, record.workspaceRoot) || !pathIsOutside(workspaceRoot, rootRealPath)) {
+      throw packageCenterError('PACKAGE_JOURNAL_INVALID', 'Package transaction journal workspace boundary is invalid');
+    }
+    const fileKeys = new Set(['target', 'oldExists', 'oldSha256', 'newSha256']);
+    const seen = new Set();
+    const files = record.files.map((raw, index) => {
+      if (!isRecord(raw) || !hasOnlyKeys(raw, fileKeys) || typeof raw.target !== 'string' ||
+          !path.isAbsolute(raw.target) || typeof raw.oldExists !== 'boolean') {
+        throw packageCenterError('PACKAGE_JOURNAL_INVALID', 'Package transaction journal file metadata is invalid');
+      }
+      const target = path.resolve(raw.target);
+      const oldDigest = raw.oldExists ? String(raw.oldSha256 || '').toLowerCase() : null;
+      const newDigest = String(raw.newSha256 || '').toLowerCase();
+      if (!sameRoot(target, raw.target) || pathIsOutside(workspaceRoot, target) || target === workspaceRoot ||
+          (raw.oldExists ? !DIGEST_PATTERN.test(oldDigest) : raw.oldSha256 !== null) ||
+          !DIGEST_PATTERN.test(newDigest) || oldDigest === newDigest) {
+        throw packageCenterError('PACKAGE_JOURNAL_INVALID', 'Package transaction journal file identity is invalid');
+      }
+      const relativePath = path.relative(workspaceRoot, target).split(path.sep).join('/');
+      if (!isAllowedDependencyPath(relativePath)) {
+        throw packageCenterError('PACKAGE_JOURNAL_INVALID', 'Package transaction journal targets a non-dependency file');
+      }
+      const collisionKey = pathKey(target);
+      if (seen.has(collisionKey)) throw packageCenterError('PACKAGE_JOURNAL_INVALID', 'Package transaction journal contains duplicate files');
+      seen.add(collisionKey);
+      return {
+        index,
+        relativePath,
+        target,
+        existed: raw.oldExists,
+        oldDigest,
+        newDigest,
+        backupPath: raw.oldExists ? path.join(directoryRealPath, `before-${index}.bin`) : null
+      };
+    });
+    return {
+      id: record.transactionId,
+      rootPath: workspaceRoot,
+      changes: files,
+      journal: { directory: directoryRealPath, filePath, record }
+    };
+  }
+
+  async function inspectRecoveryFiles(transaction, commitDirection) {
+    let rootStat;
+    try {
+      rootStat = await fs.promises.lstat(transaction.rootPath);
+    } catch (_) {
+      throw packageCenterError('PACKAGE_RECOVERY_RECONCILIATION_REQUIRED', 'Package transaction workspace is unavailable');
+    }
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+      throw packageCenterError('PACKAGE_RECOVERY_RECONCILIATION_REQUIRED', 'Package transaction workspace is not a real directory');
+    }
+    const rootRealPath = await fs.promises.realpath(transaction.rootPath);
+    if (!sameRoot(rootRealPath, transaction.rootPath)) {
+      throw packageCenterError('PACKAGE_RECOVERY_RECONCILIATION_REQUIRED', 'Package transaction workspace boundary changed');
+    }
+    const conflicts = [];
+    for (const change of transaction.changes) {
+      let parentRealPath;
+      try {
+        const parentStat = await fs.promises.lstat(path.dirname(change.target));
+        if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) throw new Error('invalid parent');
+        parentRealPath = await fs.promises.realpath(path.dirname(change.target));
+      } catch (_) {
+        conflicts.push({ path: change.relativePath, expectedSha256: change.newDigest, actualSha256: null });
+        continue;
+      }
+      if (pathIsOutside(rootRealPath, parentRealPath) || !sameRoot(path.join(parentRealPath, path.basename(change.target)), change.target)) {
+        conflicts.push({ path: change.relativePath, expectedSha256: change.newDigest, actualSha256: null });
+        continue;
+      }
+      let current;
+      try {
+        current = await readRegularFile(change.target, MAX_FILE_BYTES);
+      } catch (_) {
+        conflicts.push({ path: change.relativePath, expectedSha256: change.newDigest, actualSha256: null });
+        continue;
+      }
+      change.current = current;
+      change.position = current.exists && current.digest === change.newDigest
+        ? 'new'
+        : (change.existed ? (current.exists && current.digest === change.oldDigest ? 'old' : 'conflict') : (!current.exists ? 'old' : 'conflict'));
+      if (commitDirection ? change.position !== 'new' : change.position === 'conflict') {
+        conflicts.push({ path: change.relativePath, expectedSha256: change.newDigest, actualSha256: current.digest });
+      }
+      if (change.existed) {
+        try {
+          const backup = await readRegularFile(change.backupPath, MAX_FILE_BYTES);
+          if (!backup.exists || backup.digest !== change.oldDigest) throw new Error('invalid backup');
+          change.oldContent = backup.content;
+        } catch (_) {
+          conflicts.push({ path: change.relativePath, expectedSha256: change.oldDigest, actualSha256: null, source: 'journal-backup' });
+        }
+      }
+    }
+    return conflicts;
+  }
+
+  async function preserveRecoveryJournal(transaction, state, conflicts) {
+    try { await updateTransactionJournalState(transaction, state); } catch (_) {}
+    await rememberPendingRecovery(transaction, state, conflicts);
+    notify('reconciliation-required', transaction, { recovered: true, conflicts: conflicts || [] });
+    return {
+      success: false,
+      transactionId: transaction.id,
+      state: 'reconciliation-required',
+      reconciliationRequired: true,
+      preserved: true,
+      conflicts: conflicts || []
+    };
+  }
+
+  async function recoverJournalDirectory(directory) {
+    const transaction = await loadRecoveryJournal(directory);
+    const state = transaction.journal.record.state;
+    if (['committed', 'rolled-back', 'preserved'].includes(state)) {
+      await removeJournalDirectory(transaction.journal.directory);
+      return { success: true, transactionId: transaction.id, state, cleaned: true };
+    }
+    const commitDirection = state === 'server-applied' || state === 'commit-reconciliation-required';
+    let conflicts;
+    try {
+      conflicts = await inspectRecoveryFiles(transaction, commitDirection);
+    } catch (error) {
+      return preserveRecoveryJournal(transaction, commitDirection ? 'commit-reconciliation-required' : 'rollback-reconciliation-required', [{
+        path: '',
+        expectedSha256: null,
+        actualSha256: null,
+        error: serializedError(error)
+      }]);
+    }
+    if (conflicts.length) {
+      const result = await preserveRecoveryJournal(transaction, commitDirection ? 'commit-reconciliation-required' : 'rollback-reconciliation-required', conflicts);
+      for (const change of transaction.changes) {
+        if (change.oldContent) change.oldContent.fill(0);
+      }
+      return result;
+    }
+    if (commitDirection) {
+      await finalizeTransactionJournal(transaction, 'committed', false);
+      for (const change of transaction.changes) {
+        if (change.oldContent) change.oldContent.fill(0);
+      }
+      return { success: true, transactionId: transaction.id, state: 'committed', recovered: true };
+    }
+
+    const restored = [];
+    try {
+      for (const change of [...transaction.changes].reverse()) {
+        if (change.position === 'old') continue;
+        const verify = () => assertExpectedFile(
+          change,
+          change.newDigest,
+          'PACKAGE_ROLLBACK_CONFLICT',
+          'Dependency file changed while an interrupted package transaction was being recovered',
+          'recovery'
+        );
+        if (change.existed) {
+          const mode = change.current && change.current.stat ? change.current.stat.mode & 0o777 : 0o600;
+          await atomicWrite(change.target, change.oldContent, mode, verify);
+        } else {
+          await verify();
+          try { await fs.promises.unlink(change.target); } catch (error) { if (!error || error.code !== 'ENOENT') throw error; }
+        }
+        restored.push(change);
+        await journalCheckpoint('recovery-file-restored', transaction, change);
+      }
+    } catch (error) {
+      if (simulatedProcessCrash(error)) {
+        wipeTransactionContents(transaction);
+        throw error;
+      }
+      const recoveryConflicts = error && Array.isArray(error.conflicts) ? error.conflicts : [{
+        path: error && error.relativePath || '',
+        expectedSha256: null,
+        actualSha256: null,
+        error: serializedError(error)
+      }];
+      return preserveRecoveryJournal(transaction, 'rollback-reconciliation-required', recoveryConflicts);
+    } finally {
+      for (const change of transaction.changes) {
+        if (change.oldContent) change.oldContent.fill(0);
+      }
+    }
+    reportFilesChanged(restored.map(change => ({
+      event: change.existed ? 'file-changed' : 'file-deleted',
+      path: change.target,
+      relativePath: change.relativePath
+    })));
+    await finalizeTransactionJournal(transaction, 'rolled-back', false);
+    return { success: true, transactionId: transaction.id, state: 'rolled-back', recovered: true };
+  }
+
+  async function recoverJournalsUnqueued() {
+    const rootRealPath = await ensureJournalRoot();
+    const entries = await fs.promises.readdir(rootRealPath, { withFileTypes: true });
+    const results = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !TRANSACTION_ID_PATTERN.test(entry.name)) continue;
+      const directory = path.join(rootRealPath, entry.name);
+      try {
+        try {
+          await fs.promises.lstat(path.join(directory, JOURNAL_FILE_NAME));
+        } catch (error) {
+          if (!error || error.code !== 'ENOENT') throw error;
+          // Targets are never mutated before the journal rename succeeds, so
+          // a transaction directory without journal.json only contains an
+          // interrupted private backup preparation and is safe to discard.
+          await removeJournalDirectory(directory);
+          results.push({ success: true, transactionId: entry.name, state: 'orphan-preparation-removed', recovered: true });
+          continue;
+        }
+        results.push(await recoverJournalDirectory(directory));
+      } catch (error) {
+        results.push({ success: false, transactionId: entry.name, preserved: true, error: serializedError(error) });
+      }
+    }
+    return results;
+  }
+
   function rememberFinalized(transaction, state, details) {
     finalized.set(transaction.id, {
       state,
@@ -478,13 +984,23 @@ function createPackageCenterController(options) {
     while (finalized.size > 100) finalized.delete(finalized.keys().next().value);
   }
 
-  function releaseTransaction(transaction, state, details) {
-    transactions.delete(transaction.id);
-    activeByWorkspace.delete(transaction.workspaceKey);
+  function wipeTransactionContents(transaction) {
     for (const change of transaction.changes) {
       if (change.oldContent) change.oldContent.fill(0);
-      change.newContent.fill(0);
+      if (change.newContent) change.newContent.fill(0);
     }
+  }
+
+  async function releaseTransaction(transaction, state, details) {
+    const preserveJournal = state === 'reconciliation-required' || state === 'superseded';
+    const journalState = state === 'reconciliation-required' && details && details.serverApplied
+      ? 'commit-reconciliation-required'
+      : (preserveJournal ? 'rollback-reconciliation-required' : state);
+    await finalizeTransactionJournal(transaction, journalState, preserveJournal);
+    if (preserveJournal) await rememberPendingRecovery(transaction, journalState, details && details.conflicts);
+    transactions.delete(transaction.id);
+    activeByWorkspace.delete(transaction.workspaceKey);
+    wipeTransactionContents(transaction);
     rememberFinalized(transaction, state, details);
   }
 
@@ -494,6 +1010,14 @@ function createPackageCenterController(options) {
     }
     if (!isRecord(payload)) throw packageCenterError('PACKAGE_PLAN_INVALID', 'Package plan is required');
     const identity = currentIdentity(payload);
+    const unresolved = pendingRecoveriesForRoot(identity.rootPath);
+    if (unresolved.length) {
+      throw packageCenterError(
+        'PACKAGE_RECOVERY_RECONCILIATION_REQUIRED',
+        'Resolve the interrupted dependency file transaction before starting another package change',
+        { transactionId: unresolved[0].id, reconciliationRequired: true }
+      );
+    }
     const plan = isRecord(payload.plan) ? payload.plan : payload;
     const planId = String(plan.planId || '').trim();
     const revision = String(plan.revision || payload.revision || '').trim();
@@ -517,38 +1041,6 @@ function createPackageCenterController(options) {
     }
     const reinstall = plan.reinstall === true;
     const changes = reinstall ? [] : await inspectChanges(identity.rootPath, rootRealPath, language, plan.localChanges);
-    const bindings = reinstall
-      ? await inspectManifestBindings(identity.rootPath, rootRealPath, language, plan.manifestBindings)
-      : [];
-    assertStillCurrent(identity);
-    const written = [];
-    try {
-      for (const change of changes) {
-        // Write and fsync the temporary replacement first, then compare the
-        // current manifest at the last responsible moment before rename.
-        await atomicWrite(change.target, change.newContent, change.mode, () => assertExpectedFile(
-          change,
-          change.oldDigest,
-          'PACKAGE_CHANGE_OLD_DIGEST_MISMATCH',
-          'Dependency file changed immediately before it was written',
-          'apply'
-        ));
-        written.push(change);
-      }
-      assertStillCurrent(identity);
-      for (const change of changes) {
-        const current = await readRegularFile(change.target, MAX_FILE_BYTES);
-        if (!current.exists || current.digest !== change.newDigest) {
-          throw packageCenterError('PACKAGE_CHANGE_VERIFY_FAILED', 'Dependency file could not be verified after writing', { relativePath: change.relativePath });
-        }
-      }
-    } catch (error) {
-      // Never overwrite a newer editor/filesystem write while cleaning up a
-      // failed apply. A cleanup conflict deliberately preserves that new truth.
-      try { await restoreAppliedChanges(written, true); } catch (_) {}
-      throw error;
-    }
-
     const transaction = {
       id: crypto.randomUUID(),
       planId,
@@ -560,9 +1052,59 @@ function createPackageCenterController(options) {
       workspaceIdentity: identity.workspaceIdentity,
       workspaceKey,
       changes,
-      bindings,
+      bindings: [],
+      journal: null,
       createdAt: Date.now()
     };
+    assertStillCurrent(identity);
+    const written = [];
+    try {
+      await createTransactionJournal(transaction);
+      for (const change of changes) {
+        // Write and fsync the temporary replacement first, then compare the
+        // current manifest at the last responsible moment before rename.
+        await atomicWrite(change.target, change.newContent, change.mode, () => assertExpectedFile(
+          change,
+          change.oldDigest,
+          'PACKAGE_CHANGE_OLD_DIGEST_MISMATCH',
+          'Dependency file changed immediately before it was written',
+          'apply'
+        ));
+        written.push(change);
+        await journalCheckpoint('file-applied', transaction, change);
+      }
+      assertStillCurrent(identity);
+      for (const change of changes) {
+        const current = await readRegularFile(change.target, MAX_FILE_BYTES);
+        if (!current.exists || current.digest !== change.newDigest) {
+          throw packageCenterError('PACKAGE_CHANGE_VERIFY_FAILED', 'Dependency file could not be verified after writing', { relativePath: change.relativePath });
+        }
+      }
+      const verifiedBindings = await inspectManifestBindings(identity.rootPath, rootRealPath, language, plan.manifestBindings);
+      const changedPaths = new Set(changes.map(change => process.platform === 'win32' ? change.relativePath.toLowerCase() : change.relativePath));
+      transaction.bindings = verifiedBindings.filter(binding => !changedPaths.has(process.platform === 'win32' ? binding.relativePath.toLowerCase() : binding.relativePath));
+      await updateTransactionJournalState(transaction, 'applied');
+    } catch (error) {
+      if (simulatedProcessCrash(error)) {
+        wipeTransactionContents(transaction);
+        throw error;
+      }
+      // Never overwrite a newer editor/filesystem write while cleaning up a
+      // failed apply. A cleanup conflict deliberately preserves that new truth.
+      let cleanupError = null;
+      try { await restoreAppliedChanges(written, true); } catch (restoreError) { cleanupError = restoreError; }
+      if (cleanupError && cleanupError.code === 'PACKAGE_ROLLBACK_CONFLICT') {
+        try { await finalizeTransactionJournal(transaction, 'rollback-reconciliation-required', true); } catch (_) {}
+        await rememberPendingRecovery(transaction, 'rollback-reconciliation-required', cleanupError.conflicts || []);
+        error.reconciliationRequired = true;
+        error.conflicts = cleanupError.conflicts || [];
+      } else if (!cleanupError) {
+        try { await finalizeTransactionJournal(transaction, 'rolled-back', false); } catch (journalError) { cleanupError = journalError; }
+      }
+      wipeTransactionContents(transaction);
+      if (cleanupError && !error.reconciliationRequired) throw cleanupError;
+      throw error;
+    }
     transactions.set(transaction.id, transaction);
     activeByWorkspace.set(workspaceKey, transaction.id);
     reportFilesChanged(changes.map(change => ({
@@ -718,7 +1260,7 @@ function createPackageCenterController(options) {
       if (!error || error.code !== 'PACKAGE_ROLLBACK_CONFLICT') throw error;
       // A newer editor or filesystem write now owns the manifest. Preserve it,
       // end this transaction, and let the renderer sync that newer truth.
-      releaseTransaction(transaction, 'superseded');
+      await releaseTransaction(transaction, 'superseded', { conflicts: error.conflicts || [] });
       notify('superseded', transaction, { reason: String(reason || ''), conflicts: error.conflicts || [] });
       return publicTransaction(transaction, {
         rolledBack: false,
@@ -732,7 +1274,7 @@ function createPackageCenterController(options) {
       path: change.target,
       relativePath: change.relativePath
     })));
-    releaseTransaction(transaction, 'rolled-back');
+    await releaseTransaction(transaction, 'rolled-back');
     notify('rolled-back', transaction, { reason: String(reason || '') });
     return publicTransaction(transaction, { rolledBack: true });
   }
@@ -783,6 +1325,7 @@ function createPackageCenterController(options) {
       }
       return { success: true, transactionId: transaction.id, alreadyFinalized: true, state: transaction.finalized };
     }
+    if (serverApplied) await updateTransactionJournalState(transaction, 'server-applied');
     if (!serverApplied) assertStillCurrent(transaction);
     const conflicts = await publishedFileConflicts(transaction);
     if (serverApplied) conflicts.push(...validatedEditorConflicts(payload, transaction));
@@ -791,11 +1334,11 @@ function createPackageCenterController(options) {
         throw packageCenterError('PACKAGE_COMMIT_CONFLICT', 'Dependency files changed before the package transaction was committed', { conflicts });
       }
       const result = reconciliationResult(transaction, conflicts, false);
-      releaseTransaction(transaction, 'reconciliation-required', { conflicts });
+      await releaseTransaction(transaction, 'reconciliation-required', { conflicts, serverApplied: true });
       notify('reconciliation-required', transaction, { serverApplied: true, conflicts });
       return result;
     }
-    releaseTransaction(transaction, 'committed');
+    await releaseTransaction(transaction, 'committed');
     notify('committed', transaction, { serverApplied });
     return publicTransaction(transaction, { committed: true });
   }
@@ -812,11 +1355,11 @@ function createPackageCenterController(options) {
     return results;
   }
 
-  function preserveAllUnqueued(reason) {
+  async function preserveAllUnqueued(reason) {
     const results = [];
     for (const transaction of [...transactions.values()]) {
       const result = publicTransaction(transaction, { preserved: true, reason: String(reason || 'lifecycle') });
-      releaseTransaction(transaction, 'preserved');
+      await releaseTransaction(transaction, 'preserved');
       notify('preserved', transaction, { reason: String(reason || 'lifecycle') });
       results.push(result);
     }
@@ -833,6 +1376,89 @@ function createPackageCenterController(options) {
       workspaceTransitionDepth = Math.max(0, workspaceTransitionDepth - 1);
       throw error;
     }
+  }
+
+  async function listPendingRecoveriesUnqueued(payload) {
+    const identity = currentIdentity(payload);
+    const entries = pendingRecoveriesForRoot(identity.rootPath);
+    const recoveries = [];
+    for (const entry of entries) {
+      const transaction = await loadRecoveryJournal(entry.directory);
+      if (!sameRoot(transaction.rootPath, identity.rootPath)) {
+        throw packageCenterError('PACKAGE_WORKSPACE_STALE', 'Package recovery belongs to a different workspace');
+      }
+      await rememberPendingRecovery(transaction, entry.state, entry.conflicts);
+      recoveries.push(publicPendingRecovery(pendingRecoveries.get(entry.id)));
+    }
+    recoveries.sort((left, right) => left.transactionId.localeCompare(right.transactionId));
+    return { success: true, schema: 'project-package-local-recoveries/v1', recoveries };
+  }
+
+  async function validateAcceptedRecoveryFiles(payload, transaction) {
+    const supplied = payload && payload.files;
+    if (!Array.isArray(supplied) || supplied.length !== transaction.changes.length) {
+      throw packageCenterError('PACKAGE_RECOVERY_ACCEPT_INVALID', 'Current dependency file summary is required to clear package recovery');
+    }
+    const expected = new Map();
+    for (const item of supplied) {
+      if (!isRecord(item) || typeof item.path !== 'string' || typeof item.exists !== 'boolean') {
+        throw packageCenterError('PACKAGE_RECOVERY_ACCEPT_INVALID', 'Current dependency file summary is invalid');
+      }
+      const digest = item.exists ? String(item.sha256 || '').toLowerCase() : null;
+      if ((item.exists && !DIGEST_PATTERN.test(digest)) || (!item.exists && item.sha256 !== null)) {
+        throw packageCenterError('PACKAGE_RECOVERY_ACCEPT_INVALID', 'Current dependency file summary is invalid');
+      }
+      if (expected.has(item.path)) throw packageCenterError('PACKAGE_RECOVERY_ACCEPT_INVALID', 'Current dependency file summary contains duplicate paths');
+      expected.set(item.path, { exists: item.exists, digest });
+    }
+    const conflicts = [];
+    for (const change of transaction.changes) {
+      const accepted = expected.get(change.relativePath);
+      if (!accepted) throw packageCenterError('PACKAGE_RECOVERY_ACCEPT_INVALID', 'Current dependency file summary does not match package recovery');
+      const current = await readRegularFile(change.target, MAX_FILE_BYTES);
+      if (current.exists !== accepted.exists || (current.exists && current.digest !== accepted.digest)) {
+        conflicts.push({ path: change.relativePath, expectedSha256: accepted.digest, actualSha256: current.digest });
+      }
+    }
+    if (conflicts.length) {
+      throw packageCenterError(
+        'PACKAGE_RECOVERY_CAS_MISMATCH',
+        'Dependency files changed while package recovery was being cleared',
+        { conflicts, reconciliationRequired: true, transactionId: transaction.id }
+      );
+    }
+  }
+
+  async function resolvePendingRecoveryUnqueued(payload) {
+    if (!isRecord(payload) || !TRANSACTION_ID_PATTERN.test(String(payload.transactionId || ''))) {
+      throw packageCenterError('PACKAGE_TRANSACTION_INVALID', 'Package recovery transaction id is required');
+    }
+    const identity = currentIdentity(payload);
+    const id = String(payload.transactionId);
+    const entry = pendingRecoveries.get(id);
+    if (!entry) return { success: true, transactionId: id, resolved: true, alreadyResolved: true };
+    if (!sameRoot(entry.rootPath, identity.rootPath)) {
+      throw packageCenterError('PACKAGE_WORKSPACE_STALE', 'Package recovery belongs to a different workspace');
+    }
+    const action = String(payload.action || '').trim().toLowerCase();
+    if (action === 'retry') {
+      const result = await recoverJournalDirectory(entry.directory);
+      const pending = pendingRecoveries.get(id);
+      return pending
+        ? { success: true, transactionId: id, resolved: false, recovery: publicPendingRecovery(pending) }
+        : { success: true, transactionId: id, resolved: true, state: result.state || 'rolled-back' };
+    }
+    if (action === 'accept-current') {
+      const transaction = await loadRecoveryJournal(entry.directory);
+      if (!sameRoot(transaction.rootPath, identity.rootPath) ||
+          !['rollback-reconciliation-required', 'commit-reconciliation-required'].includes(transaction.journal.record.state)) {
+        throw packageCenterError('PACKAGE_RECOVERY_ACCEPT_INVALID', 'Package recovery is not awaiting reconciliation');
+      }
+      await validateAcceptedRecoveryFiles(payload, transaction);
+      await finalizeTransactionJournal(transaction, 'preserved', false);
+      return { success: true, transactionId: id, resolved: true, state: 'preserved' };
+    }
+    throw packageCenterError('PACKAGE_RECOVERY_ACTION_INVALID', 'Package recovery action is invalid');
   }
 
   function invokeSafely(operation) {
@@ -852,13 +1478,25 @@ function createPackageCenterController(options) {
       try { requireCurrentSender(event); } catch (error) { return { success: false, error: serializedError(error) }; }
       return invokeSafely(() => commitLocalChangesUnqueued(payload));
     });
+    ipcMain.handle('package-center:list-pending-recoveries', async (event, payload) => {
+      try { requireCurrentSender(event); } catch (error) { return { success: false, error: serializedError(error) }; }
+      return invokeSafely(() => listPendingRecoveriesUnqueued(payload));
+    });
+    ipcMain.handle('package-center:resolve-pending-recovery', async (event, payload) => {
+      try { requireCurrentSender(event); } catch (error) { return { success: false, error: serializedError(error) }; }
+      return invokeSafely(() => resolvePendingRecoveryUnqueued(payload));
+    });
   }
+
+  const recoveryReady = enqueue(() => recoverJournalsUnqueued());
 
   return {
     registerIpc,
     applyLocalChanges: payload => enqueue(() => applyLocalChangesUnqueued(payload)),
     rollbackLocalChanges: payload => enqueue(() => rollbackLocalChangesUnqueued(payload)),
     commitLocalChanges: payload => enqueue(() => commitLocalChangesUnqueued(payload)),
+    listPendingRecoveries: payload => enqueue(() => listPendingRecoveriesUnqueued(payload)),
+    resolvePendingRecovery: payload => enqueue(() => resolvePendingRecoveryUnqueued(payload)),
     rollbackAll: reason => enqueue(() => rollbackAllUnqueued(reason)),
     preserveAll: reason => enqueue(() => preserveAllUnqueued(reason)),
     beginWorkspaceTransition: reason => enqueue(() => beginWorkspaceTransitionUnqueued(reason)),
@@ -866,6 +1504,8 @@ function createPackageCenterController(options) {
       workspaceTransitionDepth = Math.max(0, workspaceTransitionDepth - 1);
       return workspaceTransitionDepth;
     }),
+    ready: () => recoveryReady,
+    recoverIncompleteTransactions: () => enqueue(() => recoverJournalsUnqueued()),
     activeTransactionCount: () => transactions.size
   };
 }

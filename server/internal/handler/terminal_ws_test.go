@@ -197,6 +197,19 @@ func TestTerminalReadyPayloadAdvertisesSnapshotAndCapabilities(t *testing.T) {
 	}
 }
 
+func TestTerminalReadyPayloadAdvertisesManagedNodePackageIntents(t *testing.T) {
+	runtime := model.RuntimeDef{RuntimeID: "node:22", DisplayName: "Node.js 22", Language: "node", Version: "22", DockerImage: "node:22-slim"}
+	payload := terminalReadyPayload("node-session", runtime, map[string]string{"kind": "personal", "folderKey": "node-project"}, terminalLimits{}, true, true)
+	capabilities, ok := payload["capabilities"].(map[string]bool)
+	if !ok || !capabilities["packageIntents"] {
+		t.Fatalf("Node terminal package-intent capability = %#v", payload["capabilities"])
+	}
+	environment, ok := payload["environment"].(map[string]string)
+	if !ok || environment["language"] != "node" || environment["runtimeId"] != runtime.RuntimeID {
+		t.Fatalf("Node terminal environment = %#v", payload["environment"])
+	}
+}
+
 func TestTerminalSnapshotCopyIsBoundedAndDoesNotMutateSource(t *testing.T) {
 	source := t.TempDir()
 	destination := t.TempDir()

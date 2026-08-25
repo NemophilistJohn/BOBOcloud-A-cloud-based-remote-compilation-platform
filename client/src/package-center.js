@@ -42,7 +42,8 @@
     'package_plan_binding_mismatch',
     'package_plan_runtime_changed',
     'package_plan_workspace_changed',
-    'package_plan_invalid'
+    'package_plan_invalid',
+    'package_manager_policy_mismatch'
   ]);
 
   var ICON_INSTALL = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 3.5v8m0 0 3-3m-3 3-3-3M4.5 13.5v2h11v-2" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -77,6 +78,9 @@
     PACKAGE_WORKSPACE_TRANSITION: 'Wait for the library operation to finish before changing projects.',
     PACKAGE_TRANSACTION_INVALID: 'The dependency file transaction is invalid.',
     PACKAGE_TRANSACTION_NOT_FOUND: 'The dependency file transaction is no longer available.',
+    PACKAGE_RECOVERY_RECONCILIATION_REQUIRED: 'Dependency file recovery is still pending.',
+    PACKAGE_RECOVERY_CAS_MISMATCH: 'Dependency file recovery is still pending.',
+    PACKAGE_RECOVERY_ACCEPT_INVALID: 'Dependency file recovery is still pending.',
     invalid_package_operation: 'The requested library change is invalid.',
     package_catalog_check_limit_exceeded: 'The requested library change is invalid.',
     package_runtime_required: 'Select a cloud runtime before managing libraries.',
@@ -99,6 +103,7 @@
     package_manifest_set_changed: 'The project changed after the library plan was created.',
     package_manifest_change_invalid: 'The selected library change conflicts with the project dependency file.',
     package_declaration_conflict: 'This library is managed by another project dependency file.',
+    package_manager_policy_mismatch: 'The project pnpm version does not match this server policy. Update packageManager and try again.',
     package_plan_invalid: 'The server returned an invalid library plan.',
     package_plan_reconciliation_required: 'The library installation status is still uncertain.',
     package_service_unavailable: 'Library management is unavailable on this server.',
@@ -159,6 +164,12 @@
     var seconds = Number(catalogTimeoutSeconds);
     if (!Number.isFinite(seconds) || seconds <= 0) return PACKAGE_QUERY_TIMEOUT_MS;
     return Math.max(PACKAGE_QUERY_TIMEOUT_MS, Math.ceil(seconds * 1000) + PACKAGE_QUERY_GRACE_MS);
+  }
+
+  function packagePlanTimeoutMs(operationTimeoutSeconds) {
+    var seconds = Number(operationTimeoutSeconds);
+    if (!Number.isFinite(seconds) || seconds <= 0) return PACKAGE_APPLY_TIMEOUT_MS;
+    return Math.max(PACKAGE_PLAN_TIMEOUT_MS, Math.ceil(seconds * 1000) + PACKAGE_QUERY_GRACE_MS);
   }
 
   function cancelPackageSearchRequest() {
@@ -249,6 +260,23 @@
 
   function localTransactionApi() {
     return BOBO.packageCenterLocalApi || global.api || {};
+  }
+
+  function normalizePendingRecovery(value) {
+    if (!value || typeof value !== 'object' || !String(value.transactionId || '').trim()) return null;
+    var files = Array.isArray(value.files) ? value.files.map(function(file) {
+      return {
+        path: String(file && file.path || ''),
+        exists: file && file.exists === true,
+        sha256: file && file.exists === true ? String(file.sha256 || '').toLowerCase() : null
+      };
+    }).filter(function(file) { return file.path && !file.path.includes('..'); }) : [];
+    return {
+      transactionId: String(value.transactionId),
+      state: 'reconciliation-required',
+      files: files,
+      conflicts: Array.isArray(value.conflicts) ? value.conflicts.slice() : []
+    };
   }
 
   function pathName(value) {
@@ -382,6 +410,51 @@
     return reason;
   }
 
+  function normalizePackageManager(raw, language, manifests, defaultManifestPath) {
+    raw = raw && typeof raw === 'object' ? raw : {};
+    language = String(language && language.id || language || '').toLowerCase();
+    manifests = Array.isArray(manifests) ? manifests : [];
+    var inferred = manifests.find(function(item) {
+      return item && item.lockfile !== true && item.path && (item.editable === true || item.manifest !== false);
+    }) || {};
+    var id = String(raw.id || inferred.manager || (language === 'python' ? 'pip' : '')).trim().toLowerCase();
+    var defaults = language === 'node' ? ['runtime', 'dev', 'optional'] : ['runtime'];
+    var scopes = (Array.isArray(raw.scopes) ? raw.scopes : defaults).map(function(scope) {
+      return String(scope || '').trim().toLowerCase();
+    }).filter(function(scope, index, values) {
+      return ['runtime', 'dev', 'optional'].includes(scope) && values.indexOf(scope) === index;
+    });
+    if (!scopes.length) scopes = defaults;
+    return {
+      id: id,
+      name: String(raw.name || (id === 'pip' ? 'pip' : id) || t('Not detected')),
+      manifestPath: String(raw.manifestPath || defaultManifestPath || inferred.path || ''),
+      lockfilePath: String(raw.lockfilePath || ''),
+      lockfilePresent: raw.lockfilePresent === true,
+      detectedBy: String(raw.detectedBy || ''),
+      scopes: scopes
+    };
+  }
+
+  function normalizePackageCapabilities(raw, fallback) {
+    raw = raw && typeof raw === 'object' ? raw : {};
+    fallback = fallback || {};
+    var explicit = ['browse', 'inspect', 'mutate', 'exactInventory', 'scopes', 'prereleases', 'transitivePackages'].some(function(key) {
+      return typeof raw[key] === 'boolean';
+    });
+    var mutationSupported = fallback.supported !== false;
+    return {
+      explicit: explicit,
+      browse: typeof raw.browse === 'boolean' ? raw.browse : mutationSupported,
+      inspect: typeof raw.inspect === 'boolean' ? raw.inspect : true,
+      mutate: typeof raw.mutate === 'boolean' ? raw.mutate : mutationSupported,
+      exactInventory: typeof raw.exactInventory === 'boolean' ? raw.exactInventory : false,
+      scopes: typeof raw.scopes === 'boolean' ? raw.scopes : false,
+      prereleases: typeof raw.prereleases === 'boolean' ? raw.prereleases : true,
+      transitivePackages: typeof raw.transitivePackages === 'boolean' ? raw.transitivePackages : true
+    };
+  }
+
   function normalizeContext(raw, environmentSnapshot) {
     raw = raw || {};
     environmentSnapshot = environmentSnapshot || {};
@@ -394,7 +467,8 @@
     var runtime = raw.runtime || environmentSnapshot.runtime || {};
     var workspace = raw.workspace || environmentSnapshot.workspace || {};
     var planCapability = raw.canPlanChanges || raw.capabilities && raw.capabilities.canPlanChanges || {};
-    var supported = raw.supported !== false && planCapability.supported !== false;
+    var capabilities = normalizePackageCapabilities(raw.capabilities, planCapability);
+    var supported = raw.supported !== false && (capabilities.explicit ? capabilities.browse : planCapability.supported !== false);
     var installedPackages = normalizeInstalledPackages(raw);
     var installedKeys = new Set(installedPackages.map(function(item) { return packageKey(item.name, language && language.id); }));
     var missingPackages = Array.isArray(raw.packages && raw.packages.missing)
@@ -404,6 +478,9 @@
       return item && item.name && !installedKeys.has(packageKey(item.name, language && language.id));
     });
     if (!S.workspaceRoot || !S.selectedRuntime) supported = false;
+    var manager = normalizePackageManager(raw.manager, language, manifests, raw.defaultManifestPath || raw.manifestPath || '');
+    if (binding.authoritative) capabilities.exactInventory = true;
+    if (manager.scopes.length > 1 && typeof (raw.capabilities || {}).scopes !== 'boolean') capabilities.scopes = true;
     return {
       schema: String(raw.schema || 'package-center-context/v1'),
       revision: String(raw.revision || environmentSnapshot.revision || ''),
@@ -415,6 +492,7 @@
       sources: sources,
       selectedSourceId: String(raw.selectedSourceId || raw.sourceId || (typeof raw.defaultSource === 'string' ? raw.defaultSource : raw.defaultSource && raw.defaultSource.id) || raw.source && (raw.source.id || raw.source.sourceId) || sources[0] && sources[0].id || ''),
       searchMode: String(raw.searchMode || 'exact'),
+      manager: manager,
       manifests: manifests.filter(Boolean),
       defaultManifestPath: String(raw.defaultManifestPath || raw.manifestPath || ''),
       packages: raw.packages || {},
@@ -427,7 +505,9 @@
       inventoryCacheEntryId: binding.cacheEntryId,
       catalogTimeoutSeconds: Number(raw.catalogTimeoutSeconds) > 0 ? Number(raw.catalogTimeoutSeconds) : 8,
       operationTimeoutSeconds: Number(raw.operationTimeoutSeconds) > 0 ? Number(raw.operationTimeoutSeconds) : 600,
-      capabilities: raw.capabilities || {}
+      capabilities: capabilities,
+      canMutate: supported && capabilities.mutate === true,
+      mutationReason: capabilityReasonLabel(planCapability.reason || raw.reason) || t('Dependency changes are unavailable for this project.')
     };
   }
 
@@ -530,6 +610,12 @@
       declaration: item.declaration || null,
       constraint: String(item.constraint || ''),
       scope: String(item.scope || item.raw && item.raw.scope || 'runtime'),
+      deprecated: item.deprecated === true,
+      deprecationMessage: String(item.deprecationMessage || ''),
+      requiresLanguage: String(item.requiresLanguage || ''),
+      distTags: item.distTags && typeof item.distTags === 'object' ? Object.assign({}, item.distTags) : {},
+      license: String(item.license || ''),
+      homepage: String(item.homepage || ''),
       raw: item
     };
   }
@@ -594,8 +680,12 @@
   function exactDeclaredPackageVersion(item) {
     if (!item) return '';
     if (item.version) return String(item.version).trim();
-    var match = String(item.constraint || '').match(/^\s*==\s*([^,;\s]+)\s*$/);
-    return match ? match[1] : '';
+    var constraint = String(item.constraint || '').trim();
+    var pythonMatch = constraint.match(/^==\s*([^,;\s]+)$/);
+    if (pythonMatch) return pythonMatch[1];
+    return /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(constraint)
+      ? constraint.replace(/^v/, '')
+      : '';
   }
 
   function managedPackageDeclarations(value) {
@@ -763,6 +853,8 @@
       var element = byId('package-center-' + value);
       if (element) element.hidden = value !== activePane;
     });
+    var detailDock = byId('package-detail-action-dock');
+    if (detailDock) detailDock.hidden = activePane !== 'detail';
   }
 
   function focusSoon(id) {
@@ -810,6 +902,7 @@
         var input = byId('package-search-input');
         if (input) input.value = String(options.query);
       }
+      void refreshPendingLocalRecovery();
       refreshContext({ loading: !context, search: true });
     }
   }
@@ -853,10 +946,12 @@
 
   function editableManifests() {
     var manifests = context && context.manifests || [];
+    var language = String(context && context.language && context.language.id || '').toLowerCase();
+    var managerPath = String(context && context.manager && context.manager.manifestPath || '').replace(/\\/g, '/').toLowerCase();
     return manifests.filter(function(item) {
       if (!item || item.writable === false || item.lockfile === true) return false;
+      if (language === 'node' && managerPath && String(item.path || '').replace(/\\/g, '/').toLowerCase() !== managerPath) return false;
       if (item.editable === true) return true;
-      var language = String(context && context.language && context.language.id || '');
       if (language === 'python') return item.manager === 'pip' || /requirements(?:[-_.][^/]*)?\.txt$/i.test(String(item.path || ''));
       return item.manifest !== false;
     });
@@ -884,11 +979,12 @@
       return Boolean(value) && Array.prototype.some.call(select.options, function(option) { return option.value === value; });
     };
     var defaultPath = String(context && context.defaultManifestPath || '');
+    var pythonDefault = String(context && context.language && context.language.id || '') === 'python' ? 'requirements.txt' : '';
     var preferred = manifestSelectionTouched && optionExists(previous)
       ? previous
-      : (optionExists(defaultPath) ? defaultPath : (manifests.length ? String(manifests[0].path || '') : 'requirements.txt'));
+      : (optionExists(defaultPath) ? defaultPath : (manifests.length ? String(manifests[0].path || '') : pythonDefault));
     if (preferred) select.value = preferred;
-    select.disabled = select.options.length <= 1 || Boolean(busyOperation) || Boolean(recoveryPending);
+    select.disabled = select.options.length <= 1 || !packageMutationAvailable() || Boolean(busyOperation) || Boolean(recoveryPending);
     select.title = select.options.length ? t('Dependency file') : t('No editable dependency file');
   }
 
@@ -899,6 +995,36 @@
       incompatible: t('Incompatible'),
       unknown: t('Compatibility unknown')
     }[normalizeCompatibility(value)] || t('Compatibility unknown');
+  }
+
+  function isNodeContext() {
+    return String(context && context.language && context.language.id || '').toLowerCase() === 'node';
+  }
+
+  function dependencyScopeLabel(scope) {
+    scope = String(scope || 'runtime').toLowerCase();
+    if (isNodeContext()) {
+      if (scope === 'dev') return t('Development dependency');
+      if (scope === 'optional') return t('Optional dependency');
+      return t('Production dependency');
+    }
+    if (scope === 'dev') return t('Development');
+    if (scope === 'optional') return t('Optional');
+    return t('Runtime');
+  }
+
+  function packageMutationAvailable() {
+    return Boolean(context && context.supported === true && context.canMutate === true);
+  }
+
+  function assertManagedPackageManager(requestedManager, activeManager) {
+    var requested = String(requestedManager || '').trim().toLowerCase();
+    var active = String(activeManager || '').trim().toLowerCase();
+    if (!requested || requested === active) return true;
+    throw new Error(t('This project uses {active}; {requested} commands cannot manage it.', {
+      active: active || t('an unknown package manager'),
+      requested: requested
+    }));
   }
 
   function iconButton(icon, title, className, replacements) {
@@ -969,7 +1095,7 @@
     meta.className = 'package-row-meta';
     meta.dataset.compatibility = item.compatibility;
     meta.textContent = installedMode
-      ? [item.scope || item.raw.scope || '', item.inventoryPresent === false
+      ? [dependencyScopeLabel(item.scope || item.raw.scope || 'runtime'), item.inventoryPresent === false
         ? (item.inventoryState === 'missing' ? t('Missing from project cache') : t('Inventory verification required'))
         : (item.inventoryState === 'mismatch' ? t('Declared version mismatch') : (item.projectCached ? t('Cached for this project') : ''))].filter(Boolean).join(' · ')
       : [compatibilityLabel(item.compatibility), item.projectCached ? t('Cached for this project') : ''].filter(Boolean).join(' · ');
@@ -995,7 +1121,8 @@
     } else if (installedMode) {
       if (item.direct && (item.inventoryPresent === false || item.inventoryState === 'mismatch')) {
         var repair = iconButton(ICON_UPDATE, 'Repair {name}', 'package-repair', { name: item.name });
-        repair.disabled = !context || context.supported !== true || Boolean(busyOperation) || Boolean(recoveryPending);
+        repair.disabled = !packageMutationAvailable() || Boolean(busyOperation) || Boolean(recoveryPending);
+        if (!packageMutationAvailable()) repair.title = context && context.mutationReason || t('Dependency changes are unavailable for this project.');
         repair.addEventListener('click', function(event) {
           event.stopPropagation();
           runPackageAction(item, { operation: 'update', version: item.version });
@@ -1004,9 +1131,10 @@
       }
       var remove = iconButton(ICON_REMOVE, 'Remove {name}', 'package-remove', { name: item.name });
       var removalInventoryReady = context && (context.inventoryExact === true || item.inventoryState === 'missing');
-      remove.disabled = !item.direct || !context || context.supported !== true || !removalInventoryReady || Boolean(busyOperation) || Boolean(recoveryPending);
+      remove.disabled = !item.direct || !packageMutationAvailable() || !removalInventoryReady || Boolean(busyOperation) || Boolean(recoveryPending);
       if (!item.direct) remove.title = t('Transitive dependencies are managed by their direct dependency.');
       else if (!removalInventoryReady) remove.title = t('Exact package inventory is required before removal.');
+      else if (!packageMutationAvailable()) remove.title = context && context.mutationReason || t('Dependency changes are unavailable for this project.');
       remove.addEventListener('click', function(event) {
         event.stopPropagation();
         runPackageAction(item, { operation: 'remove' });
@@ -1024,7 +1152,8 @@
       var actionIcon = repairRequired || direct ? ICON_UPDATE : ICON_INSTALL;
       var add = iconButton(actionIcon, sameInstalled && !repairRequired ? 'Already installed' : actionTitle, 'package-install', { name: item.name });
       add.dataset.operation = repairRequired ? 'repair' : (direct ? 'update' : 'install');
-      add.disabled = !context || context.supported !== true || item.compatibility === 'incompatible' || (sameInstalled && !repairRequired) || Boolean(busyOperation) || Boolean(recoveryPending);
+      add.disabled = !packageMutationAvailable() || item.compatibility === 'incompatible' || (sameInstalled && !repairRequired) || Boolean(busyOperation) || Boolean(recoveryPending);
+      if (!packageMutationAvailable()) add.title = context && context.mutationReason || t('Dependency changes are unavailable for this project.');
       add.addEventListener('click', function(event) {
         event.stopPropagation();
         runPackageAction(item, { operation: 'install', version: repairRequired ? declaredVersion : '' });
@@ -1057,17 +1186,40 @@
     var values = activeMode === 'installed' ? context && context.installed || [] : results;
     if (list) {
       list.textContent = '';
-      values.forEach(function(item) { list.appendChild(createPackageRow(item, activeMode === 'installed')); });
+      if (activeMode === 'installed' && values.length) {
+        var groups = [
+          { label: t('Direct dependencies'), items: values.filter(function(item) { return item.direct === true; }) },
+          { label: t('Transitive dependencies'), items: values.filter(function(item) { return item.direct !== true; }) }
+        ];
+        groups.forEach(function(group) {
+          if (!group.items.length) return;
+          var heading = document.createElement('div');
+          heading.className = 'package-installed-group';
+          var label = document.createElement('strong');
+          label.textContent = group.label;
+          var count = document.createElement('span');
+          count.className = 'environment-count';
+          count.textContent = String(group.items.length);
+          heading.appendChild(label);
+          heading.appendChild(count);
+          list.appendChild(heading);
+          group.items.forEach(function(item) { list.appendChild(createPackageRow(item, true)); });
+        });
+      } else {
+        values.forEach(function(item) { list.appendChild(createPackageRow(item, false)); });
+      }
     }
     if (empty) {
-      var waitingForExactQuery = activeMode === 'discover' && context && context.searchMode === 'exact' && !String((byId('package-search-input') || {}).value || '').trim();
-      empty.hidden = values.length > 0 || waitingForExactQuery;
+      var waitingForQuery = activeMode === 'discover' && !String((byId('package-search-input') || {}).value || '').trim();
+      empty.hidden = values.length > 0 || waitingForQuery;
       var strong = empty.querySelector('strong');
       var copy = empty.querySelector('span');
-      if (strong) strong.textContent = activeMode === 'installed' ? t('No installed libraries') : t('No libraries found');
-      if (copy) copy.textContent = activeMode === 'installed' ? t('This project has no verified installed libraries.') : t('Try another name, version, or download source.');
+      if (strong) strong.textContent = activeMode === 'installed' ? t('No installed dependencies') : t('No packages found');
+      if (copy) copy.textContent = activeMode === 'installed' ? t('This project has no verified installed dependencies.') : t('Try another package name or source.');
     }
     if (more) more.hidden = activeMode !== 'discover' || !cursor;
+    var heading = byId('package-results-heading');
+    if (heading) heading.textContent = activeMode === 'installed' ? t('Project dependencies') : t('Package catalog');
     renderSuggestions();
   }
 
@@ -1079,15 +1231,52 @@
       var runtimeLabel = context && runtimeDisplayLabel(context.runtime, context.language) || S.selectedRuntime || t('No runtime selected');
       runtime.textContent = runtimeLabel;
       runtime.title = context && context.supported === true
-        ? t('Libraries automatically match {runtime}.', { runtime: runtimeLabel })
+        ? t('Dependencies automatically match {runtime}.', { runtime: runtimeLabel })
         : runtimeLabel;
     }
+    var manager = context && context.manager || {};
+    var managerLabel = byId('package-manager-label');
+    var managerBadge = byId('package-manager-badge');
+    if (managerLabel) managerLabel.textContent = manager.name || manager.id || t('Not detected');
+    if (managerBadge) {
+      managerBadge.dataset.manager = manager.id || 'unknown';
+      managerBadge.title = manager.detectedBy
+        ? t('{manager} detected from {source}', { manager: manager.name || manager.id, source: manager.detectedBy })
+        : t('Dependency manager: {manager}', { manager: manager.name || manager.id || t('Not detected') });
+    }
+    var lockStatus = byId('package-lock-status');
+    var lockLabel = byId('package-lock-label');
+    if (lockStatus && lockLabel) {
+      var hasLockPath = Boolean(manager.lockfilePath);
+      lockStatus.hidden = !hasLockPath && !manager.manifestPath;
+      lockStatus.dataset.state = hasLockPath ? (manager.lockfilePresent ? 'ready' : 'missing') : 'manifest';
+      lockLabel.textContent = hasLockPath
+        ? (manager.lockfilePresent ? t('Lock ready') : t('Lock missing'))
+        : t('Manifest managed');
+      lockStatus.title = hasLockPath
+        ? (manager.lockfilePresent
+          ? t('Lock file: {path}', { path: manager.lockfilePath })
+          : t('{path} will be created on the first dependency change.', { path: manager.lockfilePath }))
+        : t('Managed manifest: {path}', { path: manager.manifestPath || context && context.defaultManifestPath || '' });
+    }
+    var searchInput = byId('package-search-input');
+    if (searchInput) {
+      var searchLabel = isNodeContext() ? t('Search npm packages') : t('Search exact package name');
+      searchInput.placeholder = searchLabel;
+      searchInput.setAttribute('aria-label', searchLabel);
+      searchInput.disabled = !context || context.supported !== true || Boolean(busyOperation);
+    }
+    var installedTab = byId('package-mode-installed');
+    if (installedTab) installedTab.disabled = Boolean(context && context.capabilities && context.capabilities.inspect === false);
+    var prereleaseControl = byId('package-prerelease-control');
+    if (prereleaseControl) prereleaseControl.hidden = Boolean(context && context.capabilities && context.capabilities.prereleases === false);
     var installedCount = byId('package-installed-count');
     if (installedCount) installedCount.textContent = String(context && context.installed.length || 0);
     renderSources();
     renderManifests();
-    if (!context || context.supported !== true) setCenterState('warning', context && context.reason || t('Library management is unavailable for this project.'));
-    else setCenterState('ready', t('Libraries are scoped to this project and dependency lock.'));
+    if (!context || context.supported !== true) setCenterState('warning', context && context.reason || t('Dependency management is unavailable for this project.'));
+    else if (!context.canMutate) setCenterState('warning', context.mutationReason || t('Dependency changes are unavailable for this project.'));
+    else setCenterState('ready', t('Dependencies are isolated by project and lock digest.'));
     renderBrowser();
     renderDock();
   }
@@ -1136,11 +1325,13 @@
     var input = byId('package-search-input');
     var query = String(input && input.value || '').trim();
     if (byId('package-search-clear')) byId('package-search-clear').hidden = !query;
-    if (context.searchMode === 'exact' && !query) {
+    if (!query) {
       refreshSequence += 1;
       results = [];
       cursor = '';
-      setCenterState('ready', t('Enter an exact package name to search.'));
+      setCenterState('ready', context.searchMode === 'exact'
+        ? t('Enter an exact package name to search.')
+        : t('Search packages by name or keyword.'));
       renderBrowser();
       return [];
     }
@@ -1157,8 +1348,8 @@
       results = options.append ? results.concat(normalized.items) : normalized.items;
       cursor = normalized.cursor;
       setCenterState('ready', results.length === 1
-        ? t('1 library result')
-        : t('{count} library results', { count: results.length }));
+        ? t('1 package result')
+        : t('{count} package results', { count: results.length }));
       renderBrowser();
       return results;
     } catch (error) {
@@ -1193,7 +1384,10 @@
 
   async function runPackageAction(item, options) {
     options = options || {};
-    if (busyOperation || !item || !item.name || !context || context.supported !== true) return false;
+    if (busyOperation || !item || !item.name || !packageMutationAvailable()) {
+      if (context && context.supported === true && !context.canMutate) notifyToast('warning', context.mutationReason || t('Dependency changes are unavailable for this project.'));
+      return false;
+    }
     if (recoveryPending && !await retryRecovery()) return false;
 
     var operation = String(options.operation || 'install').toLowerCase();
@@ -1268,7 +1462,7 @@
     var declaration = managedPackageDeclaration(context, item.name);
     var declaredVersion = exactDeclaredPackageVersion(declaration);
     if (byId('package-detail-name')) byId('package-detail-name').textContent = item.name || '--';
-    if (byId('package-detail-summary')) byId('package-detail-summary').textContent = item.summary || t('Loading library details...');
+    if (byId('package-detail-summary')) byId('package-detail-summary').textContent = item.summary || t('Loading package details...');
     if (byId('package-detail-catalog')) {
       var source = context && context.sources.find(function(candidate) { return candidate.id === (byId('package-source-select') || {}).value; });
       var sourceLabel = source && source.label || t('Official catalog');
@@ -1278,6 +1472,22 @@
     if (byId('package-detail-cache')) byId('package-detail-cache').textContent = installed && installed.inventoryPresent === false
       ? (installed.inventoryState === 'missing' ? t('Missing from project cache') : t('Inventory verification required'))
       : (installed && installed.inventoryState === 'mismatch' ? t('Declared version mismatch') : (item.projectCached ? t('Cached for this project') : t('Install required')));
+    var engineFact = byId('package-detail-engine-fact');
+    var engineValue = byId('package-detail-engine');
+    var engineRequirement = String(item.requiresLanguage || item.raw && item.raw.requiresLanguage || '').trim();
+    if (engineFact) engineFact.hidden = !isNodeContext() || !engineRequirement;
+    if (engineValue) engineValue.textContent = engineRequirement || '--';
+    var tagsFact = byId('package-detail-tags-fact');
+    var tagsValue = byId('package-detail-tags');
+    var distTags = item.distTags && typeof item.distTags === 'object' ? item.distTags : {};
+    var tagNames = Object.keys(distTags).sort(function(left, right) {
+      return (left === 'latest' ? -1 : 0) - (right === 'latest' ? -1 : 0) || left.localeCompare(right);
+    });
+    if (tagsFact) tagsFact.hidden = !isNodeContext() || tagNames.length === 0;
+    if (tagsValue) {
+      tagsValue.textContent = tagNames.slice(0, 4).map(function(tag) { return tag + ' ' + distTags[tag]; }).join(' · ') || '--';
+      tagsValue.title = tagNames.map(function(tag) { return tag + ': ' + distTags[tag]; }).join('\n');
+    }
     var includePrerelease = Boolean((byId('package-prerelease') || {}).checked);
     var versions = normalizePackageVersions(item, includePrerelease);
     var versionSelect = byId('package-version-select');
@@ -1289,10 +1499,13 @@
       versions.forEach(function(version) {
         var option = document.createElement('option');
         option.value = version.version;
-        option.textContent = version.version;
+        var versionTags = tagNames.filter(function(tag) { return String(distTags[tag]) === version.version; });
+        option.textContent = version.version + (versionTags.length ? ' · ' + versionTags.join(', ') : '') + (version.deprecated === true ? ' · ' + t('deprecated') : '');
         option.disabled = !isSelectablePackageVersion(version);
         option.dataset.compatibility = version.compatibility;
         option.dataset.compatibilityReason = version.compatibilityReason;
+        option.dataset.deprecated = version.deprecated === true ? 'true' : 'false';
+        option.dataset.deprecationMessage = String(version.deprecationMessage || '');
         versionSelect.appendChild(option);
       });
       versionSelect.dataset.packageKey = detailPackageKey;
@@ -1303,18 +1516,21 @@
       versionSelect.disabled = !versionSelect.value || Boolean(busyOperation);
     }
     var scopeSelect = byId('package-scope-select');
+    var scopeField = byId('package-scope-field');
     if (scopeSelect) {
-      var scopes = item.raw && item.raw.scopes || ['runtime'];
+      var scopes = context && context.manager && context.manager.scopes || ['runtime'];
       scopeSelect.textContent = '';
       scopes.forEach(function(scope) {
         var value = typeof scope === 'string' ? scope : scope.id;
         var option = document.createElement('option');
         option.value = value;
-        option.textContent = value === 'dev' ? t('Development') : (value === 'runtime' ? t('Runtime') : String(scope.label || value));
+        option.textContent = dependencyScopeLabel(value);
         scopeSelect.appendChild(option);
       });
       scopeSelect.value = installed && installed.scope || declaration && declaration.scope || 'runtime';
+      scopeSelect.disabled = !packageMutationAvailable() || Boolean(busyOperation);
     }
+    if (scopeField) scopeField.hidden = !context || context.capabilities.scopes !== true || !context.manager || context.manager.scopes.length <= 1;
     renderDetailSelectionState(item, installed, declaration);
   }
 
@@ -1326,6 +1542,12 @@
     var reason = selectedOption && selectedOption.dataset.compatibilityReason || item.compatibilityReason || t('The selected version will be verified in the chosen runtime before publication.');
     if (byId('package-detail-compatibility')) byId('package-detail-compatibility').textContent = compatibilityLabel(compatibility);
     if (byId('package-detail-note')) byId('package-detail-note').textContent = reason;
+    var warning = byId('package-detail-warning');
+    var warningCopy = byId('package-detail-warning-copy');
+    var deprecated = Boolean(selectedOption && selectedOption.dataset.deprecated === 'true') || (!selectedOption && item.deprecated === true);
+    var deprecationMessage = String(selectedOption && selectedOption.dataset.deprecationMessage || item.deprecationMessage || '').trim();
+    if (warning) warning.hidden = !deprecated;
+    if (warningCopy) warningCopy.textContent = deprecationMessage || t('This package version is deprecated by its maintainer.');
     var action = byId('package-stage-change');
     if (action) {
       var selectedVersion = selectedOption && selectedOption.value || '';
@@ -1334,7 +1556,8 @@
       var sameDeclared = declaration && exactDeclaredPackageVersion(declaration) === String(selectedVersion) && String(declaration.scope || 'runtime') === selectedScope;
       var repair = Boolean(sameDeclared && context && context.inventoryExact !== true);
       var needsInventory = sameInstalled && installed.inventoryState === 'unknown';
-      action.disabled = !context || context.supported !== true || !selectedOption || selectedOption.disabled || normalizeCompatibility(compatibility) === 'incompatible' || (sameInstalled && !repair) || Boolean(busyOperation) || Boolean(recoveryPending);
+      action.disabled = !packageMutationAvailable() || !selectedOption || selectedOption.disabled || normalizeCompatibility(compatibility) === 'incompatible' || (sameInstalled && !repair) || Boolean(busyOperation) || Boolean(recoveryPending);
+      action.title = !packageMutationAvailable() ? context && context.mutationReason || t('Dependency changes are unavailable for this project.') : '';
       action.innerHTML = (repair || installed && installed.direct || declaration ? ICON_UPDATE : ICON_INSTALL) + '<span></span>';
       var copy = action.querySelector('span');
       if (copy) copy.textContent = repair ? t('Repair installation') : (needsInventory ? t('Inventory verification required') : (sameInstalled ? t('Already installed') : (installed && installed.direct || declaration ? t('Update') : (installed ? t('Pin as direct dependency') : t('Install')))));
@@ -1364,7 +1587,7 @@
   }
 
   function installSelectedPackage() {
-    if (!selectedPackage || !context || context.supported !== true) return false;
+    if (!selectedPackage || !packageMutationAvailable()) return false;
     var installed = context.installed.find(function(item) { return packageKey(item.name) === packageKey(selectedPackage.name); });
     var versionSelect = byId('package-version-select');
     var selectedOption = versionSelect && versionSelect.selectedIndex >= 0 ? versionSelect.options[versionSelect.selectedIndex] : null;
@@ -1384,6 +1607,14 @@
   function renderDock() {
     renderSources();
     renderManifests();
+    var searchInput = byId('package-search-input');
+    if (searchInput) searchInput.disabled = !context || context.supported !== true || Boolean(busyOperation);
+    if (selectedPackage) {
+      var installed = context && context.installed.find(function(item) {
+        return packageKey(item.name) === packageKey(selectedPackage.name);
+      });
+      renderDetailSelectionState(selectedPackage, installed);
+    }
   }
 
   async function requestPlan(operationContext, options) {
@@ -1396,7 +1627,7 @@
       sourceId: String(options.sourceId || context && context.selectedSourceId || '')
     }), {
       quiet: true,
-      timeoutMs: PACKAGE_PLAN_TIMEOUT_MS
+      timeoutMs: packagePlanTimeoutMs(context && context.operationTimeoutSeconds)
     });
     var plan = extractData(response);
     if (!plan || plan.supported === false) throw new Error(plan && plan.reason || t('No safe library change plan is available.'));
@@ -1405,10 +1636,10 @@
     if (plan.reinstall === true) {
       var operations = Array.isArray(plan.changes) ? plan.changes : [];
       var bindings = Array.isArray(plan.manifestBindings) ? plan.manifestBindings : [];
-      if (!localChanges || localChanges.length !== 0 || operations.length !== 1 || operations[0].operation !== 'update' || bindings.length !== 1) {
+      if (!localChanges || localChanges.length !== 0 || operations.length !== 1 || operations[0].operation !== 'update' || bindings.length < 1 || bindings.length > 8) {
         throw new Error(t('The server returned an invalid library plan.'));
       }
-    } else if (!localChanges || localChanges.length !== 1) {
+    } else if (!localChanges || localChanges.length < 1 || localChanges.length > 8) {
       throw new Error(t('The server returned an invalid library plan.'));
     }
     currentPlan = plan;
@@ -1668,6 +1899,85 @@
     return refreshed;
   }
 
+  async function refreshPendingLocalRecovery() {
+    var api = localTransactionApi();
+    var operationContext = captureOperationContext();
+    if (!operationContext.workspaceRoot || operationContext.workspaceIdentity == null ||
+        typeof api.packageCenterListPendingRecoveries !== 'function') return [];
+    var response;
+    try {
+      response = await api.packageCenterListPendingRecoveries({
+        workspaceRoot: operationContext.workspaceRoot,
+        workspaceIdentity: operationContext.workspaceIdentity
+      });
+    } catch (_) { return []; }
+    if (!response || response.success === false || !workspaceContextMatches(operationContext)) return [];
+    var recoveries = (response.recoveries || []).map(normalizePendingRecovery).filter(Boolean);
+    if (recoveries.length && (!recoveryPending || recoveryPending.kind === 'journal')) {
+      recoveryPending = { kind: 'journal', operationContext: operationContext, recovery: recoveries[0] };
+      setOperation('warning', t('Newer dependency file edits were preserved. Synchronize them, then repair the project libraries again.'), { retry: true });
+    } else if (!recoveries.length && recoveryPending && recoveryPending.kind === 'journal') {
+      recoveryPending = null;
+    }
+    return recoveries;
+  }
+
+  async function resolveJournalRecovery(recovery) {
+    var api = localTransactionApi();
+    if (typeof api.packageCenterResolvePendingRecovery !== 'function') {
+      throw new Error(t('Dependency file recovery is still pending.'));
+    }
+    var operationContext = rebindOperationContext(recovery.operationContext);
+    if (!operationContext) throw new Error(t('Complete dependency file recovery before changing projects.'));
+    recovery.operationContext = operationContext;
+    var payload = {
+      transactionId: recovery.recovery.transactionId,
+      workspaceRoot: operationContext.workspaceRoot,
+      workspaceIdentity: operationContext.workspaceIdentity,
+      action: 'retry'
+    };
+    var result = await api.packageCenterResolvePendingRecovery(payload);
+    if (!result || result.success === false) throw new Error(localizedPackageError(result, 'Dependency file recovery is still pending.'));
+    if (!result.resolved) {
+      recovery.recovery = normalizePendingRecovery(result.recovery) || recovery.recovery;
+      var accepted = BOBO.confirm && await BOBO.confirm({
+        title: t('Keep current dependency files?'),
+        message: t('The current dependency files will be synchronized and kept; only the obsolete recovery record will be removed.'),
+        confirmLabel: t('Keep current files'),
+        danger: true
+      });
+      if (!accepted) {
+        setOperation('warning', t('Dependency file recovery is still pending.'), { retry: true });
+        return false;
+      }
+      if (!BOBO.workspace || typeof BOBO.workspace.saveAllTabs !== 'function' || !await BOBO.workspace.saveAllTabs()) {
+        throw new Error(t('The preserved dependency file edits could not be saved.'));
+      }
+      result = await api.packageCenterResolvePendingRecovery(payload);
+      if (!result || result.success === false) throw new Error(localizedPackageError(result, 'Dependency file recovery is still pending.'));
+      if (!result.resolved) recovery.recovery = normalizePendingRecovery(result.recovery) || recovery.recovery;
+    }
+    markWorkspaceUnsynced();
+    if (!BOBO.runner || typeof BOBO.runner.manualSyncWithServer !== 'function' || !await BOBO.runner.manualSyncWithServer()) {
+      if (result.resolved) recoveryPending = { kind: 'sync', operationContext: operationContext, localChanges: recovery.recovery.files.slice() };
+      throw new Error(t('The preserved dependency file edits could not be synchronized.'));
+    }
+    if (!result.resolved) {
+      var acceptedResult = await api.packageCenterResolvePendingRecovery(Object.assign({}, payload, {
+        action: 'accept-current',
+        files: recovery.recovery.files
+      }));
+      if (!acceptedResult || acceptedResult.success === false || acceptedResult.resolved !== true) {
+        throw new Error(localizedPackageError(acceptedResult, 'Dependency file recovery is still pending.'));
+      }
+    }
+    recoveryPending = null;
+    if (BOBO.environmentCenter && BOBO.environmentCenter.scheduleRefresh) BOBO.environmentCenter.scheduleRefresh('package-recovery', 0);
+    await refreshContext({ loading: false, search: false, force: true });
+    setOperation('ready', t('Dependency file recovery completed'));
+    return true;
+  }
+
   async function retryRecovery() {
     if (!recoveryPending || busyOperation) return !recoveryPending;
     var recovery = recoveryPending;
@@ -1677,7 +1987,9 @@
         (recovery.kind === 'apply' ? t('Verifying library installation...') :
           (recovery.kind === 'reconcile' ? t('Synchronizing preserved dependency file edits...') : t('Finalizing dependency files...')))));
     try {
-      if (recovery.kind === 'sync') {
+      if (recovery.kind === 'journal') {
+        return await resolveJournalRecovery(recovery);
+      } else if (recovery.kind === 'sync') {
         var reboundSyncContext = rebindOperationContext(recovery.operationContext);
         if (!reboundSyncContext) {
           if (stableIdentityState(recovery.operationContext) === 'different' || !workspaceLocationMatches(recovery.operationContext)) {
@@ -1836,6 +2148,18 @@
     try {
       if (!BOBO.workspace || typeof BOBO.workspace.saveAllTabs !== 'function' || !await BOBO.workspace.saveAllTabs()) throw new Error(t('Open files could not be saved.'));
       if (!operationContextMatches(operationContext)) throw new Error(t('The project changed while library changes were starting.'));
+
+      // Planning reads server-owned workspace files. Publish the user's latest
+      // editor and filesystem truth first, then refresh the revision and
+      // manager selected from that exact server snapshot.
+      setOperation('loading', t('Synchronizing project...'));
+      if (!BOBO.runner || typeof BOBO.runner.manualSyncWithServer !== 'function' || !await BOBO.runner.manualSyncWithServer()) {
+        throw new Error(t('Local files could not be synchronized'));
+      }
+      if (!operationContextMatches(operationContext)) throw new Error(t('The project changed while library changes were starting.'));
+      var refreshedContext = await refreshContext({ loading: false, search: false, force: true });
+      if (!refreshedContext || !operationContextMatches(operationContext)) throw new Error(t('The project changed before the library plan could be created.'));
+      if (refreshedContext.supported !== true) throw new Error(refreshedContext.reason || t('Dependency management is unavailable for this project.'));
       editorSnapshots = await captureEditorSnapshots(operationContext.workspaceRoot);
 
       setOperation('loading', t('Planning library changes...'));
@@ -2026,9 +2350,10 @@
     if (recoveryPending && !await retryRecovery()) throw new Error(t('Complete dependency file recovery before changing projects.'));
 
     var refreshed = await refreshContext({ loading: options.loading !== false, search: false, force: true });
-    if (!refreshed || refreshed.supported !== true) {
-      throw new Error(refreshed && refreshed.reason || t('Library management is unavailable on this server.'));
+    if (!refreshed || refreshed.supported !== true || refreshed.canMutate !== true) {
+      throw new Error(refreshed && (refreshed.mutationReason || refreshed.reason) || t('Dependency management is unavailable on this server.'));
     }
+    assertManagedPackageManager(options.manager, refreshed.manager && refreshed.manager.id);
     if (busyOperation) throw new Error(t('Wait for the library operation to finish before changing projects.'));
     if (pendingChanges.length) throw new Error(t('Apply or discard the pending Package Center changes first.'));
     var operationContext = captureOperationContext();
@@ -2221,8 +2546,8 @@
     if (retry) retry.addEventListener('click', retryRecovery);
     bindTabKeyboard(['environment-tab-overview', 'environment-tab-packages']);
     bindTabKeyboard(['package-mode-discover', 'package-mode-installed']);
-    global.addEventListener('bobo:workspace-changed', function() { resetForContextChange({ hard: true }); });
-    global.addEventListener('bobo:environment-changed', function() { resetForContextChange({ hard: true }); });
+    global.addEventListener('bobo:workspace-changed', function() { resetForContextChange({ hard: true }); void refreshPendingLocalRecovery(); });
+    global.addEventListener('bobo:environment-changed', function() { resetForContextChange({ hard: true }); void refreshPendingLocalRecovery(); });
     global.addEventListener('bobo:language-changed', function() {
       if (activeView === 'packages') {
         renderContext();
@@ -2242,6 +2567,7 @@
     bind();
     setActiveView('overview');
     renderDock();
+    void refreshPendingLocalRecovery();
   }
 
   BOBO.packageCenter = {
@@ -2257,6 +2583,7 @@
     applyManagedPackageChanges: applyManagedPackageChanges,
     clearPending: clearPending,
     retryRecovery: retryRecovery,
+    refreshRecovery: refreshPendingLocalRecovery,
     beforeWorkspaceLeave: beforeWorkspaceLeave,
     getState: function() {
       return { activeView: activeView, activeMode: activeMode, activePane: activePane, context: context, results: results.slice(), pendingChanges: pendingChanges.slice(), plan: currentPlan, busy: Boolean(busyOperation), recovery: recoveryPending && recoveryPending.kind || '' };
@@ -2271,6 +2598,9 @@
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       normalizeContext: normalizeContext,
+      normalizePackageManager: normalizePackageManager,
+      normalizePackageCapabilities: normalizePackageCapabilities,
+      assertManagedPackageManager: assertManagedPackageManager,
       normalizeResults: normalizeResults,
       normalizeCompatibility: normalizeCompatibility,
       normalizePackageVersions: normalizePackageVersions,
@@ -2299,9 +2629,11 @@
       captureEditorSnapshots: captureEditorSnapshots,
       updateOpenBuffers: updateOpenBuffers,
       collectEditorConflicts: collectEditorConflicts,
+      normalizePendingRecovery: normalizePendingRecovery,
       refreshConfiguredLanguageService: refreshConfiguredLanguageService,
       packageOperationTimeoutMs: packageOperationTimeoutMs,
       packageQueryTimeoutMs: packageQueryTimeoutMs,
+      packagePlanTimeoutMs: packagePlanTimeoutMs,
       packageApplyTimeoutMs: packageApplyTimeoutMs,
       PACKAGE_QUERY_TIMEOUT_MS: PACKAGE_QUERY_TIMEOUT_MS,
       PACKAGE_QUERY_GRACE_MS: PACKAGE_QUERY_GRACE_MS,

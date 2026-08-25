@@ -1,3 +1,5 @@
+import { marked } from 'marked';
+
 // Host-rendered Agent workbench. Installed extensions publish bounded state and
 // command ids; this module owns every DOM node and all interaction behavior.
 (function(global) {
@@ -28,6 +30,7 @@
   var inflight = new Set();
   var approvalDetails = new Map();
   var approvalDecisions = new Map();
+  var accessRequests = new Map();
   var documentClickHandler = null;
 
   function t(key, values) {
@@ -85,6 +88,8 @@
     if (kind === 'check') return svg('m5 12 4 4 10-10');
     if (kind === 'close') return svg('m6 6 12 12M18 6 6 18');
     if (kind === 'clock') return svg(['M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16Z', 'M12 8v4l3 2']);
+    if (kind === 'copy') return svg(['M9 8.5V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-2.5', 'M6 9h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z']);
+    if (kind === 'compress') return svg(['M4 8h5V3', 'm4 8 5-5', 'M20 16h-5v5', 'm-4-4 5 5']);
     return svg('M12 5v14');
   }
 
@@ -165,6 +170,7 @@
   function effortLabel(effort) {
     if (effort === 'low') return t('Low');
     if (effort === 'high') return t('High');
+    if (effort === 'xhigh') return t('Extra high');
     if (effort === 'max') return t('Maximum');
     return t('Medium');
   }
@@ -190,6 +196,134 @@
   function exceptionMessage(error) {
     var value = error && typeof error.message === 'string' ? error.message : String(error || '');
     return value.slice(0, 512) || t('Unknown error');
+  }
+
+  function normalizedAccessMode(value) {
+    return value === 'auto' || value === 'full' ? value : 'ask';
+  }
+
+  function accessModeLabel(value) {
+    if (value === 'auto') return t('Help me approve');
+    if (value === 'full') return t('Unrestricted access');
+    return t('Request approval');
+  }
+
+  function accessModeDescription(value) {
+    if (value === 'auto') return t('The host automatically handles routine low- and medium-risk actions. Sensitive operations still ask.');
+    if (value === 'full') return t('Allow file changes and local commands without asking again in this session.');
+    return t('Ask before writing files or running local commands.');
+  }
+
+  function accessIdentity(record) {
+    var session = record && record.state && record.state.activeSession;
+    if (!record || !record.owner || !session || !session.id) return null;
+    return { pluginId: record.owner, providerId: record.id, sessionId: session.id };
+  }
+
+  function accessKey(identity) {
+    return identity ? identity.pluginId + '\u0000' + identity.providerId + '\u0000' + identity.sessionId : '';
+  }
+
+  function validateAccessResponse(value, identity) {
+    if (!value || typeof value !== 'object' || value.pluginId !== identity.pluginId ||
+      value.providerId !== identity.providerId || value.sessionId !== identity.sessionId) {
+      throw new TypeError('Invalid Agent access response.');
+    }
+    if (value.accessMode !== 'ask' && value.accessMode !== 'auto' && value.accessMode !== 'full') {
+      throw new TypeError('Invalid Agent access response.');
+    }
+    return value.accessMode;
+  }
+
+  function ensureAccessMode(record) {
+    var identity = accessIdentity(record);
+    var api = global.api;
+    if (!identity || !api || typeof api.agentAccessGet !== 'function') return;
+    var key = accessKey(identity);
+    if (accessRequests.has(key)) return;
+    var entry = { status: 'loading' };
+    accessRequests.set(key, entry);
+    Promise.resolve(api.agentAccessGet(identity)).then(function(value) {
+      if (!initialized) return;
+      var accessMode = validateAccessResponse(value, identity);
+      var current = recordById(record.id);
+      if (accessKey(accessIdentity(current)) !== key) return;
+      entry.status = 'ready';
+      entry.accessMode = accessMode;
+      var preference = preferenceState(current);
+      preference.accessMode = accessMode;
+      preferences.set(current.id, preference);
+      renderAll();
+    }).catch(function(error) {
+      entry.status = 'error';
+      errors.set(record.id, t('Agent action failed: {message}', { message: exceptionMessage(error) }));
+      renderAll();
+    });
+  }
+
+  async function setAccessMode(record, nextMode) {
+    var identity = accessIdentity(record);
+    var api = global.api;
+    var accessMode = normalizedAccessMode(nextMode);
+    if (!identity || !api || typeof api.agentAccessSet !== 'function') return false;
+    var confirmed = false;
+    if (accessMode === 'full') {
+      confirmed = typeof BOBO.confirm === 'function' && await BOBO.confirm({
+            title: t('Enable unrestricted access?'),
+            message: t('The agent will be allowed to write files and run local commands without asking again in this session. Only enable this for code and instructions you trust.'),
+            confirmLabel: t('Enable unrestricted access'),
+            cancelLabel: t('Cancel'),
+            danger: true
+          });
+      if (!confirmed) { renderWorkspace(record); return false; }
+    }
+    var key = accessKey(identity);
+    var entry = { status: 'saving', accessMode: accessMode };
+    accessRequests.set(key, entry);
+    errors.delete(record.id);
+    renderAll();
+    try {
+      var value = await api.agentAccessSet(Object.assign({}, identity, { accessMode: accessMode, confirmed: confirmed }));
+      var accepted = validateAccessResponse(value, identity);
+      if (accepted !== accessMode) throw new TypeError('Agent access mode was not accepted.');
+      var current = recordById(record.id);
+      if (accessKey(accessIdentity(current)) !== key) return false;
+      entry.status = 'ready';
+      entry.accessMode = accepted;
+      updatePreferences(current, { accessMode: accepted });
+      return true;
+    } catch (error) {
+      entry.status = 'error';
+      errors.set(record.id, t('Agent action failed: {message}', { message: exceptionMessage(error) }));
+      renderAll();
+      return false;
+    }
+  }
+
+  async function clearAccessMode(record, identity) {
+    if (!identity) return;
+    accessRequests.delete(accessKey(identity));
+    var api = global.api;
+    if (!api || typeof api.agentAccessClear !== 'function') return;
+    try {
+      var value = await api.agentAccessClear(identity);
+      if (validateAccessResponse(value, identity) !== 'ask') throw new TypeError('Agent access mode was not cleared.');
+    } catch (error) {
+      errors.set(record.id, t('Agent action failed: {message}', { message: exceptionMessage(error) }));
+      renderAll();
+    }
+  }
+
+  function accessEntry(record) {
+    var identity = accessIdentity(record);
+    return identity ? accessRequests.get(accessKey(identity)) || null : null;
+  }
+
+  function accessReady(record) {
+    if (!record || !record.descriptor.capabilities.localTools || !record.state || !record.state.activeSession) return true;
+    var api = global.api;
+    var entry = accessEntry(record);
+    return Boolean(api && typeof api.agentAccessGet === 'function' && entry && entry.status === 'ready');
   }
 
   function approvalKey(record, approvalId) {
@@ -390,6 +524,7 @@
         sessionId: sessionId,
         mode: session && session.mode || record.descriptor.capabilities.modes[0] || 'chat',
         reasoningEffort: session && session.reasoningEffort || record.descriptor.capabilities.reasoningEfforts[0] || 'medium',
+        accessMode: 'ask',
         modelRef: session && session.modelRef || (models.find(function(model) { return model.configured; }) || models[0] || {}).ref || '',
         skillIds: enabledSkills
       };
@@ -404,6 +539,7 @@
       sessionId: current.sessionId,
       mode: current.mode,
       reasoningEffort: current.reasoningEffort,
+      accessMode: normalizedAccessMode(current.accessMode),
       modelRef: current.modelRef,
       skillIds: current.skillIds.slice()
     }, overrides || {});
@@ -683,7 +819,11 @@
       var approved = typeof BOBO.confirm === 'function'
         ? await BOBO.confirm({ title: t('Delete session?'), message: t('This removes the local Agent conversation.'), confirmLabel: t('Delete'), cancelLabel: t('Cancel'), danger: true })
         : global.confirm(t('Delete session?'));
-      if (approved) invoke(record, 'delete', { sessionId: session.id });
+      if (approved) {
+        var identity = accessIdentity(record);
+        var deleted = await invoke(record, 'delete', { sessionId: session.id });
+        if (deleted) await clearAccessMode(record, identity);
+      }
     });
     button.append(status, copy, remove);
     button.addEventListener('click', function() {
@@ -803,6 +943,7 @@
     var state = record.state || {};
     var session = state.activeSession;
     var current = preferenceState(record);
+    ensureAccessMode(record);
     var toolbar = element('header', 'agent-toolbar');
     var identity = element('div', 'agent-toolbar-identity');
     var mark = element('span', 'agent-provider-mark');
@@ -857,6 +998,23 @@
       controls.appendChild(effort.wrapper);
     }
 
+    if (record.descriptor.capabilities.localTools && session) {
+      var access = toolbarSelect(t('Local tool access'), 'agent-access-field');
+      ['ask', 'auto', 'full'].forEach(function(value) {
+        var option = element('option', '', accessModeLabel(value));
+        option.value = value;
+        option.selected = value === current.accessMode;
+        option.title = accessModeDescription(value);
+        access.select.appendChild(option);
+      });
+      var accessEntry = accessRequests.get(accessKey(accessIdentity(record)));
+      access.wrapper.dataset.mode = normalizedAccessMode(current.accessMode);
+      access.select.title = accessModeDescription(current.accessMode);
+      access.select.disabled = Boolean(accessEntry && (accessEntry.status === 'loading' || accessEntry.status === 'saving'));
+      access.select.addEventListener('change', function() { setAccessMode(record, access.select.value); });
+      controls.appendChild(access.wrapper);
+    }
+
     if (record.descriptor.capabilities.skills) {
       var skillWrap = element('div', 'agent-skill-wrap');
       var skillButton = iconButton('skill', t('Skills'), 'agent-skill-button');
@@ -882,7 +1040,11 @@
         var approved = typeof BOBO.confirm === 'function'
           ? await BOBO.confirm({ title: t('Delete session?'), message: t('This removes the local Agent conversation.'), confirmLabel: t('Delete'), cancelLabel: t('Cancel'), danger: true })
           : global.confirm(t('Delete session?'));
-        if (approved) invoke(record, 'delete', { sessionId: session.id });
+        if (approved) {
+          var identity = accessIdentity(record);
+          var deleted = await invoke(record, 'delete', { sessionId: session.id });
+          if (deleted) await clearAccessMode(record, identity);
+        }
       });
       controls.appendChild(remove);
     }
@@ -944,6 +1106,189 @@
     return section;
   }
 
+  function decodeMarkdownEntities(value) {
+    var named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+    return String(value || '').replace(/&(?:#(\d+)|#x([a-f0-9]+)|(amp|lt|gt|quot|apos));/gi, function(match, decimal, hexadecimal, name) {
+      var code = decimal ? Number(decimal) : hexadecimal ? parseInt(hexadecimal, 16) : 0;
+      if (code) {
+        try { return String.fromCodePoint(code); } catch (_) { return match; }
+      }
+      return named[String(name || '').toLowerCase()] || match;
+    });
+  }
+
+  function safeMarkdownLink(value) {
+    try {
+      var url = new URL(String(value || ''));
+      return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+    } catch (_) { return ''; }
+  }
+
+  function appendMarkdownInline(parent, tokens) {
+    (Array.isArray(tokens) ? tokens : []).forEach(function(token) {
+      if (!token || typeof token !== 'object') return;
+      if (token.type === 'strong' || token.type === 'em' || token.type === 'del') {
+        var emphasis = element(token.type === 'strong' ? 'strong' : token.type === 'em' ? 'em' : 'del');
+        appendMarkdownInline(emphasis, token.tokens);
+        parent.appendChild(emphasis);
+        return;
+      }
+      if (token.type === 'codespan') {
+        parent.appendChild(element('code', 'agent-markdown-inline-code', decodeMarkdownEntities(token.text)));
+        return;
+      }
+      if (token.type === 'br') {
+        parent.appendChild(document.createElement('br'));
+        return;
+      }
+      if (token.type === 'link') {
+        var href = safeMarkdownLink(token.href);
+        if (!href) { appendMarkdownInline(parent, token.tokens); return; }
+        var link = element('a', 'agent-markdown-link');
+        link.href = href;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        if (typeof token.title === 'string') link.title = token.title.slice(0, 500);
+        appendMarkdownInline(link, token.tokens);
+        parent.appendChild(link);
+        return;
+      }
+      if (token.type === 'image') {
+        parent.appendChild(document.createTextNode(decodeMarkdownEntities(token.text || token.raw || '')));
+        return;
+      }
+      if (Array.isArray(token.tokens) && token.tokens.length) {
+        appendMarkdownInline(parent, token.tokens);
+        return;
+      }
+      parent.appendChild(document.createTextNode(decodeMarkdownEntities(token.text || token.raw || '')));
+    });
+  }
+
+  function copyMarkdownCode(button, code) {
+    var clipboard = global.navigator && global.navigator.clipboard;
+    if (!clipboard || typeof clipboard.writeText !== 'function') return;
+    clipboard.writeText(code).then(function() {
+      button.title = t('Copied');
+      button.setAttribute('aria-label', t('Copied'));
+      global.setTimeout(function() {
+        if (!button.isConnected) return;
+        button.title = t('Copy code');
+        button.setAttribute('aria-label', t('Copy code'));
+      }, 1600);
+    }).catch(function() {});
+  }
+
+  function markdownCodeBlock(token) {
+    var section = element('div', 'agent-markdown-code-block');
+    var header = element('div', 'agent-markdown-code-header');
+    var language = typeof token.lang === 'string' ? token.lang.trim().split(/\s+/)[0].slice(0, 40) : '';
+    header.appendChild(element('span', '', language || t('Code')));
+    var copy = iconButton('copy', t('Copy code'), 'agent-icon-button agent-markdown-copy');
+    copy.addEventListener('click', function() { copyMarkdownCode(copy, String(token.text || '')); });
+    header.appendChild(copy);
+    var pre = element('pre', 'agent-markdown-pre');
+    pre.appendChild(element('code', '', String(token.text || '')));
+    section.append(header, pre);
+    return section;
+  }
+
+  function appendMarkdownBlocks(parent, tokens, compact) {
+    (Array.isArray(tokens) ? tokens : []).forEach(function(token) {
+      if (!token || typeof token !== 'object' || token.type === 'space') return;
+      if (token.type === 'heading') {
+        var heading = element('h' + Math.min(Math.max(Number(token.depth) || 1, 1) + 2, 6));
+        appendMarkdownInline(heading, token.tokens);
+        parent.appendChild(heading);
+        return;
+      }
+      if (token.type === 'paragraph' || token.type === 'text') {
+        var paragraph = compact ? parent : element('p');
+        appendMarkdownInline(paragraph, token.tokens || [{ type: 'text', text: token.text || token.raw || '' }]);
+        if (!compact) parent.appendChild(paragraph);
+        return;
+      }
+      if (token.type === 'code') {
+        parent.appendChild(markdownCodeBlock(token));
+        return;
+      }
+      if (token.type === 'blockquote') {
+        var quote = element('blockquote');
+        appendMarkdownBlocks(quote, token.tokens, false);
+        parent.appendChild(quote);
+        return;
+      }
+      if (token.type === 'list') {
+        var list = element(token.ordered ? 'ol' : 'ul');
+        if (token.ordered && Number.isSafeInteger(token.start) && token.start > 1) list.start = token.start;
+        (Array.isArray(token.items) ? token.items : []).forEach(function(item) {
+          var row = element('li');
+          if (item.task) {
+            var checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = item.checked === true;
+            checkbox.disabled = true;
+            checkbox.setAttribute('aria-hidden', 'true');
+            row.appendChild(checkbox);
+          }
+          appendMarkdownBlocks(row, item.tokens, true);
+          list.appendChild(row);
+        });
+        parent.appendChild(list);
+        return;
+      }
+      if (token.type === 'table') {
+        var wrap = element('div', 'agent-markdown-table-wrap');
+        var table = element('table');
+        var thead = element('thead');
+        var headRow = element('tr');
+        (Array.isArray(token.header) ? token.header : []).forEach(function(cell, index) {
+          var th = element('th');
+          var alignment = token.align && token.align[index];
+          if (alignment === 'left' || alignment === 'center' || alignment === 'right') th.style.textAlign = alignment;
+          appendMarkdownInline(th, cell.tokens);
+          headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        var tbody = element('tbody');
+        (Array.isArray(token.rows) ? token.rows : []).forEach(function(cells) {
+          var row = element('tr');
+          cells.forEach(function(cell, index) {
+            var td = element('td');
+            var alignment = token.align && token.align[index];
+            if (alignment === 'left' || alignment === 'center' || alignment === 'right') td.style.textAlign = alignment;
+            appendMarkdownInline(td, cell.tokens);
+            row.appendChild(td);
+          });
+          tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        parent.appendChild(wrap);
+        return;
+      }
+      if (token.type === 'hr') {
+        parent.appendChild(document.createElement('hr'));
+        return;
+      }
+      // Raw HTML and unsupported extensions are deliberately rendered as text.
+      var fallback = compact ? parent : element('p', 'agent-markdown-raw');
+      fallback.appendChild(document.createTextNode(String(token.raw || token.text || '')));
+      if (!compact) parent.appendChild(fallback);
+    });
+  }
+
+  function markdownNode(source) {
+    var root = element('div', 'agent-message-content agent-markdown');
+    try {
+      appendMarkdownBlocks(root, marked.lexer(String(source || ''), { gfm: true, breaks: false }), false);
+    } catch (_) {
+      root.textContent = String(source || '');
+    }
+    return root;
+  }
+
   function messageNode(item) {
     var message = item.value;
     var article = element('article', 'agent-message agent-message-' + message.role);
@@ -952,7 +1297,7 @@
     var time = formatTime(message.createdAt);
     if (time) header.appendChild(element('time', '', time));
     article.appendChild(header);
-    if (message.content) article.appendChild(element('div', 'agent-message-content', message.content));
+    if (message.content) article.appendChild(message.role === 'assistant' ? markdownNode(message.content) : element('div', 'agent-message-content', message.content));
     if (message.reasoning) {
       var reasoning = element('details', 'agent-message-reasoning');
       reasoning.appendChild(element('summary', '', t('Thought process')));
@@ -968,9 +1313,14 @@
     row.dataset.kind = value.kind;
     row.dataset.status = value.status;
     var rail = element('span', 'agent-timeline-marker');
-    rail.appendChild(icon(value.kind === 'tool' ? 'tool' : value.kind === 'skill' ? 'skill' : value.kind === 'error' ? 'close' : value.status === 'completed' ? 'check' : 'clock'));
+    rail.appendChild(icon(value.kind === 'tool' ? 'tool' : value.kind === 'skill' ? 'skill' : value.kind === 'compaction' ? 'compress' : value.kind === 'error' ? 'close' : value.status === 'completed' ? 'check' : 'clock'));
     var body = element('div', 'agent-timeline-body');
-    if (value.kind === 'thought' && value.detail) {
+    if (value.kind === 'compaction') {
+      var compacted = element('div', 'agent-timeline-title');
+      compacted.append(element('strong', '', t('Context compacted')), element('span', '', timelineStatusLabel(value.status)));
+      body.appendChild(compacted);
+      if (value.detail) body.appendChild(element('div', 'agent-timeline-detail', value.detail));
+    } else if (value.kind === 'thought' && value.detail) {
       var details = element('details', 'agent-timeline-details');
       details.appendChild(element('summary', '', value.title));
       details.appendChild(element('div', 'agent-timeline-detail', value.detail));
@@ -1103,7 +1453,8 @@
   function composerNode(record, session) {
     var composer = element('form', 'agent-composer');
     var textarea = element('textarea', 'agent-composer-input');
-    var turnBlocked = Boolean(session && (session.status === 'running' || session.status === 'waiting-approval'));
+    var accessBlocked = Boolean(session && !accessReady(record));
+    var turnBlocked = Boolean(session && (session.status === 'running' || session.status === 'waiting-approval' || accessBlocked));
     textarea.rows = 1;
     textarea.placeholder = t('Ask the agent to change, explain, or run something...');
     textarea.setAttribute('aria-label', t('Message the agent'));
@@ -1123,7 +1474,14 @@
     composer.appendChild(textarea);
     var footer = element('div', 'agent-composer-footer');
     var context = element('span', 'agent-composer-context');
-    if (record.descriptor.capabilities.localTools) {
+    if (accessBlocked) {
+      var entry = accessEntry(record);
+      context.append(icon('clock'), element('span', '', entry && entry.status === 'error' ? t('Local tool access unavailable') : t('Verifying local tool access...')));
+    } else if (session && session.compacting) {
+      context.append(icon('compress'), element('span', '', t('Compacting conversation context...')));
+    } else if (session && session.compaction && session.compaction.count > 0) {
+      context.append(icon('compress'), element('span', '', t('Context compacted {count} times', { count: session.compaction.count })));
+    } else if (record.descriptor.capabilities.localTools) {
       context.append(icon('tool'), element('span', '', t('Local tools require approval for changes')));
     } else {
       context.appendChild(element('span', '', modeLabel(preferenceState(record).mode)));
@@ -1228,12 +1586,16 @@
     var available = records();
     var known = new Set(available.map(function(record) { return record.id; }));
     var activeApprovalKeys = new Set();
+    var activeAccessKeys = new Set();
     available.forEach(function(record) {
       var approval = record.state && record.state.activeSession && record.state.activeSession.approval;
       if (approval) activeApprovalKeys.add(approvalKey(record, approval.id));
+      var identity = accessIdentity(record);
+      if (identity) activeAccessKeys.add(accessKey(identity));
     });
     Array.from(approvalDetails.keys()).forEach(function(key) { if (!activeApprovalKeys.has(key)) approvalDetails.delete(key); });
     Array.from(approvalDecisions.keys()).forEach(function(key) { if (!activeApprovalKeys.has(key)) approvalDecisions.delete(key); });
+    Array.from(accessRequests.keys()).forEach(function(key) { if (!activeAccessKeys.has(key)) accessRequests.delete(key); });
     var activeRemoved = '';
     var removed = [];
     Array.from(openProviders).forEach(function(id) {
@@ -1298,6 +1660,7 @@
     documentClickHandler = null;
     approvalDetails.clear();
     approvalDecisions.clear();
+    accessRequests.clear();
     destroyChrome();
     var root = document.getElementById(PAGE_ID);
     if (root) root.remove();

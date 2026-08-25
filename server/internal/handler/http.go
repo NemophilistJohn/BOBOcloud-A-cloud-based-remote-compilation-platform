@@ -46,34 +46,72 @@ type TerminalExecutor func(ctx context.Context, userID, runtimeID, command strin
 // apply request itself.
 type EnvironmentSetupExecutor func(ctx context.Context, userID, runtimeID, workspaceRoot string, commands []string) (stdout, stderr string, exitCode int, err error)
 
+type managedPackageOperationContextKey struct{}
+
+// WithManagedPackageOperation marks a server-generated Package Center install.
+// Its reviewed manifests already live in the writable dependency generation,
+// so the executor does not need to copy the user's workspace into Docker.
+func WithManagedPackageOperation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, managedPackageOperationContextKey{}, true)
+}
+
+func IsManagedPackageOperation(ctx context.Context) bool {
+	value, _ := ctx.Value(managedPackageOperationContextKey{}).(bool)
+	return value
+}
+
+type PackageLockResolutionRequest struct {
+	UserID          string
+	RuntimeID       string
+	WorkspaceRoot   string
+	Manager         string
+	ManifestPath    string
+	ManifestContent []byte
+	LockfilePath    string
+	RegistryURL     string
+}
+
+type PackageLockResolutionResult struct {
+	LockfilePath string
+	Content      []byte
+	Stdout       string
+	Stderr       string
+}
+
+// PackageLockResolver generates a lock file in an isolated runtime from a
+// server-planned manifest. The request never contains a renderer-supplied
+// command or registry URL.
+type PackageLockResolver func(context.Context, PackageLockResolutionRequest) (PackageLockResolutionResult, error)
+
 // HTTPHandler 包含所有 HTTP API 处理器及其依赖
 type HTTPHandler struct {
-	Config           *config.Config
-	Sessions         storage.SessionStore
-	Channels         *session.ChannelManager
-	Terminal         TerminalExecutor
-	EnvironmentSetup EnvironmentSetupExecutor
-	CompileActivity  storage.CompileActivityStore
-	RateLimiter      *RateLimiter // Phase 2: 限流器（按用户）
-	LoginLimiter     *RateLimiter // 登录/注册限速（按 IP，防爆破）
-	UserStore        auth.UserStore
-	AuthSessions     auth.AuthSessionStore   // 登录会话 token（可为 nil = 单机模式）
-	Invites          auth.InviteStore        // 邀请码（可为 nil = 单机模式）
-	RunHistory       storage.RunHistoryStore // 运行历史查询（可为 nil）
-	Audit            storage.AuditStore      // 审计日志（可为 nil）
-	Version          string                  // 服务端版本号（serverInfo 返回）
-	Collaboration    *collab.Manager         // 团队、Git 工作树与邀请
-	BuildCache       *buildcache.Manager     // 团队编译缓存
-	LSP              *lsp.Manager            // 远程语言服务器与独立分析缓存
-	DAP              *dap.Manager            // 独立远程调试适配器会话
-	DependencyViews  *lsp.DependencyRegistry
-	Lifecycle        *lifecycle.Manager // 运行/终端与破坏性存储操作的用户级互斥
-	PersonalCache    *personalcache.Manager
-	PackageCatalog   packagecatalog.Catalog
-	PackagePlans     *packageops.Store
-	RuntimeMetadata  RuntimeMetadataProvider
-	Metrics          *metrics.Registry
-	Readiness        ReadinessProbe // 无认证 /readyz 的依赖检查；由 main 在组件装配后注入
+	Config              *config.Config
+	Sessions            storage.SessionStore
+	Channels            *session.ChannelManager
+	Terminal            TerminalExecutor
+	EnvironmentSetup    EnvironmentSetupExecutor
+	PackageLockResolver PackageLockResolver
+	CompileActivity     storage.CompileActivityStore
+	RateLimiter         *RateLimiter // Phase 2: 限流器（按用户）
+	LoginLimiter        *RateLimiter // 登录/注册限速（按 IP，防爆破）
+	UserStore           auth.UserStore
+	AuthSessions        auth.AuthSessionStore   // 登录会话 token（可为 nil = 单机模式）
+	Invites             auth.InviteStore        // 邀请码（可为 nil = 单机模式）
+	RunHistory          storage.RunHistoryStore // 运行历史查询（可为 nil）
+	Audit               storage.AuditStore      // 审计日志（可为 nil）
+	Version             string                  // 服务端版本号（serverInfo 返回）
+	Collaboration       *collab.Manager         // 团队、Git 工作树与邀请
+	BuildCache          *buildcache.Manager     // 团队编译缓存
+	LSP                 *lsp.Manager            // 远程语言服务器与独立分析缓存
+	DAP                 *dap.Manager            // 独立远程调试适配器会话
+	DependencyViews     *lsp.DependencyRegistry
+	Lifecycle           *lifecycle.Manager // 运行/终端与破坏性存储操作的用户级互斥
+	PersonalCache       *personalcache.Manager
+	PackageCatalog      packagecatalog.Catalog
+	PackagePlans        *packageops.Store
+	RuntimeMetadata     RuntimeMetadataProvider
+	Metrics             *metrics.Registry
+	Readiness           ReadinessProbe // 无认证 /readyz 的依赖检查；由 main 在组件装配后注入
 
 	// SetUserLimit 把用户容器配额变更同步到 Docker 池（可为 nil，仅重启生效）
 	SetUserLimit func(userID string, limit int)
@@ -1459,6 +1497,12 @@ func (h *HTTPHandler) handleDeleteProject(w http.ResponseWriter, r *http.Request
 		defer mutation.Release()
 	}
 	workspaceID := lsp.StableWorkspaceIdentity(userID, "", "", "", folderKey)
+	if h.PackagePlans != nil && userID != "" {
+		if err := h.PackagePlans.DeleteWorkspace(userID, workspaceID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to delete project dependency transactions: " + err.Error()})
+			return
+		}
+	}
 	if h.authEnabled && userID != "" {
 		inspection, inspectErr := lsp.InspectPersonalDependencies(h.Config.DataDir, userID)
 		if inspectErr != nil {

@@ -173,7 +173,7 @@ function createAiController(options) {
       const nativeFim = mode === 'fim' && resolveApiContract(payload, url) === 'fim';
       const effectiveMessages = mode === 'fim' && !nativeFim ? completionMessages(payload) : messages;
       const tools = normalizeToolDefinitions(payload.tools);
-      const reasoningEffort = ['low', 'medium', 'high', 'max'].includes(payload.reasoningEffort)
+      const reasoningEffort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(payload.reasoningEffort)
         ? payload.reasoningEffort
         : '';
       let body;
@@ -191,13 +191,14 @@ function createAiController(options) {
       } else if (modelConfig.provider === 'anthropic') {
         const systemMessage = effectiveMessages.find((message) => message.role === 'system');
         const chatMessages = anthropicMessages(effectiveMessages);
+        const anthropicEffort = reasoningEffort === 'xhigh' ? 'high' : reasoningEffort;
         const thinkingMode = !tools.length && reasoningEffort && modelOptions.thinkingMode === 'adaptive'
           ? 'adaptive'
           : (!tools.length && reasoningEffort && modelOptions.enableThinking === true ? 'enabled' : '');
         const thinking = thinkingMode === 'adaptive'
           ? { type: 'adaptive' }
           : (thinkingMode === 'enabled'
-              ? { type: 'enabled', budget_tokens: reasoningEffort === 'max' ? 16000 : reasoningEffort === 'high' ? 8000 : reasoningEffort === 'medium' ? 4000 : 1600 }
+              ? { type: 'enabled', budget_tokens: reasoningEffort === 'max' ? 16000 : reasoningEffort === 'xhigh' ? 12000 : reasoningEffort === 'high' ? 8000 : reasoningEffort === 'medium' ? 4000 : 1600 }
               : undefined);
         body = JSON.stringify({
           model: modelConfig.modelId,
@@ -210,7 +211,7 @@ function createAiController(options) {
           messages: chatMessages,
           tools: tools.length ? anthropicToolDefinitions(tools) : undefined,
           thinking,
-          output_config: thinkingMode === 'adaptive' ? { effort: reasoningEffort } : undefined
+          output_config: thinkingMode === 'adaptive' ? { effort: anthropicEffort } : undefined
         });
       } else {
         body = JSON.stringify(Object.assign({}, providerOptions, {

@@ -197,6 +197,14 @@ func toolchainDockerContext(hostRoot, tool string) (map[string]string, map[strin
 		environment["PIP_CACHE_DIR"] = containerRoot
 	case "npm":
 		environment["NPM_CONFIG_CACHE"] = containerRoot
+	case "pnpm":
+		for _, child := range []string{"corepack", "store"} {
+			if err := ensureRealDirectory(filepath.Join(hostRoot, child)); err != nil {
+				return nil, nil, err
+			}
+		}
+		environment["COREPACK_HOME"] = containerRoot + "/corepack"
+		environment["PNPM_STORE_DIR"] = containerRoot + "/store"
 	case "go":
 		for _, child := range []string{"build", "mod"} {
 			if err := ensureRealDirectory(filepath.Join(hostRoot, child)); err != nil {

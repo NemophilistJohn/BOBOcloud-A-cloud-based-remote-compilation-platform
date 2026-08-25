@@ -756,12 +756,17 @@ import {
 
   function terminalIntentChanges(intent) {
     return (Array.isArray(intent && intent.packages) ? intent.packages : []).map(function(item) {
+      var ecosystem = String(intent && intent.ecosystem || '').toLowerCase();
+      var requestedScope = String(item && item.scope || 'runtime').toLowerCase();
+      var validScope = ecosystem === 'node'
+        ? ['runtime', 'dev', 'optional'].indexOf(requestedScope) >= 0
+        : requestedScope === 'runtime';
       return {
         operation: intent.operation === 'remove' ? 'remove' : 'install',
         name: String(item && item.name || ''),
         version: String(item && item.version || ''),
         features: Array.isArray(item && item.features) ? item.features.slice() : [],
-        scope: 'runtime'
+        scope: validScope ? requestedScope : 'runtime'
       };
     });
   }
@@ -798,14 +803,14 @@ import {
   function terminalPackageIntentRejectionMessage(code) {
     switch (String(code || '')) {
     case 'unsupported_option':
-      return t('This pip option cannot be managed safely in the project environment.');
+      return t('This terminal library command cannot be managed automatically. Use Package Center instead.');
     case 'unsupported_requirement':
       return t('This package requirement cannot be managed safely. Use a package name with an optional exact version.');
     case 'unknown_source':
       return t('This package source is not configured on the server.');
     case 'unsupported_invocation':
     case 'unsupported_command':
-      return t('This pip command is not supported by managed project environments.');
+      return t('This terminal library command cannot be managed automatically. Use Package Center instead.');
     case 'package_intent_timeout':
       return t('The terminal package request expired before it could be accepted. Run the command again.');
     case 'package_intent_stale':
@@ -882,6 +887,7 @@ import {
       var applied = await BOBO.packageCenter.applyManagedPackageChanges(terminalIntentChanges(event), {
         source: 'terminal',
         sourceId: String(event.sourceId || ''),
+        manager: String(event.manager || ''),
         runtimeId: String(event.runtimeId || ''),
         removalConfirmed: true,
         discardOnFailure: true

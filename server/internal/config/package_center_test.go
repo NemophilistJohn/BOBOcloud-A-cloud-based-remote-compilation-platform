@@ -27,10 +27,35 @@ func TestPackageCenterDefaultsExposeOfficialAndTUNASources(t *testing.T) {
 	if cfg.PackageSources[0].CatalogURL != "https://pypi.org" || cfg.PackageSources[1].CatalogURL != "https://pypi.tuna.tsinghua.edu.cn" || cfg.PackageSources[1].InstallURL != "https://pypi.tuna.tsinghua.edu.cn/simple/" {
 		t.Fatalf("package catalog authorities = %+v", cfg.PackageSources)
 	}
+	if cfg.PackageDefaultSources["python"] != "pypi-official" || cfg.PackageDefaultSources["node"] != "npm-official" {
+		t.Fatalf("per-ecosystem defaults = %+v", cfg.PackageDefaultSources)
+	}
+	if !cfg.PackageNodeInstallScripts {
+		t.Fatal("Node lifecycle scripts should be enabled by default")
+	}
+	if cfg.PackageNodePNPMVersion != "10.32.1" {
+		t.Fatalf("default pnpm version = %q", cfg.PackageNodePNPMVersion)
+	}
 	for _, source := range cfg.PackageSources {
-		if source.EquivalenceGroup != "pypi" {
-			t.Fatalf("source is outside the PyPI equivalence group: %+v", source)
+		expectedGroup := map[string]string{"python": "pypi", "node": "npm"}[source.Ecosystem]
+		if expectedGroup == "" || source.EquivalenceGroup != expectedGroup {
+			t.Fatalf("source is outside its ecosystem equivalence group: %+v", source)
 		}
+	}
+}
+
+func TestPackageCenterRejectsMutableOrNode20IncompatiblePNPMVersions(t *testing.T) {
+	for _, version := range []string{"latest", "^10.32.1", "11.23.0"} {
+		t.Run(version, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			payload := `{"package_node_pnpm_version":"` + version + `"}`
+			if err := os.WriteFile(path, []byte(payload), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "package_node_pnpm_version") {
+				t.Fatalf("invalid pnpm version %q was accepted: %v", version, err)
+			}
+		})
 	}
 }
 

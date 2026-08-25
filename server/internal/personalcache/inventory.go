@@ -112,7 +112,7 @@ func (m *Manager) AcquirePackageInventoryRead(request Request) (*ReadLease, Entr
 }
 
 // AcquirePackageInventorySnapshotRead inspects and retains the same published
-// Python generation under one user gate. Unlike AcquirePackageInventoryRead,
+// managed generation under one user gate. Unlike AcquirePackageInventoryRead,
 // a published generation is retained even when its inventory is incomplete or
 // corrupt so callers can report inventory health and analyzer visibility from
 // one coherent snapshot.
@@ -151,7 +151,7 @@ func (m *Manager) inspectPackageInventoryLocked(request Request) (InventoryInspe
 }
 
 func (m *Manager) inspectPackageInventoryEntryLocked(request Request, entry Entry) InventoryInspection {
-	if !strings.EqualFold(strings.TrimSpace(entry.Language), "python") {
+	if !exactPackageInventoryLanguage(entry.Language) {
 		return InventoryInspection{State: "unsupported", Detail: "Exact package inventory is not available for this language"}
 	}
 	m.mu.Lock()
@@ -172,7 +172,7 @@ func (m *Manager) inspectPackageInventoryEntryLocked(request Request, entry Entr
 		return InventoryInspection{State: "stale", Detail: "The package inventory belongs to a different dependency digest"}
 	}
 	if document.Schema != packageInventorySchema {
-		if document.Schema == 1 && document.State != "busy" {
+		if document.Schema == 1 && document.State != "busy" && strings.EqualFold(entry.Language, "python") {
 			packages, revision, _, scanErr := scanPythonPackageTree(filepath.Join(entry.absPath, "python"))
 			if scanErr == nil {
 				upgraded := packageInventoryDocument{
@@ -200,10 +200,10 @@ func (m *Manager) inspectPackageInventoryEntryLocked(request Request, entry Entr
 		// Repair only an explicitly completed publication attempt; a leftover
 		// busy marker still means an unclean writer and remains fail-closed.
 		if document.State == "incomplete" {
-			packages, revision, _, scanErr := scanPythonPackageTree(filepath.Join(entry.absPath, "python"))
+			packages, revision, _, scanErr := scanManagedPackageTree(entry.absPath, entry.Language)
 			if scanErr == nil {
 				repaired := packageInventoryDocument{
-					Schema: packageInventorySchema, State: "ready", Language: "python", Digest: entry.Digest,
+					Schema: packageInventorySchema, State: "ready", Language: strings.ToLower(strings.TrimSpace(entry.Language)), Digest: entry.Digest,
 					GeneratedAt: time.Now().UTC(), TreeRevision: revision, Packages: packages,
 				}
 				if writeErr := writePackageInventory(entry.absPath, repaired); writeErr == nil {
@@ -231,9 +231,9 @@ func (m *Manager) inspectPackageInventoryEntryLocked(request Request, entry Entr
 		}
 		return InventoryInspection{State: "incomplete", Detail: detail, GeneratedAt: document.GeneratedAt}
 	}
-	packages, revision, _, scanErr := scanPythonPackageTree(filepath.Join(entry.absPath, "python"))
+	packages, revision, _, scanErr := scanManagedPackageTree(entry.absPath, entry.Language)
 	if scanErr != nil {
-		return InventoryInspection{State: "incomplete", Detail: "Python package metadata could not be read completely", GeneratedAt: document.GeneratedAt}
+		return InventoryInspection{State: "incomplete", Detail: "Package metadata could not be read completely", GeneratedAt: document.GeneratedAt}
 	}
 	if revision != document.TreeRevision {
 		return InventoryInspection{State: "stale", Detail: "The package tree changed after its inventory snapshot was published", Packages: packages, GeneratedAt: document.GeneratedAt, Revision: revision}
@@ -246,7 +246,9 @@ func (m *Manager) inspectPackageInventoryEntryLocked(request Request, entry Entr
 
 // PreviewPackageInventory scans a writable generation without publishing it.
 // Package-center transactions use this as their pre-commit validation step so
-// an incomplete install can never replace the last known-good generation.
+// an incomplete install can never replace the last known-good generation. The
+// successful preview also seals the exact inventory that Release publishes;
+// callers must not mutate the generation after this boundary.
 func (l *Lease) PreviewPackageInventory() InventoryInspection {
 	if l == nil || l.manager == nil || !l.writable {
 		return InventoryInspection{State: "unavailable", Detail: "A writable project dependency generation is required"}
@@ -254,14 +256,14 @@ func (l *Lease) PreviewPackageInventory() InventoryInspection {
 	if l.aborted.Load() {
 		return InventoryInspection{State: "aborted", Detail: "The project dependency generation was aborted"}
 	}
-	if !strings.EqualFold(strings.TrimSpace(l.request.Language), "python") {
+	if !exactPackageInventoryLanguage(l.request.Language) {
 		return InventoryInspection{State: "unsupported", Detail: "Exact package inventory is not available for this language"}
 	}
-	packages, revision, _, err := scanPythonPackageTree(filepath.Join(l.HostRoot, "python"))
+	packages, revision, _, err := scanManagedPackageTree(l.HostRoot, l.request.Language)
 	if err != nil {
-		return InventoryInspection{State: "incomplete", Detail: "Python package metadata could not be read completely: " + err.Error()}
+		return InventoryInspection{State: "incomplete", Detail: "Package metadata could not be read completely: " + err.Error()}
 	}
-	return InventoryInspection{
+	inspection := InventoryInspection{
 		State:       "ready",
 		Detail:      "The staged package inventory is exact and ready to publish",
 		Packages:    packages,
@@ -269,10 +271,42 @@ func (l *Lease) PreviewPackageInventory() InventoryInspection {
 		GeneratedAt: time.Now().UTC(),
 		Revision:    revision,
 	}
+	l.inventoryMu.Lock()
+	l.inventorySeal = &packageInventoryDocument{
+		Schema: packageInventorySchema, State: "ready", Language: strings.ToLower(strings.TrimSpace(l.request.Language)),
+		Digest: l.Fingerprint.Digest, GeneratedAt: inspection.GeneratedAt, TreeRevision: revision,
+		Packages: cloneInventoryPackages(packages),
+	}
+	l.inventoryMu.Unlock()
+	return inspection
+}
+
+func cloneInventoryPackages(packages []InventoryPackage) []InventoryPackage {
+	cloned := make([]InventoryPackage, len(packages))
+	for index := range packages {
+		cloned[index] = packages[index]
+		cloned[index].Imports = append([]string(nil), packages[index].Imports...)
+	}
+	return cloned
+}
+
+func (l *Lease) sealedPackageInventory() *packageInventoryDocument {
+	if l == nil {
+		return nil
+	}
+	l.inventoryMu.Lock()
+	defer l.inventoryMu.Unlock()
+	if l.inventorySeal == nil || l.inventorySeal.Schema != packageInventorySchema || l.inventorySeal.State != "ready" ||
+		l.inventorySeal.Digest != l.Fingerprint.Digest || !strings.EqualFold(l.inventorySeal.Language, l.request.Language) {
+		return nil
+	}
+	document := *l.inventorySeal
+	document.Packages = cloneInventoryPackages(l.inventorySeal.Packages)
+	return &document
 }
 
 func (l *Lease) publishInventory() error {
-	if l == nil || l.manager == nil || !strings.EqualFold(strings.TrimSpace(l.request.Language), "python") {
+	if l == nil || l.manager == nil || !exactPackageInventoryLanguage(l.request.Language) {
 		return nil
 	}
 	started := time.Now()
@@ -282,20 +316,28 @@ func (l *Lease) publishInventory() error {
 	if !lastWriter {
 		return nil
 	}
-	err := publishPackageInventory(l.HostRoot, l.request.Language, l.Fingerprint.Digest)
+	var err error
+	usedPreview := false
+	if document := l.sealedPackageInventory(); document != nil {
+		usedPreview = true
+		err = writePackageInventory(l.HostRoot, *document)
+	} else {
+		err = publishPackageInventory(l.HostRoot, l.request.Language, l.Fingerprint.Digest)
+	}
 	if l.manager.options.Metrics != nil {
 		l.manager.options.Metrics.Observe("dependency.cache.inventory.publish", time.Since(started))
 		l.manager.options.Metrics.Cache("dependency.cache.inventory", err == nil)
+		l.manager.options.Metrics.Cache("dependency.cache.inventory.preview-reuse", usedPreview)
 	}
 	return err
 }
 
 func markPackageInventoryDirty(root, language, digest string) error {
-	if !strings.EqualFold(strings.TrimSpace(language), "python") {
+	if !exactPackageInventoryLanguage(language) {
 		return nil
 	}
 	return writePackageInventory(root, packageInventoryDocument{
-		Schema: packageInventorySchema, State: "busy", Language: "python", Digest: digest,
+		Schema: packageInventorySchema, State: "busy", Language: strings.ToLower(strings.TrimSpace(language)), Digest: digest,
 		GeneratedAt: time.Now().UTC(), Packages: []InventoryPackage{},
 		Detail: "The package inventory has an active writer and is not safe to read",
 	})
@@ -306,9 +348,9 @@ func publishPackageInventory(root, language, digest string) error {
 		Schema: packageInventorySchema, State: "incomplete", Language: strings.ToLower(strings.TrimSpace(language)),
 		Digest: digest, GeneratedAt: time.Now().UTC(), Packages: []InventoryPackage{},
 	}
-	packages, revision, _, err := scanPythonPackageTree(filepath.Join(root, "python"))
+	packages, revision, _, err := scanManagedPackageTree(root, language)
 	if err != nil {
-		document.Detail = "Python package metadata could not be read completely: " + err.Error()
+		document.Detail = "Package metadata could not be read completely: " + err.Error()
 		_ = writePackageInventory(root, document)
 		return err
 	}
@@ -351,6 +393,26 @@ func scanPythonPackageTree(root string) ([]InventoryPackage, string, int64, erro
 		return nil, "", 0, err
 	}
 	return tree.Packages, tree.Revision, tree.Latest, nil
+}
+
+func exactPackageInventoryLanguage(language string) bool {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "python", "node":
+		return true
+	default:
+		return false
+	}
+}
+
+func scanManagedPackageTree(root, language string) ([]InventoryPackage, string, int64, error) {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "python":
+		return scanPythonPackageTree(filepath.Join(root, "python"))
+	case "node":
+		return scanNodePackageTree(filepath.Join(root, "node_modules"))
+	default:
+		return nil, "", 0, fmt.Errorf("exact package inventory is not available for %s", language)
+	}
 }
 
 // pip --target relocates scheme data such as console scripts and man pages

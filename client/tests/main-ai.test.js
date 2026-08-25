@@ -95,6 +95,67 @@ test('FIM request to chat/completions always sends a non-empty messages field', 
   assert.equal(Object.hasOwn(requestBody, 'prompt'), false);
 });
 
+test('xhigh reasoning is preserved for compatible providers and mapped for Anthropic adaptive thinking', async (t) => {
+  const requests = [];
+  const server = http.createServer((request, response) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      requests.push({ url: request.url, body: JSON.parse(body) });
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      if (request.url === '/anthropic') {
+        response.end(JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }));
+      } else {
+        response.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }));
+      }
+    });
+  });
+  const port = await listen(server);
+  t.after(() => close(server));
+  const harness = createHarness();
+  t.after(() => harness.controller.dispose());
+  const base = {
+    mode: 'chat',
+    stream: false,
+    reasoningEffort: 'xhigh',
+    maxTokens: 16384,
+    messages: [{ role: 'user', content: 'think carefully' }]
+  };
+
+  const openAi = await harness.handlers.get('ai-chat-request')(null, {
+    ...base,
+    requestId: 'xhigh-openai',
+    modelConfig: {
+      name: 'OpenAI-compatible test',
+      provider: 'openai-compatible',
+      endpoint: `http://127.0.0.1:${port}/openai`,
+      modelId: 'reasoning-test',
+      apiKey: 'test-key',
+      options: { enableReasoningEffort: true }
+    }
+  });
+  const anthropic = await harness.handlers.get('ai-chat-request')(null, {
+    ...base,
+    requestId: 'xhigh-anthropic',
+    modelConfig: {
+      name: 'Anthropic test',
+      provider: 'anthropic',
+      endpoint: `http://127.0.0.1:${port}/anthropic`,
+      modelId: 'claude-test',
+      apiKey: 'test-key',
+      options: { thinkingMode: 'adaptive' }
+    }
+  });
+
+  assert.equal(openAi.success, true);
+  assert.equal(anthropic.success, true);
+  assert.equal(requests.find((entry) => entry.url === '/openai').body.reasoning_effort, 'xhigh');
+  const anthropicBody = requests.find((entry) => entry.url === '/anthropic').body;
+  assert.deepEqual(anthropicBody.thinking, { type: 'adaptive' });
+  assert.deepEqual(anthropicBody.output_config, { effort: 'high' });
+});
+
 test('streaming proxy batches rapid provider chunks without losing output', async (t) => {
   const pieces = Array.from({ length: 120 }, (_, index) => String(index % 10));
   const server = http.createServer((_request, response) => {

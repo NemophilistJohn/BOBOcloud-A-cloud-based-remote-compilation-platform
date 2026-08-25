@@ -15,6 +15,9 @@ globalThis.BOBO = { state: {
 } };
 const {
   normalizeContext,
+  normalizePackageManager,
+  normalizePackageCapabilities,
+  assertManagedPackageManager,
   normalizeResults,
   normalizeCompatibility,
   normalizePackageVersions,
@@ -39,8 +42,10 @@ const {
   captureEditorSnapshots,
   updateOpenBuffers,
   collectEditorConflicts,
+  normalizePendingRecovery,
   refreshConfiguredLanguageService,
   packageQueryTimeoutMs,
+  packagePlanTimeoutMs,
   packageApplyTimeoutMs,
   PACKAGE_QUERY_TIMEOUT_MS,
   PACKAGE_QUERY_GRACE_MS,
@@ -49,12 +54,29 @@ const {
   PACKAGE_PLAN_TIMEOUT_MS
 } = require('../src/package-center');
 
+test('pending local recovery normalization exposes only relative file summaries', () => {
+  assert.deepEqual(normalizePendingRecovery({
+    transactionId: 'tx-1',
+    files: [
+      { path: 'package.json', exists: true, sha256: 'A'.repeat(64) },
+      { path: '../secret', exists: true, sha256: 'B'.repeat(64) }
+    ],
+    conflicts: [{ path: 'package.json' }]
+  }), {
+    transactionId: 'tx-1',
+    state: 'reconciliation-required',
+    files: [{ path: 'package.json', exists: true, sha256: 'a'.repeat(64) }],
+    conflicts: [{ path: 'package.json' }]
+  });
+});
+
 test('package IPC errors use stable localized messages instead of raw main-process text', () => {
   const originalI18n = globalThis.BOBO.i18n;
   let locale = 'zh-CN';
   const translations = {
     'The library plan contains an invalid dependency file change.': '本地化：计划无效',
     'The selected library change conflicts with the project dependency file.': '本地化：依赖文件冲突',
+    'The project pnpm version does not match this server policy. Update packageManager and try again.': '本地化：pnpm 策略不一致',
     'Package transaction id is required': '本地化：缺少事务 ID',
     'The project library cache quota is full.': '本地化：缓存配额已满',
     'The library request failed.': '本地化：请求失败',
@@ -76,6 +98,10 @@ test('package IPC errors use stable localized messages instead of raw main-proce
     assert.equal(
       localizedPackageError({ success: false, errorCode: 'package_manifest_change_invalid', error: 'raw server wording' }, 'Library update failed.'),
       '本地化：依赖文件冲突'
+    );
+    assert.equal(
+      localizedPackageError({ success: false, errorCode: 'package_manager_policy_mismatch', error: 'raw server wording' }, 'Library update failed.'),
+      '本地化：pnpm 策略不一致'
     );
     assert.equal(
       localizedPackageError({ success: false, error: 'dynamic English server detail' }, 'The library request failed.'),
@@ -123,10 +149,75 @@ test('package center honors the server planning capability and source defaults',
   assert.equal(context.operationTimeoutSeconds, 600);
 });
 
+test('project dependency context preserves Node manager, lock, scopes, and split capabilities', () => {
+  const normalized = normalizeContext({
+    language: { id: 'node', displayName: 'Node.js' },
+    runtime: { id: 'node:22', interpreterVersion: '22.14.0' },
+    manager: {
+      id: 'pnpm', name: 'pnpm', manifestPath: 'package.json', lockfilePath: 'pnpm-lock.yaml',
+      lockfilePresent: true, detectedBy: 'pnpm-lock.yaml', scopes: ['runtime', 'dev', 'optional']
+    },
+    capabilities: {
+      browse: true, inspect: true, mutate: false, exactInventory: true,
+      scopes: true, prereleases: true, transitivePackages: true
+    },
+    canPlanChanges: { supported: false, reason: 'Fixture policy blocks changes' },
+    manifests: [
+      { path: 'package.json', manager: 'pnpm', kind: 'package', language: 'node', editable: true },
+      { path: 'pnpm-lock.yaml', manager: 'pnpm', kind: 'pnpm-lock', language: 'node', lockfile: true }
+    ],
+    defaultManifestPath: 'package.json',
+    packages: { declared: [], installed: [], missing: [], unknown: [] }
+  });
+
+  assert.equal(normalized.supported, true, 'read-only catalog browsing remains available');
+  assert.equal(normalized.canMutate, false);
+  assert.equal(normalized.mutationReason, 'Fixture policy blocks changes');
+  assert.deepEqual(normalized.manager, {
+    id: 'pnpm', name: 'pnpm', manifestPath: 'package.json', lockfilePath: 'pnpm-lock.yaml',
+    lockfilePresent: true, detectedBy: 'pnpm-lock.yaml', scopes: ['runtime', 'dev', 'optional']
+  });
+  assert.equal(normalized.capabilities.transitivePackages, true);
+  assert.equal(normalized.capabilities.scopes, true);
+  assert.equal(normalizePackageManager({}, { id: 'python' }, [{ path: 'requirements.txt', manager: 'pip' }], 'requirements.txt').id, 'pip');
+  assert.equal(normalizePackageCapabilities({ browse: true, mutate: false }, { supported: true }).mutate, false);
+});
+
+test('npm metadata and exact manifest pins survive catalog normalization', () => {
+  const item = normalizeResults({ items: [{
+    name: '@scope/demo', recommendedVersion: '3.2.1', description: 'Scoped demo',
+    requiresLanguage: '>=20', deprecated: true, deprecationMessage: 'Use @scope/next',
+    distTags: { latest: '3.2.1', next: '4.0.0-beta.1' },
+    versions: [
+      { version: '3.2.1', compatibility: 'compatible', deprecated: true, deprecationMessage: 'Use @scope/next' },
+      { version: '4.0.0-beta.1', compatibility: 'compatible' }
+    ]
+  }] }).items[0];
+  assert.equal(item.requiresLanguage, '>=20');
+  assert.equal(item.deprecated, true);
+  assert.deepEqual(item.distTags, { latest: '3.2.1', next: '4.0.0-beta.1' });
+  const stable = normalizePackageVersions(item, false);
+  assert.equal(stable.length, 1);
+  assert.equal(stable[0].deprecated, true);
+  assert.equal(exactDeclaredPackageVersion({ constraint: '3.2.1' }), '3.2.1');
+  assert.equal(exactDeclaredPackageVersion({ constraint: '^3.2.1' }), '');
+});
+
+test('terminal-managed dependency changes cannot cross Node package managers', () => {
+  assert.equal(assertManagedPackageManager('pnpm', 'pnpm'), true);
+  assert.equal(assertManagedPackageManager('', 'npm'), true);
+  assert.throws(() => assertManagedPackageManager('pnpm', 'npm'), /project uses npm; pnpm commands cannot manage/i);
+});
+
 test('catalog requests follow the server deadline with transport grace', () => {
   assert.equal(packageQueryTimeoutMs(), PACKAGE_QUERY_TIMEOUT_MS);
   assert.equal(packageQueryTimeoutMs(5), PACKAGE_QUERY_TIMEOUT_MS);
   assert.equal(packageQueryTimeoutMs(12), 12000 + PACKAGE_QUERY_GRACE_MS);
+});
+
+test('dependency planning honors the server operation deadline with a sane minimum', () => {
+  assert.equal(packagePlanTimeoutMs(5), PACKAGE_PLAN_TIMEOUT_MS);
+  assert.equal(packagePlanTimeoutMs(120), 120000 + PACKAGE_QUERY_GRACE_MS);
 });
 
 test('installed view never promotes a manifest declaration into installed inventory', () => {
@@ -444,6 +535,31 @@ test('package apply treats runtime image drift as a definitive pre-execution fai
     });
     assert.equal(calls, 1);
     assert.equal(result.errorCode, 'package_plan_runtime_changed');
+    assert.notEqual(result.uncertain, true);
+  } finally {
+    globalThis.BOBO.sendToServer = originalSend;
+  }
+});
+
+test('package apply treats package manager policy mismatch as definitive', async () => {
+  const originalSend = globalThis.BOBO.sendToServer;
+  let calls = 0;
+  globalThis.BOBO.sendToServer = async () => {
+    calls += 1;
+    return {
+      success: false,
+      status: 409,
+      errorCode: 'package_manager_policy_mismatch',
+      error: 'project packageManager does not match the server policy'
+    };
+  };
+  try {
+    const result = await applyServerPlan({ packagePlanId: 'plan-manager-mismatch' }, {
+      operationTimeoutSeconds: 1,
+      wait: async () => {}
+    });
+    assert.equal(calls, 1);
+    assert.equal(result.errorCode, 'package_manager_policy_mismatch');
     assert.notEqual(result.uncertain, true);
   } finally {
     globalThis.BOBO.sendToServer = originalSend;

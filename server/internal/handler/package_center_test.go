@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -952,6 +953,206 @@ func TestPackagePlanCatalogValidationRejectsUnsafeSelections(t *testing.T) {
 	resolved, status, code, err := resolveAndValidatePackagePlanCatalog(t.Context(), compatible, "pypi-official", "3.10.21", "exact", []model.ProjectPackageChange{change, {Operation: "remove", Name: "old"}})
 	if err != nil || status != http.StatusOK || code != "" || calls != 1 || len(resolved) != 2 {
 		t.Fatalf("compatible/removed validation = calls:%d status:%d code:%s err:%v", calls, status, code, err)
+	}
+}
+
+func TestPackagePlanCatalogValidationUsesBoundedConcurrencyAndPreservesOrder(t *testing.T) {
+	for _, ecosystem := range []string{"python", "node"} {
+		t.Run(ecosystem, func(t *testing.T) {
+			base := packagecatalog.NewWithClient(configureCatalogSourcesForTest(), nil, 1<<20)
+			names := []string{"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
+			gates := make(map[string]chan struct{}, len(names))
+			for _, name := range names {
+				gates[name] = make(chan struct{})
+			}
+			started := make(chan string, len(names))
+			completed := make(chan string, len(names))
+			var active atomic.Int32
+			var maxActive atomic.Int32
+			var calls atomic.Int32
+			catalog := &packageCenterCatalogStub{base: base, itemFn: func(ctx context.Context, request packagecatalog.ItemRequest) (model.PackageCatalogItem, error) {
+				calls.Add(1)
+				current := active.Add(1)
+				defer active.Add(-1)
+				for observed := maxActive.Load(); current > observed && !maxActive.CompareAndSwap(observed, current); observed = maxActive.Load() {
+				}
+				started <- request.Name
+				select {
+				case <-gates[request.Name]:
+				case <-ctx.Done():
+					return model.PackageCatalogItem{}, ctx.Err()
+				}
+				completed <- request.Name
+				version := request.Name + "-resolved"
+				return model.PackageCatalogItem{
+					Name: request.Name, RecommendedVersion: version, CatalogAuthority: ecosystem + ".catalog.example",
+					Versions: []model.PackageCatalogVersion{{Version: version, Compatibility: "metadata-compatible"}},
+				}, nil
+			}}
+			changes := []model.ProjectPackageChange{
+				{Operation: "add", Name: "alpha"},
+				{Operation: "update", Name: "beta"},
+				{Operation: "add", Name: "gamma"},
+				{Operation: "add", Name: "delta"},
+				{Operation: "remove", Name: "removed-without-catalog-query"},
+				{Operation: "add", Name: "epsilon"},
+				{Operation: "update", Name: "zeta"},
+				{Operation: "add", Name: "eta"},
+				{Operation: "add", Name: "theta"},
+			}
+			type validationResult struct {
+				changes []model.ProjectPackageChange
+				status  int
+				code    string
+				err     error
+			}
+			done := make(chan validationResult, 1)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			go func() {
+				resolved, status, code, err := resolveAndValidatePackagePlanCatalogForEcosystem(ctx, catalog, ecosystem, "", "20.19.0", "exact", changes)
+				done <- validationResult{changes: resolved, status: status, code: code, err: err}
+			}()
+
+			released := make(map[string]bool, len(names))
+			defer func() {
+				for _, name := range names {
+					if !released[name] {
+						close(gates[name])
+					}
+				}
+			}()
+			for batchStart := 0; batchStart < len(names); batchStart += packagePlanCatalogConcurrency {
+				batchEnd := min(batchStart+packagePlanCatalogConcurrency, len(names))
+				seen := make(map[string]bool, batchEnd-batchStart)
+				for range names[batchStart:batchEnd] {
+					select {
+					case name := <-started:
+						seen[name] = true
+					case <-ctx.Done():
+						t.Fatal("catalog validation did not start the expected batch")
+					}
+				}
+				for _, name := range names[batchStart:batchEnd] {
+					if !seen[name] {
+						t.Fatalf("catalog batch started unexpected requests: got %v", seen)
+					}
+				}
+				select {
+				case unexpected := <-started:
+					t.Fatalf("catalog concurrency exceeded %d; started %s before the current batch completed", packagePlanCatalogConcurrency, unexpected)
+				default:
+				}
+				for index := batchEnd - 1; index >= batchStart; index-- {
+					name := names[index]
+					close(gates[name])
+					released[name] = true
+					select {
+					case completedName := <-completed:
+						if completedName != name {
+							t.Fatalf("catalog completion order = %s, want %s", completedName, name)
+						}
+					case <-ctx.Done():
+						t.Fatal("catalog request did not complete after release")
+					}
+				}
+			}
+
+			var result validationResult
+			select {
+			case result = <-done:
+			case <-ctx.Done():
+				t.Fatal("catalog validation did not finish")
+			}
+			if result.err != nil || result.status != http.StatusOK || result.code != "" {
+				t.Fatalf("catalog validation = status:%d code:%s err:%v", result.status, result.code, result.err)
+			}
+			if maxActive.Load() != packagePlanCatalogConcurrency || calls.Load() != int32(len(names)) {
+				t.Fatalf("catalog calls = %d max concurrency = %d", calls.Load(), maxActive.Load())
+			}
+			for index, change := range result.changes {
+				if change.Name != changes[index].Name || change.Operation != changes[index].Operation {
+					t.Fatalf("resolved change %d lost input order: got %+v want %+v", index, change, changes[index])
+				}
+				if change.Operation != "remove" && change.Version != change.Name+"-resolved" {
+					t.Fatalf("resolved change %d received the wrong catalog result: %+v", index, change)
+				}
+			}
+		})
+	}
+}
+
+func TestPackagePlanCatalogValidationPreservesInputErrorPriority(t *testing.T) {
+	base := packagecatalog.NewWithClient(configureCatalogSourcesForTest(), nil, 1<<20)
+	secondCompleted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	catalog := &packageCenterCatalogStub{base: base, itemFn: func(ctx context.Context, request packagecatalog.ItemRequest) (model.PackageCatalogItem, error) {
+		if request.Name == "first-missing" {
+			select {
+			case <-releaseFirst:
+				return model.PackageCatalogItem{}, packagecatalog.ErrNotFound
+			case <-ctx.Done():
+				return model.PackageCatalogItem{}, ctx.Err()
+			}
+		}
+		close(secondCompleted)
+		return model.PackageCatalogItem{}, context.DeadlineExceeded
+	}}
+	type validationResult struct {
+		status int
+		code   string
+		err    error
+	}
+	done := make(chan validationResult, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	go func() {
+		_, status, code, err := resolveAndValidatePackagePlanCatalogForEcosystem(ctx, catalog, "node", "", "20.19.0", "exact", []model.ProjectPackageChange{
+			{Operation: "add", Name: "first-missing", Version: "1.0.0"},
+			{Operation: "add", Name: "second-timeout", Version: "1.0.0"},
+		})
+		done <- validationResult{status: status, code: code, err: err}
+	}()
+	select {
+	case <-secondCompleted:
+	case <-ctx.Done():
+		t.Fatal("second catalog request did not complete first")
+	}
+	close(releaseFirst)
+	select {
+	case result := <-done:
+		if result.err == nil || result.status != http.StatusBadRequest || result.code != "package_not_found" {
+			t.Fatalf("catalog error priority = status:%d code:%s err:%v", result.status, result.code, result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("catalog validation did not return")
+	}
+}
+
+func TestPackagePlanCatalogValidationRejectsMoreThanSixteenChecksBeforeQuery(t *testing.T) {
+	base := packagecatalog.NewWithClient(configureCatalogSourcesForTest(), nil, 1<<20)
+	var calls atomic.Int32
+	catalog := &packageCenterCatalogStub{base: base, itemFn: func(_ context.Context, request packagecatalog.ItemRequest) (model.PackageCatalogItem, error) {
+		calls.Add(1)
+		return model.PackageCatalogItem{
+			Name:     request.Name,
+			Versions: []model.PackageCatalogVersion{{Version: request.Version, Compatibility: "metadata-compatible"}},
+		}, nil
+	}}
+	changes := make([]model.ProjectPackageChange, packagePlanMaxCatalogChecks)
+	for index := range changes {
+		changes[index] = model.ProjectPackageChange{Operation: "add", Name: "package-at-limit", Version: "1.0.0"}
+	}
+	resolved, status, code, err := resolveAndValidatePackagePlanCatalog(t.Context(), catalog, "pypi-official", "3.10.21", "exact", changes)
+	if err != nil || status != http.StatusOK || code != "" || len(resolved) != packagePlanMaxCatalogChecks || calls.Load() != packagePlanMaxCatalogChecks {
+		t.Fatalf("catalog check limit acceptance = calls:%d status:%d code:%s err:%v", calls.Load(), status, code, err)
+	}
+
+	calls.Store(0)
+	changes = append(changes, model.ProjectPackageChange{Operation: "add", Name: "over-limit", Version: "1.0.0"})
+	_, status, code, err = resolveAndValidatePackagePlanCatalog(t.Context(), catalog, "pypi-official", "3.10.21", "exact", changes)
+	if err == nil || status != http.StatusBadRequest || code != "package_catalog_check_limit_exceeded" || calls.Load() != 0 {
+		t.Fatalf("catalog check limit = calls:%d status:%d code:%s err:%v", calls.Load(), status, code, err)
 	}
 }
 

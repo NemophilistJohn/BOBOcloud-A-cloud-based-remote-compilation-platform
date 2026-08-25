@@ -12,7 +12,7 @@ const zlib = require('node:zlib');
 const { SCM_GIT_METHODS, createScmGitBroker } = require('./scm-git');
 const { createPluginDocumentBroker } = require('./plugin-documents');
 
-const PLUGIN_API_VERSION = '1.4.0';
+const PLUGIN_API_VERSION = '1.5.0';
 const PACKAGE_SCHEMA_VERSIONS = new Set([1, 2]);
 const STATE_SCHEMA_VERSION = 1;
 const PERMISSIONS_SCHEMA_VERSION = 2;
@@ -1609,6 +1609,51 @@ function createPluginController(options) {
     return immutable(await agentBroker.cancelApproval(current.id, current.approval.approvalId));
   }
 
+  async function agentAccessRecord(payload) {
+    await initialize();
+    const id = assertSafePluginId(payload && payload.pluginId);
+    const record = records.get(id);
+    if (!record || record.status !== 'enabled' || !record.integrity.valid || !record.manifest || !agentBroker ||
+        typeof agentBroker.getAccessMode !== 'function' || typeof agentBroker.setAccessMode !== 'function' ||
+        typeof agentBroker.clearAccessMode !== 'function') {
+      throw pluginError('plugins.agent.unavailable', 'The Agent plugin or local access broker is unavailable.');
+    }
+    if (!record.grantedPermissions.includes(PluginPermission.AGENTS_REGISTER)) {
+      throw pluginError('plugins.rpc.permission', 'Plugin permission has not been granted: ' + PluginPermission.AGENTS_REGISTER);
+    }
+    const providerId = String(payload && payload.providerId || '');
+    const sessionId = String(payload && payload.sessionId || '');
+    if (!isNonEmptyString(providerId, 180) || !providerId.startsWith(id + '.') ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(providerId) ||
+        !isNonEmptyString(sessionId, 180) || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(sessionId)) {
+      throw pluginError('plugins.agent.access', 'Agent access mode requires a valid owned provider and session.');
+    }
+    return { id, providerId, sessionId };
+  }
+
+  async function getAgentAccess(payload) {
+    const current = await agentAccessRecord(payload);
+    return immutable(agentBroker.getAccessMode(current.id, current));
+  }
+
+  async function setAgentAccess(payload) {
+    const current = await agentAccessRecord(payload);
+    return immutable(agentBroker.setAccessMode(current.id, {
+      providerId: current.providerId,
+      sessionId: current.sessionId,
+      accessMode: payload && payload.accessMode,
+      confirmed: payload && payload.confirmed === true
+    }));
+  }
+
+  async function clearAgentAccess(payload) {
+    const current = await agentAccessRecord(payload);
+    return immutable(agentBroker.clearAccessMode(current.id, {
+      providerId: current.providerId,
+      sessionId: current.sessionId
+    }));
+  }
+
   function registerIpc() {
     ipcMain.handle('plugins:list', async (event) => { trustedSender(event); await initialize(); return currentList(); });
     ipcMain.handle('plugins:get', async (event, id) => { trustedSender(event); await initialize(); return get(id); });
@@ -1655,6 +1700,9 @@ function createPluginController(options) {
     ipcMain.handle('plugins:agent-approval-describe', async (event, payload) => { trustedSender(event); return describeAgentApproval(payload); });
     ipcMain.handle('plugins:agent-approval-decide', async (event, payload) => { trustedSender(event); return decideAgentApproval(payload); });
     ipcMain.handle('plugins:agent-approval-cancel', async (event, payload) => { trustedSender(event); return cancelAgentApproval(payload); });
+    ipcMain.handle('plugins:agent-access-get', async (event, payload) => { trustedSender(event); return getAgentAccess(payload); });
+    ipcMain.handle('plugins:agent-access-set', async (event, payload) => { trustedSender(event); return setAgentAccess(payload); });
+    ipcMain.handle('plugins:agent-access-clear', async (event, payload) => { trustedSender(event); return clearAgentAccess(payload); });
     ipcMain.handle('plugins:open-folder', async (event) => { trustedSender(event); return openFolder(); });
     ipcMain.handle('plugins:refresh', async (event) => { trustedSender(event); return refresh('manual'); });
   }
@@ -1676,6 +1724,9 @@ function createPluginController(options) {
     loadLocalization,
     loadDocumentView,
     rpc,
+    getAgentAccess,
+    setAgentAccess,
+    clearAgentAccess,
     openFolder,
     get root() { return pluginRoot; }
   };

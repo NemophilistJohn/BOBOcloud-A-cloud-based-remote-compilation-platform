@@ -48,16 +48,20 @@ const (
 type Options struct {
 	// ScopeMode is retained only as an internal call-site shim. cache-v2 always
 	// uses project-lock identity and never opens legacy user-level stores.
-	ScopeMode           string
-	ReservationBytes    int64
-	MaxFiles            int64
-	ReservationFiles    int64
-	MaxGenerations      int
-	ScanInterval        time.Duration
-	Retention           time.Duration
-	Metrics             *metrics.Registry
-	OnEvicted           func()
-	OnGenerationChanged func(cacheKey, currentGeneration string, publication uint64)
+	ScopeMode        string
+	ReservationBytes int64
+	MaxFiles         int64
+	ReservationFiles int64
+	MaxGenerations   int
+	ScanInterval     time.Duration
+	Retention        time.Duration
+	// NodeMaterializationPolicy is applied centrally to every Node cache
+	// request, including run, terminal, Environment Center, DAP, and LSP reads.
+	// An empty value selects the current default installer policy.
+	NodeMaterializationPolicy string
+	Metrics                   *metrics.Registry
+	OnEvicted                 func()
+	OnGenerationChanged       func(cacheKey, currentGeneration string, publication uint64)
 }
 
 type Request struct {
@@ -72,6 +76,10 @@ type Request struct {
 	Language           string
 	WorkspaceRoot      string
 	SetupCommands      []string
+	// MaterializationPolicy optionally pins a controlled transaction to the
+	// same server-side installer policy used by all ordinary cache consumers.
+	// It only affects Node fingerprints.
+	MaterializationPolicy string
 	// ManifestSnapshot binds a controlled mutation to reviewed immutable bytes.
 	// When present, fingerprinting never re-reads the concurrently writable
 	// workspace tree.
@@ -79,7 +87,11 @@ type Request struct {
 	// OperationID binds a controlled package mutation to the generation that
 	// eventually becomes canonical. It is not part of the dependency digest.
 	OperationID string
-	QuotaBytes  int64
+	// FreshGeneration preserves the previous published generation for readers
+	// but skips cloning it into staging. Full package-manager installs use this
+	// because they replace the entire dependency tree before publication.
+	FreshGeneration bool
+	QuotaBytes      int64
 }
 
 type ManifestSnapshot struct {
@@ -205,6 +217,8 @@ type Lease struct {
 	reserved      bool
 	aborted       atomic.Bool
 	published     atomic.Bool
+	inventoryMu   sync.Mutex
+	inventorySeal *packageInventoryDocument
 	released      sync.Once
 }
 
@@ -261,6 +275,9 @@ type Operation struct {
 }
 
 func NewManager(dataDir string, options Options) *Manager {
+	if strings.TrimSpace(options.NodeMaterializationPolicy) == "" {
+		options.NodeMaterializationPolicy = NodeDependencyMaterializationPolicy(true, "")
+	}
 	if options.ReservationBytes <= 0 {
 		options.ReservationBytes = 256_000_000
 	}
@@ -330,10 +347,14 @@ func (m *Manager) resolveRequest(request Request) (resolvedCacheRequest, error) 
 		return resolvedCacheRequest{}, err
 	}
 	var fingerprint Fingerprint
+	materializationPolicy := request.MaterializationPolicy
+	if strings.EqualFold(strings.TrimSpace(request.Language), "node") && strings.TrimSpace(materializationPolicy) == "" {
+		materializationPolicy = m.options.NodeMaterializationPolicy
+	}
 	if len(request.ManifestSnapshot) > 0 {
-		fingerprint, err = DependencyFingerprintFromSnapshot(request.Language, request.SetupCommands, request.RuntimeFingerprint, request.ManifestSnapshot)
+		fingerprint, err = DependencyFingerprintFromSnapshotWithPolicy(request.Language, request.SetupCommands, request.RuntimeFingerprint, materializationPolicy, request.ManifestSnapshot)
 	} else {
-		fingerprint, err = DependencyFingerprintWithRuntime(request.WorkspaceRoot, request.Language, request.SetupCommands, request.RuntimeFingerprint)
+		fingerprint, err = DependencyFingerprintWithRuntimeAndPolicy(request.WorkspaceRoot, request.Language, request.SetupCommands, request.RuntimeFingerprint, materializationPolicy)
 	}
 	if err != nil {
 		return resolvedCacheRequest{}, err
@@ -487,22 +508,24 @@ func (m *Manager) Prepare(ctx context.Context, request Request) (*Lease, error) 
 			return nil, err
 		}
 		staged = true
-		cloneStarted := time.Now()
-		var baseline directoryUsage
-		baseline, err = cloneDependencyTree(resolved.hostRoot, workRoot)
-		if err != nil {
+		if !request.FreshGeneration {
+			cloneStarted := time.Now()
+			var baseline directoryUsage
+			baseline, err = cloneDependencyTree(resolved.hostRoot, workRoot)
+			if err != nil {
+				if m.options.Metrics != nil {
+					m.options.Metrics.Cache("dependency.cache.stage.clone", false)
+					m.options.Metrics.Observe("dependency.cache.stage.clone", time.Since(cloneStarted))
+				}
+				_ = os.RemoveAll(workRoot)
+				return nil, fmt.Errorf("stage project dependency cache: %w", err)
+			}
 			if m.options.Metrics != nil {
-				m.options.Metrics.Cache("dependency.cache.stage.clone", false)
+				m.options.Metrics.Cache("dependency.cache.stage.clone", true)
 				m.options.Metrics.Observe("dependency.cache.stage.clone", time.Since(cloneStarted))
 			}
-			_ = os.RemoveAll(workRoot)
-			return nil, fmt.Errorf("stage project dependency cache: %w", err)
+			leaseBaseline = baseline
 		}
-		if m.options.Metrics != nil {
-			m.options.Metrics.Cache("dependency.cache.stage.clone", true)
-			m.options.Metrics.Observe("dependency.cache.stage.clone", time.Since(cloneStarted))
-		}
-		leaseBaseline = baseline
 	}
 	if err := ensureDependencyDirectories(workRoot); err != nil {
 		if staged {

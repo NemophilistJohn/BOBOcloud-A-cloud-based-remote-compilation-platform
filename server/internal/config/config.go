@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"bobocloud-server/internal/nodetoolchain"
 )
 
 const (
@@ -102,24 +104,31 @@ type Config struct {
 	PersonalPersistRetentionDays      int    `json:"personal_persist_retention_days"`
 	PersonalPersistCleanupIntervalMin int    `json:"personal_persist_cleanup_interval_minutes"`
 
-	// The first package-center release supports the public Python ecosystem.
-	// Sources are configured server-side so untrusted requests cannot turn the
-	// catalog or installer into an arbitrary URL fetcher.
-	PackageCenterEnabled              bool                  `json:"package_center_enabled"`
-	PackageDefaultSource              string                `json:"package_default_source"`
-	PackageCatalogTimeoutSeconds      int                   `json:"package_catalog_timeout_seconds"`
-	PackageCatalogMaxResponseBytes    int64                 `json:"package_catalog_max_response_bytes"`
-	PackageRuntimeProbeTimeoutSeconds int                   `json:"package_runtime_probe_timeout_seconds"`
-	PackageRuntimeMetadataTTLSeconds  int                   `json:"package_runtime_metadata_ttl_seconds"`
-	PackagePlanTTLSeconds             int                   `json:"package_plan_ttl_seconds"`
-	PackagePlanCompletedTTLSeconds    int                   `json:"package_plan_completed_ttl_seconds"`
-	PackageOperationTimeoutSeconds    int                   `json:"package_operation_timeout_seconds"`
-	PackageOperationMaxPlans          int                   `json:"package_operation_max_plans"`
-	PackageOperationMaxPlansPerUser   int                   `json:"package_operation_max_plans_per_user"`
-	PackagePlanStoreMaxBytes          int64                 `json:"package_plan_store_max_bytes"`
-	PackagePlanStoreMaxBytesPerUser   int64                 `json:"package_plan_store_max_bytes_per_user"`
-	PackagePlanResultMaxBytes         int64                 `json:"package_plan_result_max_bytes"`
-	PackageSources                    []PackageSourceConfig `json:"package_sources"`
+	// Dependency sources are configured server-side per ecosystem so untrusted
+	// requests cannot turn a catalog or installer into an arbitrary URL fetcher.
+	PackageCenterEnabled              bool              `json:"package_center_enabled"`
+	PackageDefaultSource              string            `json:"package_default_source"`
+	PackageDefaultSources             map[string]string `json:"package_default_sources,omitempty"`
+	PackageCatalogTimeoutSeconds      int               `json:"package_catalog_timeout_seconds"`
+	PackageCatalogMaxResponseBytes    int64             `json:"package_catalog_max_response_bytes"`
+	PackageRuntimeProbeTimeoutSeconds int               `json:"package_runtime_probe_timeout_seconds"`
+	PackageRuntimeMetadataTTLSeconds  int               `json:"package_runtime_metadata_ttl_seconds"`
+	PackagePlanTTLSeconds             int               `json:"package_plan_ttl_seconds"`
+	PackagePlanCompletedTTLSeconds    int               `json:"package_plan_completed_ttl_seconds"`
+	PackageOperationTimeoutSeconds    int               `json:"package_operation_timeout_seconds"`
+	// PackageNodeInstallScripts controls dependency package lifecycle scripts.
+	// The isolated project-root package.json scripts are always removed.
+	PackageNodeInstallScripts bool `json:"package_node_install_scripts"`
+	// PackageNodePNPMVersion is an exact pnpm release shared by lockfile
+	// resolution and dependency materialization. It is constrained to pnpm 9/10
+	// while the managed runtime set includes both Node 20 and Node 22.
+	PackageNodePNPMVersion          string                `json:"package_node_pnpm_version"`
+	PackageOperationMaxPlans        int                   `json:"package_operation_max_plans"`
+	PackageOperationMaxPlansPerUser int                   `json:"package_operation_max_plans_per_user"`
+	PackagePlanStoreMaxBytes        int64                 `json:"package_plan_store_max_bytes"`
+	PackagePlanStoreMaxBytesPerUser int64                 `json:"package_plan_store_max_bytes_per_user"`
+	PackagePlanResultMaxBytes       int64                 `json:"package_plan_result_max_bytes"`
+	PackageSources                  []PackageSourceConfig `json:"package_sources"`
 
 	// 超时配置
 	DefaultCompileTimeout  int `json:"compile_timeout_seconds"`
@@ -244,6 +253,7 @@ func Default() *Config {
 		PersonalPersistCleanupIntervalMin: 10,
 		PackageCenterEnabled:              true,
 		PackageDefaultSource:              "pypi-official",
+		PackageDefaultSources:             map[string]string{"python": "pypi-official", "node": "npm-official"},
 		PackageCatalogTimeoutSeconds:      8,
 		PackageCatalogMaxResponseBytes:    4 << 20,
 		PackageRuntimeProbeTimeoutSeconds: 3,
@@ -251,6 +261,8 @@ func Default() *Config {
 		PackagePlanTTLSeconds:             15 * 60,
 		PackagePlanCompletedTTLSeconds:    60 * 60,
 		PackageOperationTimeoutSeconds:    10 * 60,
+		PackageNodeInstallScripts:         true,
+		PackageNodePNPMVersion:            nodetoolchain.DefaultPNPMVersion,
 		PackageOperationMaxPlans:          512,
 		PackageOperationMaxPlansPerUser:   32,
 		PackagePlanStoreMaxBytes:          64 << 20,
@@ -260,6 +272,8 @@ func Default() *Config {
 			{ID: "pypi-official", Ecosystem: "python", Name: "PyPI", Kind: "official", CatalogURL: "https://pypi.org", InstallURL: "https://pypi.org/simple/", EquivalenceGroup: "pypi", Official: true},
 			{ID: "pypi-tuna", Ecosystem: "python", Name: "TUNA", Kind: "mirror", CatalogURL: "https://pypi.tuna.tsinghua.edu.cn", InstallURL: "https://pypi.tuna.tsinghua.edu.cn/simple/", EquivalenceGroup: "pypi"},
 			{ID: "pypi-aliyun", Ecosystem: "python", Name: "Aliyun", Kind: "mirror", CatalogURL: "https://pypi.org", InstallURL: "https://mirrors.aliyun.com/pypi/simple/", EquivalenceGroup: "pypi"},
+			{ID: "npm-official", Ecosystem: "node", Name: "npm", Kind: "official", CatalogURL: "https://registry.npmjs.org", InstallURL: "https://registry.npmjs.org/", EquivalenceGroup: "npm", Official: true},
+			{ID: "npm-npmmirror", Ecosystem: "node", Name: "npmmirror", Kind: "mirror", CatalogURL: "https://registry.npmmirror.com", InstallURL: "https://registry.npmmirror.com/", EquivalenceGroup: "npm"},
 		},
 		DefaultCompileTimeout:               30,
 		RustCompileTimeout:                  60,
@@ -369,6 +383,11 @@ func Load(path string) (*Config, error) {
 			}
 			if err := json.Unmarshal(data, cfg); err != nil {
 				return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
+			}
+			if _, configured := fields["package_default_sources"]; !configured {
+				// A legacy config may replace package_sources without knowing about
+				// per-ecosystem defaults. Rebuild the map from that source set below.
+				cfg.PackageDefaultSources = nil
 			}
 		}
 	}
@@ -495,29 +514,48 @@ func Load(path string) (*Config, error) {
 	} else if cfg.PackagePlanResultMaxBytes < minimumPackagePlanResultBytes {
 		cfg.PackagePlanResultMaxBytes = minimumPackagePlanResultBytes
 	}
+	if strings.TrimSpace(cfg.PackageNodePNPMVersion) == "" {
+		cfg.PackageNodePNPMVersion = nodetoolchain.DefaultPNPMVersion
+	}
+	normalizedPNPMVersion, pnpmVersionErr := nodetoolchain.NormalizePNPMVersion(cfg.PackageNodePNPMVersion)
+	if pnpmVersionErr != nil {
+		return nil, fmt.Errorf("package_node_pnpm_version is invalid: %w", pnpmVersionErr)
+	}
+	cfg.PackageNodePNPMVersion = normalizedPNPMVersion
 	if cfg.PackageCenterEnabled {
 		if len(cfg.PackageSources) == 0 {
 			return nil, fmt.Errorf("package_center_enabled requires at least one package source")
 		}
-		seenPackageSources := make(map[string]bool, len(cfg.PackageSources))
+		seenPackageSources := make(map[string]string, len(cfg.PackageSources))
+		configuredEcosystems := make(map[string]bool)
+		fallbackSources := make(map[string]string)
+		officialSources := make(map[string]string)
 		for index := range cfg.PackageSources {
 			source := &cfg.PackageSources[index]
 			source.ID = strings.TrimSpace(source.ID)
 			source.Ecosystem = strings.ToLower(strings.TrimSpace(source.Ecosystem))
 			source.Kind = strings.ToLower(strings.TrimSpace(source.Kind))
 			source.EquivalenceGroup = strings.TrimSpace(source.EquivalenceGroup)
-			if source.ID == "" || seenPackageSources[source.ID] {
+			if source.ID == "" || seenPackageSources[source.ID] != "" {
 				return nil, fmt.Errorf("package source IDs must be non-empty and unique")
 			}
-			seenPackageSources[source.ID] = true
-			if source.Ecosystem != "python" {
+			seenPackageSources[source.ID] = source.Ecosystem
+			configuredEcosystems[source.Ecosystem] = true
+			if fallbackSources[source.Ecosystem] == "" {
+				fallbackSources[source.Ecosystem] = source.ID
+			}
+			if source.Official && officialSources[source.Ecosystem] == "" {
+				officialSources[source.Ecosystem] = source.ID
+			}
+			if source.Ecosystem != "python" && source.Ecosystem != "node" {
 				return nil, fmt.Errorf("package source %s uses unsupported ecosystem %q", source.ID, source.Ecosystem)
 			}
 			if source.Kind != "official" && source.Kind != "mirror" {
 				return nil, fmt.Errorf("package source %s kind must be official or mirror", source.ID)
 			}
-			if source.EquivalenceGroup != "pypi" {
-				return nil, fmt.Errorf("package source %s must be an equivalent PyPI source in this release", source.ID)
+			expectedGroup := map[string]string{"python": "pypi", "node": "npm"}[source.Ecosystem]
+			if source.EquivalenceGroup != expectedGroup {
+				return nil, fmt.Errorf("package source %s must use the %s equivalence group", source.ID, expectedGroup)
 			}
 			for field, raw := range map[string]string{"catalog_url": source.CatalogURL, "install_url": source.InstallURL} {
 				parsed, parseErr := url.Parse(strings.TrimSpace(raw))
@@ -526,10 +564,30 @@ func Load(path string) (*Config, error) {
 				}
 			}
 		}
-		cfg.PackageDefaultSource = strings.TrimSpace(cfg.PackageDefaultSource)
-		if cfg.PackageDefaultSource == "" || !seenPackageSources[cfg.PackageDefaultSource] {
-			return nil, fmt.Errorf("default package source must reference a configured package source")
+		if cfg.PackageDefaultSources == nil {
+			cfg.PackageDefaultSources = make(map[string]string)
 		}
+		cfg.PackageDefaultSource = strings.TrimSpace(cfg.PackageDefaultSource)
+		if cfg.PackageDefaultSources["python"] == "" {
+			cfg.PackageDefaultSources["python"] = cfg.PackageDefaultSource
+		}
+		for ecosystem, sourceID := range cfg.PackageDefaultSources {
+			normalizedEcosystem := strings.ToLower(strings.TrimSpace(ecosystem))
+			sourceID = strings.TrimSpace(sourceID)
+			if normalizedEcosystem != ecosystem || !configuredEcosystems[normalizedEcosystem] || seenPackageSources[sourceID] != normalizedEcosystem {
+				return nil, fmt.Errorf("default package source for %s must reference a configured source in the same ecosystem", ecosystem)
+			}
+			cfg.PackageDefaultSources[ecosystem] = sourceID
+		}
+		for ecosystem := range configuredEcosystems {
+			if cfg.PackageDefaultSources[ecosystem] == "" {
+				cfg.PackageDefaultSources[ecosystem] = officialSources[ecosystem]
+				if cfg.PackageDefaultSources[ecosystem] == "" {
+					cfg.PackageDefaultSources[ecosystem] = fallbackSources[ecosystem]
+				}
+			}
+		}
+		cfg.PackageDefaultSource = cfg.PackageDefaultSources["python"]
 	}
 	if cfg.LSPMaxSessions <= 0 {
 		cfg.LSPMaxSessions = 8
@@ -757,6 +815,9 @@ func applyEnvOverrides(cfg *Config) {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.PackageRuntimeMetadataTTLSeconds = n
 		}
+	}
+	if v := strings.TrimSpace(os.Getenv("BOBOCLOUD_PACKAGE_NODE_PNPM_VERSION")); v != "" {
+		cfg.PackageNodePNPMVersion = v
 	}
 	if v := os.Getenv("BOBOCLOUD_TEAM_CACHE_QUOTA_MB"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

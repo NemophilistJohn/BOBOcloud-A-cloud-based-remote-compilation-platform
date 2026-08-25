@@ -21,6 +21,8 @@ const MAX_ACTIVE_MODELS_PER_PLUGIN = 2;
 const MAX_ACTIVE_SEARCHES = 2;
 const MAX_ACTIVE_OPERATIONS = 8;
 const MAX_ACTIVE_OPERATIONS_PER_PLUGIN = 2;
+const ACCESS_MODES = new Set(['ask', 'auto', 'full']);
+const ACCESS_MODE_RANK = Object.freeze({ ask: 0, auto: 1, full: 2 });
 const ALLOWED_COMMANDS = new Set([
   'node', 'npm', 'npm.cmd', 'npx', 'npx.cmd', 'pnpm', 'pnpm.cmd', 'yarn', 'yarn.cmd',
   'bun', 'deno', 'git', 'go', 'cargo', 'rustc', 'python', 'python3', 'py', 'java',
@@ -40,6 +42,16 @@ const PROCESS_ENV_KEYS = new Set([
   'JAVA_HOME', 'GOPATH', 'GOROOT', 'CARGO_HOME', 'RUSTUP_HOME', 'DOTNET_ROOT',
   'CC', 'CXX', 'MAKEFLAGS'
 ]);
+const HIGH_RISK_WRITE_PATHS = [
+  /(^|\/)\.git(?:\/|$)/i,
+  /(^|\/)\.github\/workflows(?:\/|$)/i,
+  /(^|\/)\.vscode\/(?:tasks|settings)\.json$/i,
+  /(^|\/)(?:\.env(?:\..*)?|\.npmrc|\.yarnrc(?:\.yml)?|\.pypirc)$/i,
+  /(^|\/)(?:credentials?|secrets?)(?:\.[^/]*)?$/i,
+  /(^|\/)(?:package\.json|dockerfile|docker-compose(?:\.[^/]*)?\.ya?ml|makefile|justfile)$/i,
+  /\.(?:sh|ps1|cmd|bat)$/i
+];
+const LOW_RISK_GIT_COMMANDS = new Set(['status', 'diff', 'log', 'show', 'rev-parse', 'ls-files']);
 
 function agentError(code, message) {
   const error = new Error(message);
@@ -65,6 +77,25 @@ function safePluginId(value) {
   const id = String(value || '');
   if (!/^[a-z0-9][a-z0-9.-]{2,119}$/.test(id)) throw agentError('AGENT_INVALID_PLUGIN', 'Agent plugin id is invalid.');
   return id;
+}
+
+function safeAgentIdentity(value, label) {
+  const id = boundedText(value, 180).trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(id)) throw agentError('AGENT_INVALID_ACCESS_CONTEXT', label + ' is invalid.');
+  return id;
+}
+
+function classifyWorkspaceWriteRisk(args) {
+  const relativePath = normalizeRelativePath(args && args.path);
+  return HIGH_RISK_WRITE_PATHS.some((pattern) => pattern.test(relativePath)) ? 'high' : 'medium';
+}
+
+function classifyProcessRisk(args) {
+  const command = boundedText(args && args.command, 120).trim().toLowerCase();
+  const commandArgs = Array.isArray(args && args.args) ? args.args.map((value) => boundedText(value, 4000).trim()) : [];
+  if (commandArgs.length === 1 && /^(?:--version|-v|version|--help|-h|help)$/i.test(commandArgs[0])) return 'low';
+  if (command === 'git' && commandArgs.length > 0 && LOW_RISK_GIT_COMMANDS.has(commandArgs[0].toLowerCase())) return 'low';
+  return 'high';
 }
 
 function sha256(value) {
@@ -170,9 +201,74 @@ function createAgentPlatformBroker(options) {
   const activeSearches = new Map();
   const pluginEpochs = new Map();
   const runningProcesses = new Map();
+  const accessModes = new Map();
+  const activeAccessContexts = new Map();
 
   function pluginEpoch(pluginId) {
     return pluginEpochs.get(pluginId) || 0;
+  }
+
+  function accessIdentity(pluginId, args) {
+    const providerId = safeAgentIdentity(args && args.providerId, 'Agent provider id');
+    if (!providerId.startsWith(pluginId + '.')) throw agentError('AGENT_INVALID_ACCESS_CONTEXT', 'Agent provider id must use the plugin namespace.');
+    const sessionId = safeAgentIdentity(args && args.sessionId, 'Agent session id');
+    return { pluginId, providerId, sessionId, key: pluginId + '\0' + providerId + '\0' + sessionId };
+  }
+
+  function accessSnapshot(identity, accessMode) {
+    return Object.freeze({
+      pluginId: identity.pluginId,
+      providerId: identity.providerId,
+      sessionId: identity.sessionId,
+      accessMode
+    });
+  }
+
+  function cancelAutomaticOperations(accessKey) {
+    for (const operation of activeOperations.values()) {
+      if (operation.accessKey !== accessKey || operation.autoApproved !== true) continue;
+      operation.cancelled = true;
+      if (operation.child) terminateProcess(operation);
+    }
+  }
+
+  function getAccessMode(pluginId, args) {
+    const identity = accessIdentity(safePluginId(pluginId), args);
+    const accessMode = accessModes.get(identity.key) || 'ask';
+    const previousKey = activeAccessContexts.get(identity.pluginId);
+    if (previousKey && previousKey !== identity.key) cancelAutomaticOperations(previousKey);
+    activeAccessContexts.set(identity.pluginId, identity.key);
+    return accessSnapshot(identity, accessMode);
+  }
+
+  function setAccessMode(pluginId, args) {
+    const identity = accessIdentity(safePluginId(pluginId), args);
+    const accessMode = boundedText(args && args.accessMode, 16).trim();
+    if (!ACCESS_MODES.has(accessMode)) throw agentError('AGENT_INVALID_ACCESS_MODE', 'Agent access mode must be ask, auto, or full.');
+    if (accessMode === 'full' && (!args || args.confirmed !== true)) {
+      throw agentError('AGENT_FULL_ACCESS_CONFIRMATION_REQUIRED', 'Full access requires an explicit trusted user confirmation.');
+    }
+    const previousMode = accessModes.get(identity.key) || 'ask';
+    const previousKey = activeAccessContexts.get(identity.pluginId);
+    if (previousKey && previousKey !== identity.key) cancelAutomaticOperations(previousKey);
+    if (ACCESS_MODE_RANK[accessMode] < ACCESS_MODE_RANK[previousMode]) cancelAutomaticOperations(identity.key);
+    accessModes.set(identity.key, accessMode);
+    activeAccessContexts.set(identity.pluginId, identity.key);
+    return accessSnapshot(identity, accessMode);
+  }
+
+  function clearAccessMode(pluginId, args) {
+    const identity = accessIdentity(safePluginId(pluginId), args);
+    cancelAutomaticOperations(identity.key);
+    accessModes.delete(identity.key);
+    if (activeAccessContexts.get(identity.pluginId) === identity.key) activeAccessContexts.delete(identity.pluginId);
+    return accessSnapshot(identity, 'ask');
+  }
+
+  function currentAccess(pluginId) {
+    const key = activeAccessContexts.get(pluginId);
+    if (!key) return { key: '', accessMode: 'ask' };
+    return { key, accessMode: accessModes.get(key) || 'ask' };
   }
 
   function countOwned(records, pluginId) {
@@ -354,7 +450,8 @@ function createAgentPlatformBroker(options) {
       const models = await modelRecords();
       const record = models.find((model) => model.ref === args.modelRef);
       if (!record || !record.configured) throw agentError('AGENT_MODEL_UNCONFIGURED', 'The selected local model profile is unavailable or incomplete.');
-      const effort = ['low', 'medium', 'high', 'max'].includes(args.reasoningEffort) ? args.reasoningEffort : 'medium';
+      const effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(args.reasoningEffort) ? args.reasoningEffort : 'medium';
+      const defaultMaxTokens = effort === 'max' ? 16384 : effort === 'xhigh' ? 12288 : 8192;
       if (activeModelRequests.get(hostRequestId)?.epoch !== pluginEpoch(pluginId)) {
         throw agentError('AGENT_CANCELLED', 'The Agent model request was cancelled.');
       }
@@ -364,7 +461,7 @@ function createAgentPlatformBroker(options) {
         messages: normalizeMessages(args.messages),
         tools: normalizeTools(args.tools),
         reasoningEffort: effort,
-        maxTokens: Math.max(256, Math.min(32768, Number(args.maxTokens) || (effort === 'max' ? 16384 : 8192))),
+        maxTokens: Math.max(256, Math.min(32768, Number(args.maxTokens) || defaultMaxTokens)),
         temperature: Number.isFinite(Number(args.temperature)) ? Number(args.temperature) : 0.2,
         stream: false,
         mode: 'chat'
@@ -511,14 +608,9 @@ function createAgentPlatformBroker(options) {
     }
   }
 
-  function approval(pluginId, snapshot, tool, args, summary, risk) {
-    if (approvals.size >= MAX_PENDING_APPROVALS || countOwned(approvals, pluginId) >= MAX_PENDING_APPROVALS_PER_PLUGIN) {
-      throw agentError('AGENT_APPROVAL_LIMIT', 'This Agent already has the maximum number of pending approvals.');
-    }
-    const id = 'approval-' + crypto.randomBytes(18).toString('hex');
-    const expiresAt = Date.now() + APPROVAL_TTL_MS;
-    approvals.set(id, {
-      id,
+  function createOperation(pluginId, snapshot, tool, args, summary, risk, riskLevel, access) {
+    return {
+      id: 'approval-' + crypto.randomBytes(18).toString('hex'),
       pluginId,
       epoch: pluginEpoch(pluginId),
       snapshot,
@@ -526,12 +618,46 @@ function createAgentPlatformBroker(options) {
       args: cloneJson(args),
       summary: boundedText(summary, 64 * 1024),
       risk,
-      expiresAt
-    });
+      riskLevel,
+      accessMode: access.accessMode,
+      accessKey: access.key,
+      expiresAt: Date.now() + APPROVAL_TTL_MS
+    };
+  }
+
+  function queueApproval(operation) {
+    if (approvals.size >= MAX_PENDING_APPROVALS || countOwned(approvals, operation.pluginId) >= MAX_PENDING_APPROVALS_PER_PLUGIN) {
+      throw agentError('AGENT_APPROVAL_LIMIT', 'This Agent already has the maximum number of pending approvals.');
+    }
+    approvals.set(operation.id, operation);
     return {
       approvalRequired: true,
-      approval: { id, tool, summary: boundedText(summary, 1000), risk, expiresAt: new Date(expiresAt).toISOString() }
+      approval: {
+        id: operation.id,
+        tool: operation.tool,
+        summary: boundedText(operation.summary, 1000),
+        risk: operation.risk,
+        riskLevel: operation.riskLevel,
+        accessMode: operation.accessMode,
+        expiresAt: new Date(operation.expiresAt).toISOString()
+      }
     };
+  }
+
+  async function authorizeOperation(pluginId, snapshot, tool, args, summary, risk, riskLevel) {
+    // Path and executable resolution above may yield. Re-read trusted state at the
+    // last synchronous boundary before the operation becomes pending or active.
+    const access = currentAccess(pluginId);
+    const operation = createOperation(pluginId, snapshot, tool, args, summary, risk, riskLevel, access);
+    const automatic = access.accessMode === 'full' || (access.accessMode === 'auto' && riskLevel !== 'high');
+    if (!automatic) return queueApproval(operation);
+    operation.autoApproved = true;
+    const result = await executeOperation(operation);
+    return Object.assign({}, result, {
+      autoApproved: true,
+      accessMode: access.accessMode,
+      riskLevel
+    });
   }
 
   async function requestWrite(pluginId, args) {
@@ -553,8 +679,9 @@ function createAgentPlatformBroker(options) {
       throw agentError('AGENT_FILE_CHANGED', 'The file changed after the Agent read it. Read it again before writing.');
     }
     const operation = { path: target.normalized, content, expectedSha256: currentHash };
-    return approval(pluginId, snapshot, 'workspace_write', operation,
-      (currentHash ? 'Replace ' : 'Create ') + target.normalized + ' (' + Buffer.byteLength(content, 'utf8') + ' bytes)', 'write');
+    return authorizeOperation(pluginId, snapshot, 'workspace_write', operation,
+      (currentHash ? 'Replace ' : 'Create ') + target.normalized + ' (' + Buffer.byteLength(content, 'utf8') + ' bytes)',
+      'write', classifyWorkspaceWriteRisk(operation));
   }
 
   async function requestProcess(pluginId, args) {
@@ -580,7 +707,7 @@ function createAgentPlatformBroker(options) {
       prefixArgs: resolvedCommand.prefixArgs
     };
     const shown = [command].concat(commandArgs.map((value) => JSON.stringify(value))).join(' ');
-    return approval(pluginId, snapshot, 'process_run', operation, shown, 'execute');
+    return authorizeOperation(pluginId, snapshot, 'process_run', operation, shown, 'execute', classifyProcessRisk(operation));
   }
 
   async function invokeTool(pluginId, args) {
@@ -742,22 +869,23 @@ function createAgentPlatformBroker(options) {
       tool: operation.tool,
       summary: operation.summary,
       risk: operation.risk,
+      riskLevel: operation.riskLevel,
+      accessMode: operation.accessMode,
       permission: approvalPermission(operation),
       expiresAt: new Date(operation.expiresAt).toISOString(),
       details
     };
   }
 
-  async function decideApproval(pluginId, approvalId, approved) {
-    const operation = findApproval(pluginId, approvalId);
-    if (approved !== true) {
-      approvals.delete(operation.id);
-      return { rejected: true, tool: operation.tool };
-    }
+  function assertOperationCapacity(pluginId) {
     if (activeOperations.size >= MAX_ACTIVE_OPERATIONS || countOwned(activeOperations, pluginId) >= MAX_ACTIVE_OPERATIONS_PER_PLUGIN) {
       throw agentError('AGENT_OPERATION_BUSY', 'This Agent already has the maximum number of active approved operations.');
     }
-    approvals.delete(operation.id);
+  }
+
+  async function executeOperation(operation) {
+    const pluginId = operation.pluginId;
+    assertOperationCapacity(pluginId);
     operation.cancelled = false;
     activeOperations.set(operation.id, operation);
     try {
@@ -769,6 +897,17 @@ function createAgentPlatformBroker(options) {
       runningProcesses.delete(operation.id);
       activeOperations.delete(operation.id);
     }
+  }
+
+  async function decideApproval(pluginId, approvalId, approved) {
+    const operation = findApproval(pluginId, approvalId);
+    if (approved !== true) {
+      approvals.delete(operation.id);
+      return { rejected: true, tool: operation.tool };
+    }
+    assertOperationCapacity(pluginId);
+    approvals.delete(operation.id);
+    return executeOperation(operation);
   }
 
   function cancelApproval(pluginId, approvalId) {
@@ -908,6 +1047,8 @@ function createAgentPlatformBroker(options) {
     for (const search of activeSearches.values()) {
       if (search.pluginId === pluginId) search.cancelled = true;
     }
+    activeAccessContexts.delete(pluginId);
+    for (const key of accessModes.keys()) if (key.startsWith(pluginId + '\0')) accessModes.delete(key);
   }
 
   function workspaceChanged() {
@@ -927,6 +1068,8 @@ function createAgentPlatformBroker(options) {
       try { cancelModel(requestId); } catch (_) {}
     }
     activeModelRequests.clear();
+    accessModes.clear();
+    activeAccessContexts.clear();
   }
 
   function dispose() {
@@ -939,13 +1082,24 @@ function createAgentPlatformBroker(options) {
 
   return Object.freeze({
     request,
+    getAccessMode,
+    setAccessMode,
+    clearAccessMode,
     describeApproval,
     decideApproval,
     cancelApproval,
     disposePlugin,
     workspaceChanged,
     dispose,
-    _test: { normalizeRelativePath, modelRecords, discoverSkills, processEnvironment, resolveProcessCommand }
+    _test: {
+      normalizeRelativePath,
+      modelRecords,
+      discoverSkills,
+      processEnvironment,
+      resolveProcessCommand,
+      classifyWorkspaceWriteRisk,
+      classifyProcessRisk
+    }
   });
 }
 

@@ -1,5 +1,5 @@
 /**
- * BOBOCloud Plugin API 1.4.0 declarations.
+ * BOBOCloud Plugin API 1.5.0 declarations.
  *
  * Copy or reference this file from a plugin's TypeScript project. The runtime
  * is a sandboxed ES module; Node.js, Electron, DOM, and window APIs are not
@@ -456,9 +456,11 @@ export interface PluginScm {
 
 export type AgentPhase = 'idle' | 'loading' | 'ready' | 'unconfigured' | 'error';
 export type AgentMode = 'chat' | 'goal';
-export type AgentReasoningEffort = 'low' | 'medium' | 'high' | 'max';
+export type AgentAccessMode = 'ask' | 'auto' | 'full';
+export type AgentToolRiskLevel = 'low' | 'medium' | 'high';
+export type AgentReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type AgentSessionStatus = 'idle' | 'running' | 'waiting-approval' | 'completed' | 'failed' | 'cancelled';
-export type AgentTimelineKind = 'thought' | 'tool' | 'status' | 'skill' | 'error';
+export type AgentTimelineKind = 'thought' | 'tool' | 'status' | 'skill' | 'compaction' | 'error';
 export type AgentTimelineStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'rejected';
 export type AgentGoalStepStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';
 
@@ -486,6 +488,7 @@ export interface AgentDescriptor {
   readonly capabilities?: Readonly<{
     readonly modes?: readonly AgentMode[];
     readonly reasoningEfforts?: readonly AgentReasoningEffort[];
+    readonly accessModes?: readonly AgentAccessMode[];
     readonly skills?: boolean;
     readonly localTools?: boolean;
   }>;
@@ -550,17 +553,29 @@ export interface AgentApproval {
   readonly id: string;
 }
 
+export interface AgentCompaction {
+  readonly count: number;
+  readonly compactedMessages: number;
+  readonly estimatedTokensBefore: number;
+  readonly estimatedTokensAfter: number;
+  readonly compactedAt: string;
+}
+
 export interface AgentActiveSession {
   readonly id: string;
   readonly title: string;
   readonly status?: AgentSessionStatus;
   readonly mode?: AgentMode;
+  /** Plugin/session semantics only. Host tool authority comes from trusted main-process state. */
+  readonly accessMode?: AgentAccessMode;
   readonly reasoningEffort?: AgentReasoningEffort;
   readonly modelRef?: string;
   readonly messages?: readonly AgentMessage[];
   readonly timeline?: readonly AgentTimelineItem[];
   readonly goal?: AgentGoal | null;
   readonly approval?: AgentApproval | null;
+  readonly compacting?: boolean;
+  readonly compaction?: AgentCompaction | null;
 }
 
 /** Complete replacement snapshot. The host validates, bounds, freezes, and renders it. */
@@ -581,6 +596,8 @@ export interface AgentCommandPayload {
   readonly sessionId?: string;
   readonly text?: string;
   readonly mode?: AgentMode;
+  /** Trusted workbench selection; this field does not itself grant tool access. */
+  readonly accessMode?: AgentAccessMode;
   readonly reasoningEffort?: AgentReasoningEffort;
   readonly modelRef?: string;
   readonly skillIds?: readonly string[];
@@ -677,11 +694,22 @@ export interface AgentToolApprovalRequired {
     readonly tool: string;
     readonly summary: string;
     readonly risk: 'read' | 'write' | 'execute' | 'network';
+    readonly riskLevel: AgentToolRiskLevel;
+    readonly accessMode: AgentAccessMode;
     readonly expiresAt: string;
   }>;
 }
-export interface AgentWorkspaceWriteResult { readonly approved: true; readonly path: string; readonly sha256: string }
-export interface AgentProcessRunResult {
+export interface AgentAutomaticToolMetadata {
+  readonly autoApproved?: true;
+  readonly accessMode?: 'auto' | 'full';
+  readonly riskLevel?: AgentToolRiskLevel;
+}
+export interface AgentWorkspaceWriteResult extends AgentAutomaticToolMetadata {
+  readonly approved: true;
+  readonly path: string;
+  readonly sha256: string;
+}
+export interface AgentProcessRunResult extends AgentAutomaticToolMetadata {
   readonly approved: true;
   readonly exitCode: number | null;
   readonly signal: string;
@@ -707,9 +735,9 @@ export interface PluginTools {
   invoke(tool: 'workspace_list', input?: AgentWorkspaceListInput): Promise<AgentWorkspaceListResult>;
   invoke(tool: 'workspace_read', input: AgentWorkspaceReadInput): Promise<AgentWorkspaceReadResult>;
   invoke(tool: 'workspace_search', input: AgentWorkspaceSearchInput): Promise<AgentWorkspaceSearchResult>;
-  /** Mutating and process tools return a user-approval token without executing. */
-  invoke(tool: 'workspace_write', input: AgentWorkspaceWriteInput): Promise<AgentToolApprovalRequired>;
-  invoke(tool: 'process_run', input: AgentProcessRunInput): Promise<AgentToolApprovalRequired>;
+  /** `ask`, or a host-classified high-risk `auto` call, returns an approval without executing. */
+  invoke(tool: 'workspace_write', input: AgentWorkspaceWriteInput): Promise<AgentToolApprovalRequired | AgentWorkspaceWriteResult>;
+  invoke(tool: 'process_run', input: AgentProcessRunInput): Promise<AgentToolApprovalRequired | AgentProcessRunResult>;
   invoke(tool: string, input?: JsonObject): Promise<JsonValue>;
 }
 

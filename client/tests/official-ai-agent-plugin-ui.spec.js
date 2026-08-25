@@ -15,7 +15,7 @@ const ARTIFACT = path.resolve(
   '..',
   'BOBOCloud-AI-Agent-plugin-offical',
   'artifacts',
-  'bobocloud.ai-agent-1.0.0.boboplugin'
+  'bobocloud.ai-agent-1.1.0.boboplugin'
 );
 
 function electronPath() {
@@ -45,11 +45,11 @@ async function stop(app) {
 
 async function installPackage(userData, workspace) {
   const installer = createPluginController({
-    app: { getPath: () => userData, getVersion: () => '2.7.0' },
+    app: { getPath: () => userData, getVersion: () => '2.8.0' },
     ipcMain: { handle() {} },
     getWindow: () => null,
     getWorkspaceIdentity: () => ({ rootPath: workspace, workspaceIdentity: 1 }),
-    hostVersion: '2.7.0'
+    hostVersion: '2.8.0'
   });
   return installer.installArchiveFromPath(ARTIFACT);
 }
@@ -120,7 +120,26 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
           }
         : {
             role: 'assistant',
-            content: processResult ? 'Approved process completed.' : 'Workspace inspection complete.',
+            content: processResult ? 'Approved process completed.' : [
+              '# Workspace inspection complete.',
+              '',
+              '- **Result:** reviewed `main.js`',
+              '- [Documentation](https://example.com/docs)',
+              '- [Unsafe link](javascript:window.__agentMarkdownXss=true)',
+              '',
+              '> The workspace remains isolated.',
+              '',
+              '| Check | Status |',
+              '| --- | --- |',
+              '| Skill | Active |',
+              '',
+              '```js',
+              'export const safe = true;',
+              '```',
+              '',
+              '<img src=x onerror="window.__agentMarkdownXss=true">',
+              '<script>window.__agentMarkdownXss=true</script>'
+            ].join('\n'),
             reasoning_content: processResult
               ? 'I verified the bounded process result returned by the trusted host.'
               : 'I checked the selected workspace skill and request mode.'
@@ -207,7 +226,7 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
 
     const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
     const installed = await installPackage(userData, workspace);
-    expect(installed).toMatchObject({ id: PLUGIN_ID, version: '1.0.0', enabled: false });
+    expect(installed).toMatchObject({ id: PLUGIN_ID, version: '1.1.0', enabled: false });
     expect([...installed.grantedPermissions].sort()).toEqual([...installed.requestedPermissions].sort());
     await page.evaluate(async (id) => {
       await window.api.plugins.refresh();
@@ -246,8 +265,8 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
     const effort = workbench.locator('.agent-effort-field select');
     await expect(effort).toBeVisible();
     await expect(effort).toHaveAttribute('aria-label', 'Thinking intensity');
-    await effort.selectOption('high');
-    await expect(effort).toHaveValue('high');
+    await effort.selectOption('xhigh');
+    await expect(effort).toHaveValue('xhigh');
 
     await workbench.locator('.agent-skill-button').click();
     const skillMenu = workbench.locator('.agent-skills-menu');
@@ -260,10 +279,35 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
     await expect(sidebar.locator('.agent-session-row')).toHaveCount(1);
     await expect(workbench.locator('.agent-composer-input')).toBeEnabled();
 
+    const access = workbench.locator('.agent-access-field select');
+    await expect(access).toHaveValue('ask');
+    await expect(access.locator('option')).toHaveText(['Request approval', 'Help me approve', 'Unrestricted access']);
+    await access.selectOption('full');
+    const accessConfirm = page.locator('#confirm-dialog.open');
+    await expect(accessConfirm).toBeVisible();
+    await expect(accessConfirm.locator('.confirm-card')).toHaveAttribute('role', 'alertdialog');
+    await expect(accessConfirm.locator('.confirm-btn-danger')).toHaveText('Enable unrestricted access');
+    await accessConfirm.locator('.confirm-btn-ghost').click();
+    await expect(access).toHaveValue('ask');
+    await access.selectOption('auto');
+    await expect(access).toHaveValue('auto');
+
     const prompt = 'Review this workspace with the selected skill.';
     await workbench.locator('.agent-composer-input').fill(prompt);
     await workbench.locator('.agent-send-button').click();
     await expect(workbench.locator('.agent-message-assistant')).toContainText('Workspace inspection complete.');
+    const markdown = workbench.locator('.agent-message-assistant .agent-markdown');
+    await expect(markdown.locator('h3')).toHaveText('Workspace inspection complete.');
+    await expect(markdown.locator('table')).toContainText('Skill');
+    await expect(markdown.locator('blockquote')).toContainText('workspace remains isolated');
+    await expect(markdown.locator('.agent-markdown-code-block code')).toContainText('export const safe = true;');
+    const safeLink = markdown.locator('a', { hasText: 'Documentation' });
+    await expect(safeLink).toHaveAttribute('href', 'https://example.com/docs');
+    await expect(safeLink).toHaveAttribute('target', '_blank');
+    await expect(safeLink).toHaveAttribute('rel', 'noopener noreferrer');
+    await expect(markdown.locator('a[href^="javascript:"]')).toHaveCount(0);
+    await expect(markdown.locator('script, img')).toHaveCount(0);
+    expect(await page.evaluate(() => window.__agentMarkdownXss)).toBeUndefined();
     await expect(workbench.locator('.agent-timeline-row[data-kind="thought"]')).toContainText('selected workspace skill');
     await expect(workbench.locator('.agent-timeline-row[data-kind="skill"]')).toContainText('UI Review Checklist');
     await expect(workbench.locator('.agent-goal')).toBeVisible();
@@ -276,7 +320,7 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
     expect(requests[0].body).toMatchObject({
       model: 'agent-ui-model',
       stream: false,
-      reasoning_effort: 'high',
+      reasoning_effort: 'xhigh',
       tool_choice: 'auto'
     });
     expect(requests[0].body.tools.map((tool) => tool.function.name)).toEqual(expect.arrayContaining([

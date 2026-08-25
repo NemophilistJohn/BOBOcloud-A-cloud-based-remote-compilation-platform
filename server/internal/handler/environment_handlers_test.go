@@ -667,7 +667,7 @@ func TestProjectEnvironmentLSPCheckReportsSourceStatusAndRuntime(t *testing.T) {
 
 func TestEnvironmentManifestsCoverNodeGoRustJavaAndUnknownClassification(t *testing.T) {
 	root := t.TempDir()
-	writeEnvironmentFile(t, filepath.Join(root, "web", "package.json"), `{"dependencies":{"react":"^19.0.0"},"devDependencies":{"vitest":"^3.0.0"}}`)
+	writeEnvironmentFile(t, filepath.Join(root, "web", "package.json"), `{"dependencies":{"react":"^19.0.0"},"devDependencies":{"vitest":"^3.0.0"},"optionalDependencies":{"fsevents":"^2.3.3"}}`)
 	writeEnvironmentFile(t, filepath.Join(root, "go.mod"), "module example.test/app\nrequire (\n github.com/google/uuid v1.6.0\n)\n")
 	writeEnvironmentFile(t, filepath.Join(root, "native", "Cargo.toml"), "[package]\nname='native'\nversion='0.1.0'\n[dependencies]\nserde = \"1.0\"\n")
 	writeEnvironmentFile(t, filepath.Join(root, "java", "pom.xml"), "<project><dependencies><dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId><version>2.0.16</version></dependency></dependencies></project>")
@@ -688,16 +688,23 @@ func TestEnvironmentManifestsCoverNodeGoRustJavaAndUnknownClassification(t *test
 			t.Errorf("manifest %s was not recognized: %+v", path, manifests)
 		}
 	}
-	wantPackages := map[string]bool{"react": false, "vitest": false, "github.com/google/uuid": false, "serde": false, "org.slf4j:slf4j-api": false}
+	wantPackages := map[string]bool{"react": false, "vitest": false, "fsevents": false, "github.com/google/uuid": false, "serde": false, "org.slf4j:slf4j-api": false}
+	nodeScopes := make(map[string]string)
 	for _, item := range declared {
 		if _, exists := wantPackages[item.Name]; exists {
 			wantPackages[item.Name] = true
+		}
+		if item.Name == "react" || item.Name == "vitest" || item.Name == "fsevents" {
+			nodeScopes[item.Name] = item.Scope
 		}
 	}
 	for name, found := range wantPackages {
 		if !found {
 			t.Errorf("declared package %s was not parsed: %+v", name, declared)
 		}
+	}
+	if nodeScopes["react"] != "runtime" || nodeScopes["vitest"] != "dev" || nodeScopes["fsevents"] != "optional" {
+		t.Fatalf("Node dependency scopes do not match the package-center contract: %+v", nodeScopes)
 	}
 	classified := classifyEnvironmentPackages([]model.ProjectEnvironmentPackage{{Name: "github.com/google/uuid", Source: "go.mod"}}, []model.ProjectEnvironmentPackage{{Name: "github.com/google/uuid", Version: "v1.6.0", Source: "go-module-cache"}}, "go", false)
 	if len(classified.Missing) != 0 || len(classified.Unknown) != 0 {
@@ -769,6 +776,31 @@ func TestExactPythonVersionUnknownPreventsAlignedEnvironment(t *testing.T) {
 	check := projectEnvironmentDependencyRuntimeCheck(model.ProjectEnvironmentRuntime{ID: "python:3.10"}, "python", packages, true, "personal", "ready", "")
 	if len(packages.Unknown) != 1 || len(packages.Missing) != 0 || check.Status != "unknown" || !strings.Contains(check.Detail, "cannot verify 1") {
 		t.Fatalf("unparseable exact constraint was falsely aligned: packages=%+v check=%+v", packages, check)
+	}
+}
+
+func TestClassifyExactNodeVersionConstraints(t *testing.T) {
+	installed := []model.ProjectEnvironmentPackage{{Name: "react", Version: "18.3.1", Source: "project-lock-node", Trust: "exact"}}
+	matched := classifyEnvironmentPackages(
+		[]model.ProjectEnvironmentPackage{{Name: "react", Constraint: "^18.2.0", Source: "package.json"}},
+		installed, "node", true,
+	)
+	if len(matched.Missing) != 0 || len(matched.Unknown) != 0 {
+		t.Fatalf("compatible Node dependency was not matched: %+v", matched)
+	}
+	mismatched := classifyEnvironmentPackages(
+		[]model.ProjectEnvironmentPackage{{Name: "react", Constraint: "^19.0.0", Source: "package.json"}},
+		installed, "node", true,
+	)
+	if len(mismatched.Missing) != 1 || len(mismatched.Unknown) != 0 || !strings.Contains(mismatched.Missing[0].Reason, "does not satisfy") {
+		t.Fatalf("Node version mismatch was not reported: %+v", mismatched)
+	}
+	unknown := classifyEnvironmentPackages(
+		[]model.ProjectEnvironmentPackage{{Name: "react", Constraint: "workspace:*", Source: "package.json"}},
+		installed, "node", true,
+	)
+	if len(unknown.Unknown) != 1 || len(unknown.Missing) != 0 || !strings.Contains(unknown.Unknown[0].Reason, "cannot verify") {
+		t.Fatalf("unsupported Node range was not kept unknown: %+v", unknown)
 	}
 }
 

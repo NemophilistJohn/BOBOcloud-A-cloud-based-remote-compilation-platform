@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const { marked } = require('marked');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -22,6 +23,7 @@ function loadWorkbench() {
     Promise,
     Map,
     Set,
+    marked,
     window: null,
     document: {
       documentElement: { getAttribute: () => '' },
@@ -51,7 +53,9 @@ function loadWorkbench() {
     removeEventListener() {}
   };
   sandbox.window = sandbox;
-  vm.runInNewContext(fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8'), sandbox, { filename: 'src/agent-workbench.js' });
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8')
+    .replace(/^import \{ marked \} from 'marked';\s*/, '');
+  vm.runInNewContext(source, sandbox, { filename: 'src/agent-workbench.js' });
   return { sandbox, calls, record };
 }
 
@@ -110,4 +114,49 @@ test('Agent approvals render and execute only host-canonical details', () => {
   assert.doesNotMatch(source, /approval\.(?:summary|risk|tool|expiresAt)/);
   assert.match(css, /\.agent-approval-details/);
   assert.match(css, /\.agent-approval-preview/);
+});
+
+test('Agent access modes stay session-scoped and full access requires trusted confirmation', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8');
+  const core = fs.readFileSync(path.join(ROOT, 'renderer', 'core', 'agent.js'), 'utf8');
+
+  assert.match(source, /agentAccessGet\(identity\)/);
+  assert.match(source, /agentAccessSet\(Object\.assign\(\{\}, identity, \{ accessMode: accessMode, confirmed: confirmed \}\)\)/);
+  assert.match(source, /agentAccessClear\(identity\)/);
+  assert.match(source, /pluginId: record\.owner, providerId: record\.id, sessionId: session\.id/);
+  assert.match(source, /accessMode === 'full'[\s\S]*danger: true/);
+  assert.match(source, /accessMode: normalizedAccessMode\(current\.accessMode\)/);
+  assert.match(source, /session && !accessReady\(record\)/);
+  assert.match(core, /const ACCESS_MODES = new Set\(\['ask', 'auto', 'full'\]\)/);
+});
+
+test('assistant Markdown uses lexer tokens and never injects parser HTML', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'styles', 'agent-workbench.css'), 'utf8');
+  const packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const tokens = marked.lexer('| Name | Value |\n| --- | --- |\n| safe | yes |\n\n<script>alert(1)</script>', { gfm: true });
+
+  assert.equal(packageJson.dependencies.marked, '14.0.0');
+  assert.equal(tokens.some((token) => token.type === 'table'), true);
+  assert.equal(tokens.some((token) => token.type === 'html'), true);
+  assert.match(source, /marked\.lexer\([\s\S]*\{ gfm: true, breaks: false \}/);
+  assert.match(source, /token\.type === 'html'|Raw HTML and unsupported extensions are deliberately rendered as text/);
+  assert.match(source, /url\.protocol === 'http:' \|\| url\.protocol === 'https:'/);
+  assert.match(source, /link\.target = '_blank'/);
+  assert.match(source, /link\.rel = 'noopener noreferrer'/);
+  assert.match(source, /token\.type === 'image'[\s\S]*createTextNode/);
+  assert.doesNotMatch(source, /innerHTML\s*=/);
+  assert.match(css, /\.agent-markdown-table-wrap/);
+  assert.match(css, /\.agent-markdown-code-block/);
+});
+
+test('xhigh reasoning and compaction state are host-rendered workbench options', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8');
+  const core = fs.readFileSync(path.join(ROOT, 'renderer', 'core', 'agent.js'), 'utf8');
+
+  assert.match(source, /effort === 'xhigh'/);
+  assert.match(source, /value\.kind === 'compaction'/);
+  assert.match(source, /Context compacted \{count\} times/);
+  assert.match(core, /'low', 'medium', 'high', 'xhigh', 'max'/);
+  assert.match(core, /'thought', 'tool', 'status', 'skill', 'compaction', 'error'/);
 });

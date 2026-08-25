@@ -79,11 +79,16 @@
   "personal_persist_cleanup_interval_minutes": 10,
   "_personal_persist_cleanup_interval_minutes": "个人持久化缓存后台清理间隔（分钟）。",
 
-  "_section_package_center": "────────── 第三方库管理中心 ──────────",
+  "_section_package_center": "────────── 项目依赖中心 ──────────",
   "package_center_enabled": true,
-  "_package_center_enabled": "启用项目级第三方库目录、变更计划和受控安装链路。首版支持个人项目的 Python requirements。",
+  "_package_center_enabled": "启用项目级依赖目录、变更计划和受控安装链路。支持 Python/pip 与 Node/npm、pnpm。",
   "package_default_source": "pypi-tuna",
-  "_package_default_source": "默认安装源 ID。中国区服务器可设为 pypi-tuna 或 pypi-aliyun；用户仍可在库中心切换。",
+  "_package_default_source": "兼容旧版 Python 配置；新部署请使用 package_default_sources。",
+  "package_default_sources": {
+    "python": "pypi-tuna",
+    "node": "npm-npmmirror"
+  },
+  "_package_default_sources": "按依赖生态设置默认源 ID；用户仍可在项目依赖中心切换已配置的等价源。",
   "package_catalog_timeout_seconds": 20,
   "_package_catalog_timeout_seconds": "第三方库目录检索的服务端总截止时间（秒）。等价目录会在此总预算内进行有界并发回退。",
   "package_catalog_max_response_bytes": 4194304,
@@ -94,6 +99,10 @@
   "package_plan_ttl_seconds": 900,
   "package_plan_completed_ttl_seconds": 3600,
   "package_operation_timeout_seconds": 600,
+  "package_node_install_scripts": true,
+  "_package_node_install_scripts": "允许 npm/pnpm 执行依赖包自身的生命周期脚本。项目根 package.json 的 scripts 始终不会执行。关闭后会追加 --ignore-scripts，安全性更高，但可能导致需要构建步骤的依赖包不可用。",
+  "package_node_pnpm_version": "10.32.1",
+  "_package_node_pnpm_version": "pnpm 的精确版本，锁文件解析与依赖安装共用。仅允许兼容 Node 20/22 的 pnpm 9.x 或 10.x 稳定版本；禁止 latest、版本范围和预发布版本，以避免相同项目因时间不同得到不同依赖环境。",
   "package_operation_max_plans": 512,
   "package_operation_max_plans_per_user": 32,
   "package_plan_store_max_bytes": 67108864,
@@ -127,6 +136,25 @@
       "catalog_url": "https://pypi.org",
       "install_url": "https://mirrors.aliyun.com/pypi/simple/",
       "equivalence_group": "pypi"
+    },
+    {
+      "id": "npm-official",
+      "ecosystem": "node",
+      "name": "npm",
+      "kind": "official",
+      "catalog_url": "https://registry.npmjs.org",
+      "install_url": "https://registry.npmjs.org/",
+      "equivalence_group": "npm",
+      "official": true
+    },
+    {
+      "id": "npm-npmmirror",
+      "ecosystem": "node",
+      "name": "npmmirror",
+      "kind": "mirror",
+      "catalog_url": "https://registry.npmmirror.com",
+      "install_url": "https://registry.npmmirror.com/",
+      "equivalence_group": "npm"
     }
   ],
 

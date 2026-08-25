@@ -37,7 +37,8 @@ function agentDescriptor(id = 'acme.agent.main') {
     },
     capabilities: {
       modes: ['chat', 'goal'],
-      reasoningEfforts: ['low', 'medium', 'high', 'max'],
+      reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      accessModes: ['ask', 'auto', 'full'],
       skills: true,
       localTools: true
     }
@@ -76,7 +77,8 @@ function agentState() {
       title: 'Inspect project',
       status: 'waiting-approval',
       mode: 'goal',
-      reasoningEffort: 'high',
+      reasoningEffort: 'xhigh',
+      accessMode: 'auto',
       modelRef: 'chat:local-model',
       messages: [{ id: 'message-1', role: 'user', content: 'Inspect this project.' }],
       timeline: [{ id: 'timeline-1', kind: 'tool', title: 'Write file', status: 'waiting' }],
@@ -87,6 +89,14 @@ function agentState() {
       },
       approval: {
         id: 'approval-123'
+      },
+      compacting: false,
+      compaction: {
+        count: 1,
+        compactedMessages: 8,
+        estimatedTokensBefore: 12000,
+        estimatedTokensAfter: 4000,
+        compactedAt: '2026-08-25T00:00:00.000Z'
       }
     }
   };
@@ -136,8 +146,8 @@ test.after(() => {
   fs.rmSync(temporaryDirectory, { recursive: true, force: true });
 });
 
-test('Plugin API 1.4 publishes the complete Agent permission set', () => {
-  assert.equal(core.PLUGIN_API_VERSION, '1.4.0');
+test('Plugin API 1.5 publishes the complete Agent permission set', () => {
+  assert.equal(core.PLUGIN_API_VERSION, '1.5.0');
   assert.deepEqual([
     core.PluginPermission.AGENTS_REGISTER,
     core.PluginPermission.MODELS_GENERATE,
@@ -159,7 +169,7 @@ test('Plugin API 1.4 publishes the complete Agent permission set', () => {
   const manifest = core.validatePluginManifest({
     id: 'acme.agent',
     version: '1.0.0',
-    engines: { pluginApi: '^1.4.0' },
+    engines: { pluginApi: '^1.5.0' },
     permissions: Object.values(core.PluginPermission)
   });
   assert.equal(manifest.permissions.includes('agents.register'), true);
@@ -170,6 +180,7 @@ test('Agent descriptors, command payloads, and state snapshots are bounded data'
   assert.equal(descriptor.id, 'acme.agent.main');
   assert.equal(descriptor.commands.send, 'acme.agent.send');
   assert.deepEqual(descriptor.capabilities.modes, ['chat', 'goal']);
+  assert.deepEqual(descriptor.capabilities.accessModes, ['ask', 'auto', 'full']);
   assert.equal(Object.isFrozen(descriptor.commands), true);
 
   assert.throws(
@@ -184,6 +195,8 @@ test('Agent descriptors, command payloads, and state snapshots are bounded data'
   const state = core.validateAgentState(agentState());
   assert.equal(state.activeSession.goal.steps[0].status, 'completed');
   assert.deepEqual(state.activeSession.approval, { id: 'approval-123' });
+  assert.equal(state.activeSession.accessMode, 'auto');
+  assert.equal(state.activeSession.compaction.compactedMessages, 8);
   assert.equal(Object.isFrozen(state.activeSession.messages), true);
   assert.throws(
     () => core.validateAgentState({
@@ -208,7 +221,8 @@ test('Agent descriptors, command payloads, and state snapshots are bounded data'
     sessionId: 'session-1',
     text: 'Inspect this project.',
     mode: 'goal',
-    reasoningEffort: 'high',
+    reasoningEffort: 'xhigh',
+    accessMode: 'auto',
     modelRef: 'chat:local-model',
     skillIds: ['skill-123'],
     ignored: 'not forwarded'
@@ -218,7 +232,8 @@ test('Agent descriptors, command payloads, and state snapshots are bounded data'
     sessionId: 'session-1',
     text: 'Inspect this project.',
     mode: 'goal',
-    reasoningEffort: 'high',
+    reasoningEffort: 'xhigh',
+    accessMode: 'auto',
     modelRef: 'chat:local-model',
     skillIds: ['skill-123']
   });
@@ -288,7 +303,7 @@ test('trusted plugin runtime requires dedicated Agent registration and cleans it
   const manifest = {
     id: 'acme.agent',
     version: '1.0.0',
-    engines: { pluginApi: '^1.4.0' },
+    engines: { pluginApi: '^1.5.0' },
     permissions: [core.PluginPermission.AGENTS_REGISTER]
   };
   const activated = await platform.plugins.activate(manifest, {
@@ -344,7 +359,7 @@ test('installed extension host gates Agent brokers and tears down Agent state', 
     manifest: {
       id: 'acme.agent',
       version: '1.0.0',
-      engines: { pluginApi: '^1.4.0' },
+      engines: { pluginApi: '^1.5.0' },
       permissions: [
         core.PluginPermission.AGENTS_REGISTER,
         core.PluginPermission.MODELS_GENERATE,

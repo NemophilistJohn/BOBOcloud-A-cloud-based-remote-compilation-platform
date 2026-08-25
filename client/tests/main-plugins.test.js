@@ -215,6 +215,23 @@ test('Agent broker RPC denies Worker decisions while trusted approval IPC retain
       calls.push({ pluginId, method: 'cancelApproval', args: { approvalId } });
       return { cancelled: true };
     },
+    getAccessMode: (pluginId, args) => {
+      calls.push({ pluginId, method: 'getAccessMode', args });
+      return { pluginId, providerId: args.providerId, sessionId: args.sessionId, accessMode: 'ask' };
+    },
+    setAccessMode: (pluginId, args) => {
+      calls.push({ pluginId, method: 'setAccessMode', args });
+      if (args.accessMode === 'full' && args.confirmed !== true) {
+        const error = new Error('confirmation required');
+        error.code = 'AGENT_FULL_ACCESS_CONFIRMATION_REQUIRED';
+        throw error;
+      }
+      return { pluginId, providerId: args.providerId, sessionId: args.sessionId, accessMode: args.accessMode };
+    },
+    clearAccessMode: (pluginId, args) => {
+      calls.push({ pluginId, method: 'clearAccessMode', args });
+      return { pluginId, providerId: args.providerId, sessionId: args.sessionId, accessMode: 'ask' };
+    },
     disposePlugin: (pluginId) => disposed.push(pluginId)
   };
   const harness = await createHarness(t, { agentBroker });
@@ -251,6 +268,10 @@ test('Agent broker RPC denies Worker decisions while trusted approval IPC retain
       { code: 'plugins.rpc.denied' }
     );
   }
+  await assert.rejects(
+    () => harness.controller.rpc('acme.sample-plugin', 'agent.access.set', { accessMode: 'full' }),
+    { code: 'plugins.rpc.denied' }
+  );
 
   const trustedEvent = { sender: harness.window.webContents };
   assert.equal((await harness.handlers.get('plugins:agent-approval-describe')(trustedEvent, {
@@ -262,6 +283,38 @@ test('Agent broker RPC denies Worker decisions while trusted approval IPC retain
   assert.deepEqual(await harness.handlers.get('plugins:agent-approval-cancel')(trustedEvent, {
     pluginId: 'acme.sample-plugin', approvalId: 'approval-process'
   }), { cancelled: true });
+  const accessIdentity = {
+    pluginId: 'acme.sample-plugin',
+    providerId: 'acme.sample-plugin.main',
+    sessionId: 'session-one'
+  };
+  assert.deepEqual(await harness.handlers.get('plugins:agent-access-get')(trustedEvent, accessIdentity), {
+    ...accessIdentity,
+    accessMode: 'ask'
+  });
+  assert.deepEqual(await harness.handlers.get('plugins:agent-access-set')(trustedEvent, {
+    ...accessIdentity,
+    accessMode: 'auto',
+    confirmed: false
+  }), { ...accessIdentity, accessMode: 'auto' });
+  await assert.rejects(
+    () => harness.handlers.get('plugins:agent-access-set')(trustedEvent, { ...accessIdentity, accessMode: 'full' }),
+    { code: 'AGENT_FULL_ACCESS_CONFIRMATION_REQUIRED' }
+  );
+  assert.deepEqual(await harness.handlers.get('plugins:agent-access-set')(trustedEvent, {
+    ...accessIdentity,
+    accessMode: 'full',
+    confirmed: true
+  }), { ...accessIdentity, accessMode: 'full' });
+  assert.deepEqual(await harness.handlers.get('plugins:agent-access-clear')(trustedEvent, accessIdentity), {
+    ...accessIdentity,
+    accessMode: 'ask'
+  });
+  assert.deepEqual(calls.at(-1), {
+    pluginId: 'acme.sample-plugin',
+    method: 'clearAccessMode',
+    args: { providerId: accessIdentity.providerId, sessionId: accessIdentity.sessionId }
+  });
 
   assert.deepEqual(calls.filter((call) => call.method.startsWith('models.')).map((call) => call.method), [
     'models.list',
@@ -560,6 +613,7 @@ test('plugin IPC surface is explicit and sender-bound', async (t) => {
     'plugins:grant', 'plugins:revoke', 'plugins:runtime-descriptors', 'plugins:load-entry', 'plugins:load-localization',
     'plugins:load-document-view', 'plugins:document-open', 'plugins:document-read', 'plugins:document-close', 'plugins:rpc',
     'plugins:agent-approval-describe', 'plugins:agent-approval-decide', 'plugins:agent-approval-cancel',
+    'plugins:agent-access-get', 'plugins:agent-access-set', 'plugins:agent-access-clear',
     'plugins:open-folder', 'plugins:refresh'
   ];
   assert.deepEqual(Array.from(harness.handlers.keys()), expected);

@@ -759,6 +759,42 @@ func TestManagerRecoversCompletedTransactionAndRemovesHiddenStaging(t *testing.T
 	}
 }
 
+func TestManagerRecoversOnlyVerifiedCompletedNodeTransaction(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "package.json"), []byte("{\"name\":\"demo\",\"dependencies\":{\"lodash\":\"4.17.21\"}}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{
+		UserID: "u1", WorkspaceID: "node-project", RuntimeID: "node:20", RuntimeFingerprint: trustedTestRuntimeFingerprint,
+		Language: "node", WorkspaceRoot: workspace, QuotaBytes: 1 << 20,
+	}
+	lease, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeNodeInventoryPackage(t, filepath.Join(lease.HostRoot, "node_modules"), "lodash", "lodash", "4.17.21")
+	lease.Release()
+	canonical := lease.HostRoot
+	cacheRoot := filepath.Join(dataDir, "users", request.UserID, cacheRootDir)
+	stagingRoot := filepath.Join(cacheRoot, stagingDir)
+	if err := os.MkdirAll(stagingRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	completed := filepath.Join(stagingRoot, "generation-completed-node")
+	if err := os.Rename(canonical, completed); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered := NewManager(dataDir, Options{ReservationBytes: 8})
+	recovered.RecoverOrphanedTransactions()
+	inspection := recovered.InspectPackageInventory(request)
+	if inspection.State != "ready" || !inspection.Exact || len(inspection.Packages) != 1 || inspection.Packages[0].Name != "lodash" {
+		t.Fatalf("completed Node transaction was not recovered: %+v", inspection)
+	}
+}
+
 func TestManagerTracksActiveNamespaceAfterMetadataIsCorrupted(t *testing.T) {
 	dataDir := t.TempDir()
 	workspace := filepath.Join(dataDir, "workspace")
@@ -1076,5 +1112,108 @@ func TestManagerDeletesNamespaceWithOversizedMetadata(t *testing.T) {
 	}
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Fatalf("oversized-metadata namespace still exists: %v", err)
+	}
+}
+
+func TestManagerFreshGenerationSkipsCloningPublishedDependencyTree(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := filepath.Join(dataDir, "workspace")
+	if err := os.MkdirAll(workspace, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "requirements.txt"), []byte("demo==1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: workspace, QuotaBytes: 1 << 20}
+	first, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(first.HostRoot, "python", "old-generation.txt")
+	if err := os.WriteFile(marker, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	first.Release()
+	if !first.Published() {
+		t.Fatal("initial generation was not published")
+	}
+
+	request.FreshGeneration = true
+	staged, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !staged.Hit || staged.HostRoot == first.HostRoot {
+		t.Fatalf("fresh staging lease = %+v", staged)
+	}
+	if _, err := os.Stat(filepath.Join(staged.HostRoot, "python", "old-generation.txt")); !errors.Is(err, os.ErrNotExist) {
+		staged.Abort()
+		staged.Release()
+		t.Fatalf("published dependency bytes were cloned into fresh staging: %v", err)
+	}
+	reader, err := manager.PrepareReadOnly(context.Background(), request)
+	if err != nil || reader == nil {
+		staged.Abort()
+		staged.Release()
+		t.Fatalf("published generation was unavailable during fresh staging: lease=%v err=%v", reader, err)
+	}
+	if _, err := os.Stat(filepath.Join(reader.HostRoot, "python", "old-generation.txt")); err != nil {
+		reader.Release()
+		staged.Abort()
+		staged.Release()
+		t.Fatalf("fresh staging changed the published reader: %v", err)
+	}
+	reader.Release()
+	staged.Abort()
+	staged.Release()
+}
+
+func TestManagerAppliesNodeMaterializationPolicyToWorkspaceAndSnapshotRequests(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := t.TempDir()
+	packageJSON := []byte(`{"name":"demo","dependencies":{"lodash":"4.17.21"}}`)
+	lockfile := []byte(`{"lockfileVersion":3,"packages":{"node_modules/lodash":{"version":"4.17.21"}}}`)
+	if err := os.WriteFile(filepath.Join(workspace, "package.json"), packageJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "package-lock.json"), lockfile, 0600); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{
+		UserID: "u1", WorkspaceID: "node-project", RuntimeID: "node:20", RuntimeFingerprint: trustedTestRuntimeFingerprint,
+		Language: "node", WorkspaceRoot: workspace, QuotaBytes: 1 << 20,
+	}
+	enabled := NewManager(dataDir, Options{NodeMaterializationPolicy: NodeDependencyMaterializationPolicy(true, "10.32.1")})
+	enabledWorkspace, err := enabled.resolveRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ManifestSnapshot = []ManifestSnapshot{
+		{Path: "package.json", Content: packageJSON},
+		{Path: "package-lock.json", Content: lockfile},
+	}
+	enabledSnapshot, err := enabled.resolveRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabledWorkspace.fingerprint.Digest != enabledSnapshot.fingerprint.Digest {
+		t.Fatalf("Manager workspace and snapshot identities diverged: workspace=%+v snapshot=%+v", enabledWorkspace.fingerprint, enabledSnapshot.fingerprint)
+	}
+	disabled := NewManager(dataDir, Options{NodeMaterializationPolicy: NodeDependencyMaterializationPolicy(false, "10.32.1")})
+	disabledSnapshot, err := disabled.resolveRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabledSnapshot.fingerprint.Digest == disabledSnapshot.fingerprint.Digest {
+		t.Fatalf("Manager Node policy switch reused generation %s", enabledSnapshot.fingerprint.Digest)
+	}
+	request.MaterializationPolicy = NodeDependencyMaterializationPolicy(true, "10.32.1")
+	pinned, err := disabled.resolveRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pinned.fingerprint.Digest != enabledSnapshot.fingerprint.Digest {
+		t.Fatalf("request-pinned transaction did not match Manager consumer policy: pinned=%+v enabled=%+v", pinned.fingerprint, enabledSnapshot.fingerprint)
 	}
 }

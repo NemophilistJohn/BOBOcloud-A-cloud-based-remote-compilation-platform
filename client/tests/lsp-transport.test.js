@@ -924,6 +924,47 @@ test('dependency refresh coordinator waits for status and coalesces concurrent r
   assert.equal(sendCount, 3);
 });
 
+test('dependency refresh coordinator waits for a ready session and retries a closed transport', async () => {
+  const timers = [];
+  let ready = false;
+  let sendCount = 0;
+  const coordinator = uriHelpers.createDependencyRefreshCoordinator({
+    timeoutMs: 1000,
+    retryDelayMs: 25,
+    canSend: () => ready,
+    setTimer: (fn, delay) => {
+      const timer = { fn, delay, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: (timer) => { timer.cleared = true; }
+  });
+
+  const pending = coordinator.request(() => {
+    sendCount += 1;
+    if (sendCount === 1) return Promise.reject(new Error('socket closed'));
+    return Promise.resolve(true);
+  }, 'project-a');
+  assert.equal(sendCount, 0, 'a disconnected LSP must not receive the control frame');
+
+  ready = true;
+  assert.equal(coordinator.notifyReady('project-a'), true);
+  await nextTurn();
+  assert.equal(sendCount, 1);
+  const retry = timers.find((timer) => timer.delay === 25 && !timer.cleared);
+  assert.ok(retry, 'a transient send failure schedules a bounded retry');
+  retry.fn();
+  await nextTurn();
+  assert.equal(sendCount, 2);
+  assert.equal(coordinator.settle(true), true);
+  assert.equal(await pending, true);
+
+  ready = false;
+  const stale = coordinator.request(() => Promise.resolve(true), 'project-a');
+  assert.equal(coordinator.notifyReady('project-b'), true, 'identity changes cancel the old refresh');
+  assert.equal(await stale, false);
+});
+
 test('LSP runtime selection keeps compatible compilers and isolates editor-only languages', () => {
   assert.equal(uriHelpers.runtimeForLanguage('typescript', 'node:22'), 'node:22');
   assert.equal(uriHelpers.runtimeForLanguage('cpp', 'c:13'), 'c:13');

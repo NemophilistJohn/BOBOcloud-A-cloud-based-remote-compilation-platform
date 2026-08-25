@@ -23,6 +23,7 @@ import (
 	"bobocloud-server/internal/auth"
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/packagecatalog"
 	"bobocloud-server/internal/personalcache"
 )
 
@@ -58,6 +59,7 @@ var environmentManifestSpecs = map[string]environmentManifestSpec{
 	"package-lock.json":   {"package-lock", "npm", "node", true, false},
 	"npm-shrinkwrap.json": {"npm-shrinkwrap", "npm", "node", true, false},
 	"pnpm-lock.yaml":      {"pnpm-lock", "pnpm", "node", true, false},
+	"pnpm-workspace.yaml": {"pnpm-workspace", "pnpm", "node", false, false},
 	"yarn.lock":           {"yarn-lock", "yarn", "node", true, false},
 	"bun.lock":            {"bun-lock", "bun", "node", true, false},
 	"go.mod":              {"go-module", "go", "go", false, true},
@@ -417,6 +419,11 @@ func inspectEnvironmentManifests(root, preferredLanguage string) ([]model.Projec
 				status = "unparsed"
 			}
 		}
+		if spec.Language == "node" && strings.EqualFold(entry.Name(), "package.json") {
+			if manager := inspectNodePackageManagerDeclaration(current); manager != "" {
+				spec.Manager = manager
+			}
+		}
 		if info, statErr := entry.Info(); statErr == nil {
 			modTimes = append(modTimes, info.ModTime().UTC().UnixMilli())
 		}
@@ -517,7 +524,7 @@ func parsePackageJSON(data []byte, source string) ([]model.ProjectEnvironmentPac
 		}
 	}
 	appendMap(value.Dependencies, "runtime")
-	appendMap(value.DevDependencies, "development")
+	appendMap(value.DevDependencies, "dev")
 	appendMap(value.OptionalDependencies, "optional")
 	return items, nil
 }
@@ -796,7 +803,7 @@ func (h *HTTPHandler) acquireEnvironmentDependencySnapshot(r *http.Request, req 
 	}
 	cacheRequest := h.environmentCacheRequest(r, req, resolved, runtime, language)
 	snapshot := &environmentDependencySnapshot{managed: true}
-	if language == "python" {
+	if language == "python" || language == "node" {
 		snapshot.reader, snapshot.entry, snapshot.inventory, snapshot.exists = h.PersonalCache.AcquirePackageInventorySnapshotRead(cacheRequest)
 		return snapshot
 	}
@@ -812,6 +819,10 @@ func environmentDependencySnapshotArg(snapshots []*environmentDependencySnapshot
 }
 
 func installedEnvironmentInspectionFromPythonInventory(inventory personalcache.InventoryInspection) installedEnvironmentInspection {
+	return installedEnvironmentInspectionFromManagedInventory(inventory, "python")
+}
+
+func installedEnvironmentInspectionFromManagedInventory(inventory personalcache.InventoryInspection, language string) installedEnvironmentInspection {
 	checkedAt := int64(0)
 	if !inventory.GeneratedAt.IsZero() {
 		checkedAt = inventory.GeneratedAt.UTC().UnixMilli()
@@ -822,15 +833,41 @@ func installedEnvironmentInspectionFromPythonInventory(inventory personalcache.I
 		if inventory.Exact {
 			trust = "exact"
 		}
+		name := normalizePackageName(item.Name)
+		if language == "python" {
+			name = normalizePythonPackageName(item.Name)
+		}
 		items = append(items, model.ProjectEnvironmentPackage{
-			Name: normalizePythonPackageName(item.Name), Version: item.Version,
-			Scope: "project-lock", Source: "project-lock-python", Trust: trust,
+			Name: name, Version: item.Version,
+			Scope: "project-lock", Source: "project-lock-" + language, Trust: trust,
 		})
 	}
 	return installedEnvironmentInspection{
 		Packages: items, Exact: inventory.Exact, CheckedAt: checkedAt,
 		State: inventory.State, Detail: inventory.Detail,
 	}
+}
+
+func inspectNodePackageManagerDeclaration(pathValue string) string {
+	info, err := os.Lstat(pathValue)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 1<<20 {
+		return ""
+	}
+	data, err := os.ReadFile(pathValue)
+	if err != nil || int64(len(data)) != info.Size() {
+		return ""
+	}
+	var metadata struct {
+		PackageManager string `json:"packageManager"`
+	}
+	if json.Unmarshal(data, &metadata) != nil {
+		return ""
+	}
+	manager := strings.ToLower(strings.TrimSpace(strings.SplitN(metadata.PackageManager, "@", 2)[0]))
+	if manager == "npm" || manager == "pnpm" {
+		return manager
+	}
+	return ""
 }
 
 func inspectInstalledEnvironmentSnapshot(root, language string) installedEnvironmentInspection {
@@ -862,8 +899,8 @@ func (h *HTTPHandler) inspectInstalledEnvironmentPackages(r *http.Request, req *
 		cacheRequest := h.environmentCacheRequest(r, req, resolved, runtime, language)
 		snapshot := environmentDependencySnapshotArg(snapshots)
 		if snapshot != nil && snapshot.managed {
-			if language == "python" {
-				return installedEnvironmentInspectionFromPythonInventory(snapshot.inventory)
+			if language == "python" || language == "node" {
+				return installedEnvironmentInspectionFromManagedInventory(snapshot.inventory, language)
 			}
 			if errors.Is(snapshot.err, personalcache.ErrCacheInUse) {
 				return installedEnvironmentInspection{State: "busy", Detail: "The package cache is being written and cannot be inspected yet"}
@@ -877,8 +914,8 @@ func (h *HTTPHandler) inspectInstalledEnvironmentPackages(r *http.Request, req *
 			}
 			return inspectInstalledEnvironmentSnapshot(snapshot.reader.HostRoot, language)
 		}
-		if language == "python" {
-			return installedEnvironmentInspectionFromPythonInventory(h.PersonalCache.InspectPackageInventory(cacheRequest))
+		if language == "python" || language == "node" {
+			return installedEnvironmentInspectionFromManagedInventory(h.PersonalCache.InspectPackageInventory(cacheRequest), language)
 		}
 		reader, _, exists, err := h.PersonalCache.AcquireRead(cacheRequest)
 		if errors.Is(err, personalcache.ErrCacheInUse) {
@@ -1527,6 +1564,7 @@ func pythonVersionSatisfies(installed pythonVersion, constraint pythonVersionCon
 func classifyEnvironmentPackages(declared, installed []model.ProjectEnvironmentPackage, language string, trusted bool) model.ProjectEnvironmentPackages {
 	result := model.ProjectEnvironmentPackages{Declared: nonNilEnvironmentPackages(declared), Installed: nonNilEnvironmentPackages(installed), Missing: []model.ProjectEnvironmentPackage{}, Unknown: []model.ProjectEnvironmentPackage{}}
 	python := canonicalEnvironmentLanguage(language) == "python"
+	node := canonicalEnvironmentLanguage(language) == "node"
 	installedByName := map[string][]model.ProjectEnvironmentPackage{}
 	for _, item := range installed {
 		name := normalizePackageName(item.Name)
@@ -1566,6 +1604,34 @@ func classifyEnvironmentPackages(declared, installed []model.ProjectEnvironmentP
 		}
 		if len(installedItems) == 0 {
 			item.Reason = "Declared dependency was not found in the selected runtime scope"
+			result.Missing = append(result.Missing, item)
+			continue
+		}
+		if node && strings.TrimSpace(item.Constraint) != "" {
+			installedVersions := make([]string, 0, len(installedItems))
+			unverifiable := false
+			matched := false
+			for _, installedItem := range installedItems {
+				installedVersions = append(installedVersions, strings.TrimSpace(installedItem.Version))
+				satisfies, understood := packagecatalog.NPMVersionSatisfies(installedItem.Version, item.Constraint)
+				if !understood {
+					unverifiable = true
+					continue
+				}
+				if satisfies {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				continue
+			}
+			if unverifiable {
+				item.Reason = fmt.Sprintf("Exact Node inventory cannot verify installed version %q against constraint %q", strings.Join(installedVersions, ", "), item.Constraint)
+				result.Unknown = append(result.Unknown, item)
+				continue
+			}
+			item.Reason = fmt.Sprintf("Installed Node version %q does not satisfy declared constraint %q", strings.Join(installedVersions, ", "), item.Constraint)
 			result.Missing = append(result.Missing, item)
 			continue
 		}

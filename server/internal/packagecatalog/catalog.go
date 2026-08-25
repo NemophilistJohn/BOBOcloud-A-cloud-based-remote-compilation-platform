@@ -23,6 +23,7 @@ import (
 
 const (
 	SearchModeExact       = "exact"
+	SearchModeCatalog     = "catalog"
 	searchSchema          = "package-catalog-search/v1"
 	exactMetadataCacheTTL = 2 * time.Minute
 	exactMetadataCacheMax = 256
@@ -42,6 +43,7 @@ type Source struct {
 }
 
 type SearchRequest struct {
+	Ecosystem           string
 	Query               string
 	SourceID            string
 	Cursor              string
@@ -50,6 +52,7 @@ type SearchRequest struct {
 }
 
 type ItemRequest struct {
+	Ecosystem                 string
 	Name                      string
 	SourceID                  string
 	RuntimeVersion            string
@@ -70,7 +73,7 @@ type Service struct {
 	client           *http.Client
 	timeout          time.Duration
 	maxResponseBytes int64
-	defaultSourceID  string
+	defaultSourceIDs map[string]string
 	sources          map[string]Source
 	ordered          []Source
 	exactMu          sync.Mutex
@@ -93,6 +96,15 @@ type exactMetadataCall struct {
 }
 
 func New(sources []config.PackageSourceConfig, defaultSourceID string, timeout time.Duration, maxResponseBytes int64) *Service {
+	service := NewWithDefaults(sources, nil, timeout, maxResponseBytes)
+	service.setDefaultSource(defaultSourceID)
+	return service
+}
+
+// NewWithDefaults configures an independent default source for every package
+// ecosystem. Registry URLs remain owned by the server-side source registry;
+// callers can select only an advertised source ID.
+func NewWithDefaults(sources []config.PackageSourceConfig, defaultSourceIDs map[string]string, timeout time.Duration, maxResponseBytes int64) *Service {
 	if timeout <= 0 {
 		timeout = 8 * time.Second
 	}
@@ -107,7 +119,9 @@ func New(sources []config.PackageSourceConfig, defaultSourceID string, timeout t
 		return nil
 	}
 	service := NewWithClient(sources, client, maxResponseBytes)
-	service.defaultSourceID = strings.TrimSpace(defaultSourceID)
+	for ecosystem, sourceID := range defaultSourceIDs {
+		service.setDefaultSourceForEcosystem(ecosystem, sourceID)
+	}
 	return service
 }
 
@@ -131,7 +145,8 @@ func NewWithClient(sources []config.PackageSourceConfig, client *http.Client, ma
 	}
 	service := &Service{
 		client: client, timeout: client.Timeout, maxResponseBytes: maxResponseBytes, sources: make(map[string]Source),
-		exactCache: make(map[string]exactMetadataCacheEntry), exactInFlight: make(map[string]*exactMetadataCall),
+		defaultSourceIDs: make(map[string]string),
+		exactCache:       make(map[string]exactMetadataCacheEntry), exactInFlight: make(map[string]*exactMetadataCall),
 	}
 	for _, item := range sources {
 		catalogURL := strings.TrimRight(strings.TrimSpace(item.CatalogURL), "/")
@@ -155,6 +170,27 @@ func NewWithClient(sources []config.PackageSourceConfig, client *http.Client, ma
 	return service
 }
 
+func (s *Service) setDefaultSource(sourceID string) {
+	if s == nil {
+		return
+	}
+	sourceID = strings.TrimSpace(sourceID)
+	if source, ok := s.sources[sourceID]; ok {
+		s.defaultSourceIDs[source.Public.Ecosystem] = sourceID
+	}
+}
+
+func (s *Service) setDefaultSourceForEcosystem(ecosystem, sourceID string) {
+	if s == nil {
+		return
+	}
+	ecosystem = strings.ToLower(strings.TrimSpace(ecosystem))
+	sourceID = strings.TrimSpace(sourceID)
+	if source, ok := s.sources[sourceID]; ok && source.Public.Ecosystem == ecosystem {
+		s.defaultSourceIDs[ecosystem] = sourceID
+	}
+}
+
 func (s *Service) Sources(ecosystem string) []model.PackageCenterSource {
 	ecosystem = strings.ToLower(strings.TrimSpace(ecosystem))
 	result := make([]model.PackageCenterSource, 0, len(s.ordered))
@@ -167,12 +203,13 @@ func (s *Service) Sources(ecosystem string) []model.PackageCenterSource {
 }
 
 func (s *Service) DefaultSource(ecosystem string) string {
-	if configured, ok := s.sources[s.defaultSourceID]; ok && configured.Public.Ecosystem == strings.ToLower(strings.TrimSpace(ecosystem)) {
+	ecosystem = strings.ToLower(strings.TrimSpace(ecosystem))
+	if configured, ok := s.sources[s.defaultSourceIDs[ecosystem]]; ok && configured.Public.Ecosystem == ecosystem {
 		return configured.Public.ID
 	}
 	var fallback string
 	for _, source := range s.ordered {
-		if source.Public.Ecosystem != strings.ToLower(strings.TrimSpace(ecosystem)) {
+		if source.Public.Ecosystem != ecosystem {
 			continue
 		}
 		if fallback == "" {
@@ -202,12 +239,33 @@ func (s *Service) ResolveSource(ecosystem, id string) (Source, error) {
 }
 
 func (s *Service) Search(ctx context.Context, request SearchRequest) (model.PackageCatalogSearchResult, error) {
+	switch normalizeCatalogEcosystem(request.Ecosystem) {
+	case "python":
+		return s.searchPython(ctx, request)
+	case "node":
+		return s.searchNPM(ctx, request)
+	default:
+		return model.PackageCatalogSearchResult{}, fmt.Errorf("unsupported package ecosystem: %s", strings.TrimSpace(request.Ecosystem))
+	}
+}
+
+func normalizeCatalogEcosystem(ecosystem string) string {
+	ecosystem = strings.ToLower(strings.TrimSpace(ecosystem))
+	if ecosystem == "" {
+		// Preserve the original API contract for existing Python callers while
+		// handlers migrate to an explicit ecosystem.
+		return "python"
+	}
+	return ecosystem
+}
+
+func (s *Service) searchPython(ctx context.Context, request SearchRequest) (model.PackageCatalogSearchResult, error) {
 	query := strings.TrimSpace(request.Query)
 	result := model.PackageCatalogSearchResult{Schema: searchSchema, Query: query, SourceID: strings.TrimSpace(request.SourceID), SearchMode: SearchModeExact, Items: []model.PackageCatalogItem{}}
 	if request.Cursor != "" {
 		return result, fmt.Errorf("the exact package catalog does not use cursors")
 	}
-	item, err := s.Item(ctx, ItemRequest{Name: query, SourceID: request.SourceID, RuntimeVersion: request.RuntimeVersion, RuntimeVersionTrust: request.RuntimeVersionTrust})
+	item, err := s.Item(ctx, ItemRequest{Ecosystem: "python", Name: query, SourceID: request.SourceID, RuntimeVersion: request.RuntimeVersion, RuntimeVersionTrust: request.RuntimeVersionTrust})
 	if errors.Is(err, ErrNotFound) {
 		return result, nil
 	}
@@ -224,6 +282,17 @@ func (s *Service) Search(ctx context.Context, request SearchRequest) (model.Pack
 }
 
 func (s *Service) Item(ctx context.Context, request ItemRequest) (model.PackageCatalogItem, error) {
+	switch normalizeCatalogEcosystem(request.Ecosystem) {
+	case "python":
+		return s.itemPython(ctx, request)
+	case "node":
+		return s.itemNPM(ctx, request)
+	default:
+		return model.PackageCatalogItem{}, fmt.Errorf("unsupported package ecosystem: %s", strings.TrimSpace(request.Ecosystem))
+	}
+}
+
+func (s *Service) itemPython(ctx context.Context, request ItemRequest) (model.PackageCatalogItem, error) {
 	name := strings.TrimSpace(request.Name)
 	if !pythonDistributionRE.MatchString(name) {
 		return model.PackageCatalogItem{}, fmt.Errorf("invalid Python distribution name")
@@ -876,6 +945,8 @@ func projectCatalogVersionSummary(item *model.PackageCatalogItem, version string
 		item.RequiresLanguage = candidate.RequiresLanguage
 		item.Compatibility = candidate.Compatibility
 		item.CompatibilityReason = candidate.Reason
+		item.Deprecated = candidate.Deprecated
+		item.DeprecationMessage = candidate.DeprecationMessage
 		return
 	}
 }

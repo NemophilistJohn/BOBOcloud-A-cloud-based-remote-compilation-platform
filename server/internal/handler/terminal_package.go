@@ -34,6 +34,8 @@ var (
 	terminalPackageFrameSuffix = byte('\a')
 	terminalPackageNamePattern = regexp.MustCompile(`^([A-Za-z0-9](?:[A-Za-z0-9._-]{0,127}))(?:\[([A-Za-z0-9._-]+(?:,[A-Za-z0-9._-]+)*)\])?(?:==([A-Za-z0-9](?:[A-Za-z0-9.!+_-]{0,127})))?$`)
 	terminalPackageNameSep     = regexp.MustCompile(`[-_.]+`)
+	terminalNodePackagePart    = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._~-]{0,212}[a-z0-9._~-])?$`)
+	terminalNodeExactVersion   = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
 	terminalPackageIntentID    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,256}$`)
 	terminalPackageDecision    = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,256}$`)
 )
@@ -49,6 +51,7 @@ type terminalPackageSpec struct {
 	Name     string   `json:"name"`
 	Version  string   `json:"version,omitempty"`
 	Features []string `json:"features,omitempty"`
+	Scope    string   `json:"scope,omitempty"`
 }
 
 type terminalPackageIntent struct {
@@ -168,18 +171,23 @@ func cleanTerminalPackageDecisionCode(value string) string {
 	return value
 }
 
-type terminalPackagePolicy struct {
+type terminalPackageSourcePolicy struct {
 	defaultSource string
 	sourceByURL   map[string]string
 }
 
+type terminalPackagePolicy struct {
+	byEcosystem map[string]terminalPackageSourcePolicy
+}
+
 func newTerminalPackagePolicy(cfg *config.Config) terminalPackagePolicy {
-	policy := terminalPackagePolicy{sourceByURL: make(map[string]string)}
+	policy := terminalPackagePolicy{byEcosystem: make(map[string]terminalPackageSourcePolicy)}
 	if cfg == nil || !cfg.PackageCenterEnabled {
 		return policy
 	}
 	for _, source := range cfg.PackageSources {
-		if !strings.EqualFold(strings.TrimSpace(source.Ecosystem), "python") {
+		ecosystem := strings.ToLower(strings.TrimSpace(source.Ecosystem))
+		if ecosystem != "python" && ecosystem != "node" {
 			continue
 		}
 		id := strings.TrimSpace(source.ID)
@@ -187,79 +195,101 @@ func newTerminalPackagePolicy(cfg *config.Config) terminalPackagePolicy {
 		if id == "" || !ok {
 			continue
 		}
-		policy.sourceByURL[canonical] = id
+		sourcePolicy := policy.byEcosystem[ecosystem]
+		if sourcePolicy.sourceByURL == nil {
+			sourcePolicy.sourceByURL = make(map[string]string)
+		}
+		sourcePolicy.sourceByURL[canonical] = id
+		policy.byEcosystem[ecosystem] = sourcePolicy
 	}
-	if candidate := strings.TrimSpace(cfg.PackageDefaultSource); candidate != "" {
-		for _, id := range policy.sourceByURL {
-			if id == candidate {
-				policy.defaultSource = candidate
-				break
+	for ecosystem, sourcePolicy := range policy.byEcosystem {
+		candidate := strings.TrimSpace(cfg.PackageDefaultSources[ecosystem])
+		if ecosystem == "python" && candidate == "" {
+			candidate = strings.TrimSpace(cfg.PackageDefaultSource)
+		}
+		if candidate != "" {
+			for _, id := range sourcePolicy.sourceByURL {
+				if id == candidate {
+					sourcePolicy.defaultSource = candidate
+					break
+				}
 			}
+		}
+		if sourcePolicy.defaultSource == "" {
+			delete(policy.byEcosystem, ecosystem)
+		} else {
+			policy.byEcosystem[ecosystem] = sourcePolicy
 		}
 	}
 	return policy
 }
 
-func canonicalTerminalPackageSourceURL(value string) (string, bool) {
-	parsed, err := url.Parse(strings.TrimSpace(value))
-	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.User != nil || parsed.Hostname() == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", false
-	}
-	parsed.Scheme = "https"
-	parsed.Host = strings.ToLower(parsed.Host)
-	parsed.Path = strings.TrimRight(parsed.Path, "/")
-	parsed.RawPath = ""
-	if parsed.Path == "" {
-		parsed.Path = "/"
-	}
-	return parsed.String(), true
+func (policy terminalPackagePolicy) sourcePolicy(ecosystem string) (terminalPackageSourcePolicy, bool) {
+	sourcePolicy, ok := policy.byEcosystem[strings.ToLower(strings.TrimSpace(ecosystem))]
+	return sourcePolicy, ok && sourcePolicy.defaultSource != "" && len(sourcePolicy.sourceByURL) > 0
+}
+
+func (policy terminalPackagePolicy) enabledFor(language string) bool {
+	_, ok := policy.sourcePolicy(language)
+	return ok
 }
 
 func (policy terminalPackagePolicy) enabled() bool {
-	return policy.defaultSource != "" && len(policy.sourceByURL) > 0
+	for ecosystem := range policy.byEcosystem {
+		if policy.enabledFor(ecosystem) {
+			return true
+		}
+	}
+	return false
 }
 
-func terminalPackageIntentEligible(requested bool, teamID, language string, personalCacheAvailable bool, policy terminalPackagePolicy) bool {
-	return requested && personalCacheAvailable && strings.TrimSpace(teamID) == "" &&
-		strings.EqualFold(strings.TrimSpace(language), "python") && policy.enabled()
+func terminalPackageEcosystem(invocation string) (string, string, bool) {
+	switch strings.ToLower(strings.TrimSpace(invocation)) {
+	case "pip", "pip3", "python-pip", "python3-pip":
+		return "python", "pip", true
+	case "npm":
+		return "node", "npm", true
+	case "pnpm":
+		return "node", "pnpm", true
+	default:
+		return "", "", false
+	}
 }
 
-func (policy terminalPackagePolicy) parseFrame(encoded []byte, nonce string) (terminalPackageIntent, error) {
-	if !policy.enabled() || len(encoded) == 0 || len(encoded) > terminalPackageFrameMaxBytes {
-		return terminalPackageIntent{}, terminalPackageError("invalid_frame")
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(string(encoded))
-	if err != nil || len(raw) == 0 || len(raw) > terminalPackageFrameMaxBytes {
-		return terminalPackageIntent{}, terminalPackageError("invalid_frame")
-	}
-	var frame terminalPackageShimFrame
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&frame) != nil || frame.Schema != terminalPackageIntentSchema || frame.Nonce != nonce || strings.TrimSpace(nonce) == "" {
-		return terminalPackageIntent{}, terminalPackageError("invalid_frame")
-	}
-	if decoder.Decode(&struct{}{}) != io.EOF {
-		return terminalPackageIntent{}, terminalPackageError("invalid_frame")
-	}
-	return policy.parseArgs(frame.Invocation, frame.Args)
-}
-
-func (policy terminalPackagePolicy) parseArgs(invocation string, args []string) (terminalPackageIntent, error) {
-	invocation = strings.ToLower(strings.TrimSpace(invocation))
-	if invocation != "pip" && invocation != "pip3" && invocation != "python-pip" && invocation != "python3-pip" {
-		return terminalPackageIntent{}, terminalPackageError("unsupported_invocation")
-	}
+func cleanTerminalPackageArguments(args []string) ([]string, error) {
 	if len(args) == 0 || len(args) > terminalPackageMaxArguments {
-		return terminalPackageIntent{}, terminalPackageError("unsupported_command")
+		return nil, terminalPackageError("unsupported_command")
 	}
 	cleanArgs := make([]string, len(args))
 	for index, value := range args {
 		if value == "" || len(value) > 1024 || strings.IndexByte(value, 0) >= 0 || strings.ContainsAny(value, "\r\n") {
-			return terminalPackageIntent{}, terminalPackageError("invalid_argument")
+			return nil, terminalPackageError("invalid_argument")
 		}
 		cleanArgs[index] = value
 	}
+	return cleanArgs, nil
+}
 
+func (policy terminalPackagePolicy) parseArgs(invocation string, args []string) (terminalPackageIntent, error) {
+	ecosystem, manager, ok := terminalPackageEcosystem(invocation)
+	if !ok {
+		return terminalPackageIntent{}, terminalPackageError("unsupported_invocation")
+	}
+	sourcePolicy, ok := policy.sourcePolicy(ecosystem)
+	if !ok {
+		return terminalPackageIntent{}, terminalPackageError("unsupported_invocation")
+	}
+	cleanArgs, err := cleanTerminalPackageArguments(args)
+	if err != nil {
+		return terminalPackageIntent{}, err
+	}
+	if ecosystem == "python" {
+		return sourcePolicy.parsePythonArgs(cleanArgs)
+	}
+	return sourcePolicy.parseNodeArgs(manager, cleanArgs)
+}
+
+func (policy terminalPackageSourcePolicy) parsePythonArgs(cleanArgs []string) (terminalPackageIntent, error) {
 	operation := ""
 	sourceID := policy.defaultSource
 	packages := make([]string, 0, len(cleanArgs))
@@ -293,7 +323,7 @@ func (policy terminalPackagePolicy) parseArgs(invocation string, args []string) 
 					return terminalPackageIntent{}, terminalPackageError("unknown_source")
 				}
 				sourceID = resolved
-				continue
+				break
 			}
 			if strings.HasPrefix(argument, "-") {
 				if !terminalPackageFlagAllowed(operation, argument) {
@@ -331,6 +361,207 @@ func (policy terminalPackagePolicy) parseArgs(invocation string, args []string) 
 	}, nil
 }
 
+func (policy terminalPackageSourcePolicy) parseNodeArgs(manager string, cleanArgs []string) (terminalPackageIntent, error) {
+	operation := ""
+	sourceID := policy.defaultSource
+	scope := "runtime"
+	scopeExplicit := false
+	packages := make([]string, 0, len(cleanArgs))
+	for index := 0; index < len(cleanArgs); index++ {
+		argument := cleanArgs[index]
+		if resolvedOperation, command := terminalNodePackageOperation(manager, argument); command {
+			if operation != "" {
+				return terminalPackageIntent{}, terminalPackageError("unsupported_command")
+			}
+			operation = resolvedOperation
+			continue
+		}
+		switch argument {
+		case "--registry":
+			index++
+			if index >= len(cleanArgs) {
+				return terminalPackageIntent{}, terminalPackageError("unknown_source")
+			}
+			resolved, ok := policy.sourceByURLValue(cleanArgs[index])
+			if !ok {
+				return terminalPackageIntent{}, terminalPackageError("unknown_source")
+			}
+			sourceID = resolved
+		case "-D", "--save-dev":
+			if scopeExplicit && scope != "dev" {
+				return terminalPackageIntent{}, terminalPackageError("unsupported_option")
+			}
+			scope, scopeExplicit = "dev", true
+		case "-O", "--save-optional":
+			if scopeExplicit && scope != "optional" {
+				return terminalPackageIntent{}, terminalPackageError("unsupported_option")
+			}
+			scope, scopeExplicit = "optional", true
+		case "-P", "--save-prod":
+			if scopeExplicit && scope != "runtime" {
+				return terminalPackageIntent{}, terminalPackageError("unsupported_option")
+			}
+			scope, scopeExplicit = "runtime", true
+		default:
+			if strings.HasPrefix(argument, "--registry=") {
+				resolved, ok := policy.sourceByURLValue(strings.TrimPrefix(argument, "--registry="))
+				if !ok {
+					return terminalPackageIntent{}, terminalPackageError("unknown_source")
+				}
+				sourceID = resolved
+				continue
+			}
+			if strings.HasPrefix(argument, "-") {
+				if !terminalNodePackageFlagAllowed(operation, argument) {
+					return terminalPackageIntent{}, terminalPackageError("unsupported_option")
+				}
+				continue
+			}
+			if operation == "" {
+				return terminalPackageIntent{}, terminalPackageError("unsupported_command")
+			}
+			packages = append(packages, argument)
+		}
+	}
+	if operation == "" || len(packages) == 0 || len(packages) > terminalPackageMaxPackages {
+		return terminalPackageIntent{}, terminalPackageError("unsupported_command")
+	}
+
+	specs := make([]terminalPackageSpec, 0, len(packages))
+	seen := make(map[string]bool, len(packages))
+	for _, candidate := range packages {
+		spec, err := parseTerminalNodePackageSpec(candidate, operation, scope)
+		if err != nil {
+			return terminalPackageIntent{}, err
+		}
+		if seen[spec.Name] {
+			return terminalPackageIntent{}, terminalPackageError("duplicate_package")
+		}
+		seen[spec.Name] = true
+		specs = append(specs, spec)
+	}
+	return terminalPackageIntent{
+		Schema: terminalPackageIntentSchema, Type: "terminal.packageIntent", IntentID: auth.GenerateToken(),
+		Ecosystem: "node", Manager: manager, Operation: operation, Packages: specs, SourceID: sourceID,
+		RequiresTerminalClose: true,
+	}, nil
+}
+
+func terminalNodePackageOperation(manager, argument string) (string, bool) {
+	switch manager {
+	case "npm":
+		switch argument {
+		case "install", "i", "add":
+			return "install", true
+		case "uninstall", "remove", "rm":
+			return "remove", true
+		}
+	case "pnpm":
+		switch argument {
+		case "add":
+			return "install", true
+		case "remove", "rm":
+			return "remove", true
+		}
+	}
+	return "", false
+}
+
+func terminalNodePackageFlagAllowed(operation, argument string) bool {
+	switch argument {
+	case "--ignore-scripts", "--no-audit", "--no-fund", "--no-progress", "--silent", "--quiet":
+		return true
+	case "-E", "--save-exact":
+		return operation == "" || operation == "install"
+	default:
+		return false
+	}
+}
+
+func parseTerminalNodePackageSpec(value, operation, scope string) (terminalPackageSpec, error) {
+	value = strings.TrimSpace(value)
+	name, version := value, ""
+	hasVersion := false
+	if strings.HasPrefix(value, "@") {
+		slash := strings.IndexByte(value, '/')
+		if slash < 2 {
+			return terminalPackageSpec{}, terminalPackageError("unsupported_requirement")
+		}
+		if versionAt := strings.IndexByte(value[slash+1:], '@'); versionAt >= 0 {
+			versionAt += slash + 1
+			name, version = value[:versionAt], value[versionAt+1:]
+			hasVersion = true
+		}
+	} else if versionAt := strings.LastIndexByte(value, '@'); versionAt >= 0 {
+		name, version = value[:versionAt], value[versionAt+1:]
+		hasVersion = true
+	}
+	if !validTerminalNodePackageName(name) || (hasVersion && !terminalNodeExactVersion.MatchString(version)) {
+		return terminalPackageSpec{}, terminalPackageError("unsupported_requirement")
+	}
+	if operation == "remove" && version != "" {
+		return terminalPackageSpec{}, terminalPackageError("unsupported_requirement")
+	}
+	return terminalPackageSpec{Name: name, Version: version, Scope: scope}, nil
+}
+
+func validTerminalNodePackageName(name string) bool {
+	if name == "" || len(name) > 214 || name != strings.ToLower(name) || strings.ContainsAny(name, "\\%:") {
+		return false
+	}
+	if strings.HasPrefix(name, "@") {
+		parts := strings.Split(name[1:], "/")
+		return len(parts) == 2 && terminalNodePackagePart.MatchString(parts[0]) && terminalNodePackagePart.MatchString(parts[1])
+	}
+	return !strings.Contains(name, "/") && terminalNodePackagePart.MatchString(name)
+}
+
+func canonicalTerminalPackageSourceURL(value string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.User != nil || parsed.Hostname() == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+	parsed.Scheme = "https"
+	parsed.Host = strings.ToLower(parsed.Host)
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawPath = ""
+	if parsed.Path == "" {
+		parsed.Path = "/"
+	}
+	return parsed.String(), true
+}
+
+func terminalPackageIntentEligible(requested bool, teamID, language string, personalCacheAvailable bool, policy terminalPackagePolicy) bool {
+	return requested && personalCacheAvailable && strings.TrimSpace(teamID) == "" && policy.enabledFor(language)
+}
+
+func (policy terminalPackagePolicy) parseFrame(encoded []byte, nonce, expectedEcosystem string) (terminalPackageIntent, error) {
+	if !policy.enabled() || len(encoded) == 0 || len(encoded) > terminalPackageFrameMaxBytes {
+		return terminalPackageIntent{}, terminalPackageError("invalid_frame")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(string(encoded))
+	if err != nil || len(raw) == 0 || len(raw) > terminalPackageFrameMaxBytes {
+		return terminalPackageIntent{}, terminalPackageError("invalid_frame")
+	}
+	var frame terminalPackageShimFrame
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&frame) != nil || frame.Schema != terminalPackageIntentSchema || frame.Nonce != nonce || strings.TrimSpace(nonce) == "" {
+		return terminalPackageIntent{}, terminalPackageError("invalid_frame")
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return terminalPackageIntent{}, terminalPackageError("invalid_frame")
+	}
+	intent, err := policy.parseArgs(frame.Invocation, frame.Args)
+	if err != nil {
+		return terminalPackageIntent{}, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(intent.Ecosystem), strings.TrimSpace(expectedEcosystem)) {
+		return terminalPackageIntent{}, terminalPackageError("unsupported_invocation")
+	}
+	return intent, nil
+}
+
 func terminalPackageFlagAllowed(operation, argument string) bool {
 	switch argument {
 	case "--isolated", "--disable-pip-version-check", "--no-cache-dir", "--no-input", "-q", "--quiet":
@@ -344,7 +575,7 @@ func terminalPackageFlagAllowed(operation, argument string) bool {
 	}
 }
 
-func (policy terminalPackagePolicy) sourceByURLValue(value string) (string, bool) {
+func (policy terminalPackageSourcePolicy) sourceByURLValue(value string) (string, bool) {
 	canonical, ok := canonicalTerminalPackageSourceURL(value)
 	if !ok {
 		return "", false
@@ -372,7 +603,7 @@ func parseTerminalPackageSpec(value, operation string) (terminalPackageSpec, err
 	if operation == "remove" && (match[2] != "" || match[3] != "") {
 		return terminalPackageSpec{}, terminalPackageError("unsupported_requirement")
 	}
-	return terminalPackageSpec{Name: name, Version: match[3], Features: features}, nil
+	return terminalPackageSpec{Name: name, Version: match[3], Features: features, Scope: "runtime"}, nil
 }
 
 // terminalPackageFrameDecoder removes BOBOCLOUD OSC frames from stdout while
@@ -448,7 +679,7 @@ func terminalPackagePrefixOverlap(data []byte) int {
 	return 0
 }
 
-func terminalPackageShimScript(nonce string) (string, error) {
+func terminalPackageShimScript(nonce, language string) (string, error) {
 	if nonce == "" || len(nonce) > 256 {
 		return "", fmt.Errorf("terminal package nonce is invalid")
 	}
@@ -456,6 +687,12 @@ func terminalPackageShimScript(nonce string) (string, error) {
 		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '-' && char != '_' {
 			return "", fmt.Errorf("terminal package nonce is invalid")
 		}
+	}
+	if strings.EqualFold(strings.TrimSpace(language), "node") {
+		return terminalNodePackageShimScript(nonce), nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(language), "python") {
+		return "", fmt.Errorf("terminal package shim language is unsupported")
 	}
 	return `import base64
 import json
@@ -471,7 +708,12 @@ if invocation in ("python", "python3"):
     else:
         os.execv(sys.executable, [sys.executable, *arguments])
 
-command = next((argument for argument in arguments if not argument.startswith("-")), "")
+known_commands = {
+    "install", "uninstall", "remove", "download", "freeze", "inspect", "list",
+    "show", "check", "config", "search", "cache", "index", "wheel", "hash",
+    "completion", "debug", "help", "lock",
+}
+command = next((argument for argument in arguments if argument in known_commands), "")
 if command not in ("install", "uninstall", "remove"):
     os.execv(sys.executable, [sys.executable, "-m", "pip", *arguments])
 
@@ -489,12 +731,88 @@ sys.stdout.flush()
 `, nil
 }
 
-func installTerminalPackageShim(ctx context.Context, containerID, nonce string) error {
-	script, err := terminalPackageShimScript(nonce)
+func terminalNodePackageShimScript(nonce string) string {
+	return `'use strict';
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
+
+const invocation = path.basename(process.argv[1] || '');
+const cliArgs = process.argv.slice(2);
+const mutationCommands = invocation === 'npm'
+  ? new Set(['install', 'i', 'add', 'uninstall', 'remove', 'rm', 'update', 'up', 'ci', 'prune', 'dedupe', 'link', 'unlink', 'rebuild'])
+  : new Set(['add', 'install', 'i', 'remove', 'rm', 'update', 'up', 'prune', 'dedupe', 'link', 'unlink', 'import', 'rebuild']);
+const knownCommands = new Set([
+  ...mutationCommands,
+  'access', 'audit', 'bugs', 'cache', 'completion', 'config', 'diff', 'dist-tag',
+  'docs', 'doctor', 'exec', 'explain', 'explore', 'find-dupes', 'fund', 'help',
+  'help-search', 'init', 'login', 'logout', 'ls', 'list', 'org', 'outdated',
+  'owner', 'pack', 'ping', 'pkg', 'prefix', 'profile', 'publish', 'query', 'repo',
+  'restart', 'root', 'run', 'run-script', 'search', 'shrinkwrap', 'star', 'stars',
+  'start', 'stop', 'store', 'team', 'test', 'token', 'unpublish', 'unstar',
+  'version', 'view', 'why', 'whoami'
+]);
+const command = cliArgs.find((argument) => knownCommands.has(argument)) || '';
+const shimBin = path.resolve('` + terminalPackageShimRoot + `/bin');
+const delegatedPath = String(process.env.PATH || '').split(path.delimiter)
+  .filter((entry) => entry && path.resolve(entry) !== shimBin)
+  .join(path.delimiter);
+
+function findExecutable(name) {
+  for (const directory of delegatedPath.split(path.delimiter)) {
+    const candidate = path.join(directory, name);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch (_) {}
+  }
+  return '';
+}
+
+function delegate() {
+  let executable = findExecutable(invocation);
+  let delegatedArguments = cliArgs;
+  if (!executable && invocation === 'pnpm') {
+    executable = findExecutable('corepack');
+    delegatedArguments = ['pnpm', ...cliArgs];
+  }
+  if (!executable) {
+    process.stderr.write(invocation + ': original package manager is unavailable\n');
+    process.exit(127);
+  }
+  const child = spawn(executable, delegatedArguments, {
+    stdio: 'inherit', env: { ...process.env, PATH: delegatedPath }
+  });
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(signal, () => child.kill(signal));
+  }
+  child.on('error', (error) => {
+    process.stderr.write(String(error && error.message || error) + '\n');
+    process.exit(127);
+  });
+  child.on('exit', (code, signal) => {
+    if (signal) process.kill(process.pid, signal);
+    else process.exit(Number.isInteger(code) ? code : 1);
+  });
+}
+
+if (!mutationCommands.has(command)) {
+  delegate();
+} else {
+  const frame = { schema: 1, nonce: '` + nonce + `', invocation, args: cliArgs };
+  const payload = Buffer.from(JSON.stringify(frame), 'utf8').toString('base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  process.stdout.write('\x1b]777;BOBOCLOUD_PACKAGE;' + payload + '\x07');
+}
+`
+}
+
+func installTerminalPackageShim(ctx context.Context, containerID, nonce, language string) error {
+	script, err := terminalPackageShimScript(nonce, language)
 	if err != nil {
 		return err
 	}
-	command := exec.CommandContext(ctx, "docker", "exec", "-i", "-w", "/", containerID, "sh", "-c", terminalPackageShimInstallShell())
+	command := exec.CommandContext(ctx, "docker", "exec", "-i", "-w", "/", containerID, "sh", "-c", terminalPackageShimInstallShell(language))
 	command.Stdin = strings.NewReader(script)
 	if output, runErr := command.CombinedOutput(); runErr != nil {
 		return fmt.Errorf("install terminal package shim: %s", strings.TrimSpace(string(output)))
@@ -502,6 +820,9 @@ func installTerminalPackageShim(ctx context.Context, containerID, nonce string) 
 	return nil
 }
 
-func terminalPackageShimInstallShell() string {
+func terminalPackageShimInstallShell(language string) string {
+	if strings.EqualFold(strings.TrimSpace(language), "node") {
+		return "umask 077; real_node=$(command -v node); real_npm=$(command -v npm); test -n \"$real_node\"; test -n \"$real_npm\"; rm -rf " + terminalPackageShimRoot + "; mkdir -p " + terminalPackageShimRoot + "/bin; { printf '#!%s\\n' \"$real_node\"; cat; } > " + terminalPackageShimRoot + "/terminalpackage.js; chmod 0700 " + terminalPackageShimRoot + "/terminalpackage.js; for command_name in npm pnpm; do cp " + terminalPackageShimRoot + "/terminalpackage.js " + terminalPackageShimRoot + "/bin/$command_name; chmod 0700 " + terminalPackageShimRoot + "/bin/$command_name; done; " + terminalPackageShimRoot + "/bin/npm --version >/dev/null"
+	}
 	return "umask 077; real_python=$(command -v python3 || command -v python); test -n \"$real_python\"; rm -rf " + terminalPackageShimRoot + "; mkdir -p " + terminalPackageShimRoot + "/bin; { printf '#!%s\\n' \"$real_python\"; cat; } > " + terminalPackageShimRoot + "/terminalpackage.py; chmod 0700 " + terminalPackageShimRoot + "/terminalpackage.py; for command_name in pip pip3 python python3; do ln -s ../terminalpackage.py " + terminalPackageShimRoot + "/bin/$command_name; done; " + terminalPackageShimRoot + "/bin/pip --version >/dev/null; " + terminalPackageShimRoot + "/bin/python -c 'import sys; assert sys.version_info.major == 3'"
 }

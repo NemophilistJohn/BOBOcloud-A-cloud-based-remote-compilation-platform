@@ -15,7 +15,7 @@ function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
-test('library center plans, applies, and rolls back project-scoped dependencies', async () => {
+test('project dependency center plans, applies, and rolls back project-scoped dependencies', async () => {
   test.setTimeout(60000);
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-package-center-ui-'));
   const appData = path.join(sandbox, 'appdata');
@@ -243,12 +243,17 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
             requiresConfirmation: true,
             planId: 'plan-' + packageName,
             revision: fixture.applied ? 'environment-2' : 'environment-1',
+            changes: data.changes,
             localChanges: [{
               path: data.manifestPath,
               oldExists: true,
               oldSha256: initialInstall ? fixture.hashes.initial : fixture.hashes.applied,
               newContent,
               newSha256: initialInstall ? fixture.hashes.applied : fixture.hashes.failed
+            }],
+            manifestBindings: [{
+              path: data.manifestPath,
+              sha256: initialInstall ? fixture.hashes.applied : fixture.hashes.failed
             }],
             warnings: []
           } };
@@ -292,7 +297,7 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
     });
     await expect(page.locator('#package-center-state')).toHaveText('Enter an exact package name to search.');
     await expect(page.locator('#package-context-runtime')).toHaveText('Python 3.11.13');
-    await expect(page.locator('#package-context-runtime')).toHaveAttribute('title', 'Libraries automatically match Python 3.11.13.');
+    await expect(page.locator('#package-context-runtime')).toHaveAttribute('title', 'Dependencies automatically match Python 3.11.13.');
     await expect(page.locator('#package-manifest-select')).toHaveValue('requirements-a.txt');
     await expect(page.locator('#package-manifest-select option')).toHaveCount(2);
     await expect(page.locator('#package-center-review')).toHaveCount(0);
@@ -371,6 +376,7 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
     const numpyRow = page.locator('#package-results-list .package-row[data-package-name="numpy"]');
     await expect(numpyRow.locator('.package-install')).toHaveAttribute('aria-label', 'Install numpy');
     const detailsBeforeInstall = await page.evaluate(() => window.__packageFixture.calls.filter(call => call.action === 'getPackageCatalogItem').length);
+    const syncsBeforeInstall = await page.evaluate(() => window.__packageFixture.syncCount);
     await numpyRow.locator('.package-install').evaluate(button => { button.click(); button.click(); });
     await expect(page.locator('#package-operation-status')).toContainText('Fixture local apply failed');
     expect(await page.evaluate(() => ({
@@ -418,7 +424,7 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
       confirmation: window.__packageFixture.confirmation,
       recovery: window.BOBO.packageCenter.getState().recovery
     }))).toEqual({
-      syncCount: 1,
+      syncCount: syncsBeforeInstall + 3,
       applyCount: 3,
       lspRefreshed: true,
       environmentRefreshes: [{ reason: 'package-change', delay: 0 }],
@@ -453,7 +459,7 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
     await page.evaluate(async () => {
       await window.BOBO.i18n.setLocale('en');
       window.__packageFixture.failApply = true;
-      window.__packageFixture.failSyncAt = window.__packageFixture.syncCount + 2;
+      window.__packageFixture.failSyncAt = window.__packageFixture.syncCount + 3;
       window.__packageFixture.refreshCountsBeforeFailedApply = {
         lsp: window.__packageFixture.lspRefreshCount,
         environment: window.__packageFixture.environmentRefreshes.length,
@@ -549,12 +555,179 @@ test('library center plans, applies, and rolls back project-scoped dependencies'
       const values = await page.evaluate(async nextLocale => {
         await window.BOBO.i18n.setLocale(nextLocale);
         return {
-          expected: window.BOBO.i18n.t('Libraries'),
+          expected: window.BOBO.i18n.t('Dependencies'),
           actual: document.getElementById('environment-tab-packages').textContent
         };
       }, locale);
       expect(values.actual).toBe(values.expected);
     }
+    expect(errors).toEqual([]);
+  } finally {
+    if (app) {
+      try { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)); } catch {}
+    }
+    await new Promise(resolve => setTimeout(resolve, 300));
+    await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+  }
+});
+
+test('Node dependency center adapts npm metadata and pnpm project workflow', async () => {
+  test.setTimeout(45000);
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-node-dependency-center-'));
+  const appData = path.join(sandbox, 'appdata');
+  const home = path.join(sandbox, 'home');
+  const workspace = path.join(sandbox, 'node-project');
+  fs.mkdirSync(appData, { recursive: true });
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.mkdirSync(path.join(process.cwd(), 'test-results'), { recursive: true });
+  fs.writeFileSync(path.join(workspace, 'package.json'), '{"name":"node-project","packageManager":"pnpm@10.0.0","dependencies":{"react":"19.1.0"}}\n', 'utf8');
+  fs.writeFileSync(path.join(workspace, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8');
+  fs.writeFileSync(path.join(workspace, 'index.js'), "import React from 'react';\n", 'utf8');
+
+  let app;
+  try {
+    app = await electron.launch({
+      executablePath: electronPath(),
+      args: ['.', '--user-data-dir=' + path.join(sandbox, 'chromium')],
+      env: Object.assign({}, process.env, {
+        APPDATA: appData,
+        ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
+        HOME: home,
+        USERPROFILE: home,
+        XDG_CONFIG_HOME: path.join(sandbox, 'xdg-config')
+      })
+    });
+    const page = await app.firstWindow();
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+    await page.setViewportSize({ width: 1024, height: 720 });
+    await page.waitForFunction(() => document.documentElement && document.documentElement.dataset.boboReady === 'true', null, { timeout: 20000 });
+
+    await page.evaluate(async workspacePath => {
+      const selected = await window.api.pickWorkspace(workspacePath);
+      await window.BOBO.workspace.applyWorkspace(selected.rootPath, selected.tree);
+      window.BOBO.state.serverSettings.ip = 'fixture.example';
+      window.BOBO.state.auth = { mode: 'multi', token: 'node-fixture-token', user: { id: 'node-user', username: 'node-user' } };
+      window.BOBO.state.selectedRuntime = 'node:22';
+      window.__nodePackageFixture = { calls: [], confirmations: 0, syncCount: 0, events: [] };
+      window.BOBO.confirm = async () => {
+        window.__nodePackageFixture.confirmations += 1;
+        return true;
+      };
+      window.BOBO.runner.manualSyncWithServer = async () => {
+        window.__nodePackageFixture.syncCount += 1;
+        window.__nodePackageFixture.events.push('sync');
+        return true;
+      };
+      window.BOBO.sendToServer = async (action, data) => {
+        window.__nodePackageFixture.calls.push({ action, data });
+        window.__nodePackageFixture.events.push(action);
+        if (action === 'getPackageCenterContext') return { success: true, data: {
+          schema: 'project-package-center/v1', revision: 'node-environment-1',
+          workspace: { kind: 'personal', id: 'node-user\\0' + data.folderKey, key: data.folderKey, name: 'node-project' },
+          language: { id: 'node', displayName: 'Node.js' },
+          runtime: { id: 'node:22', displayName: 'Node.js 22', version: '22', interpreterVersion: '22.14.0' },
+          manager: {
+            id: 'pnpm', name: 'pnpm', manifestPath: 'package.json', lockfilePath: 'pnpm-lock.yaml',
+            lockfilePresent: true, detectedBy: 'packageManager', scopes: ['runtime', 'dev', 'optional']
+          },
+          capabilities: {
+            browse: true, inspect: true, mutate: true, exactInventory: true,
+            scopes: true, prereleases: true, transitivePackages: true
+          },
+          sources: [
+            { id: 'npm-official', name: 'npm', kind: 'official', ecosystem: 'node' },
+            { id: 'npm-npmmirror', name: 'npmmirror', kind: 'mirror', ecosystem: 'node' }
+          ],
+          defaultSource: 'npm-official', searchMode: 'catalog', defaultManifestPath: 'package.json',
+          manifests: [
+            { path: 'package.json', manager: 'pnpm', kind: 'package', language: 'node', editable: true },
+            { path: 'pnpm-lock.yaml', manager: 'pnpm', kind: 'pnpm-lock', language: 'node', lockfile: true }
+          ],
+          packages: {
+            declared: [{ name: 'react', constraint: '19.1.0', scope: 'runtime', source: 'package.json' }],
+            installed: [
+              { name: 'react', version: '19.1.0', relationship: 'direct', trust: 'exact' },
+              { name: 'scheduler', version: '0.26.0', relationship: 'transitive', trust: 'exact' }
+            ],
+            missing: [], unknown: []
+          },
+          inventory: { exact: true, cacheId: 'node-cache', generation: 'node-generation', dependencyDigest: 'node-digest' },
+          canPlanChanges: { supported: true }
+        } };
+        if (action === 'searchPackageCatalog') return { success: true, data: { searchMode: 'catalog', items: [{
+          name: 'old-package', recommendedVersion: '2.1.0', latestVersion: '2.1.0',
+          description: 'Deprecated fixture package', compatibility: 'compatible'
+        }] } };
+        if (action === 'getPackageCatalogItem') return { success: true, data: {
+          name: 'old-package', recommendedVersion: '2.1.0', latestVersion: '2.1.0',
+          description: 'Deprecated fixture package', compatibility: 'compatible', requiresLanguage: '>=20',
+          deprecated: true, deprecationMessage: 'Use modern-package instead.',
+          distTags: { latest: '2.1.0', next: '3.0.0-beta.1' },
+          versions: [
+            { version: '3.0.0-beta.1', compatibility: 'compatible' },
+            { version: '2.1.0', compatibility: 'compatible', deprecated: true, deprecationMessage: 'Use modern-package instead.' }
+          ]
+        } };
+        if (action === 'planProjectPackageChanges') return {
+          success: false, errorCode: 'package_manifest_change_invalid', error: 'Fixture stopped after plan capture'
+        };
+        return { success: false, error: 'unexpected fixture action: ' + action };
+      };
+    }, workspace);
+
+    await page.locator('#activity-environment').click();
+    await page.locator('#environment-tab-packages').click();
+    await expect(page.locator('#package-center-view')).toBeVisible();
+    await expect(page.locator('#package-manager-label')).toHaveText('pnpm');
+    await expect(page.locator('#package-lock-label')).toHaveText('Lock ready');
+    await expect(page.locator('#package-lock-status')).toHaveAttribute('title', 'Lock file: pnpm-lock.yaml');
+    await expect(page.locator('#package-manifest-select')).toHaveValue('package.json');
+    await expect(page.locator('#package-search-input')).toHaveAttribute('placeholder', 'Search npm packages');
+    await expect(page.locator('#package-center-state')).toHaveText('Search packages by name or keyword.');
+    expect(await page.evaluate(() => window.__nodePackageFixture.calls.filter(call => call.action === 'searchPackageCatalog').length)).toBe(0);
+
+    await page.locator('#package-mode-installed').click();
+    await expect(page.locator('.package-installed-group')).toHaveCount(2);
+    await expect(page.locator('.package-installed-group').nth(0)).toContainText('Direct dependencies');
+    await expect(page.locator('.package-installed-group').nth(1)).toContainText('Transitive dependencies');
+
+    await page.locator('#package-mode-discover').click();
+    await page.locator('#package-search-input').fill('old-package');
+    const result = page.locator('#package-results-list .package-row[data-package-name="old-package"]');
+    await expect(result).toBeVisible();
+    await result.locator('.package-row-main').click();
+    await expect(page.locator('#package-center-detail')).toBeVisible();
+    await expect(page.locator('#package-detail-engine')).toHaveText('>=20');
+    await expect(page.locator('#package-detail-tags')).toContainText('latest 2.1.0');
+    await expect(page.locator('#package-detail-warning')).toContainText('Use modern-package instead.');
+    await expect(page.locator('#package-scope-field')).toBeVisible();
+    await expect(page.locator('#package-scope-select option')).toHaveText([
+      'Production dependency', 'Development dependency', 'Optional dependency'
+    ]);
+    expect(await page.locator('#package-center-view').evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    await page.screenshot({ path: path.join(process.cwd(), 'test-results', 'project-dependency-center-node.png'), fullPage: false });
+    await page.locator('#package-scope-select').selectOption('dev');
+    await page.locator('#package-stage-change').click();
+    await expect.poll(() => page.evaluate(() => window.__nodePackageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').length)).toBe(1);
+    const captured = await page.evaluate(() => {
+      const fixture = window.__nodePackageFixture;
+      const plan = fixture.calls.find(call => call.action === 'planProjectPackageChanges');
+      return {
+        change: plan.data.changes[0], manifestPath: plan.data.manifestPath,
+        confirmations: fixture.confirmations, syncCount: fixture.syncCount,
+        planningOrder: fixture.events.slice(-3)
+      };
+    });
+    expect(captured).toEqual({
+      change: { operation: 'add', name: 'old-package', version: '2.1.0', scope: 'dev' },
+      manifestPath: 'package.json',
+      confirmations: 0,
+      syncCount: 1,
+      planningOrder: ['sync', 'getPackageCenterContext', 'planProjectPackageChanges']
+    });
     expect(errors).toEqual([]);
   } finally {
     if (app) {

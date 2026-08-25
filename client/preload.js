@@ -71,6 +71,8 @@ contextBridge.exposeInMainWorld('api', {
   packageCenterApplyLocalChanges: (payload) => ipcRenderer.invoke('package-center:apply-local-changes', payload),
   packageCenterRollbackLocalChanges: (payload) => ipcRenderer.invoke('package-center:rollback-local-changes', payload),
   packageCenterCommitLocalChanges: (payload) => ipcRenderer.invoke('package-center:commit-local-changes', payload),
+  packageCenterListPendingRecoveries: (payload) => ipcRenderer.invoke('package-center:list-pending-recoveries', payload),
+  packageCenterResolvePendingRecovery: (payload) => ipcRenderer.invoke('package-center:resolve-pending-recovery', payload),
   onPackageCenterLocalTransaction: (cb) => subscribePayload('package-center:local-transaction', cb),
 
   // FS operations
@@ -214,6 +216,9 @@ contextBridge.exposeInMainWorld('api', {
   pluginsAgentApprovalDescribe: (payload) => ipcRenderer.invoke('plugins:agent-approval-describe', payload),
   pluginsAgentApprovalDecide: (payload) => ipcRenderer.invoke('plugins:agent-approval-decide', payload),
   pluginsAgentApprovalCancel: (payload) => ipcRenderer.invoke('plugins:agent-approval-cancel', payload),
+  agentAccessGet: (payload) => ipcRenderer.invoke('plugins:agent-access-get', payload),
+  agentAccessSet: (payload) => ipcRenderer.invoke('plugins:agent-access-set', payload),
+  agentAccessClear: (payload) => ipcRenderer.invoke('plugins:agent-access-clear', payload),
 
   // ──── AI Agent ────
   aiChatRequest: (payload) => ipcRenderer.invoke('ai-chat-request', payload),

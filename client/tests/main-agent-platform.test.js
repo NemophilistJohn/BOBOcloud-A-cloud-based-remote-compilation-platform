@@ -120,6 +120,15 @@ test('Agent model broker exposes opaque refs, retains credentials, and scopes ca
   assert.equal(harness.modelRequests[0].modelConfig.apiKey, 'host-secret-key');
   assert.match(harness.modelRequests[0].requestId, /^agent-[a-f0-9]{16}-turn-1$/);
 
+  await harness.broker.request('acme.agent', 'models.generate', {
+    modelRef: 'chat:chat-local',
+    requestId: 'turn-xhigh',
+    reasoningEffort: 'xhigh',
+    messages: [{ role: 'user', content: 'Inspect more deeply.' }]
+  });
+  assert.equal(harness.modelRequests[1].reasoningEffort, 'xhigh');
+  assert.equal(harness.modelRequests[1].maxTokens, 12288);
+
   assert.deepEqual(await harness.broker.request('acme.agent', 'models.cancel', { requestId: 'turn-1' }), {
     success: true,
     cancelled: true
@@ -207,6 +216,111 @@ test('Agent workspace searches stop at plugin and workspace lifecycle boundaries
   });
   harness.broker.workspaceChanged();
   await assert.rejects(switchedSearch, { code: 'AGENT_CANCELLED' });
+});
+
+test('trusted Agent access modes apply the host risk matrix without accepting Worker escalation', async (t) => {
+  const harness = await createHarness(t);
+  await fsp.mkdir(path.join(harness.workspace, 'src'), { recursive: true });
+  const identity = { providerId: 'acme.agent.main', sessionId: 'session-one' };
+
+  assert.deepEqual(harness.broker.getAccessMode('acme.agent', identity), {
+    pluginId: 'acme.agent',
+    providerId: 'acme.agent.main',
+    sessionId: 'session-one',
+    accessMode: 'ask'
+  });
+  const forged = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
+    tool: 'workspace_write',
+    accessMode: 'full',
+    sessionId: 'forged-session',
+    input: { path: 'src/forged.txt', content: 'must ask\n', accessMode: 'full' }
+  });
+  assert.equal(forged.approvalRequired, true);
+  assert.equal(forged.approval.accessMode, 'ask');
+  assert.equal(forged.approval.riskLevel, 'medium');
+  await harness.broker.decideApproval('acme.agent', forged.approval.id, false);
+
+  assert.deepEqual(harness.broker.setAccessMode('acme.agent', { ...identity, accessMode: 'auto' }), {
+    pluginId: 'acme.agent',
+    providerId: 'acme.agent.main',
+    sessionId: 'session-one',
+    accessMode: 'auto'
+  });
+  const automaticWrite = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
+    tool: 'workspace_write', input: { path: 'src/automatic.txt', content: 'automatic\n' }
+  });
+  assert.equal(automaticWrite.approved, true);
+  assert.equal(automaticWrite.autoApproved, true);
+  assert.equal(automaticWrite.accessMode, 'auto');
+  assert.equal(automaticWrite.riskLevel, 'medium');
+
+  const sensitiveAuto = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
+    tool: 'workspace_write', input: { path: '.env.local', content: 'SECRET=value\n' }
+  });
+  assert.equal(sensitiveAuto.approvalRequired, true);
+  assert.equal(sensitiveAuto.approval.riskLevel, 'high');
+  assert.equal(sensitiveAuto.approval.accessMode, 'auto');
+  assert.equal(harness.broker.describeApproval('acme.agent', sensitiveAuto.approval.id).riskLevel, 'high');
+  await harness.broker.decideApproval('acme.agent', sensitiveAuto.approval.id, false);
+
+  const inspection = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
+    tool: 'process_run', input: { command: 'node', args: ['--version'], cwd: '.' }
+  });
+  assert.equal(inspection.autoApproved, true);
+  assert.equal(inspection.riskLevel, 'low');
+  const executableAuto = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
+    tool: 'process_run', input: { command: 'node', args: ['-e', 'process.stdout.write("unsafe")'], cwd: '.' }
+  });
+  assert.equal(executableAuto.approvalRequired, true);
+  assert.equal(executableAuto.approval.riskLevel, 'high');
+  await harness.broker.decideApproval('acme.agent', executableAuto.approval.id, false);
+
+  assert.throws(
+    () => harness.broker.setAccessMode('acme.agent', { ...identity, accessMode: 'full' }),
+    { code: 'AGENT_FULL_ACCESS_CONFIRMATION_REQUIRED' }
+  );
+  harness.broker.setAccessMode('acme.agent', { ...identity, accessMode: 'full', confirmed: true });
+  const fullWrite = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
+    tool: 'workspace_write', input: { path: '.env.local', content: 'SECRET=value\n' }
+  });
+  assert.equal(fullWrite.autoApproved, true);
+  assert.equal(fullWrite.accessMode, 'full');
+  assert.equal(fullWrite.riskLevel, 'high');
+
+  assert.equal(harness.broker._test.classifyWorkspaceWriteRisk({ path: 'src/app.js' }), 'medium');
+  assert.equal(harness.broker._test.classifyWorkspaceWriteRisk({ path: '.github/workflows/ci.yml' }), 'high');
+  assert.equal(harness.broker._test.classifyProcessRisk({ command: 'git', args: ['status'] }), 'low');
+  assert.equal(harness.broker._test.classifyProcessRisk({ command: 'git', args: ['push'] }), 'high');
+
+  harness.broker.setAccessMode('acme.agent', { ...identity, accessMode: 'full', confirmed: true });
+  const downgradeRace = harness.broker.request('acme.agent', 'agent.tools.invoke', {
+    tool: 'process_run', input: { command: 'node', args: ['--version'], cwd: '.' }
+  });
+  harness.broker.setAccessMode('acme.agent', { ...identity, accessMode: 'ask' });
+  const downgraded = await downgradeRace;
+  assert.equal(downgraded.approvalRequired, true);
+  assert.equal(downgraded.approval.accessMode, 'ask');
+  await harness.broker.decideApproval('acme.agent', downgraded.approval.id, false);
+
+  harness.broker.setAccessMode('acme.agent', { ...identity, accessMode: 'full', confirmed: true });
+  assert.deepEqual(harness.broker.clearAccessMode('acme.agent', identity), {
+    pluginId: 'acme.agent',
+    ...identity,
+    accessMode: 'ask'
+  });
+  assert.equal(harness.broker.getAccessMode('acme.agent', identity).accessMode, 'ask');
+  const cleared = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
+    tool: 'workspace_write', input: { path: '.env.cleared', content: 'TOKEN=cleared\n' }
+  });
+  assert.equal(cleared.approvalRequired, true);
+  assert.equal(cleared.approval.accessMode, 'ask');
+  await harness.broker.decideApproval('acme.agent', cleared.approval.id, false);
+
+  harness.broker.disposePlugin('acme.agent');
+  assert.equal(harness.broker.getAccessMode('acme.agent', identity).accessMode, 'ask');
+  harness.broker.setAccessMode('acme.agent', { ...identity, accessMode: 'auto' });
+  harness.broker.workspaceChanged();
+  assert.equal(harness.broker.getAccessMode('acme.agent', identity).accessMode, 'ask');
 });
 
 test('Agent writes and processes require scoped approvals and structured execution', async (t) => {

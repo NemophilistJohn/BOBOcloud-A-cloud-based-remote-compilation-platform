@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"bobocloud-server/internal/cachev2"
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/packageops"
 	"bobocloud-server/internal/personalcache"
 )
 
@@ -285,7 +287,7 @@ func TestProjectDependencyCacheListsExactPythonDistributionAndRejectsDigestMutat
 	}
 }
 
-func TestProjectDependencyCacheKeepsOtherLanguagesOpaqueToPackageInventory(t *testing.T) {
+func TestProjectDependencyCachePublishesExactNodeInventoryAndKeepsUnsupportedLanguagesOpaque(t *testing.T) {
 	handler, _, user := newAuthenticatedLifecycleHandler(t)
 	handler.PersonalCache = personalcache.NewManager(handler.Config.DataDir, personalcache.Options{ReservationBytes: 8, ReservationFiles: 1})
 
@@ -336,10 +338,19 @@ func TestProjectDependencyCacheKeepsOtherLanguagesOpaqueToPackageInventory(t *te
 	}
 	for _, test := range tests {
 		module, exists := byLanguage[test.language]
-		if !exists || module.PackageInventory == nil || module.PackageInventory.State != "unsupported" || module.Generation == "" {
+		if !exists || module.PackageInventory == nil || module.Generation == "" {
 			t.Fatalf("%s lazy module summary = entry:%+v inventory:%+v", test.language, module, module.PackageInventory)
 		}
 		_, inventory := personalCacheV2EntryDetail(t, handler, user.APIKey, module.ID)
+		if test.language == "node" {
+			if module.PackageInventory.State != "deferred" || !module.PackageInventory.Deferred || inventory.State != "ready" || !inventory.Exact || inventory.Revision == "" || len(inventory.Packages) != 1 || inventory.Packages[0].Name != "lodash" || inventory.Packages[0].Version != "4.17.21" {
+				t.Fatalf("Node exact package inventory = summary:%+v detail:%+v", module.PackageInventory, inventory)
+			}
+			continue
+		}
+		if module.PackageInventory.State != "unsupported" {
+			t.Fatalf("%s package inventory summary = %+v", test.language, module.PackageInventory)
+		}
 		if inventory.State != "unsupported" || inventory.Exact || inventory.Revision != "" || len(inventory.Packages) != 0 {
 			t.Fatalf("%s package inventory leaked observational guesses: %+v", test.language, inventory)
 		}
@@ -378,6 +389,44 @@ func TestSingleUserProjectDeletionRemovesDependencyNamespaces(t *testing.T) {
 	recorder, _ := callProjectEnvironment(t, handler, `{"action":"deleteProject","folderKey":"project"}`)
 	if recorder.Code != http.StatusOK || len(handler.PersonalCache.Inspect("default", 0).Entries) != 0 {
 		t.Fatalf("single-user delete left project cache: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestProjectDeletionRemovesOnlyBoundPackageTransactions(t *testing.T) {
+	handler, _, user := newAuthenticatedLifecycleHandler(t)
+	project := filepath.Join(handler.Config.DataDir, "users", user.ID, "workspaces", "project")
+	otherProject := filepath.Join(handler.Config.DataDir, "users", user.ID, "workspaces", "other")
+	for _, root := range []string{project, otherProject} {
+		if err := os.MkdirAll(root, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projectWorkspaceID := lsp.StableWorkspaceIdentity(user.ID, "", "", "", "project")
+	otherWorkspaceID := lsp.StableWorkspaceIdentity(user.ID, "", "", "", "other")
+	projectPlan, err := handler.PackagePlans.Put(packageops.ExecutionPlan{UserID: user.ID, WorkspaceID: projectWorkspaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPlan, err := handler.PackagePlans.Put(packageops.ExecutionPlan{UserID: user.ID, WorkspaceID: otherWorkspaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := serveAuthenticatedAction(t, handler, user.APIKey, `{"action":"deleteProject","folderKey":"project"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("delete project status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := handler.PackagePlans.Claim(projectPlan.Public.PlanID, user.ID); !errors.Is(err, packageops.ErrPlanNotFound) {
+		t.Fatalf("deleted project retained package plan: %v", err)
+	}
+	if _, err := handler.PackagePlans.Claim(otherPlan.Public.PlanID, user.ID); err != nil {
+		t.Fatalf("project deletion removed another workspace plan: %v", err)
+	}
+	if _, err := os.Stat(project); !os.IsNotExist(err) {
+		t.Fatalf("project directory still exists: %v", err)
+	}
+	if _, err := os.Stat(otherProject); err != nil {
+		t.Fatalf("other project directory was removed: %v", err)
 	}
 }
 

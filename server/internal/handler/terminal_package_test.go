@@ -5,6 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -51,6 +54,38 @@ func TestTerminalPackagePolicyAcceptsDirectPythonPackageIntents(t *testing.T) {
 	}
 	if remove.Operation != "remove" || remove.Packages[0].Name != "num-py" || remove.SourceID != config.Default().PackageDefaultSource {
 		t.Fatalf("remove intent = %#v", remove)
+	}
+}
+
+func TestTerminalPackagePolicyAcceptsManagedNodePackageIntents(t *testing.T) {
+	policy := newTerminalPackagePolicy(config.Default())
+	npm, err := policy.parseArgs("npm", []string{
+		"install", "@types/node@22.10.2", "chalk", "--save-dev", "--save-exact",
+		"--registry=https://registry.npmmirror.com/",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if npm.Ecosystem != "node" || npm.Manager != "npm" || npm.Operation != "install" || npm.SourceID != "npm-npmmirror" || !npm.RequiresTerminalClose {
+		t.Fatalf("npm intent = %#v", npm)
+	}
+	if len(npm.Packages) != 2 || npm.Packages[0].Name != "@types/node" || npm.Packages[0].Version != "22.10.2" || npm.Packages[0].Scope != "dev" || npm.Packages[1].Name != "chalk" || npm.Packages[1].Scope != "dev" {
+		t.Fatalf("npm packages = %#v", npm.Packages)
+	}
+
+	pnpm, err := policy.parseArgs("pnpm", []string{"add", "fsevents@2.3.3", "-O"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pnpm.Manager != "pnpm" || pnpm.SourceID != "npm-official" || pnpm.Packages[0].Scope != "optional" {
+		t.Fatalf("pnpm add intent = %#v", pnpm)
+	}
+	remove, err := policy.parseArgs("pnpm", []string{"remove", "@types/node", "--save-dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remove.Operation != "remove" || remove.Packages[0].Name != "@types/node" || remove.Packages[0].Version != "" || remove.Packages[0].Scope != "dev" {
+		t.Fatalf("pnpm remove intent = %#v", remove)
 	}
 }
 
@@ -124,14 +159,54 @@ func TestTerminalPackageIntentEligibilityRequiresExplicitCompatibleHandshake(t *
 	if terminalPackageIntentEligible(true, "team-id", "python", true, policy) {
 		t.Fatal("a team terminal was allowed to publish a personal package intent")
 	}
-	if terminalPackageIntentEligible(true, "", "node", true, policy) {
-		t.Fatal("a non-Python terminal was allowed to publish a Python package intent")
+	if !terminalPackageIntentEligible(true, "", "node", true, policy) {
+		t.Fatal("an explicitly negotiated personal Node terminal was rejected")
+	}
+	if terminalPackageIntentEligible(true, "", "rust", true, policy) {
+		t.Fatal("an unsupported ecosystem was allowed to publish a package intent")
 	}
 	if terminalPackageIntentEligible(true, "", "python", false, policy) {
 		t.Fatal("a terminal without personal cache authority enabled package intents")
 	}
 	if !terminalPackageIntentEligible(true, "", "PYTHON", true, policy) {
 		t.Fatal("an explicitly negotiated personal Python terminal was rejected")
+	}
+}
+
+func TestTerminalPackagePolicyRejectsUnsafeNodePackageInputs(t *testing.T) {
+	policy := newTerminalPackagePolicy(config.Default())
+	tests := []struct {
+		name       string
+		invocation string
+		args       []string
+		code       string
+	}{
+		{name: "npm global", invocation: "npm", args: []string{"install", "chalk", "--global"}, code: "unsupported_option"},
+		{name: "npm short global", invocation: "npm", args: []string{"install", "chalk", "-g"}, code: "unsupported_option"},
+		{name: "npm workspace", invocation: "npm", args: []string{"install", "chalk", "--workspace", "app"}, code: "unsupported_option"},
+		{name: "pnpm workspace", invocation: "pnpm", args: []string{"add", "chalk", "--filter", "app"}, code: "unsupported_option"},
+		{name: "local path", invocation: "npm", args: []string{"install", "../chalk"}, code: "unsupported_requirement"},
+		{name: "file URL", invocation: "npm", args: []string{"install", "file:../chalk"}, code: "unsupported_requirement"},
+		{name: "git URL", invocation: "pnpm", args: []string{"add", "git+https://example.invalid/chalk.git"}, code: "unsupported_requirement"},
+		{name: "https URL", invocation: "npm", args: []string{"install", "https://example.invalid/chalk.tgz"}, code: "unsupported_requirement"},
+		{name: "version range", invocation: "npm", args: []string{"install", "chalk@^5.0.0"}, code: "unsupported_requirement"},
+		{name: "version tag", invocation: "npm", args: []string{"install", "chalk@latest"}, code: "unsupported_requirement"},
+		{name: "empty version", invocation: "npm", args: []string{"install", "chalk@"}, code: "unsupported_requirement"},
+		{name: "alias", invocation: "npm", args: []string{"install", "colors@npm:chalk@5.4.1"}, code: "unsupported_requirement"},
+		{name: "uppercase name", invocation: "npm", args: []string{"install", "Chalk"}, code: "unsupported_requirement"},
+		{name: "remove version", invocation: "npm", args: []string{"remove", "chalk@5.4.1"}, code: "unsupported_requirement"},
+		{name: "conflicting scope", invocation: "pnpm", args: []string{"add", "chalk", "-D", "-O"}, code: "unsupported_option"},
+		{name: "unknown source", invocation: "npm", args: []string{"install", "chalk", "--registry", "https://example.invalid/"}, code: "unknown_source"},
+		{name: "cross ecosystem source", invocation: "npm", args: []string{"install", "chalk", "--registry", "https://pypi.org/simple/"}, code: "unknown_source"},
+		{name: "pnpm install is not a direct change", invocation: "pnpm", args: []string{"install", "chalk"}, code: "unsupported_command"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := policy.parseArgs(testCase.invocation, testCase.args)
+			if got := terminalPackageErrorCode(err); got != testCase.code {
+				t.Fatalf("error code = %q, want %q (err=%v)", got, testCase.code, err)
+			}
+		})
 	}
 }
 
@@ -192,12 +267,15 @@ func TestTerminalPackageFrameDecoderStripsSplitOSCFrame(t *testing.T) {
 		t.Fatalf("decoded frames = %q", frames)
 	}
 	policy := newTerminalPackagePolicy(config.Default())
-	intent, err := policy.parseFrame(frames[0], nonce)
+	intent, err := policy.parseFrame(frames[0], nonce, "python")
 	if err != nil || intent.Packages[0].Name != "numpy" {
 		t.Fatalf("parsed frame = %#v, %v", intent, err)
 	}
-	if _, err := policy.parseFrame(frames[0], "different-session"); terminalPackageErrorCode(err) != "invalid_frame" {
+	if _, err := policy.parseFrame(frames[0], "different-session", "python"); terminalPackageErrorCode(err) != "invalid_frame" {
 		t.Fatalf("cross-session nonce was accepted: %v", err)
+	}
+	if _, err := policy.parseFrame(frames[0], nonce, "node"); terminalPackageErrorCode(err) != "unsupported_invocation" {
+		t.Fatalf("cross-ecosystem package frame was accepted: %v", err)
 	}
 }
 
@@ -225,20 +303,20 @@ func TestTerminalPackageFrameDecoderDropsOversizedAndTruncatedControlData(t *tes
 func TestTerminalPackageFrameRejectsUnknownFields(t *testing.T) {
 	raw := []byte(`{"schema":1,"nonce":"n","invocation":"pip","args":["install","numpy"],"extra":true}`)
 	encoded := []byte(base64.RawURLEncoding.EncodeToString(raw))
-	if _, err := newTerminalPackagePolicy(config.Default()).parseFrame(encoded, "n"); terminalPackageErrorCode(err) != "invalid_frame" {
+	if _, err := newTerminalPackagePolicy(config.Default()).parseFrame(encoded, "n", "python"); terminalPackageErrorCode(err) != "invalid_frame" {
 		t.Fatalf("frame with unknown fields was accepted: %v", err)
 	}
 }
 
 func TestTerminalPackageShimEmitsIntentAndDelegatesReadOnlyCommands(t *testing.T) {
-	script, err := terminalPackageShimScript("nonce_123")
+	script, err := terminalPackageShimScript("nonce_123", "python")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, required := range []string{
 		"BOBOCLOUD_PACKAGE", `"nonce": "nonce_123"`, "os.execv", `["-m", "pip"]`,
 		`invocation in ("python", "python3")`, `invocation = invocation + "-pip"`,
-		`[sys.executable, *arguments]`, `command = next((argument for argument in arguments if not argument.startswith("-")), "")`,
+		`[sys.executable, *arguments]`, `command = next((argument for argument in arguments if argument in known_commands), "")`,
 		`command not in ("install", "uninstall", "remove")`,
 	} {
 		if !strings.Contains(script, required) {
@@ -248,13 +326,113 @@ func TestTerminalPackageShimEmitsIntentAndDelegatesReadOnlyCommands(t *testing.T
 	if strings.Contains(script, "subprocess") || strings.Contains(script, "os.system") {
 		t.Fatalf("shim can execute a mutation through a shell: %s", script)
 	}
-	if _, err := terminalPackageShimScript("bad nonce;exit"); err == nil {
+	if _, err := terminalPackageShimScript("bad nonce;exit", "python"); err == nil {
 		t.Fatal("unsafe shim nonce was accepted")
 	}
-	installShell := terminalPackageShimInstallShell()
+	installShell := terminalPackageShimInstallShell("python")
 	if !strings.Contains(installShell, "for command_name in pip pip3 python python3") ||
 		!strings.Contains(installShell, terminalPackageShimRoot+"/bin/pip --version") ||
 		!strings.Contains(installShell, terminalPackageShimRoot+"/bin/python -c") {
 		t.Fatalf("shim installer does not install and probe every supported invocation: %s", installShell)
+	}
+}
+
+func TestTerminalNodePackageShimInterceptsMutationsAndDelegatesWithoutRecursion(t *testing.T) {
+	script, err := terminalPackageShimScript("nonce_123", "node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"BOBOCLOUD_PACKAGE", "'npm'", "'pnpm'", "mutationCommands.has(command)",
+		"findExecutable(invocation)", "path.resolve(entry) !== shimBin", "spawn(executable, delegatedArguments", "PATH: delegatedPath",
+		"executable = findExecutable('corepack')", "['pnpm', ...cliArgs]",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("Node shim is missing %q", required)
+		}
+	}
+	if strings.Contains(script, "exec(") || strings.Contains(script, "shell: true") {
+		t.Fatalf("Node shim delegates through a shell: %s", script)
+	}
+	installShell := terminalPackageShimInstallShell("node")
+	if !strings.Contains(installShell, "for command_name in npm pnpm") ||
+		!strings.Contains(installShell, "cp "+terminalPackageShimRoot+"/terminalpackage.js") ||
+		!strings.Contains(installShell, terminalPackageShimRoot+"/bin/npm --version") ||
+		!strings.Contains(installShell, "real_node=$(command -v node)") {
+		t.Fatalf("Node shim installer does not install and probe supported invocations: %s", installShell)
+	}
+	if _, err := terminalPackageShimScript("nonce", "rust"); err == nil {
+		t.Fatal("unsupported shim language was accepted")
+	}
+}
+
+func TestTerminalNodePackageShimIsValidJavaScriptAndEmitsParseableIntent(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is unavailable")
+	}
+	script, err := terminalPackageShimScript("nonce_123", "node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(t.TempDir(), "npm")
+	if err := os.WriteFile(scriptPath, []byte(script), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(node, "--check", scriptPath).CombinedOutput(); err != nil {
+		t.Fatalf("Node shim syntax error: %v\n%s", err, output)
+	}
+	output, err := exec.Command(node, scriptPath, "--registry", "https://registry.npmmirror.com/", "install", "@types/node@22.10.2", "--save-dev").CombinedOutput()
+	if err != nil {
+		t.Fatalf("Node shim intent command failed: %v\n%s", err, output)
+	}
+	if !bytes.HasPrefix(output, terminalPackageFramePrefix) || len(output) <= len(terminalPackageFramePrefix)+1 || output[len(output)-1] != terminalPackageFrameSuffix {
+		t.Fatalf("Node shim output is not a package frame: %q", output)
+	}
+	encoded := output[len(terminalPackageFramePrefix) : len(output)-1]
+	intent, err := newTerminalPackagePolicy(config.Default()).parseFrame(encoded, "nonce_123", "node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.Manager != "npm" || intent.SourceID != "npm-npmmirror" || intent.Packages[0].Name != "@types/node" || intent.Packages[0].Scope != "dev" {
+		t.Fatalf("Node shim intent = %#v", intent)
+	}
+}
+
+func TestTerminalPythonPackageShimInterceptsMutationAfterGlobalSourceOption(t *testing.T) {
+	python := ""
+	for _, candidate := range []string{"python3", "python"} {
+		resolved, err := exec.LookPath(candidate)
+		if err != nil || exec.Command(resolved, "-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)").Run() != nil {
+			continue
+		}
+		python = resolved
+		break
+	}
+	if python == "" {
+		t.Skip("python is unavailable")
+	}
+	script, err := terminalPackageShimScript("nonce_123", "python")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(t.TempDir(), "pip")
+	if err := os.WriteFile(scriptPath, []byte(script), 0600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command(python, scriptPath, "-i", "https://pypi.tuna.tsinghua.edu.cn/simple", "install", "numpy==2.1.0").CombinedOutput()
+	if err != nil {
+		t.Fatalf("Python shim intent command failed: %v\n%s", err, output)
+	}
+	if !bytes.HasPrefix(output, terminalPackageFramePrefix) || len(output) <= len(terminalPackageFramePrefix)+1 || output[len(output)-1] != terminalPackageFrameSuffix {
+		t.Fatalf("Python shim output is not a package frame: %q", output)
+	}
+	encoded := output[len(terminalPackageFramePrefix) : len(output)-1]
+	intent, err := newTerminalPackagePolicy(config.Default()).parseFrame(encoded, "nonce_123", "python")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.Manager != "pip" || intent.SourceID != "pypi-tuna" || len(intent.Packages) != 1 || intent.Packages[0].Name != "numpy" {
+		t.Fatalf("Python shim intent = %#v", intent)
 	}
 }

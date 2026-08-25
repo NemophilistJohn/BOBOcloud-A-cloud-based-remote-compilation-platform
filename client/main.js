@@ -66,7 +66,7 @@ const plugins = createPluginController({ app, ipcMain, dialog, shell, getWindow,
 });
 const marketplace = createMarketplaceController({ app, ipcMain, getWindow, pluginManager: plugins, hostVersion: app.getVersion() });
 packageCenter = createPackageCenterController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity,
-  onFilesChanged: files => workspace.notifyExternalFileChanges(files) });
+  onFilesChanged: files => workspace.notifyExternalFileChanges(files), userDataPath: app.getPath('userData') });
 const auth = createAuthController({ ipcMain, settings, disposeLsp: disposeRemoteEditorServices,
   onStateChanged: () => { if (menu) menu.rebuild(); }, onServerSettingsWritten: secureTransport.update });
 menu = createMenuController({ Menu, dialog, getWindow, languagePacks, getAuthState: auth.getState,

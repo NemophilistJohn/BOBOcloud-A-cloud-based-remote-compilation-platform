@@ -116,6 +116,7 @@
     var setTimer = config.setTimer || setTimeout;
     var clearTimer = config.clearTimer || clearTimeout;
     var timeoutMs = config.timeoutMs === undefined ? 15000 : Math.max(0, Number(config.timeoutMs) || 0);
+    var retryDelayMs = config.retryDelayMs === undefined ? 250 : Math.max(0, Number(config.retryDelayMs) || 0);
     var pending = null;
 
     function settle(success, error) {
@@ -123,29 +124,85 @@
       var current = pending;
       pending = null;
       if (current.timer) clearTimer(current.timer);
+      if (current.retryTimer) clearTimer(current.retryTimer);
       if (error && config.onError) config.onError(error);
       current.resolve(success === true);
       return true;
     }
 
-    function request(send) {
-      if (pending) return pending.promise;
+    function canSend() {
+      try { return !config.canSend || config.canSend() === true; } catch (_) { return false; }
+    }
+
+    function retryLater(current) {
+      if (!pending || pending !== current || current.retryTimer) return;
+      current.retryTimer = setTimer(function() {
+        current.retryTimer = null;
+        attempt(current);
+      }, retryDelayMs);
+    }
+
+    function attempt(current) {
+      if (!pending || pending !== current || current.sending || !canSend()) return false;
+      current.sending = true;
+      try {
+        Promise.resolve(current.send()).then(function(sent) {
+          current.sending = false;
+          if (!pending || pending !== current) return;
+          if (sent === false) {
+            current.lastError = new Error(t('Remote analysis is not ready'));
+            retryLater(current);
+          }
+        }, function(error) {
+          current.sending = false;
+          if (!pending || pending !== current) return;
+          current.lastError = error;
+          retryLater(current);
+        });
+      } catch (error) {
+        current.sending = false;
+        current.lastError = error;
+        retryLater(current);
+      }
+      return true;
+    }
+
+    function request(send, key) {
+      key = String(key || '');
+      if (pending && pending.key === key) return pending.promise;
+      if (pending) settle(false);
       var resolvePromise;
       var promise = new Promise(function(resolve) { resolvePromise = resolve; });
-      pending = { promise: promise, resolve: resolvePromise, timer: null };
-      pending.timer = setTimer(function() { settle(false); }, timeoutMs);
-      try {
-        Promise.resolve(send()).catch(function(error) { settle(false, error); });
-      } catch (error) {
-        settle(false, error);
-      }
+      var current = {
+        promise: promise,
+        resolve: resolvePromise,
+        timer: null,
+        retryTimer: null,
+        send: send,
+        sending: false,
+        lastError: null,
+        key: key
+      };
+      pending = current;
+      current.timer = setTimer(function() { settle(false, current.lastError); }, timeoutMs);
+      attempt(current);
       return promise;
     }
 
     return {
       request: request,
       settle: settle,
-      isPending: function() { return !!pending; }
+      notifyReady: function(key) {
+        if (!pending) return false;
+        if (pending.key && String(key || '') !== pending.key) return settle(false);
+        if (pending.retryTimer) {
+          clearTimer(pending.retryTimer);
+          pending.retryTimer = null;
+        }
+        return attempt(pending);
+      },
+      isPending: function() { return !!pending; },
+      activeKey: function() { return pending ? pending.key : ''; }
     };
   }
 
@@ -735,6 +792,7 @@
   function getDependencyRefreshCoordinator() {
     if (!dependencyRefreshCoordinator) {
       dependencyRefreshCoordinator = createDependencyRefreshCoordinator({
+        canSend: function() { return status.state === 'ready'; },
         onError: function(error) {
           if (BOBO.toast) BOBO.toast.error(t('Could not refresh dependencies: {message}', { message: error.message }));
         }
@@ -2278,6 +2336,7 @@
   function identityChanged() {
     lastConfigSignature = '';
     invalidateCompletionContext();
+    if (dependencyRefreshCoordinator) dependencyRefreshCoordinator.settle(false);
     status = Object.assign({}, status, { state: 'disconnected', error: '' });
     updateCompletionCapabilities({});
     clearRemoteMarkers();
@@ -2432,6 +2491,13 @@
         invalidateCompletionContext();
       }
       if (dependencyRefreshCoordinator) dependencyRefreshCoordinator.settle(next.dependencyRefresh.success !== false);
+    }
+    if (dependencyRefreshCoordinator && dependencyRefreshCoordinator.isPending()) {
+      if (status.state === 'ready' && (previousState !== 'ready' || previousSessionId !== status.sessionId)) {
+        dependencyRefreshCoordinator.notifyReady(lspReconnectIdentityKey());
+      } else if (status.state === 'local' || status.state === 'disabled' || status.state === 'unsupported') {
+        dependencyRefreshCoordinator.settle(false);
+      }
     }
     if (status.state === 'connecting' || status.state === 'local' || status.state === 'disconnected' || status.state === 'error') indexStatus = '';
     if (S.lsp) S.lsp.status = status;
@@ -2943,15 +3009,19 @@
   }
 
   function dependenciesChanged() {
-    if (settings.mode === 'local' || status.state !== 'ready' || !activeLspDecision().available || !global.api || !global.api.lspControl) return Promise.resolve(false);
+    if (settings.mode === 'local' || !activeLspDecision().available || !global.api || !global.api.lspControl) return Promise.resolve(false);
+    var identity = lspReconnectIdentityKey();
     // setupCommands participate in the project dependency digest. Re-run the
     // configuration boundary so the main-process transport reconnects when
     // that digest input changed; same-config calls remain a cheap no-op there.
     lastConfigSignature = '';
     scheduleConfigure();
     return getDependencyRefreshCoordinator().request(function() {
+      if (identity !== lspReconnectIdentityKey() || status.state !== 'ready') {
+        throw new Error(t('Remote analysis is not ready'));
+      }
       return global.api.lspControl({ type: 'lsp.dependency.refresh' });
-    });
+    }, identity);
   }
 
   function bindUi() {
