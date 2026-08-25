@@ -130,6 +130,31 @@ test('Agent access modes stay session-scoped and full access requires trusted co
   assert.match(core, /const ACCESS_MODES = new Set\(\['ask', 'auto', 'full'\]\)/);
 });
 
+test('Agent mode, effort, and access controls live in the composer with keyboard slash commands', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8');
+  const toolbarStart = source.indexOf('function appendToolbar(');
+  const toolbarEnd = source.indexOf('\n  function ', toolbarStart + 1);
+  const composerStart = source.indexOf('function composerNode(');
+  const composerEnd = source.indexOf('\n  function ', composerStart + 1);
+  const toolbar = source.slice(toolbarStart, toolbarEnd);
+  const composer = source.slice(composerStart, composerEnd);
+
+  assert.ok(toolbarStart >= 0 && toolbarEnd > toolbarStart);
+  assert.ok(composerStart >= 0 && composerEnd > composerStart);
+  assert.doesNotMatch(toolbar, /agent-mode-control|agent-effort-field|agent-access-field/);
+  assert.match(source, /agent-composer-control-trigger/);
+  assert.match(source, /agent-composer-control-menu/);
+  assert.match(source, /t\('Agent controls'\)/);
+  assert.match(source, /button\.setAttribute\('aria-pressed', selected \? 'true' : 'false'\)/);
+  assert.match(source, /mode === 'goal' \|\| mode === 'chat'/);
+  assert.match(source, /function parseSlashCommand/);
+  assert.match(composer, /ArrowDown/);
+  assert.match(composer, /ArrowUp/);
+  assert.match(composer, /event\.key === 'Tab'/);
+  assert.match(composer, /event\.key === 'Escape'/);
+  assert.match(composer, /parseSlashCommand[\s\S]*updatePreferences\(record, \{ mode: slash\.mode \}\)[\s\S]*invoke\(record, 'send'/);
+});
+
 test('assistant Markdown uses lexer tokens and never injects parser HTML', () => {
   const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8');
   const css = fs.readFileSync(path.join(ROOT, 'styles', 'agent-workbench.css'), 'utf8');

@@ -43,14 +43,20 @@ func TestNodePackageCenterPlansAndPublishesNPMDependencyGeneration(t *testing.T)
 		}
 		return model.PackageCatalogItem{Name: "lodash", Versions: []model.PackageCatalogVersion{{Version: "4.17.21", Compatibility: "metadata-compatible"}}}, nil
 	}
+	lockResolutionCalls := 0
 	handler.PackageLockResolver = func(_ context.Context, request PackageLockResolutionRequest) (PackageLockResolutionResult, error) {
+		lockResolutionCalls++
 		if request.Manager != "npm" || request.ManifestPath != "package.json" || request.LockfilePath != "package-lock.json" || request.RegistryURL != "https://registry.npmjs.org/" {
 			t.Fatalf("lock resolution request = %+v", request)
 		}
-		if !strings.Contains(string(request.ManifestContent), `"lodash": "4.17.21"`) {
-			t.Fatalf("planned package.json = %s", request.ManifestContent)
+		manifest := string(request.ManifestContent)
+		if !strings.Contains(manifest, `"left-pad": "1.3.0"`) {
+			t.Fatalf("planned package.json lost the existing dependency: %s", request.ManifestContent)
 		}
-		return PackageLockResolutionResult{LockfilePath: "package-lock.json", Content: []byte("{\n  \"name\": \"demo\",\n  \"lockfileVersion\": 3,\n  \"packages\": {}\n}\n")}, nil
+		if strings.Contains(manifest, `"lodash": "4.17.21"`) {
+			return PackageLockResolutionResult{LockfilePath: "package-lock.json", Content: []byte("{\n  \"name\": \"demo\",\n  \"lockfileVersion\": 3,\n  \"packages\": {}\n}\n")}, nil
+		}
+		return PackageLockResolutionResult{LockfilePath: "package-lock.json", Content: []byte("{\n  \"name\": \"demo\",\n  \"lockfileVersion\": 3,\n  \"packages\": {\n    \"\": {\"dependencies\": {\"left-pad\": \"1.3.0\"}},\n    \"node_modules/left-pad\": {\"version\": \"1.3.0\"}\n  }\n}\n")}, nil
 	}
 	workspace := filepath.Join(serverRoot, "project-key")
 	writeEnvironmentFile(t, filepath.Join(workspace, "index.js"), "require('lodash')\n")
@@ -130,6 +136,96 @@ func TestNodePackageCenterPlansAndPublishesNPMDependencyGeneration(t *testing.T)
 		t.Fatalf("published Node generation was not reusable by LSP: %+v", view)
 	}
 	view.Release()
+
+	removeRecorder, removeEnvelope := callProjectEnvironment(t, handler, `{"action":"planProjectPackageChanges","folderName":"Project","folderKey":"project-key","runtime":"node:20","language":"node","sourceId":"npm-official","changes":[{"operation":"remove","name":"lodash","scope":"runtime"}]}`)
+	if removeRecorder.Code != http.StatusOK || !removeEnvelope.Success {
+		t.Fatalf("Node remove plan response: %s", removeRecorder.Body.String())
+	}
+	var removePlan model.ProjectPackageChangePlan
+	if err := json.Unmarshal(removeEnvelope.Data, &removePlan); err != nil {
+		t.Fatal(err)
+	}
+	if !removePlan.Supported || len(removePlan.Changes) != 1 || removePlan.Changes[0].Operation != "remove" || removePlan.Changes[0].Name != "lodash" || len(removePlan.LocalChanges) != 2 {
+		t.Fatalf("Node remove plan = %+v", removePlan)
+	}
+	var plannedManifest struct {
+		Dependencies map[string]string `json:"dependencies"`
+		Scripts      map[string]string `json:"scripts"`
+	}
+	for _, change := range removePlan.LocalChanges {
+		if change.Path == "package.json" {
+			if err := json.Unmarshal([]byte(change.NewContent), &plannedManifest); err != nil {
+				t.Fatalf("planned removal package.json: %v", err)
+			}
+		}
+		writeEnvironmentFile(t, filepath.Join(workspace, filepath.FromSlash(change.Path)), change.NewContent)
+	}
+	if _, exists := plannedManifest.Dependencies["lodash"]; exists || plannedManifest.Dependencies["left-pad"] != "1.3.0" || plannedManifest.Scripts["postinstall"] != "node scripts/setup.js" {
+		t.Fatalf("Node remove plan damaged unrelated declarations: %+v", plannedManifest)
+	}
+	if lockResolutionCalls != 2 {
+		t.Fatalf("Node add/remove lock resolution calls = %d", lockResolutionCalls)
+	}
+
+	handler.EnvironmentSetup = func(ctx context.Context, _, runtimeID, _ string, commands []string) (string, string, int, error) {
+		if !IsManagedPackageOperation(ctx) {
+			t.Fatal("Node package removal did not mark the workspace-copy-free execution path")
+		}
+		if runtimeID != "node:20" || len(commands) != 1 || !strings.Contains(commands[0], "npm ci") || !strings.Contains(commands[0], "--registry='https://registry.npmjs.org/'") {
+			t.Fatalf("Node removal command = runtime:%s commands:%#v", runtimeID, commands)
+		}
+		lease := personalcache.LeaseFromContext(ctx)
+		if lease == nil || !lease.Writable() {
+			t.Fatalf("Node removal dependency lease = %+v", lease)
+		}
+		manifest, err := os.ReadFile(filepath.Join(lease.HostRoot, "package.json"))
+		if err != nil || strings.Contains(string(manifest), `"lodash"`) || !strings.Contains(string(manifest), `"left-pad":"1.3.0"`) || strings.Contains(string(manifest), `"scripts"`) {
+			t.Fatalf("staged removal package.json = %s err=%v", manifest, err)
+		}
+		lockfile, err := os.ReadFile(filepath.Join(lease.HostRoot, "package-lock.json"))
+		if err != nil || strings.Contains(string(lockfile), `"lodash"`) || !strings.Contains(string(lockfile), `"node_modules/left-pad"`) {
+			t.Fatalf("staged removal package lock = %s err=%v", lockfile, err)
+		}
+		writeHandlerNodePackage(t, filepath.Join(lease.HostRoot, "node_modules"), "left-pad", "left-pad", "1.3.0")
+		return "removed 1 package", "", 0, nil
+	}
+	removeApplyBody, err := json.Marshal(map[string]any{
+		"action": "applyProjectPackageChanges", "folderName": "Project", "folderKey": "project-key",
+		"runtime": "node:20", "language": "node", "sourceId": "npm-official", "packagePlanId": removePlan.PlanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	removeApplyRecorder, removeApplyEnvelope := callProjectEnvironment(t, handler, string(removeApplyBody))
+	if removeApplyRecorder.Code != http.StatusOK || !removeApplyEnvelope.Success {
+		t.Fatalf("Node remove apply response: %s", removeApplyRecorder.Body.String())
+	}
+	var removeResult model.ProjectPackageChangeResult
+	if err := json.Unmarshal(removeApplyEnvelope.Data, &removeResult); err != nil || !removeResult.Applied {
+		t.Fatalf("Node remove apply result = %+v err=%v", removeResult, err)
+	}
+	removedInspection := handler.PersonalCache.InspectPackageInventory(cacheRequest)
+	if removedInspection.State != "ready" || !removedInspection.Exact || len(removedInspection.Packages) != 1 || removedInspection.Packages[0].Name != "left-pad" || removedInspection.Packages[0].Version != "1.3.0" {
+		t.Fatalf("published Node inventory after removal = %+v", removedInspection)
+	}
+	manifestAfterRemoval, err := os.ReadFile(filepath.Join(workspace, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var declarationAfterRemoval struct {
+		Dependencies map[string]string `json:"dependencies"`
+		Scripts      map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(manifestAfterRemoval, &declarationAfterRemoval); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := declarationAfterRemoval.Dependencies["lodash"]; exists || declarationAfterRemoval.Dependencies["left-pad"] != "1.3.0" || declarationAfterRemoval.Scripts["postinstall"] != "node scripts/setup.js" {
+		t.Fatalf("workspace declarations after Node removal = %+v", declarationAfterRemoval)
+	}
+	unrelatedManifest, err := os.ReadFile(filepath.Join(workspace, "examples", "package.json"))
+	if err != nil || !strings.Contains(string(unrelatedManifest), `"react": "19.0.0"`) {
+		t.Fatalf("unrelated nested manifest changed: %s err=%v", unrelatedManifest, err)
+	}
 }
 
 func TestNodePackageInstallCommandsKeepManagersAndLifecyclePolicyDistinct(t *testing.T) {

@@ -263,6 +263,43 @@ func TestManagerPrefersManifestAnalyzerImageForLocalRuntime(t *testing.T) {
 	}
 }
 
+func TestManagerUsesNodeProjectContainerRoot(t *testing.T) {
+	catalog, err := NewCatalog(Manifest{Version: 1, Servers: []ServerSpec{{
+		LanguageID: "node",
+		Command:    []string{"typescript-language-server", "--stdio"},
+		Docker: DockerSpec{
+			Image:   "bobocloud/analyzer-node:test",
+			Command: []string{"typescript-language-server", "--stdio"},
+		},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &captureStarter{launches: make(chan LaunchSpec, 1)}
+	manager := NewManager(catalog, NewCacheManager(t.TempDir(), 16, 7), starter, ManagerOptions{CleanupInterval: time.Hour})
+	defer manager.Close()
+	session, err := manager.Start(SessionContext{
+		UserID: "u1", WorkspaceKind: "personal", FolderKey: "project", RuntimeID: "node:22",
+		LanguageID: "typescript", Mode: ModeStandard, RemoteRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch := <-starter.launches
+	if !launch.Docker {
+		t.Fatal("Node analyzer did not use Docker")
+	}
+	if session.URIMapper() == nil || session.URIMapper().RootURI() != "file:///workspace/project" {
+		t.Fatalf("Node Docker session root = %+v", session.URIMapper())
+	}
+	session.Stop()
+	select {
+	case <-session.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("session did not stop")
+	}
+}
+
 func TestManagerUsesHostCommandWhenLocalManifestHasNoImage(t *testing.T) {
 	catalog, _ := NewCatalog(Manifest{Version: 1, Servers: []ServerSpec{{LanguageID: "go", Command: []string{"gopls"}}}})
 	starter := &captureStarter{launches: make(chan LaunchSpec, 1)}

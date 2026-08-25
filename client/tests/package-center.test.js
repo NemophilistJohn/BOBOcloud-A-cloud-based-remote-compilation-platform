@@ -32,6 +32,8 @@ const {
   exactDeclaredPackageVersion,
   managedPackageDeclarations,
   inventoryBinding,
+  canonicalPackageLanguage,
+  packageLanguageForRequest,
   packageContextMatchesRequest,
   localizedPackageError,
   applyServerPlan,
@@ -322,6 +324,35 @@ test('package inventory binding accepts the current Go cache id and binds respon
   assert.equal(packageContextMatchesRequest(response, {
     folderKey: 'project-key', runtime: 'python:3.12', language: 'python'
   }), false);
+});
+
+test('package context matches Node editor language aliases without weakening workspace or runtime binding', () => {
+  const response = {
+    workspace: { kind: 'personal', key: 'node-project' },
+    runtime: { id: 'node:22' },
+    language: { id: 'node' }
+  };
+  const request = { folderKey: 'node-project', runtime: 'node:22' };
+
+  for (const language of ['javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'node', 'nodejs']) {
+    assert.equal(packageContextMatchesRequest(response, { ...request, language }), true, language);
+  }
+
+  assert.equal(packageContextMatchesRequest(response, { ...request, language: 'python' }), false);
+  assert.equal(packageContextMatchesRequest(response, {
+    folderKey: 'other-project', runtime: 'node:22', language: 'javascript'
+  }), false);
+  assert.equal(packageContextMatchesRequest(response, {
+    folderKey: 'node-project', runtime: 'node:20', language: 'typescript'
+  }), false);
+});
+
+test('package requests follow the selected runtime ecosystem instead of the active editor file', () => {
+  assert.equal(packageLanguageForRequest({ runtime: 'node:22', language: 'json' }), 'node');
+  assert.equal(packageLanguageForRequest({ runtime: 'node:22', language: 'javascript' }), 'node');
+  assert.equal(packageLanguageForRequest({ runtime: 'python:3.10', language: 'javascript' }), 'python');
+  assert.equal(packageLanguageForRequest({ runtime: '', language: 'typescriptreact' }), 'node');
+  assert.equal(canonicalPackageLanguage('golang'), 'go');
 });
 
 test('catalog results distinguish direct updates from transitive pins', () => {

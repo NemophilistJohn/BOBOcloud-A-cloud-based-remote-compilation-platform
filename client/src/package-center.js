@@ -76,6 +76,7 @@
     PACKAGE_WORKSPACE_MISSING: 'Open a workspace before managing libraries.',
     PACKAGE_WORKSPACE_STALE: 'The project changed while library changes were starting.',
     PACKAGE_WORKSPACE_TRANSITION: 'Wait for the library operation to finish before changing projects.',
+    PACKAGE_CONTEXT_MISMATCH: 'The project context could not be verified while dependencies were loading. Refresh and try again.',
     PACKAGE_TRANSACTION_INVALID: 'The dependency file transaction is invalid.',
     PACKAGE_TRANSACTION_NOT_FOUND: 'The dependency file transaction is no longer available.',
     PACKAGE_RECOVERY_RECONCILIATION_REQUIRED: 'Dependency file recovery is still pending.',
@@ -284,6 +285,24 @@
     return parts.length ? parts[parts.length - 1] : '';
   }
 
+  function canonicalPackageLanguage(value) {
+    var language = String(value || '').trim().toLowerCase();
+    if (['javascript', 'javascriptreact', 'typescript', 'typescriptreact', 'js', 'jsx', 'ts', 'tsx', 'nodejs'].includes(language)) return 'node';
+    if (language === 'py') return 'python';
+    if (language === 'golang') return 'go';
+    if (['c++', 'cc', 'cxx'].includes(language)) return 'cpp';
+    return language;
+  }
+
+  function packageLanguageForRequest(request) {
+    request = request || {};
+    var runtime = String(request.runtime || '').trim();
+    var runtimeLanguage = canonicalPackageLanguage(runtime.split(':')[0]);
+    return runtimeLanguage && runtimeLanguage !== 'local'
+      ? runtimeLanguage
+      : canonicalPackageLanguage(request.language);
+  }
+
   function packageKey(name, language) {
     var value = String(name || '').trim().toLowerCase();
     var activeLanguage = String(language || context && context.language && context.language.id || '').toLowerCase();
@@ -312,7 +331,7 @@
     var runtime = typeof raw.runtime === 'string' ? raw.runtime : raw.runtime && raw.runtime.id;
     if (request.runtime && String(runtime || '') !== String(request.runtime)) return false;
     var language = typeof raw.language === 'string' ? raw.language : raw.language && raw.language.id;
-    if (request.language && language && String(language).toLowerCase() !== String(request.language).toLowerCase()) return false;
+    if (request.language && language && canonicalPackageLanguage(language) !== canonicalPackageLanguage(request.language)) return false;
 
     var workspace = raw.workspace || {};
     if (request.projectId) {
@@ -741,11 +760,13 @@
       : { folderName: pathName(S.workspaceRoot), folderKey: BOBO.projectKey ? BOBO.projectKey(S.workspaceRoot || '') : '', runtime: S.selectedRuntime || '' };
     var source = byId('package-source-select');
     var manifest = byId('package-manifest-select');
-    return Object.assign({}, base, {
+    var request = Object.assign({}, base, {
       revision: context && context.revision || '',
       sourceId: source && source.value || context && context.selectedSourceId || '',
       manifestPath: manifest && manifest.value || context && context.defaultManifestPath || ''
     }, extra || {});
+    request.language = packageLanguageForRequest(request);
+    return request;
   }
 
   function captureOperationContext() {
@@ -941,7 +962,7 @@
     var available = context && context.sources || [];
     var selected = previous && available.some(function(source) { return source.id === previous; }) ? previous : context && context.selectedSourceId;
     if (selected) select.value = selected;
-    select.disabled = !context || !context.sources.length || Boolean(busyOperation) || Boolean(recoveryPending);
+    select.disabled = !context || !context.sources.length || Boolean(busyOperation) || packageMutationBlockedByRecovery();
   }
 
   function editableManifests() {
@@ -984,7 +1005,7 @@
       ? previous
       : (optionExists(defaultPath) ? defaultPath : (manifests.length ? String(manifests[0].path || '') : pythonDefault));
     if (preferred) select.value = preferred;
-    select.disabled = select.options.length <= 1 || !packageMutationAvailable() || Boolean(busyOperation) || Boolean(recoveryPending);
+    select.disabled = select.options.length <= 1 || !packageMutationAvailable() || Boolean(busyOperation) || packageMutationBlockedByRecovery();
     select.title = select.options.length ? t('Dependency file') : t('No editable dependency file');
   }
 
@@ -1015,6 +1036,10 @@
 
   function packageMutationAvailable() {
     return Boolean(context && context.supported === true && context.canMutate === true);
+  }
+
+  function packageMutationBlockedByRecovery() {
+    return Boolean(recoveryPending && recoveryPending.kind !== 'refresh');
   }
 
   function assertManagedPackageManager(requestedManager, activeManager) {
@@ -1121,7 +1146,7 @@
     } else if (installedMode) {
       if (item.direct && (item.inventoryPresent === false || item.inventoryState === 'mismatch')) {
         var repair = iconButton(ICON_UPDATE, 'Repair {name}', 'package-repair', { name: item.name });
-        repair.disabled = !packageMutationAvailable() || Boolean(busyOperation) || Boolean(recoveryPending);
+        repair.disabled = !packageMutationAvailable() || Boolean(busyOperation) || packageMutationBlockedByRecovery();
         if (!packageMutationAvailable()) repair.title = context && context.mutationReason || t('Dependency changes are unavailable for this project.');
         repair.addEventListener('click', function(event) {
           event.stopPropagation();
@@ -1129,17 +1154,18 @@
         });
         actions.appendChild(repair);
       }
-      var remove = iconButton(ICON_REMOVE, 'Remove {name}', 'package-remove', { name: item.name });
-      var removalInventoryReady = context && (context.inventoryExact === true || item.inventoryState === 'missing');
-      remove.disabled = !item.direct || !packageMutationAvailable() || !removalInventoryReady || Boolean(busyOperation) || Boolean(recoveryPending);
-      if (!item.direct) remove.title = t('Transitive dependencies are managed by their direct dependency.');
-      else if (!removalInventoryReady) remove.title = t('Exact package inventory is required before removal.');
-      else if (!packageMutationAvailable()) remove.title = context && context.mutationReason || t('Dependency changes are unavailable for this project.');
-      remove.addEventListener('click', function(event) {
-        event.stopPropagation();
-        runPackageAction(item, { operation: 'remove' });
-      });
-      actions.appendChild(remove);
+      if (item.direct) {
+        var remove = iconButton(ICON_REMOVE, 'Remove {name}', 'package-remove', { name: item.name });
+        var removalInventoryReady = context && (context.inventoryExact === true || item.inventoryState === 'missing');
+        remove.disabled = !packageMutationAvailable() || !removalInventoryReady || Boolean(busyOperation) || packageMutationBlockedByRecovery();
+        if (!removalInventoryReady) remove.title = t('Exact package inventory is required before removal.');
+        else if (!packageMutationAvailable()) remove.title = context && context.mutationReason || t('Dependency changes are unavailable for this project.');
+        remove.addEventListener('click', function(event) {
+          event.stopPropagation();
+          runPackageAction(item, { operation: 'remove' });
+        });
+        actions.appendChild(remove);
+      }
     } else {
       var declaration = managedPackageDeclaration(context, item.name);
       var declaredVersion = exactDeclaredPackageVersion(declaration);
@@ -1152,7 +1178,7 @@
       var actionIcon = repairRequired || direct ? ICON_UPDATE : ICON_INSTALL;
       var add = iconButton(actionIcon, sameInstalled && !repairRequired ? 'Already installed' : actionTitle, 'package-install', { name: item.name });
       add.dataset.operation = repairRequired ? 'repair' : (direct ? 'update' : 'install');
-      add.disabled = !packageMutationAvailable() || item.compatibility === 'incompatible' || (sameInstalled && !repairRequired) || Boolean(busyOperation) || Boolean(recoveryPending);
+      add.disabled = !packageMutationAvailable() || item.compatibility === 'incompatible' || (sameInstalled && !repairRequired) || Boolean(busyOperation) || packageMutationBlockedByRecovery();
       if (!packageMutationAvailable()) add.title = context && context.mutationReason || t('Dependency changes are unavailable for this project.');
       add.addEventListener('click', function(event) {
         event.stopPropagation();
@@ -1293,17 +1319,25 @@
     if (options.loading !== false) setCenterState('loading', t('Loading library environment...'));
     try {
       var environmentSnapshot = BOBO.environmentCenter && BOBO.environmentCenter.getSnapshot ? BOBO.environmentCenter.getSnapshot() : null;
-      var requestIdentity = captureOperationContext();
-      var requestPayload = currentRequestContext();
-      var response = await BOBO.sendToServer('getPackageCenterContext', requestPayload, {
-        quiet: true,
-        timeoutMs: PACKAGE_QUERY_TIMEOUT_MS
-      });
-      if (sequence !== refreshSequence) return null;
-      if (!operationContextMatches(requestIdentity)) return null;
-      var responseData = extractData(response);
-      if (!packageContextMatchesRequest(responseData, requestPayload)) {
-        throw new Error(t('The project changed before the library plan could be created.'));
+      var responseData = null;
+      for (var attempt = 0; attempt < 2; attempt += 1) {
+        var requestIdentity = captureOperationContext();
+        var requestPayload = currentRequestContext();
+        var response = await BOBO.sendToServer('getPackageCenterContext', requestPayload, {
+          quiet: true,
+          timeoutMs: PACKAGE_QUERY_TIMEOUT_MS
+        });
+        if (sequence !== refreshSequence) return null;
+        if (!operationContextMatches(requestIdentity)) return null;
+        var candidate = extractData(response);
+        if (packageContextMatchesRequest(candidate, requestPayload)) {
+          responseData = candidate;
+          break;
+        }
+        if (attempt === 0) continue;
+        var mismatch = new Error(t('The project context could not be verified while dependencies were loading. Refresh and try again.'));
+        mismatch.code = 'PACKAGE_CONTEXT_MISMATCH';
+        throw mismatch;
       }
       context = normalizeContext(responseData, environmentSnapshot);
       renderContext();
@@ -1388,7 +1422,7 @@
       if (context && context.supported === true && !context.canMutate) notifyToast('warning', context.mutationReason || t('Dependency changes are unavailable for this project.'));
       return false;
     }
-    if (recoveryPending && !await retryRecovery()) return false;
+    if (packageMutationBlockedByRecovery() && !await retryRecovery()) return false;
 
     var operation = String(options.operation || 'install').toLowerCase();
     var declarations = managedPackageDeclarations(context);
@@ -1429,6 +1463,7 @@
         var view = byId('package-center-view');
         if (view) view.setAttribute('aria-busy', 'false');
         renderDock();
+        renderBrowser();
       }
     }
 
@@ -1449,7 +1484,7 @@
     }
     setPendingChanges(normalized);
     var applied = await applyPending({ removalConfirmed: operation === 'remove' });
-    if (!applied && !recoveryPending) setPendingChanges([]);
+    if (!applied && !packageMutationBlockedByRecovery()) setPendingChanges([]);
     if (applied && !recoveryPending) {
       setPane('browser');
     }
@@ -1556,7 +1591,7 @@
       var sameDeclared = declaration && exactDeclaredPackageVersion(declaration) === String(selectedVersion) && String(declaration.scope || 'runtime') === selectedScope;
       var repair = Boolean(sameDeclared && context && context.inventoryExact !== true);
       var needsInventory = sameInstalled && installed.inventoryState === 'unknown';
-      action.disabled = !packageMutationAvailable() || !selectedOption || selectedOption.disabled || normalizeCompatibility(compatibility) === 'incompatible' || (sameInstalled && !repair) || Boolean(busyOperation) || Boolean(recoveryPending);
+      action.disabled = !packageMutationAvailable() || !selectedOption || selectedOption.disabled || normalizeCompatibility(compatibility) === 'incompatible' || (sameInstalled && !repair) || Boolean(busyOperation) || packageMutationBlockedByRecovery();
       action.title = !packageMutationAvailable() ? context && context.mutationReason || t('Dependency changes are unavailable for this project.') : '';
       action.innerHTML = (repair || installed && installed.direct || declaration ? ICON_UPDATE : ICON_INSTALL) + '<span></span>';
       var copy = action.querySelector('span');
@@ -2125,6 +2160,7 @@
       var view = byId('package-center-view');
       if (view) view.setAttribute('aria-busy', 'false');
       renderDock();
+      renderBrowser();
       flushDeferredContextReset();
     }
   }
@@ -2132,7 +2168,7 @@
   async function applyPending(options) {
     options = options || {};
     if (busyOperation || !pendingChanges.length || !context || context.supported !== true) return false;
-    if (recoveryPending && !await retryRecovery()) return false;
+    if (packageMutationBlockedByRecovery() && !await retryRecovery()) return false;
     var operationContext = captureOperationContext();
     var transaction = null;
     var localChanges = [];
@@ -2262,6 +2298,7 @@
       setOperation('loading', t('Refreshing language service...'));
       try {
         await refreshLanguageServices();
+        if (recoveryPending && recoveryPending.kind === 'refresh') recoveryPending = null;
       } catch (refreshError) {
         recoveryPending = { kind: 'refresh', operationContext: operationContext };
         setPane('browser');
@@ -2339,6 +2376,7 @@
       var view = byId('package-center-view');
       if (view) view.setAttribute('aria-busy', 'false');
       renderDock();
+      renderBrowser();
       flushDeferredContextReset();
     }
   }
@@ -2347,7 +2385,7 @@
     options = options || {};
     if (busyOperation) throw new Error(t('Wait for the library operation to finish before changing projects.'));
     if (pendingChanges.length) throw new Error(t('Apply or discard the pending Package Center changes first.'));
-    if (recoveryPending && !await retryRecovery()) throw new Error(t('Complete dependency file recovery before changing projects.'));
+    if (packageMutationBlockedByRecovery() && !await retryRecovery()) throw new Error(t('Complete dependency file recovery before changing projects.'));
 
     var refreshed = await refreshContext({ loading: options.loading !== false, search: false, force: true });
     if (!refreshed || refreshed.supported !== true || refreshed.canMutate !== true) {
@@ -2387,6 +2425,7 @@
     } finally {
       if (busyOperation === marker) busyOperation = null;
       renderDock();
+      renderBrowser();
       flushDeferredContextReset();
     }
     if (!operationContextMatches(operationContext)) throw new Error(t('The project changed before dependency files were updated.'));
@@ -2396,7 +2435,7 @@
       removalConfirmed: options.removalConfirmed === true,
       sourceId: String(options.sourceId || refreshed.selectedSourceId || '')
     });
-    if (!applied && options.discardOnFailure === true && !recoveryPending) setPendingChanges([]);
+    if (!applied && options.discardOnFailure === true && !packageMutationBlockedByRecovery()) setPendingChanges([]);
     return applied === true;
   }
 
@@ -2521,7 +2560,10 @@
     var manifest = byId('package-manifest-select');
     if (manifest) manifest.addEventListener('change', function() { manifestSelectionTouched = true; currentPlan = null; renderDock(); });
     var refresh = byId('package-refresh');
-    if (refresh) refresh.addEventListener('click', function() { if (activeMode === 'discover') searchPackages(); else refreshContext({ loading: true, search: false, force: true }); });
+    if (refresh) refresh.addEventListener('click', function() {
+      if (activeMode === 'discover' && context && context.supported === true) searchPackages();
+      else refreshContext({ loading: true, search: activeMode === 'discover', force: true });
+    });
     var more = byId('package-load-more');
     if (more) more.addEventListener('click', function() { searchPackages({ append: true }); });
     var detailBack = byId('package-detail-back');
@@ -2616,6 +2658,8 @@
       managedPackageDeclarations: managedPackageDeclarations,
       managedPackageDeclaration: managedPackageDeclaration,
       inventoryBinding: inventoryBinding,
+      canonicalPackageLanguage: canonicalPackageLanguage,
+      packageLanguageForRequest: packageLanguageForRequest,
       packageContextMatchesRequest: packageContextMatchesRequest,
       packageKey: packageKey,
       localizedPackageError: localizedPackageError,

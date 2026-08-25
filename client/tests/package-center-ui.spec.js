@@ -407,6 +407,8 @@ test('project dependency center plans, applies, and rolls back project-scoped de
     await page.locator('#package-operation-retry').click();
     await expect(page.locator('#package-operation-status')).toContainText('analysis service still needs a refresh');
     expect(await page.evaluate(() => window.BOBO.packageCenter.getState().recovery)).toBe('refresh');
+    await page.locator('#package-mode-installed').click();
+    await expect(page.locator('#package-results-list .package-remove').first()).toBeEnabled();
     await page.evaluate(() => {
       window.__packageFixture.failRefresh = false;
       window.__packageFixture.lspRefreshResult = true;
@@ -414,6 +416,10 @@ test('project dependency center plans, applies, and rolls back project-scoped de
     });
     await page.locator('#package-operation-retry').click();
     await expect(page.locator('#package-operation-status')).toContainText('Language service refreshed');
+    const refreshedNumpy = page.locator('#package-results-list .package-row[data-package-name="numpy"]');
+    await expect(refreshedNumpy).toBeVisible();
+    await expect(refreshedNumpy.locator('.package-remove')).toBeEnabled();
+    await page.locator('#package-mode-discover').click();
     expect(await page.evaluate(() => ({
       syncCount: window.__packageFixture.syncCount,
       applyCount: window.__packageFixture.calls.filter(call => call.action === 'applyProjectPackageChanges').length,
@@ -571,6 +577,126 @@ test('project dependency center plans, applies, and rolls back project-scoped de
   }
 });
 
+test('JavaScript editor normalizes npm package requests to the Node ecosystem', async () => {
+  test.setTimeout(45000);
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-node-language-alias-'));
+  const appData = path.join(sandbox, 'appdata');
+  const home = path.join(sandbox, 'home');
+  const workspace = path.join(sandbox, 'npm-project');
+  const sourceFile = path.join(workspace, 'index.js');
+  fs.mkdirSync(appData, { recursive: true });
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.writeFileSync(path.join(workspace, 'package.json'), '{"name":"npm-project","packageManager":"npm@10.9.2","dependencies":{}}\n', 'utf8');
+  fs.writeFileSync(path.join(workspace, 'package-lock.json'), '{"name":"npm-project","lockfileVersion":3,"packages":{}}\n', 'utf8');
+  fs.writeFileSync(sourceFile, "const lodash = require('lodash');\n", 'utf8');
+
+  let app;
+  try {
+    app = await electron.launch({
+      executablePath: electronPath(),
+      args: ['.', '--user-data-dir=' + path.join(sandbox, 'chromium')],
+      env: Object.assign({}, process.env, {
+        APPDATA: appData,
+        ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
+        HOME: home,
+        USERPROFILE: home,
+        XDG_CONFIG_HOME: path.join(sandbox, 'xdg-config')
+      })
+    });
+    const page = await app.firstWindow();
+    await page.setViewportSize({ width: 1024, height: 720 });
+    await page.waitForFunction(() => document.documentElement && document.documentElement.dataset.boboReady === 'true', null, { timeout: 20000 });
+
+    const editorLanguage = await page.evaluate(async ({ workspacePath, filePath }) => {
+      const selected = await window.api.pickWorkspace(workspacePath);
+      await window.BOBO.workspace.applyWorkspace(selected.rootPath, selected.tree);
+      await window.BOBO.workspace.openFile(filePath, 'index.js');
+      window.BOBO.state.serverSettings.ip = 'fixture.example';
+      window.BOBO.state.auth = { mode: 'multi', token: 'npm-fixture-token', user: { id: 'npm-user', username: 'npm-user' } };
+      window.BOBO.state.selectedRuntime = 'node:22';
+      window.__npmLanguageAliasFixture = { calls: [], contextMismatch: false };
+      window.BOBO.sendToServer = async (action, data) => {
+        const fixture = window.__npmLanguageAliasFixture;
+        fixture.calls.push({ action, data });
+        if (action === 'getProjectEnvironment') return { success: false, error: 'not part of npm language alias fixture' };
+        if (action === 'getPackageCenterContext') return { success: true, data: {
+          schema: 'project-package-center/v1',
+          revision: 'npm-environment-1',
+          workspace: {
+            kind: 'personal',
+            id: 'npm-user\\0' + (fixture.contextMismatch ? 'stale-folder' : data.folderKey),
+            key: fixture.contextMismatch ? 'stale-folder' : data.folderKey,
+            name: 'npm-project'
+          },
+          language: { id: 'node', displayName: 'Node.js' },
+          runtime: { id: 'node:22', displayName: 'Node.js 22', version: '22', interpreterVersion: '22.14.0' },
+          manager: {
+            id: 'npm', name: 'npm', manifestPath: 'package.json', lockfilePath: 'package-lock.json',
+            lockfilePresent: true, detectedBy: 'packageManager', scopes: ['runtime', 'dev', 'optional']
+          },
+          capabilities: { browse: true, inspect: true, mutate: true, exactInventory: true, scopes: true },
+          sources: [{ id: 'npm-official', name: 'npm', kind: 'official', ecosystem: 'node' }],
+          defaultSource: 'npm-official',
+          searchMode: 'catalog',
+          defaultManifestPath: 'package.json',
+          manifests: [
+            { path: 'package.json', manager: 'npm', kind: 'package', language: 'node', editable: true },
+            { path: 'package-lock.json', manager: 'npm', kind: 'npm-lock', language: 'node', lockfile: true }
+          ],
+          packages: { declared: [], installed: [], missing: [], unknown: [] },
+          inventory: { exact: true, cacheId: 'npm-cache', generation: 'npm-generation', dependencyDigest: 'npm-digest' },
+          canPlanChanges: { supported: true }
+        } };
+        return { success: false, error: 'unexpected fixture action: ' + action };
+      };
+      return window.BOBO.state.editor.getModel().getLanguageId();
+    }, { workspacePath: workspace, filePath: sourceFile });
+
+    expect(editorLanguage).toBe('javascript');
+    await page.locator('#activity-environment').click();
+    await page.locator('#environment-tab-packages').click();
+    await expect(page.locator('#package-center-view')).toBeVisible();
+    await expect(page.locator('#package-center-state')).not.toContainText('The project changed before the library plan could be created.');
+    await expect(page.locator('#package-manager-label')).toHaveText('npm');
+    await expect(page.locator('#package-search-input')).toBeEnabled();
+    await expect(page.locator('#package-search-input')).toHaveAttribute('placeholder', 'Search npm packages');
+    const requestLanguage = await page.evaluate(() => {
+      const call = window.__npmLanguageAliasFixture.calls.find(item => item.action === 'getPackageCenterContext');
+      return call && call.data.language;
+    });
+    expect(requestLanguage).toBe('node');
+
+    const contextCallsBeforeMismatch = await page.evaluate(() => (
+      window.__npmLanguageAliasFixture.calls.filter(item => item.action === 'getPackageCenterContext').length
+    ));
+    await page.evaluate(async () => {
+      window.__npmLanguageAliasFixture.contextMismatch = true;
+      await window.BOBO.packageCenter.refresh({ force: true, search: false });
+    });
+    await expect.poll(() => page.evaluate(() => (
+      window.__npmLanguageAliasFixture.calls.filter(item => item.action === 'getPackageCenterContext').length
+    ))).toBe(contextCallsBeforeMismatch + 2);
+    await expect(page.locator('#package-center-state')).toHaveText('The project context could not be verified while dependencies were loading. Refresh and try again.');
+    await expect(page.locator('#package-search-input')).toBeDisabled();
+
+    await page.evaluate(() => { window.__npmLanguageAliasFixture.contextMismatch = false; });
+    await page.locator('#package-refresh').click();
+    await expect.poll(() => page.evaluate(() => (
+      window.__npmLanguageAliasFixture.calls.filter(item => item.action === 'getPackageCenterContext').length
+    ))).toBe(contextCallsBeforeMismatch + 3);
+    await expect(page.locator('#package-center-state')).not.toContainText('The project context could not be verified while dependencies were loading.');
+    await expect(page.locator('#package-manager-label')).toHaveText('npm');
+    await expect(page.locator('#package-search-input')).toBeEnabled();
+  } finally {
+    if (app) {
+      try { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)); } catch {}
+    }
+    await new Promise(resolve => setTimeout(resolve, 300));
+    await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+  }
+});
+
 test('Node dependency center adapts npm metadata and pnpm project workflow', async () => {
   test.setTimeout(45000);
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-node-dependency-center-'));
@@ -693,6 +819,15 @@ test('Node dependency center adapts npm metadata and pnpm project workflow', asy
     await expect(page.locator('.package-installed-group')).toHaveCount(2);
     await expect(page.locator('.package-installed-group').nth(0)).toContainText('Direct dependencies');
     await expect(page.locator('.package-installed-group').nth(1)).toContainText('Transitive dependencies');
+    const installedReact = page.locator('#package-results-list .package-row[data-package-name="react"]');
+    const installedScheduler = page.locator('#package-results-list .package-row[data-package-name="scheduler"]');
+    await expect(installedReact.locator('.package-remove')).toBeEnabled();
+    await expect(installedScheduler.locator('.package-remove')).toHaveCount(0);
+    await installedReact.locator('.package-remove').click();
+    await expect.poll(() => page.evaluate(() => window.__nodePackageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').length)).toBe(1);
+    expect(await page.evaluate(() => window.__nodePackageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').at(-1).data.changes[0])).toEqual({
+      operation: 'remove', name: 'react', version: '', scope: 'runtime'
+    });
 
     await page.locator('#package-mode-discover').click();
     await page.locator('#package-search-input').fill('old-package');
@@ -710,11 +845,12 @@ test('Node dependency center adapts npm metadata and pnpm project workflow', asy
     expect(await page.locator('#package-center-view').evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
     await page.screenshot({ path: path.join(process.cwd(), 'test-results', 'project-dependency-center-node.png'), fullPage: false });
     await page.locator('#package-scope-select').selectOption('dev');
+    const plansBeforeAdd = await page.evaluate(() => window.__nodePackageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').length);
     await page.locator('#package-stage-change').click();
-    await expect.poll(() => page.evaluate(() => window.__nodePackageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').length)).toBe(1);
+    await expect.poll(() => page.evaluate(() => window.__nodePackageFixture.calls.filter(call => call.action === 'planProjectPackageChanges').length)).toBe(plansBeforeAdd + 1);
     const captured = await page.evaluate(() => {
       const fixture = window.__nodePackageFixture;
-      const plan = fixture.calls.find(call => call.action === 'planProjectPackageChanges');
+      const plan = fixture.calls.filter(call => call.action === 'planProjectPackageChanges').at(-1);
       return {
         change: plan.data.changes[0], manifestPath: plan.data.manifestPath,
         confirmations: fixture.confirmations, syncCount: fixture.syncCount,
@@ -724,8 +860,8 @@ test('Node dependency center adapts npm metadata and pnpm project workflow', asy
     expect(captured).toEqual({
       change: { operation: 'add', name: 'old-package', version: '2.1.0', scope: 'dev' },
       manifestPath: 'package.json',
-      confirmations: 0,
-      syncCount: 1,
+      confirmations: 1,
+      syncCount: 2,
       planningOrder: ['sync', 'getPackageCenterContext', 'planProjectPackageChanges']
     });
     expect(errors).toEqual([]);

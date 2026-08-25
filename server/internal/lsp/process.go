@@ -16,7 +16,17 @@ import (
 	"time"
 )
 
-const DockerWorkspaceRoot = "/workspace"
+const (
+	DockerWorkspaceRoot     = "/workspace"
+	nodeDockerWorkspaceRoot = DockerWorkspaceRoot + "/project"
+)
+
+func dockerWorkspaceRoot(languageID string) string {
+	if normalizeLanguage(languageID) == "node" {
+		return nodeDockerWorkspaceRoot
+	}
+	return DockerWorkspaceRoot
+}
 
 type LaunchSpec struct {
 	SessionID          string
@@ -259,7 +269,7 @@ func appendEnvironment(base []string, additional map[string]string) []string {
 func expandCommand(command []string, spec LaunchSpec, docker bool) []string {
 	cacheDir, workspace := spec.CacheDir, spec.Workspace
 	if docker {
-		cacheDir, workspace = "/analysis-cache", DockerWorkspaceRoot
+		cacheDir, workspace = "/analysis-cache", dockerWorkspaceRoot(spec.LanguageID)
 	}
 	out := make([]string, len(command))
 	for i, value := range command {
@@ -333,7 +343,8 @@ func startDockerProcess(ctx context.Context, spec LaunchSpec) (Process, error) {
 			releasePinnedMounts()
 		}
 	}()
-	args := []string{"run", "--rm", "-i", "--name", name, "--label", "bobocloud.lsp=true", "--label", "bobocloud.lsp.session=" + spec.SessionID, "--label", "bobocloud.lsp.user=" + safeLabel(spec.UserID), "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "256", "--tmpfs", "/tmp:rw,noexec,nosuid,size=128m", "-v", workspace + ":" + DockerWorkspaceRoot + ":ro", "-v", cache + ":/analysis-cache:rw", "-w", DockerWorkspaceRoot}
+	containerWorkspace := dockerWorkspaceRoot(spec.LanguageID)
+	args := []string{"run", "--rm", "-i", "--name", name, "--label", "bobocloud.lsp=true", "--label", "bobocloud.lsp.session=" + spec.SessionID, "--label", "bobocloud.lsp.user=" + safeLabel(spec.UserID), "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "256", "--tmpfs", "/tmp:rw,noexec,nosuid,size=128m", "-v", workspace + ":" + containerWorkspace + ":ro", "-v", cache + ":/analysis-cache:rw", "-w", containerWorkspace}
 	if identity := containerUser(); identity != "" {
 		args = append(args, "--user", identity)
 	}

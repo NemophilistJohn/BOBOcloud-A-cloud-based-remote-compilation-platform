@@ -9,14 +9,16 @@ const { createPluginController } = require('../main/plugins');
 
 const PLUGIN_ID = 'bobocloud.ai-agent';
 const PROVIDER_ID = 'bobocloud.ai-agent.workbench';
-const ARTIFACT = path.resolve(
-  __dirname,
-  '..',
-  '..',
-  'BOBOCloud-AI-Agent-plugin-offical',
-  'artifacts',
-  'bobocloud.ai-agent-1.1.0.boboplugin'
-);
+const PLUGIN_ROOT = process.env.BOBO_AI_AGENT_PLUGIN_DIR
+  ? path.resolve(process.env.BOBO_AI_AGENT_PLUGIN_DIR)
+  : path.resolve(__dirname, '..', '..', '..', 'BOBOCloud-AI-Agent-plugin-offical');
+const ARTIFACT = process.env.BOBO_AI_AGENT_PLUGIN_ARTIFACT
+  ? path.resolve(process.env.BOBO_AI_AGENT_PLUGIN_ARTIFACT)
+  : path.join(
+      PLUGIN_ROOT,
+      'artifacts',
+      'bobocloud.ai-agent-1.1.0.boboplugin'
+    );
 
 function electronPath() {
   const dist = path.join(process.cwd(), 'node_modules', 'electron', 'dist');
@@ -256,17 +258,9 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
     await expect(agentTab).toHaveClass(/active/);
     await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title')).toHaveText('main.js');
 
-    const mode = workbench.locator('.agent-mode-control');
-    await expect(mode.getByRole('button', { name: 'Chat', exact: true })).toBeVisible();
-    await expect(mode.getByRole('button', { name: 'Goal', exact: true })).toBeVisible();
-    await mode.getByRole('button', { name: 'Goal', exact: true }).click();
-    await expect(mode.getByRole('button', { name: 'Goal', exact: true })).toHaveAttribute('aria-pressed', 'true');
-
-    const effort = workbench.locator('.agent-effort-field select');
-    await expect(effort).toBeVisible();
-    await expect(effort).toHaveAttribute('aria-label', 'Thinking intensity');
-    await effort.selectOption('xhigh');
-    await expect(effort).toHaveValue('xhigh');
+    await expect(workbench.locator('.agent-toolbar .agent-mode-control')).toHaveCount(0);
+    await expect(workbench.locator('.agent-toolbar .agent-effort-field')).toHaveCount(0);
+    await expect(workbench.locator('.agent-toolbar .agent-access-field')).toHaveCount(0);
 
     await workbench.locator('.agent-skill-button').click();
     const skillMenu = workbench.locator('.agent-skills-menu');
@@ -277,23 +271,73 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
 
     await sidebar.locator('.agent-new-session').click();
     await expect(sidebar.locator('.agent-session-row')).toHaveCount(1);
-    await expect(workbench.locator('.agent-composer-input')).toBeEnabled();
+    const composer = workbench.locator('.agent-composer');
+    const input = composer.locator('.agent-composer-input');
+    const controlsButton = composer.getByRole('button', { name: 'Agent controls', exact: true });
+    const controls = composer.locator('.agent-composer-control-menu[aria-label="Agent controls"]');
+    const openControls = async () => {
+      if (!await controls.isVisible()) await controlsButton.click();
+      await expect(controls).toBeVisible();
+    };
+    await expect(input).toBeEnabled();
+    await expect(controlsButton).toBeVisible();
 
-    const access = workbench.locator('.agent-access-field select');
-    await expect(access).toHaveValue('ask');
-    await expect(access.locator('option')).toHaveText(['Request approval', 'Help me approve', 'Unrestricted access']);
-    await access.selectOption('full');
+    await openControls();
+    await controls.getByRole('button', { name: 'Extra high', exact: true }).click();
+    await expect(controlsButton).toContainText('Extra high');
+    await openControls();
+    await expect(controls.getByRole('button', { name: 'Extra high', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(controls.getByRole('button', { name: /Request approval/ })).toHaveAttribute('aria-pressed', 'true');
+    await controls.getByRole('button', { name: /Unrestricted access/ }).click();
     const accessConfirm = page.locator('#confirm-dialog.open');
     await expect(accessConfirm).toBeVisible();
     await expect(accessConfirm.locator('.confirm-card')).toHaveAttribute('role', 'alertdialog');
     await expect(accessConfirm.locator('.confirm-btn-danger')).toHaveText('Enable unrestricted access');
     await accessConfirm.locator('.confirm-btn-ghost').click();
-    await expect(access).toHaveValue('ask');
-    await access.selectOption('auto');
-    await expect(access).toHaveValue('auto');
+    await expect(controlsButton).toContainText('Request approval');
+    await openControls();
+    await expect(controls.getByRole('button', { name: /Request approval/ })).toHaveAttribute('aria-pressed', 'true');
+    await controls.getByRole('button', { name: /Help me approve/ }).click();
+    await expect(controlsButton).toContainText('Help me approve');
+    await openControls();
+    await expect(controls.getByRole('button', { name: /Help me approve/ })).toHaveAttribute('aria-pressed', 'true');
+    await page.screenshot({
+      path: path.join(evidenceDirectory, 'official-ai-agent-plugin-controls.png'),
+      fullPage: false,
+      animations: 'disabled'
+    });
+    if (await controls.isVisible()) await controlsButton.click();
+
+    await input.fill('/g');
+    await expect(workbench.getByText('/goal', { exact: true })).toBeVisible();
+    await page.screenshot({
+      path: path.join(evidenceDirectory, 'official-ai-agent-plugin-slash-goal.png'),
+      fullPage: false,
+      animations: 'disabled'
+    });
+    await input.press('Tab');
+    await expect(input).toHaveValue('/goal ');
+    await input.fill('/c');
+    await expect(workbench.getByText('/chat', { exact: true })).toBeVisible();
+    await input.press('Escape');
+    await expect(workbench.getByText('/chat', { exact: true })).toBeHidden();
+    await input.fill('/');
+    await input.press('ArrowDown');
+    await input.press('Enter');
+    await expect(input).toHaveValue('/goal ');
+    await input.press('Enter');
+    await expect(input).toHaveValue('');
+    expect(requests).toHaveLength(0);
+
+    await input.fill('/chat');
+    await input.press('Enter');
+    await expect(input).toHaveValue('/chat ');
+    await input.press('Enter');
+    await expect(input).toHaveValue('');
+    expect(requests).toHaveLength(0);
 
     const prompt = 'Review this workspace with the selected skill.';
-    await workbench.locator('.agent-composer-input').fill(prompt);
+    await input.fill('/goal ' + prompt);
     await workbench.locator('.agent-send-button').click();
     await expect(workbench.locator('.agent-message-assistant')).toContainText('Workspace inspection complete.');
     const markdown = workbench.locator('.agent-message-assistant .agent-markdown');
@@ -330,6 +374,8 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
       'process_run'
     ]));
     expect(requests[0].body.messages[0].content).toContain('AGENT_UI_SKILL_MARKER');
+    expect(requests[0].body.messages.some((message) => message.role === 'user' && message.content === prompt)).toBe(true);
+    expect(requests[0].body.messages.some((message) => message.role === 'user' && message.content.startsWith('/goal'))).toBe(false);
 
     await expect(page.locator('#bottom-panel')).toBeVisible();
     await expect(page.locator('#panel-output')).toHaveClass(/active/);

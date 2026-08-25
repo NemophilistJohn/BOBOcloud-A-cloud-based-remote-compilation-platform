@@ -410,7 +410,7 @@ func (m *Manager) Start(ctx SessionContext) (*Session, error) {
 	}
 	mapper, err := NewURIMapper(ctx.RemoteRoot)
 	if useDocker {
-		mapper, err = NewContainerURIMapper(DockerWorkspaceRoot)
+		mapper, err = NewContainerURIMapper(dockerWorkspaceRoot(ctx.LanguageID))
 	}
 	if err != nil {
 		return nil, fmt.Errorf("map analyzer workspace: %w", err)

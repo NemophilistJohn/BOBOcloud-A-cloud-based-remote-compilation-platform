@@ -58,6 +58,32 @@ func TestDockerEnvironmentUsesAnalysisCacheHome(t *testing.T) {
 	}
 }
 
+func TestDockerWorkspaceRootSeparatesNodeDependenciesFromReadOnlyProject(t *testing.T) {
+	for _, languageID := range []string{"node", "javascript", "typescript", "js", "ts"} {
+		if got := dockerWorkspaceRoot(languageID); got != nodeDockerWorkspaceRoot {
+			t.Fatalf("%s Docker workspace root = %q", languageID, got)
+		}
+	}
+	if got := dockerWorkspaceRoot("python"); got != DockerWorkspaceRoot {
+		t.Fatalf("Python Docker workspace root = %q", got)
+	}
+	if strings.HasPrefix(nodeModulesContainer, nodeDockerWorkspaceRoot+"/") || nodeModulesContainer == nodeDockerWorkspaceRoot {
+		t.Fatalf("Node dependencies %q are nested below read-only project %q", nodeModulesContainer, nodeDockerWorkspaceRoot)
+	}
+	if !strings.HasPrefix(nodeModulesContainer, DockerWorkspaceRoot+"/") || !strings.HasPrefix(nodeDockerWorkspaceRoot, DockerWorkspaceRoot+"/") {
+		t.Fatalf("Node project and dependency mounts must remain siblings below %q", DockerWorkspaceRoot)
+	}
+
+	command := expandCommand([]string{"server", "--workspace", "{{workspace}}", "--cache", "{{cacheDir}}"}, LaunchSpec{
+		LanguageID: "typescript",
+		Workspace:  t.TempDir(),
+		CacheDir:   t.TempDir(),
+	}, true)
+	if strings.Join(command, " ") != "server --workspace /workspace/project --cache /analysis-cache" {
+		t.Fatalf("expanded Node Docker command = %q", command)
+	}
+}
+
 func TestValidateDockerMountSourceRejectsReplacementLink(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "source")

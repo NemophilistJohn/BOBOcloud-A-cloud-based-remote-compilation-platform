@@ -83,6 +83,7 @@ import { marked } from 'marked';
       return stop;
     }
     if (kind === 'settings') return svg(['M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z', 'M19 13.5v-3l-2-.7-.6-1.4.9-1.9-2.1-2.1-1.9.9-1.4-.6L11.2 3h-3l-.7 2-1.4.6-1.9-.9-2.1 2.1.9 1.9-.6 1.4-2 .7v3l2 .7.6 1.4-.9 1.9 2.1 2.1 1.9-.9 1.4.6.7 2h3l.7-2 1.4-.6 1.9.9 2.1-2.1-.9-1.9.6-1.4 2-.7Z']);
+    if (kind === 'controls') return svg(['M4 7h10', 'M18 7h2', 'M14 4v6', 'M4 17h2', 'M10 17h10', 'M6 14v6']);
     if (kind === 'skill') return svg(['M5 4.5h5.5A2.5 2.5 0 0 1 13 7v12H7.5A2.5 2.5 0 0 1 5 16.5v-12Z', 'M19 4.5h-3A3 3 0 0 0 13 7.5V19h3.5a2.5 2.5 0 0 0 2.5-2.5v-12Z']);
     if (kind === 'tool') return svg(['m14.5 5.5 4 4', 'M13 7l4-4 4 4-4 4M4 20l9.5-9.5 3 3L7 23H4v-3Z']);
     if (kind === 'check') return svg('m5 12 4 4 10-10');
@@ -935,15 +936,15 @@ import { marked } from 'marked';
     var current = preferenceState(record);
     Object.assign(current, next || {});
     preferences.set(record.id, current);
-    if (current.sessionId) invoke(record, 'preferences', commandValues(record));
-    else renderWorkspace(record);
+    if (current.sessionId) return invoke(record, 'preferences', commandValues(record));
+    renderWorkspace(record);
+    return Promise.resolve(true);
   }
 
   function appendToolbar(parent, record) {
     var state = record.state || {};
     var session = state.activeSession;
     var current = preferenceState(record);
-    ensureAccessMode(record);
     var toolbar = element('header', 'agent-toolbar');
     var identity = element('div', 'agent-toolbar-identity');
     var mark = element('span', 'agent-provider-mark');
@@ -967,52 +968,6 @@ import { marked } from 'marked';
       });
       model.select.addEventListener('change', function() { updatePreferences(record, { modelRef: model.select.value }); });
       controls.appendChild(model.wrapper);
-    }
-
-    var modes = record.descriptor.capabilities.modes || [];
-    if (modes.length) {
-      var modeGroup = element('div', 'agent-mode-control');
-      modeGroup.setAttribute('role', 'group');
-      modeGroup.setAttribute('aria-label', t('Agent mode'));
-      modes.forEach(function(mode) {
-        var button = element('button', '', modeLabel(mode));
-        button.type = 'button';
-        button.setAttribute('aria-pressed', mode === current.mode ? 'true' : 'false');
-        button.addEventListener('click', function() { updatePreferences(record, { mode: mode }); });
-        modeGroup.appendChild(button);
-      });
-      controls.appendChild(modeGroup);
-    }
-
-    var efforts = record.descriptor.capabilities.reasoningEfforts || [];
-    if (efforts.length) {
-      var effort = toolbarSelect(t('Thinking intensity'), 'agent-effort-field');
-      efforts.forEach(function(value) {
-        var option = element('option', '', effortLabel(value));
-        option.value = value;
-        option.selected = value === current.reasoningEffort;
-        effort.select.appendChild(option);
-      });
-      effort.select.title = t('Thinking intensity');
-      effort.select.addEventListener('change', function() { updatePreferences(record, { reasoningEffort: effort.select.value }); });
-      controls.appendChild(effort.wrapper);
-    }
-
-    if (record.descriptor.capabilities.localTools && session) {
-      var access = toolbarSelect(t('Local tool access'), 'agent-access-field');
-      ['ask', 'auto', 'full'].forEach(function(value) {
-        var option = element('option', '', accessModeLabel(value));
-        option.value = value;
-        option.selected = value === current.accessMode;
-        option.title = accessModeDescription(value);
-        access.select.appendChild(option);
-      });
-      var accessEntry = accessRequests.get(accessKey(accessIdentity(record)));
-      access.wrapper.dataset.mode = normalizedAccessMode(current.accessMode);
-      access.select.title = accessModeDescription(current.accessMode);
-      access.select.disabled = Boolean(accessEntry && (accessEntry.status === 'loading' || accessEntry.status === 'saving'));
-      access.select.addEventListener('change', function() { setAccessMode(record, access.select.value); });
-      controls.appendChild(access.wrapper);
     }
 
     if (record.descriptor.capabilities.skills) {
@@ -1450,11 +1405,177 @@ import { marked } from 'marked';
     return empty;
   }
 
+  function supportedModes(record) {
+    var modes = record && record.descriptor && record.descriptor.capabilities && record.descriptor.capabilities.modes;
+    return Array.isArray(modes) ? modes.filter(function(mode) { return mode === 'goal' || mode === 'chat'; }) : [];
+  }
+
+  function slashCommandDescription(mode) {
+    return mode === 'goal' ? t('Use for a multi-step task') : t('Use for a focused conversation');
+  }
+
+  function slashCommandValue(mode) {
+    return mode === 'goal' ? '/goal' : '/chat';
+  }
+
+  function matchingSlashCommands(record, value) {
+    var match = /^\/([a-z]*)$/i.exec(String(value || ''));
+    if (!match) return [];
+    var query = match[1].toLocaleLowerCase();
+    return supportedModes(record).filter(function(mode) { return mode.indexOf(query) === 0; });
+  }
+
+  function parseSlashCommand(record, value) {
+    var match = /^\/(goal|chat)(?:\s+([\s\S]*))?$/i.exec(String(value || '').trim());
+    if (!match) return null;
+    var mode = match[1].toLocaleLowerCase();
+    if (supportedModes(record).indexOf(mode) < 0) return null;
+    return { mode: mode, text: String(match[2] || '').trim() };
+  }
+
+  function composerControlOption(className, value, label, description, selected, disabled, onSelect) {
+    var button = element('button', 'agent-composer-control-option ' + className);
+    button.type = 'button';
+    button.dataset.value = value;
+    button.disabled = Boolean(disabled);
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    var mark = element('span', 'agent-composer-control-check');
+    if (selected) mark.appendChild(icon('check'));
+    var copy = element('span', 'agent-composer-control-copy');
+    copy.appendChild(element('strong', '', label));
+    if (description) copy.appendChild(element('small', '', description));
+    button.append(mark, copy);
+    button.addEventListener('click', onSelect);
+    return button;
+  }
+
+  function composerControlsNode(record, session, disabled) {
+    var current = preferenceState(record);
+    var efforts = record.descriptor.capabilities.reasoningEfforts || [];
+    var declaredAccessModes = record.descriptor.capabilities.accessModes;
+    var accessModes = (Array.isArray(declaredAccessModes) && declaredAccessModes.length
+      ? declaredAccessModes
+      : ['ask', 'auto', 'full']).filter(function(value) {
+      return value === 'ask' || value === 'auto' || value === 'full';
+    });
+    var hasAccess = Boolean(record.descriptor.capabilities.localTools && session && accessModes.length);
+    if (!hasAccess && !efforts.length) return null;
+
+    var wrap = element('div', 'agent-composer-controls agent-composer-control-wrap');
+    var accessMode = normalizedAccessMode(current.accessMode);
+    var summary = [];
+    if (hasAccess) summary.push(accessModeLabel(accessMode));
+    if (efforts.length) summary.push(effortLabel(current.reasoningEffort));
+    var trigger = iconButton('controls', t('Agent controls'), 'agent-composer-control-trigger');
+    trigger.disabled = Boolean(disabled);
+    trigger.setAttribute('aria-haspopup', 'dialog');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.append(element('span', 'agent-composer-control-summary', summary.join(' · ')), icon('chevron'));
+
+    var menu = element('div', 'agent-composer-control-menu');
+    menu.hidden = true;
+    menu.setAttribute('role', 'dialog');
+    menu.setAttribute('aria-label', t('Agent controls'));
+    menu.appendChild(element('div', 'agent-composer-control-title', t('Agent controls')));
+
+    function closeMenu(focusTrigger) {
+      menu.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+      if (focusTrigger) trigger.focus();
+    }
+
+    if (hasAccess) {
+      var accessSection = element('section', 'agent-composer-control-section');
+      accessSection.appendChild(element('div', 'agent-composer-control-section-title', t('Local tool access')));
+      var entry = accessEntry(record);
+      var accessPending = Boolean(entry && (entry.status === 'loading' || entry.status === 'saving'));
+      accessModes.forEach(function(value) {
+        accessSection.appendChild(composerControlOption(
+          'agent-control-access-option',
+          value,
+          accessModeLabel(value),
+          accessModeDescription(value),
+          value === accessMode,
+          accessPending,
+          function() { closeMenu(false); setAccessMode(record, value); }
+        ));
+      });
+      menu.appendChild(accessSection);
+    }
+
+    if (efforts.length) {
+      var effortSection = element('section', 'agent-composer-control-section agent-composer-effort-section');
+      effortSection.appendChild(element('div', 'agent-composer-control-section-title', t('Thinking intensity')));
+      var effortOptions = element('div', 'agent-composer-effort-options');
+      efforts.forEach(function(value) {
+        effortOptions.appendChild(composerControlOption(
+          'agent-control-effort-option',
+          value,
+          effortLabel(value),
+          '',
+          value === current.reasoningEffort,
+          false,
+          function() { closeMenu(false); updatePreferences(record, { reasoningEffort: value }); }
+        ));
+      });
+      effortSection.appendChild(effortOptions);
+      menu.appendChild(effortSection);
+    }
+
+    trigger.addEventListener('click', function(event) {
+      event.stopPropagation();
+      var open = menu.hidden;
+      var composer = wrap.closest('.agent-composer');
+      var slash = composer && composer.querySelector('.agent-slash-menu');
+      var input = composer && composer.querySelector('.agent-composer-input');
+      if (slash) slash.hidden = true;
+      if (input) {
+        input.setAttribute('aria-expanded', 'false');
+        input.removeAttribute('aria-activedescendant');
+      }
+      menu.hidden = !open;
+      trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) {
+        var selected = menu.querySelector('[aria-pressed="true"]');
+        if (selected) selected.focus();
+      }
+    });
+    menu.addEventListener('click', function(event) { event.stopPropagation(); });
+    menu.addEventListener('keydown', function(event) {
+      var items = Array.from(menu.querySelectorAll('button:not(:disabled)'));
+      var index = items.indexOf(document.activeElement);
+      if (event.key === 'Escape' || event.key === 'Tab') {
+        closeMenu(event.key === 'Escape');
+        return;
+      }
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
+      event.preventDefault();
+      if (!items.length) return;
+      if (event.key === 'Home') index = 0;
+      else if (event.key === 'End') index = items.length - 1;
+      else if (event.key === 'ArrowDown') index = (index + 1 + items.length) % items.length;
+      else index = (index - 1 + items.length) % items.length;
+      items[index].focus();
+    });
+    wrap.append(trigger, menu);
+    return wrap;
+  }
+
   function composerNode(record, session) {
     var composer = element('form', 'agent-composer');
     var textarea = element('textarea', 'agent-composer-input');
+    ensureAccessMode(record);
     var accessBlocked = Boolean(session && !accessReady(record));
     var turnBlocked = Boolean(session && (session.status === 'running' || session.status === 'waiting-approval' || accessBlocked));
+    var controlsDisabled = Boolean(!session || session.status === 'running' || session.status === 'waiting-approval');
+    var slashMenu = element('div', 'agent-slash-menu');
+    var slashMatches = [];
+    var slashIndex = 0;
+    var send = null;
+    slashMenu.id = 'agent-composer-slash-menu';
+    slashMenu.hidden = true;
+    slashMenu.setAttribute('role', 'listbox');
+    slashMenu.setAttribute('aria-label', t('Slash commands'));
     textarea.rows = 1;
     textarea.placeholder = t('Ask the agent to change, explain, or run something...');
     textarea.setAttribute('aria-label', t('Message the agent'));
@@ -1464,15 +1585,84 @@ import { marked } from 'marked';
       textarea.style.height = 'auto';
       textarea.style.height = Math.min(180, textarea.scrollHeight) + 'px';
     }
-    textarea.addEventListener('input', function() { drafts.set(record.id, textarea.value); resize(); });
+    function updateSendState() {
+      if (send) send.disabled = turnBlocked || !textarea.value.trim() || isBusy(record.id, 'send');
+    }
+    function hideSlashMenu() {
+      slashMenu.hidden = true;
+      textarea.setAttribute('aria-expanded', 'false');
+      textarea.removeAttribute('aria-activedescendant');
+    }
+    function selectSlashCommand(mode) {
+      textarea.value = slashCommandValue(mode) + ' ';
+      drafts.set(record.id, textarea.value);
+      hideSlashMenu();
+      resize();
+      updateSendState();
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    }
+    function renderSlashMenu(resetSelection) {
+      slashMatches = matchingSlashCommands(record, textarea.value);
+      if (!slashMatches.length) { hideSlashMenu(); return; }
+      var controlMenu = composer.querySelector('.agent-composer-control-menu');
+      var controlTrigger = composer.querySelector('.agent-composer-control-trigger');
+      if (controlMenu) controlMenu.hidden = true;
+      if (controlTrigger) controlTrigger.setAttribute('aria-expanded', 'false');
+      if (resetSelection || slashIndex >= slashMatches.length) slashIndex = 0;
+      slashMenu.replaceChildren();
+      slashMatches.forEach(function(mode, index) {
+        var option = element('button', 'agent-slash-option');
+        option.type = 'button';
+        option.id = 'agent-slash-option-' + mode;
+        option.dataset.command = mode;
+        option.setAttribute('role', 'option');
+        option.setAttribute('aria-selected', index === slashIndex ? 'true' : 'false');
+        option.append(element('code', '', slashCommandValue(mode)), element('span', '', slashCommandDescription(mode)));
+        option.addEventListener('mousedown', function(event) { event.preventDefault(); });
+        option.addEventListener('click', function() { selectSlashCommand(mode); });
+        slashMenu.appendChild(option);
+      });
+      slashMenu.hidden = false;
+      textarea.setAttribute('aria-controls', slashMenu.id);
+      textarea.setAttribute('aria-expanded', 'true');
+      textarea.setAttribute('aria-activedescendant', 'agent-slash-option-' + slashMatches[slashIndex]);
+    }
+    textarea.addEventListener('input', function() {
+      drafts.set(record.id, textarea.value);
+      resize();
+      renderSlashMenu(true);
+      updateSendState();
+    });
     textarea.addEventListener('keydown', function(event) {
+      if (!slashMenu.hidden && slashMatches.length) {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          slashIndex = event.key === 'ArrowDown'
+            ? (slashIndex + 1) % slashMatches.length
+            : (slashIndex - 1 + slashMatches.length) % slashMatches.length;
+          renderSlashMenu(false);
+          return;
+        }
+        if (event.key === 'Enter' || event.key === 'Tab') {
+          event.preventDefault();
+          selectSlashCommand(slashMatches[slashIndex]);
+          return;
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          hideSlashMenu();
+          return;
+        }
+      }
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         if (session && !turnBlocked) composer.requestSubmit();
       }
     });
-    composer.appendChild(textarea);
+    composer.append(slashMenu, textarea);
     var footer = element('div', 'agent-composer-footer');
+    var left = element('div', 'agent-composer-left');
     var context = element('span', 'agent-composer-context');
     if (accessBlocked) {
       var entry = accessEntry(record);
@@ -1482,29 +1672,47 @@ import { marked } from 'marked';
     } else if (session && session.compaction && session.compaction.count > 0) {
       context.append(icon('compress'), element('span', '', t('Context compacted {count} times', { count: session.compaction.count })));
     } else if (record.descriptor.capabilities.localTools) {
-      context.append(icon('tool'), element('span', '', t('Local tools require approval for changes')));
+      context.append(icon('tool'), element('span', '', modeLabel(preferenceState(record).mode) + ' · ' + t('Local tools require approval for changes')));
     } else {
       context.appendChild(element('span', '', modeLabel(preferenceState(record).mode)));
     }
-    footer.appendChild(context);
+    left.appendChild(context);
+    footer.appendChild(left);
+    var actions = element('div', 'agent-composer-actions');
+    var control = composerControlsNode(record, session, controlsDisabled);
+    if (control) actions.appendChild(control);
     if (session && session.status === 'running') {
       var cancel = iconButton('stop', t('Cancel run'), 'agent-send-button agent-cancel-button');
       cancel.disabled = isBusy(record.id, 'cancel');
       cancel.addEventListener('click', function() { invoke(record, 'cancel', { sessionId: session.id }); });
-      footer.appendChild(cancel);
+      actions.appendChild(cancel);
     } else {
-      var send = iconButton('send', t('Send message'), 'agent-send-button');
+      send = iconButton('send', t('Send message'), 'agent-send-button');
       send.type = 'submit';
       send.disabled = !session || turnBlocked || !textarea.value.trim() || isBusy(record.id, 'send');
-      textarea.addEventListener('input', function() { send.disabled = turnBlocked || !textarea.value.trim() || isBusy(record.id, 'send'); });
-      footer.appendChild(send);
+      actions.appendChild(send);
     }
+    footer.appendChild(actions);
     composer.appendChild(footer);
     composer.addEventListener('submit', async function(event) {
       event.preventDefault();
       var value = textarea.value.trim();
       if (!session || !value || turnBlocked) return;
-      var sent = await invoke(record, 'send', commandValues(record, { sessionId: session.id, text: value }));
+      var slash = parseSlashCommand(record, value);
+      if (slash) {
+        var changed = await updatePreferences(record, { mode: slash.mode });
+        if (!changed) return;
+        if (!slash.text) {
+          drafts.set(record.id, '');
+          var modeInput = document.querySelector('#' + PAGE_ID + ' .agent-composer-input');
+          if (modeInput) { modeInput.value = ''; modeInput.style.height = 'auto'; }
+          var modeSend = document.querySelector('#' + PAGE_ID + ' .agent-send-button');
+          if (modeSend && !modeSend.classList.contains('agent-cancel-button')) modeSend.disabled = true;
+          return;
+        }
+        value = slash.text;
+      }
+      var sent = await invoke(record, 'send', commandValues(record, { sessionId: session.id, mode: slash ? slash.mode : preferenceState(record).mode, text: value }));
       if (sent) {
         drafts.set(record.id, '');
         var next = document.querySelector('#' + PAGE_ID + ' .agent-composer-input');
@@ -1640,10 +1848,26 @@ import { marked } from 'marked';
       languageSubscription = { dispose: function() { global.removeEventListener('bobo:language-changed', renderAll); } };
     }
     documentClickHandler = function(event) {
-      if (!skillsOpenFor || event.target.closest('.agent-skill-wrap')) return;
-      skillsOpenFor = '';
-      var record = activeRecord();
-      if (record) renderWorkspace(record);
+      var controlMenu = document.querySelector('.agent-composer-control-menu:not([hidden])');
+      if (controlMenu && !event.target.closest('.agent-composer-control-wrap')) {
+        controlMenu.hidden = true;
+        var controlTrigger = document.querySelector('.agent-composer-control-trigger');
+        if (controlTrigger) controlTrigger.setAttribute('aria-expanded', 'false');
+      }
+      var slashMenu = document.querySelector('.agent-slash-menu:not([hidden])');
+      if (slashMenu && !event.target.closest('.agent-slash-menu') && !event.target.closest('.agent-composer-input')) {
+        slashMenu.hidden = true;
+        var input = document.querySelector('.agent-composer-input');
+        if (input) {
+          input.setAttribute('aria-expanded', 'false');
+          input.removeAttribute('aria-activedescendant');
+        }
+      }
+      if (skillsOpenFor && !event.target.closest('.agent-skill-wrap')) {
+        skillsOpenFor = '';
+        var record = activeRecord();
+        if (record) renderWorkspace(record);
+      }
     };
     document.addEventListener('click', documentClickHandler);
     sync();
