@@ -1,6 +1,7 @@
 package personalcache
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -719,13 +720,29 @@ func (m *Manager) evictCacheV2Locked(userID string, quotaBytes, targetBytes, tar
 }
 
 func recoverCacheV2DeletionTransactions(layout cachev2.Layout) {
+	_ = recoverCacheV2DeletionTransactionsContext(context.Background(), layout)
+}
+
+func recoverCacheV2DeletionTransactionsContext(ctx context.Context, layout cachev2.Layout) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(layout.Transactions)
 	if err != nil {
-		return
+		return nil
 	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && strings.HasPrefix(entry.Name(), "delete-cv2_") {
-			_ = os.RemoveAll(filepath.Join(layout.Transactions, entry.Name()))
+			if removeErr := removeRecoveryTreeContext(ctx, filepath.Join(layout.Transactions, entry.Name())); removeErr != nil && ctx.Err() != nil {
+				return ctx.Err()
+			}
 		}
 	}
+	return ctx.Err()
 }

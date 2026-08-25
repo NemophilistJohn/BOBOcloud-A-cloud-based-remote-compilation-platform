@@ -513,6 +513,13 @@ func (m *Manager) snapshot(match func(*Session) bool) []*Session {
 }
 
 func stopAndWait(sessions []*Session, timeout time.Duration) error {
+	return stopAndWaitContext(context.Background(), sessions, timeout)
+}
+
+func stopAndWaitContext(ctx context.Context, sessions []*Session, timeout time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	for _, session := range sessions {
 		session.Stop()
 	}
@@ -521,6 +528,8 @@ func stopAndWait(sessions []*Session, timeout time.Duration) error {
 	for _, session := range sessions {
 		select {
 		case <-session.ResourcesDone():
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-deadline.C:
 			return fmt.Errorf("timed out waiting for debug session resources to stop")
 		}
@@ -529,10 +538,14 @@ func stopAndWait(sessions []*Session, timeout time.Duration) error {
 }
 
 func (m *Manager) StopUser(userID string) error {
+	return m.StopUserContext(context.Background(), userID)
+}
+
+func (m *Manager) StopUserContext(ctx context.Context, userID string) error {
 	if m == nil {
 		return nil
 	}
-	return stopAndWait(m.snapshot(func(session *Session) bool { return session.Context.UserID == userID }), 7*time.Second)
+	return stopAndWaitContext(ctx, m.snapshot(func(session *Session) bool { return session.Context.UserID == userID }), 7*time.Second)
 }
 
 func (m *Manager) StopUserWorkspace(userID, folderKey string) error {
@@ -571,6 +584,30 @@ func (m *Manager) cleanupLoop() {
 			}
 		}
 	}
+}
+
+// CloseContext stops all debug sessions and waits for their process and
+// container cleanup to finish. A timed-out close can be retried safely.
+func (m *Manager) CloseContext(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.cancel()
+	sessions := m.snapshot(nil)
+	for _, session := range sessions {
+		session.Stop()
+	}
+	for _, session := range sessions {
+		select {
+		case <-session.ResourcesDone():
+		case <-ctx.Done():
+			return fmt.Errorf("wait for debug session resources: %w", ctx.Err())
+		}
+	}
+	return nil
 }
 
 func (m *Manager) Close() {

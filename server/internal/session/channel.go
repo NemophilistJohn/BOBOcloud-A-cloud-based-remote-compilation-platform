@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -30,17 +31,22 @@ func NewRunChannel(runID string) *RunChannel {
 	return rc
 }
 
-// Attach 将 WebSocket 连接绑定到此 Channel
-func (rc *RunChannel) Attach(conn *websocket.Conn) {
+// Attach 将 WebSocket 连接绑定到此 Channel。返回 false 表示当前 generation
+// 已经关闭，调用者不得再启动对应的运行任务。
+func (rc *RunChannel) Attach(conn *websocket.Conn) bool {
+	if conn == nil {
+		return false
+	}
 	rc.mu.Lock()
 	if rc.closed {
 		rc.mu.Unlock()
-		conn.Close()
-		return
+		_ = conn.Close()
+		return false
 	}
 	rc.conn = conn
 	rc.cond.Broadcast()
 	rc.mu.Unlock()
+	return true
 }
 
 // SendJSON 向客户端发送 JSON 消息。线程安全，发送失败时自动关闭 Channel。
@@ -106,14 +112,16 @@ func (rc *RunChannel) WaitUntilClosed() {
 
 // ChannelManager 管理 RunChannel 生命周期
 type ChannelManager struct {
-	mu       sync.Mutex
-	channels map[string]*RunChannel
+	mu              sync.Mutex
+	channels        map[string]*RunChannel
+	pendingCleanups map[string]*RunChannel
 }
 
 // NewChannelManager 创建 Channel 管理器
 func NewChannelManager() *ChannelManager {
 	return &ChannelManager{
-		channels: make(map[string]*RunChannel),
+		channels:        make(map[string]*RunChannel),
+		pendingCleanups: make(map[string]*RunChannel),
 	}
 }
 
@@ -134,12 +142,75 @@ func (cm *ChannelManager) Remove(runID string) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	delete(cm.channels, runID)
+	delete(cm.pendingCleanups, runID)
 }
 
-// CleanupRun 同时删除 Channel 和对应的 Session
-func (cm *ChannelManager) CleanupRun(runID string, store interface{ Delete(runID string) }) {
-	cm.Remove(runID)
-	store.Delete(runID)
+// RemoveIfCurrent removes only the channel generation owned by the caller.
+// It is used after storage has already atomically removed expired handshakes.
+func (cm *ChannelManager) RemoveIfCurrent(runID string, expected *RunChannel) bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if cm.channels[runID] != expected {
+		if cm.pendingCleanups[runID] == expected {
+			delete(cm.pendingCleanups, runID)
+		}
+		return false
+	}
+	delete(cm.channels, runID)
+	if cm.pendingCleanups[runID] == expected {
+		delete(cm.pendingCleanups, runID)
+	}
+	return true
+}
+
+// CleanupRun deletes persistent state before releasing its channel identity.
+// Keeping the channel mapped on failure makes cleanup retryable; checking the
+// expected pointer prevents a late duplicate cleanup from deleting a newer run
+// that reused the same run ID.
+func (cm *ChannelManager) CleanupRun(runID string, expected *RunChannel, store interface{ Delete(runID string) error }) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if cm.channels[runID] != expected {
+		if cm.pendingCleanups[runID] == expected {
+			delete(cm.pendingCleanups, runID)
+		}
+		return nil
+	}
+	if err := store.Delete(runID); err != nil {
+		if expected != nil {
+			cm.pendingCleanups[runID] = expected
+		}
+		return fmt.Errorf("delete persistent run session %q: %w", runID, err)
+	}
+	delete(cm.channels, runID)
+	delete(cm.pendingCleanups, runID)
+	return nil
+}
+
+// RetryPendingCleanups retries persistent deletes that previously failed while
+// their exact channel generation was retained. A replaced or removed channel
+// makes the old pending entry stale, so CleanupRun drops it without touching a
+// newer persistent session that reused the same run ID.
+func (cm *ChannelManager) RetryPendingCleanups(store interface{ Delete(runID string) error }) error {
+	type pendingCleanup struct {
+		runID    string
+		expected *RunChannel
+	}
+
+	cm.mu.Lock()
+	pending := make([]pendingCleanup, 0, len(cm.pendingCleanups))
+	for runID, expected := range cm.pendingCleanups {
+		pending = append(pending, pendingCleanup{runID: runID, expected: expected})
+	}
+	cm.mu.Unlock()
+
+	var retryErrors []error
+	for _, cleanup := range pending {
+		if err := cm.CleanupRun(cleanup.runID, cleanup.expected, store); err != nil {
+			retryErrors = append(retryErrors, err)
+		}
+	}
+	return errors.Join(retryErrors...)
 }
 
 // ---------- 消息构建辅助函数 ----------

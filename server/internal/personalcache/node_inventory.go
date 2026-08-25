@@ -1,6 +1,7 @@
 package personalcache
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +20,16 @@ type nodeInventoryCandidate struct {
 }
 
 func scanNodePackageTree(root string) ([]InventoryPackage, string, int64, error) {
+	return scanNodePackageTreeContext(context.Background(), root)
+}
+
+func scanNodePackageTreeContext(ctx context.Context, root string) ([]InventoryPackage, string, int64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, "", 0, err
+	}
 	root, err := filepath.Abs(filepath.Clean(root))
 	if err != nil {
 		return nil, "", 0, err
@@ -37,6 +48,9 @@ func scanNodePackageTree(root string) ([]InventoryPackage, string, int64, error)
 	latest := info.ModTime().UTC().UnixMilli()
 	visited := 0
 	err = filepath.WalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -105,6 +119,9 @@ func scanNodePackageTree(root string) ([]InventoryPackage, string, int64, error)
 	if err != nil {
 		return nil, "", 0, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, "", 0, err
+	}
 
 	sort.Slice(candidates, func(i, j int) bool {
 		leftDepth := strings.Count(candidates[i].Path, "/")
@@ -117,6 +134,9 @@ func scanNodePackageTree(root string) ([]InventoryPackage, string, int64, error)
 	seen := make(map[string]bool, len(candidates))
 	packages := make([]InventoryPackage, 0, len(candidates))
 	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, "", 0, err
+		}
 		key := strings.ToLower(candidate.Package.Name) + "\x00" + candidate.Package.Version
 		if seen[key] {
 			continue
@@ -129,6 +149,9 @@ func scanNodePackageTree(root string) ([]InventoryPackage, string, int64, error)
 		right := strings.ToLower(packages[j].Name) + "\x00" + packages[j].Version
 		return left < right
 	})
+	if err := ctx.Err(); err != nil {
+		return nil, "", 0, err
+	}
 	hash.Write([]byte("entries=" + strconv.Itoa(visited)))
 	return packages, hex.EncodeToString(hash.Sum(nil)), latest, nil
 }

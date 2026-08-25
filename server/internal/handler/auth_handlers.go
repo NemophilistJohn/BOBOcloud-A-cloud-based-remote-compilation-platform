@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -479,26 +481,34 @@ func (h *HTTPHandler) handleChangePassword(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: err.Error()})
 		return
 	}
-	// API-Key 老用户可能没有密码哈希：有旧哈希才校验旧密码
-	if user.PasswordHash != "" && !auth.CheckPassword(user.PasswordHash, req.OldPassword) {
-		h.auditEvent(r, "", "", "changePassword", "", "wrong old password", false)
-		writeJSON(w, http.StatusUnauthorized, model.Response{Success: false, Error: "Old password is incorrect"})
-		return
-	}
 	hash, err := auth.HashPassword(req.NewPassword)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to process password"})
 		return
 	}
-	user.PasswordHash = hash
-	if err := h.UserStore.Create(user); err != nil {
+	oldPasswordIncorrect := errors.New("old password is incorrect")
+	updatedUser, err := h.UserStore.MutateExisting(user.ID, func(latest *auth.User) error {
+		// Keep the old-password check and update in one transaction so concurrent
+		// changes cannot both validate against the request's stale user snapshot.
+		if latest.PasswordHash != "" && !auth.CheckPassword(latest.PasswordHash, req.OldPassword) {
+			return oldPasswordIncorrect
+		}
+		latest.PasswordHash = hash
+		return nil
+	})
+	if errors.Is(err, oldPasswordIncorrect) {
+		h.auditEvent(r, "", "", "changePassword", "", "wrong old password", false)
+		writeJSON(w, http.StatusUnauthorized, model.Response{Success: false, Error: "Old password is incorrect"})
+		return
+	}
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to save"})
 		return
 	}
 	// 作废其它会话（保留当前会话），改密后其它设备需重新登录
 	if h.AuthSessions != nil {
 		currentToken, _ := r.Context().Value(contextKeySessionToken).(string)
-		h.AuthSessions.DeleteByUserExcept(user.ID, currentToken)
+		h.AuthSessions.DeleteByUserExcept(updatedUser.ID, currentToken)
 	}
 	h.auditEvent(r, "", "", "changePassword", "", "", true)
 	writeJSON(w, http.StatusOK, model.Response{Success: true, Message: "Password changed. Other sessions have been logged out."})
@@ -681,8 +691,19 @@ func (h *HTTPHandler) handleSetUserDisabled(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "Insufficient permission for this user"})
 		return
 	}
-	target.Disabled = *req.Disabled
-	if err := h.UserStore.Create(target); err != nil {
+	protectedTarget := errors.New("target is no longer manageable")
+	target, err = h.UserStore.MutateExisting(target.ID, func(latest *auth.User) error {
+		if latest.EffectiveRole() == auth.RoleRoot || !canManage(caller, latest) {
+			return protectedTarget
+		}
+		latest.Disabled = *req.Disabled
+		return nil
+	})
+	if errors.Is(err, protectedTarget) {
+		writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "Insufficient permission for this user"})
+		return
+	}
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to save"})
 		return
 	}
@@ -715,9 +736,21 @@ func (h *HTTPHandler) handleSetUserRole(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "Cannot change the root account's role"})
 		return
 	}
-	oldRole := target.EffectiveRole()
-	target.Role = req.Role
-	if err := h.UserStore.Create(target); err != nil {
+	protectedTarget := errors.New("root role cannot be changed")
+	oldRole := ""
+	target, err = h.UserStore.MutateExisting(target.ID, func(latest *auth.User) error {
+		if latest.EffectiveRole() == auth.RoleRoot {
+			return protectedTarget
+		}
+		oldRole = latest.EffectiveRole()
+		latest.Role = req.Role
+		return nil
+	})
+	if errors.Is(err, protectedTarget) {
+		writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "Cannot change the root account's role"})
+		return
+	}
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to save"})
 		return
 	}
@@ -758,8 +791,19 @@ func (h *HTTPHandler) handleResetUserPassword(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to process password"})
 		return
 	}
-	target.PasswordHash = hash
-	if err := h.UserStore.Create(target); err != nil {
+	protectedTarget := errors.New("target is no longer manageable")
+	target, err = h.UserStore.MutateExisting(target.ID, func(latest *auth.User) error {
+		if !canManage(caller, latest) {
+			return protectedTarget
+		}
+		latest.PasswordHash = hash
+		return nil
+	})
+	if errors.Is(err, protectedTarget) {
+		writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "Insufficient permission for this user"})
+		return
+	}
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to save"})
 		return
 	}
@@ -795,21 +839,38 @@ func (h *HTTPHandler) handleUpdateUserQuota(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "Insufficient permission for this user"})
 		return
 	}
-	if req.ContainerLimit > 0 {
-		target.ContainerLimit = req.ContainerLimit
+	// Keep the persisted quota and Docker admission update in the same ordering
+	// domain as account deletion and its background cleanup. MutateExisting makes
+	// each store write atomic, but without this barrier two requests could apply
+	// their Docker side effects in the reverse order of their committed writes.
+	h.userDeletionMu.Lock()
+	protectedTarget := errors.New("target is no longer manageable")
+	target, err = h.UserStore.MutateExisting(target.ID, func(latest *auth.User) error {
+		if !canManage(caller, latest) {
+			return protectedTarget
+		}
+		if req.ContainerLimit > 0 {
+			latest.ContainerLimit = req.ContainerLimit
+		}
+		if req.RateLimit > 0 {
+			latest.RateLimit = req.RateLimit
+		}
+		if req.DiskQuotaMB >= 0 {
+			latest.DiskQuotaMB = req.DiskQuotaMB
+		}
+		return nil
+	})
+	if err == nil && h.SetUserLimit != nil {
+		h.SetUserLimit(target.ID, target.ContainerLimit)
 	}
-	if req.RateLimit > 0 {
-		target.RateLimit = req.RateLimit
-	}
-	if req.DiskQuotaMB >= 0 {
-		target.DiskQuotaMB = req.DiskQuotaMB
-	}
-	if err := h.UserStore.Create(target); err != nil {
-		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to save"})
+	h.userDeletionMu.Unlock()
+	if errors.Is(err, protectedTarget) {
+		writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "Insufficient permission for this user"})
 		return
 	}
-	if h.SetUserLimit != nil {
-		h.SetUserLimit(target.ID, target.ContainerLimit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to save"})
+		return
 	}
 	h.auditEvent(r, "", "", "updateUserQuota", target.ID,
 		fmt.Sprintf("container=%d rate=%d disk=%dMB", target.ContainerLimit, target.RateLimit, target.DiskQuotaMB), true)
@@ -833,7 +894,7 @@ func (h *HTTPHandler) handleDeleteUser(w http.ResponseWriter, r *http.Request, r
 	target, err := h.UserStore.Get(req.UserID)
 	if err != nil {
 		if h.hasPendingUserDeletion(req.UserID) {
-			pending := h.retryDeletedUserCleanup(req.UserID)
+			pending := h.retryDeletedUserCleanupContext(r.Context(), req.UserID)
 			if len(pending) == 0 {
 				writeJSON(w, http.StatusOK, model.Response{Success: true, Message: fmt.Sprintf("User %s deletion cleanup completed", req.UserID)})
 			} else {
@@ -869,39 +930,18 @@ func (h *HTTPHandler) handleDeleteUser(w http.ResponseWriter, r *http.Request, r
 		}
 	}
 
-	// Persistent phase. Deleting the user first makes authentication deny the
-	// account immediately. Auxiliary persistent failures compensate by restoring
-	// the exact user record before any sessions, teams, or files are touched.
+	// Commit point: the account record and durable cleanup job change atomically.
+	// Every auxiliary store/resource cleanup below is idempotent and retryable;
+	// trying to roll the account back would race with reuse of its unique indexes.
 	if err := h.UserStore.DeleteWithCleanupMarker(target.ID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to delete user"})
 		return
 	}
-	rollbackUser := func(component string, cause error) {
-		if restoreErr := h.UserStore.Restore(target); restoreErr != nil {
-			slog.Error("Failed to restore user after pre-commit cleanup failure", "user_id", target.ID, "component", component, "cleanup_error", cause, "restore_error", restoreErr)
-			writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to delete user; account recovery also failed"})
-			return
-		}
-		slog.Error("Pre-commit user cleanup failed; account restored", "user_id", target.ID, "component", component, "error", cause)
-		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to delete user " + component})
-	}
-	if h.CompileActivity != nil {
-		if err := h.CompileActivity.DeleteByUser(target.ID); err != nil {
-			rollbackUser("compile activity", err)
-			return
-		}
-	}
-	// Commit point. Everything below is idempotent external cleanup. Once this
-	// starts, never report a rollback-style failure: the account record and its
-	// persistent per-user data are already gone.
-	cleanupComponents := h.cleanupDeletedUser(target.ID)
+	// Never report a rollback-style failure after this point: the account is gone
+	// and any failed component remains represented by the durable marker.
+	cleanupComponents := h.retryDeletedUserCleanupContext(r.Context(), target.ID)
 	h.auditEvent(r, "", "", "deleteUser", target.ID, "username="+target.Username, true)
-	if len(cleanupComponents) == 0 {
-		if err := h.UserStore.DeleteDeletionCleanup(target.ID); err != nil {
-			cleanupComponents = append(cleanupComponents, "cleanup_marker")
-			slog.Error("Failed to clear completed user cleanup marker", "user_id", target.ID, "error", err)
-		}
-	} else {
+	if len(cleanupComponents) > 0 {
 		slog.Warn("User deleted with pending post-commit cleanup", "user_id", target.ID, "failures", len(cleanupComponents))
 	}
 	message := fmt.Sprintf("User %s deleted", target.ID)
@@ -925,7 +965,14 @@ func (h *HTTPHandler) hasPendingUserDeletion(userID string) bool {
 }
 
 func (h *HTTPHandler) retryDeletedUserCleanup(userID string) []string {
-	pending := h.cleanupDeletedUser(userID)
+	return h.retryDeletedUserCleanupContext(context.Background(), userID)
+}
+
+func (h *HTTPHandler) retryDeletedUserCleanupContext(ctx context.Context, userID string) []string {
+	pending := h.cleanupDeletedUserContext(ctx, userID)
+	if err := ctx.Err(); err != nil {
+		return append(pending, "interrupted")
+	}
 	if len(pending) == 0 {
 		if err := h.UserStore.DeleteDeletionCleanup(userID); err != nil {
 			pending = append(pending, "cleanup_marker")
@@ -937,43 +984,102 @@ func (h *HTTPHandler) retryDeletedUserCleanup(userID string) []string {
 // RetryPendingUserDeletions is called once all cleanup dependencies are wired.
 // The marker remains stored until every idempotent cleanup step succeeds.
 func (h *HTTPHandler) RetryPendingUserDeletions() {
+	_ = h.RetryPendingUserDeletionsContext(context.Background())
+}
+
+// RetryPendingUserDeletionsContext keeps startup recovery interruptible. A
+// cancelled cleanup retains its durable marker and is retried on the next
+// process start.
+func (h *HTTPHandler) RetryPendingUserDeletionsContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	h.userDeletionMu.Lock()
 	defer h.userDeletionMu.Unlock()
 	userIDs, err := h.UserStore.ListDeletionCleanup()
 	if err != nil {
 		slog.Error("Failed to list pending user deletion cleanup", "error", err)
-		return
+		return fmt.Errorf("list pending user deletion cleanup: %w", err)
 	}
 	for _, userID := range userIDs {
-		if pending := h.retryDeletedUserCleanup(userID); len(pending) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if pending := h.retryDeletedUserCleanupContext(ctx, userID); len(pending) > 0 {
 			slog.Warn("User deletion cleanup remains pending", "user_id", userID, "components", pending)
 		} else {
 			slog.Info("Pending user deletion cleanup completed", "user_id", userID)
 		}
 	}
+	return ctx.Err()
+}
+
+// RunPendingUserDeletionCleanup retries durable post-commit cleanup jobs while
+// the server is running. The same mutex and idempotent pipeline used by manual
+// deletion prevent overlapping attempts and keep failed jobs retryable.
+func (h *HTTPHandler) RunPendingUserDeletionCleanup(ctx context.Context, interval time.Duration) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := h.RetryPendingUserDeletionsContext(ctx); err != nil && ctx.Err() == nil {
+				slog.Error("Pending user deletion background retry failed", "error", err)
+			}
+		}
+	}
 }
 
 func (h *HTTPHandler) cleanupDeletedUser(userID string) []string {
+	return h.cleanupDeletedUserContext(context.Background(), userID)
+}
+
+func (h *HTTPHandler) cleanupDeletedUserContext(ctx context.Context, userID string) []string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	pending := make([]string, 0, 5)
-	cleanup := func(component string, action func() error) {
+	cleanup := func(component string, action func() error) bool {
+		if ctx.Err() != nil {
+			return false
+		}
 		if err := action(); err != nil {
 			pending = append(pending, component)
 			slog.Error("Post-commit user cleanup failed", "user_id", userID, "component", component, "error", err)
 		}
+		return ctx.Err() == nil
 	}
 	if h.Collaboration != nil {
-		cleanup("collaboration", func() error { return h.Collaboration.PrepareUserDeletion(userID) })
+		if !cleanup("collaboration", func() error { return h.Collaboration.PrepareUserDeletion(userID) }) {
+			return pending
+		}
 	}
 	if h.CompileActivity != nil {
-		cleanup("compile_activity", func() error { return h.CompileActivity.DeleteByUser(userID) })
+		if !cleanup("compile_activity", func() error { return h.CompileActivity.DeleteByUser(userID) }) {
+			return pending
+		}
 	}
 	if h.RunHistory != nil {
-		cleanup("run_history", func() error { return h.RunHistory.DeleteByUser(userID) })
+		if !cleanup("run_history", func() error { return h.RunHistory.DeleteByUser(userID) }) {
+			return pending
+		}
 	}
 	if h.AuthSessions != nil {
-		cleanup("auth_sessions", func() error { return h.AuthSessions.DeleteByUser(userID) })
+		if !cleanup("auth_sessions", func() error { return h.AuthSessions.DeleteByUser(userID) }) {
+			return pending
+		}
 	}
-	if h.OnUserDeleted != nil {
+	if h.OnUserDeletedContext != nil {
+		cleanup("user_resources", func() error { return h.OnUserDeletedContext(ctx, userID) })
+	} else if h.OnUserDeleted != nil {
 		cleanup("user_resources", func() error { return h.OnUserDeleted(userID) })
 	}
 	return pending

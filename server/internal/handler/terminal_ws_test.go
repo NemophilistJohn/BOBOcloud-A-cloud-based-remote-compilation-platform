@@ -325,15 +325,15 @@ func TestTerminalHandshakeDeadlineCanBeCleared(t *testing.T) {
 	}
 }
 
-func TestTerminalOriginPolicyAllowsElectronAndSameHostOnly(t *testing.T) {
+func TestTerminalOriginPolicyAllowsElectronAndSameOriginOnly(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "http://terminal.example/terminal", nil)
 	request.Host = "terminal.example"
 	if !terminalUpgrader.CheckOrigin(request) {
 		t.Fatal("Electron request without Origin was rejected")
 	}
-	request.Header.Set("Origin", "https://terminal.example")
+	request.Header.Set("Origin", "http://terminal.example")
 	if !terminalUpgrader.CheckOrigin(request) {
-		t.Fatal("same-host origin was rejected")
+		t.Fatal("same-origin request was rejected")
 	}
 	request.Header.Set("Origin", "https://other.example")
 	if terminalUpgrader.CheckOrigin(request) {

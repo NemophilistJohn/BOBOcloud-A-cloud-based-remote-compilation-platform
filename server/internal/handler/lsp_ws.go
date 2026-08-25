@@ -27,7 +27,7 @@ var lspUpgrader = websocket.Upgrader{
 	ReadBufferSize:    8192,
 	WriteBufferSize:   8192,
 	EnableCompression: true,
-	CheckOrigin:       func(_ *http.Request) bool { return true },
+	CheckOrigin:       websocketOriginAllowed,
 }
 
 type lspWorkspaceStart struct {
@@ -693,11 +693,18 @@ func (p *pendingWorkspaceConfigurations) count() int {
 // HandleLSPWebSocket bridges virtual-URI JSON-RPC messages to an isolated
 // stdio language server process.
 func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
+	releaseWork, accepted := acquireLongLivedWork(w, h.Accepting, h.AcquireWork, "lsp-websocket")
+	if !accepted {
+		return
+	}
+	defer releaseWork()
 	conn, err := lspUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer conn.Close()
+	stopContextClose := closeWebSocketOnContext(r.Context(), conn)
+	defer stopContextClose()
 	conn.EnableWriteCompression(true)
 	maxMessage := h.Config.LSPMaxMessageBytes
 	if maxMessage <= 0 {

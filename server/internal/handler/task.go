@@ -23,7 +23,9 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 	output.WriteStatus("setup", "Task accepted; resolving cloud workspace")
 	defer func() {
 		channel.Close()
-		h.Channels.CleanupRun(runID, h.Sessions)
+		if err := h.Channels.CleanupRun(runID, channel, h.Sessions); err != nil {
+			slog.Error("Failed to clean project task session", "run_id", runID, "error", err)
+		}
 	}()
 	defer func() {
 		if runResult != nil && ctx.Err() == context.Canceled {

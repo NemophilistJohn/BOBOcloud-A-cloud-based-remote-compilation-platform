@@ -123,101 +123,149 @@ func (s *BoltUserStore) GetByEmail(email string) (*User, error) {
 
 // Create 创建或更新用户（同时维护 API Key / 用户名 / 邮箱索引）
 func (s *BoltUserStore) Create(user *User) error {
+	return s.storeUser(user, false)
+}
+
+// UpdateExisting updates a user only while the record still exists in the same
+// Bolt transaction. A stale handler can therefore never recreate a user after
+// deletion cleanup has already removed its tombstone.
+func (s *BoltUserStore) UpdateExisting(user *User) error {
+	return s.storeUser(user, true)
+}
+
+func (s *BoltUserStore) storeUser(user *User, requireExisting bool) error {
 	if user == nil || user.ID == "" {
 		return fmt.Errorf("user ID is required")
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
-		if tx.Bucket(userDeletionCleanupBucket).Get([]byte(user.ID)) != nil {
-			return fmt.Errorf("user deletion cleanup is pending: %s", user.ID)
-		}
-		ub := tx.Bucket(usersBucket)
-		kb := tx.Bucket(userKeysBucket)
-		nb := tx.Bucket(userNamesBucket)
-		eb := tx.Bucket(userEmailsBucket)
-		ib := tx.Bucket(userUIDsBucket)
-
-		// Enforce index ownership inside the same Bolt write transaction. This
-		// protects callers other than registration and prevents concurrent
-		// creates from silently stealing another user's login/API-key index.
-		checks := []struct {
-			bucket *bolt.Bucket
-			value  string
-			label  string
-			lower  bool
-		}{
-			{kb, user.APIKey, "API key", false},
-			{nb, user.Username, "username", true},
-			{eb, user.Email, "email", true},
-			{ib, user.UID, "UID", true},
-		}
-		for _, check := range checks {
-			if check.value == "" {
-				continue
-			}
-			key := check.value
-			if check.lower {
-				key = strings.ToLower(key)
-			}
-			if owner := check.bucket.Get([]byte(key)); owner != nil && string(owner) != user.ID {
-				return fmt.Errorf("%s already belongs to another user", check.label)
-			}
-		}
-
-		// 删除旧索引（如果存在且已变更）
-		if oldData := ub.Get([]byte(user.ID)); oldData != nil {
-			var oldUser User
-			if err := json.Unmarshal(oldData, &oldUser); err == nil {
-				if oldUser.UID != "" && oldUser.UID != user.UID {
-					return fmt.Errorf("UID cannot be changed")
-				}
-				if oldUser.APIKey != "" && oldUser.APIKey != user.APIKey {
-					kb.Delete([]byte(oldUser.APIKey))
-				}
-				if oldUser.Username != "" && !strings.EqualFold(oldUser.Username, user.Username) {
-					nb.Delete([]byte(strings.ToLower(oldUser.Username)))
-				}
-				if oldUser.Email != "" && !strings.EqualFold(oldUser.Email, user.Email) {
-					eb.Delete([]byte(strings.ToLower(oldUser.Email)))
-				}
-				if oldUser.UID != "" && !strings.EqualFold(oldUser.UID, user.UID) {
-					ib.Delete([]byte(strings.ToLower(oldUser.UID)))
-				}
-			}
-		}
-
-		// 存储用户
-		data, err := json.Marshal(user)
-		if err != nil {
-			return fmt.Errorf("failed to marshal user: %w", err)
-		}
-		if err := ub.Put([]byte(user.ID), data); err != nil {
-			return fmt.Errorf("failed to put user: %w", err)
-		}
-
-		// 存储索引
-		if user.APIKey != "" {
-			if err := kb.Put([]byte(user.APIKey), []byte(user.ID)); err != nil {
-				return fmt.Errorf("failed to put api key index: %w", err)
-			}
-		}
-		if user.Username != "" {
-			if err := nb.Put([]byte(strings.ToLower(user.Username)), []byte(user.ID)); err != nil {
-				return fmt.Errorf("failed to put username index: %w", err)
-			}
-		}
-		if user.Email != "" {
-			if err := eb.Put([]byte(strings.ToLower(user.Email)), []byte(user.ID)); err != nil {
-				return fmt.Errorf("failed to put email index: %w", err)
-			}
-		}
-		if user.UID != "" {
-			if err := ib.Put([]byte(strings.ToLower(user.UID)), []byte(user.ID)); err != nil {
-				return fmt.Errorf("failed to put uid index: %w", err)
-			}
-		}
-
-		return nil
+		return s.storeUserTx(tx, user, requireExisting)
 	})
+}
+
+func (s *BoltUserStore) MutateExisting(id string, mutate func(*User) error) (*User, error) {
+	if id == "" || mutate == nil {
+		return nil, fmt.Errorf("user ID and mutation are required")
+	}
+	var updated User
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		if tx.Bucket(userDeletionCleanupBucket).Get([]byte(id)) != nil {
+			return fmt.Errorf("user deletion cleanup is pending: %s", id)
+		}
+		data := tx.Bucket(usersBucket).Get([]byte(id))
+		if data == nil {
+			return fmt.Errorf("user not found: %s", id)
+		}
+		if err := json.Unmarshal(data, &updated); err != nil {
+			return fmt.Errorf("failed to decode user: %w", err)
+		}
+		if err := mutate(&updated); err != nil {
+			return err
+		}
+		if updated.ID != id {
+			return fmt.Errorf("user ID cannot be changed")
+		}
+		return s.storeUserTx(tx, &updated, true)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (s *BoltUserStore) storeUserTx(tx *bolt.Tx, user *User, requireExisting bool) error {
+	ub := tx.Bucket(usersBucket)
+	if tx.Bucket(userDeletionCleanupBucket).Get([]byte(user.ID)) != nil {
+		return fmt.Errorf("user deletion cleanup is pending: %s", user.ID)
+	}
+	if requireExisting && ub.Get([]byte(user.ID)) == nil {
+		return fmt.Errorf("user not found: %s", user.ID)
+	}
+	kb := tx.Bucket(userKeysBucket)
+	nb := tx.Bucket(userNamesBucket)
+	eb := tx.Bucket(userEmailsBucket)
+	ib := tx.Bucket(userUIDsBucket)
+
+	// Enforce index ownership inside the same Bolt write transaction. This
+	// protects callers other than registration and prevents concurrent
+	// creates from silently stealing another user's login/API-key index.
+	checks := []struct {
+		bucket *bolt.Bucket
+		value  string
+		label  string
+		lower  bool
+	}{
+		{kb, user.APIKey, "API key", false},
+		{nb, user.Username, "username", true},
+		{eb, user.Email, "email", true},
+		{ib, user.UID, "UID", true},
+	}
+	for _, check := range checks {
+		if check.value == "" {
+			continue
+		}
+		key := check.value
+		if check.lower {
+			key = strings.ToLower(key)
+		}
+		if owner := check.bucket.Get([]byte(key)); owner != nil && string(owner) != user.ID {
+			return fmt.Errorf("%s already belongs to another user", check.label)
+		}
+	}
+
+	// 删除旧索引（如果存在且已变更）
+	if oldData := ub.Get([]byte(user.ID)); oldData != nil {
+		var oldUser User
+		if err := json.Unmarshal(oldData, &oldUser); err == nil {
+			if oldUser.UID != "" && oldUser.UID != user.UID {
+				return fmt.Errorf("UID cannot be changed")
+			}
+			if oldUser.APIKey != "" && oldUser.APIKey != user.APIKey {
+				kb.Delete([]byte(oldUser.APIKey))
+			}
+			if oldUser.Username != "" && !strings.EqualFold(oldUser.Username, user.Username) {
+				nb.Delete([]byte(strings.ToLower(oldUser.Username)))
+			}
+			if oldUser.Email != "" && !strings.EqualFold(oldUser.Email, user.Email) {
+				eb.Delete([]byte(strings.ToLower(oldUser.Email)))
+			}
+			if oldUser.UID != "" && !strings.EqualFold(oldUser.UID, user.UID) {
+				ib.Delete([]byte(strings.ToLower(oldUser.UID)))
+			}
+		}
+	}
+
+	// 存储用户
+	data, err := json.Marshal(user)
+	if err != nil {
+		return fmt.Errorf("failed to marshal user: %w", err)
+	}
+	if err := ub.Put([]byte(user.ID), data); err != nil {
+		return fmt.Errorf("failed to put user: %w", err)
+	}
+
+	// 存储索引
+	if user.APIKey != "" {
+		if err := kb.Put([]byte(user.APIKey), []byte(user.ID)); err != nil {
+			return fmt.Errorf("failed to put api key index: %w", err)
+		}
+	}
+	if user.Username != "" {
+		if err := nb.Put([]byte(strings.ToLower(user.Username)), []byte(user.ID)); err != nil {
+			return fmt.Errorf("failed to put username index: %w", err)
+		}
+	}
+	if user.Email != "" {
+		if err := eb.Put([]byte(strings.ToLower(user.Email)), []byte(user.ID)); err != nil {
+			return fmt.Errorf("failed to put email index: %w", err)
+		}
+	}
+	if user.UID != "" {
+		if err := ib.Put([]byte(strings.ToLower(user.UID)), []byte(user.ID)); err != nil {
+			return fmt.Errorf("failed to put uid index: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // UpdateProfile patches only user-owned fields in one Bolt write transaction.

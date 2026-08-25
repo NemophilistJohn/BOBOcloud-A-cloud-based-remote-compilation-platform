@@ -3,6 +3,7 @@
 package dap
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -79,8 +80,21 @@ func pinDAPDependencyMount(mountRoot, sessionID, source string) (string, func(),
 }
 
 func releaseDAPDependencyMountAnchor(sessionRoot, anchor string) error {
+	return releaseDAPDependencyMountAnchorContext(context.Background(), sessionRoot, anchor)
+}
+
+func releaseDAPDependencyMountAnchorContext(ctx context.Context, sessionRoot, anchor string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := unix.Unmount(anchor, unix.MNT_DETACH); err != nil && err != unix.EINVAL && err != unix.ENOENT {
 		return fmt.Errorf("unmount DAP dependency anchor %q: %w", anchor, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := os.Remove(anchor); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove DAP dependency anchor %q: %w", anchor, err)
@@ -94,6 +108,18 @@ func releaseDAPDependencyMountAnchor(sessionRoot, anchor string) error {
 // CleanupDependencyMountOrphans releases only DAP-managed anchors left after
 // an unclean server exit. It never recursively removes a mounted directory.
 func CleanupDependencyMountOrphans(mountRoot string) error {
+	return CleanupDependencyMountOrphansContext(context.Background(), mountRoot)
+}
+
+// CleanupDependencyMountOrphansContext is the cancellable startup-recovery
+// variant. Cancellation is checked between every managed session and anchor.
+func CleanupDependencyMountOrphansContext(ctx context.Context, mountRoot string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	root, err := prepareDAPDependencyMountRoot(mountRoot)
 	if err != nil {
 		return fmt.Errorf("prepare DAP dependency mount cleanup: %w", err)
@@ -104,6 +130,9 @@ func CleanupDependencyMountOrphans(mountRoot string) error {
 	}
 	var result error
 	for _, session := range sessions {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(result, err)
+		}
 		if !strings.HasPrefix(session.Name(), "session-") {
 			continue
 		}
@@ -128,7 +157,11 @@ func CleanupDependencyMountOrphans(mountRoot string) error {
 			}
 			continue
 		}
-		result = errors.Join(result, releaseDAPDependencyMountAnchor(sessionRoot, anchor))
+		releaseErr := releaseDAPDependencyMountAnchorContext(ctx, sessionRoot, anchor)
+		result = errors.Join(result, releaseErr)
+		if ctx.Err() != nil {
+			return errors.Join(result, ctx.Err())
+		}
 	}
 	return result
 }

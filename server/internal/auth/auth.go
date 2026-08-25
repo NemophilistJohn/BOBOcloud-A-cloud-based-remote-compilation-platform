@@ -77,9 +77,16 @@ type UserStore interface {
 	GetByUsername(username string) (*User, error)
 	GetByEmail(email string) (*User, error)
 	Create(user *User) error
+	// UpdateExisting atomically rejects stale writes after an account was
+	// deleted; unlike Create it can never recreate a missing user record.
+	UpdateExisting(user *User) error
+	// MutateExisting loads the latest record and applies a field-level mutation
+	// under the store's write lock/transaction. Handlers use it to avoid lost
+	// updates between independent password, role, status, and quota changes.
+	MutateExisting(id string, mutate func(*User) error) (*User, error)
 	UpdateProfile(id, name, avatar string) (*User, error)
-	// Restore re-creates the exact previously stored record. It is used only to
-	// compensate a failed multi-store account deletion before its commit point.
+	// Restore re-creates an exact previously stored record for explicit recovery.
+	// Normal account deletion is committed atomically and retried via its marker.
 	Restore(user *User) error
 	Delete(id string) error
 	// DeleteWithCleanupMarker atomically removes the account record and creates
@@ -312,13 +319,55 @@ func (s *MemoryUserStore) GetByEmail(email string) (*User, error) {
 }
 
 func (s *MemoryUserStore) Create(user *User) error {
+	return s.storeUser(user, false)
+}
+
+func (s *MemoryUserStore) UpdateExisting(user *User) error {
+	return s.storeUser(user, true)
+}
+
+func (s *MemoryUserStore) storeUser(user *User, requireExisting bool) error {
 	if user == nil || user.ID == "" {
 		return fmt.Errorf("user ID is required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.storeUserLocked(user, requireExisting)
+}
+
+func (s *MemoryUserStore) MutateExisting(id string, mutate func(*User) error) (*User, error) {
+	if id == "" || mutate == nil {
+		return nil, fmt.Errorf("user ID and mutation are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deletionCleanup[id] {
+		return nil, fmt.Errorf("user deletion cleanup is pending: %s", id)
+	}
+	current, exists := s.users[id]
+	if !exists {
+		return nil, fmt.Errorf("user not found: %s", id)
+	}
+	updated := cloneUser(current)
+	if err := mutate(updated); err != nil {
+		return nil, err
+	}
+	if updated.ID != id {
+		return nil, fmt.Errorf("user ID cannot be changed")
+	}
+	if err := s.storeUserLocked(updated, true); err != nil {
+		return nil, err
+	}
+	return cloneUser(updated), nil
+}
+
+func (s *MemoryUserStore) storeUserLocked(user *User, requireExisting bool) error {
 	if s.deletionCleanup[user.ID] {
 		return fmt.Errorf("user deletion cleanup is pending: %s", user.ID)
+	}
+	old, exists := s.users[user.ID]
+	if requireExisting && !exists {
+		return fmt.Errorf("user not found: %s", user.ID)
 	}
 	if user.APIKey != "" {
 		if owner, ok := s.keyIndex[user.APIKey]; ok && owner != user.ID {
@@ -341,7 +390,7 @@ func (s *MemoryUserStore) Create(user *User) error {
 		}
 	}
 	// 清理旧索引（更新场景）
-	if old, ok := s.users[user.ID]; ok {
+	if exists {
 		// Public UID is immutable once assigned. This also protects callers that
 		// update a full User object without going through the profile handler.
 		if old.UID != "" && user.UID != old.UID {

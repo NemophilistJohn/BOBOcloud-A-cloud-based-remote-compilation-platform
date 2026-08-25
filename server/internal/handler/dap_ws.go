@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,16 +28,7 @@ import (
 
 var dapUpgrader = websocket.Upgrader{
 	ReadBufferSize: 4096, WriteBufferSize: 4096,
-	CheckOrigin: func(r *http.Request) bool {
-		// Electron has no Origin header. Browser clients must be same-origin;
-		// authentication and TLS still protect both cases.
-		origin := strings.TrimSpace(r.Header.Get("Origin"))
-		if origin == "" {
-			return true
-		}
-		parsed, err := url.Parse(origin)
-		return err == nil && strings.EqualFold(parsed.Host, r.Host)
-	},
+	CheckOrigin: websocketOriginAllowed,
 }
 
 type DAPHandler struct {
@@ -53,6 +43,8 @@ type DAPHandler struct {
 	ChildTickets    *dap.ChildTicketBroker
 	PersonalCache   *personalcache.Manager
 	RuntimeMetadata RuntimeMetadataProvider
+	Accepting       func() bool
+	AcquireWork     func(string) (func(), error)
 }
 
 type dapWorkspaceStart struct {
@@ -339,12 +331,19 @@ func releaseDAPSessionAfterStartError(release func(), err error) {
 }
 
 func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	releaseWork, accepted := acquireLongLivedWork(w, h.Accepting, h.AcquireWork, "dap-websocket")
+	if !accepted {
+		return
+	}
+	defer releaseWork()
 	conn, err := dapUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Error("DAP WebSocket upgrade failed", "error", err)
 		return
 	}
 	defer conn.Close()
+	stopContextClose := closeWebSocketOnContext(r.Context(), conn)
+	defer stopContextClose()
 	if h.Manager == nil || h.Config == nil || !h.Config.DAPEnabled {
 		writeDAPControlError(conn, "disabled", "remote debugging is disabled")
 		return
@@ -647,11 +646,18 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 // a separate listener from the root DAP endpoint: the child ticket is bound to
 // an authenticated parent user and expires after a few seconds.
 func (h *DAPHandler) HandleChildWebSocket(w http.ResponseWriter, r *http.Request) {
+	releaseWork, accepted := acquireLongLivedWork(w, h.Accepting, h.AcquireWork, "dap-child-websocket")
+	if !accepted {
+		return
+	}
+	defer releaseWork()
 	conn, err := dapUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer conn.Close()
+	stopContextClose := closeWebSocketOnContext(r.Context(), conn)
+	defer stopContextClose()
 	if h.Manager == nil || h.Config == nil || !h.Config.DAPEnabled || h.ChildTickets == nil {
 		writeDAPControlError(conn, "child_session_unavailable", "debug child sessions are unavailable")
 		return

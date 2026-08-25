@@ -41,9 +41,7 @@ import (
 var wsUpgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
+	CheckOrigin:     runWebSocketOriginAllowed,
 }
 
 // WSHandler 处理 WebSocket 连接
@@ -67,15 +65,24 @@ type WSHandler struct {
 	PersonalCache   *personalcache.Manager
 	RuntimeMetadata RuntimeMetadataProvider
 	Metrics         *metrics.Registry
+	Accepting       func() bool
+	AcquireWork     func(string) (func(), error)
 }
 
 // HandleWebSocket 处理 WebSocket 连接
 func (h *WSHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	releaseWork, accepted := acquireLongLivedWork(w, h.Accepting, h.AcquireWork, "run-websocket")
+	if !accepted {
+		return
+	}
+	defer releaseWork()
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Error("WebSocket upgrade failed", "error", err)
 		return
 	}
+	stopContextClose := closeWebSocketOnContext(r.Context(), conn)
+	defer stopContextClose()
 
 	conn.SetReadLimit(int64(h.Config.WSReadLimit))
 	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
@@ -117,9 +124,20 @@ func (h *WSHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, ok := h.Sessions.Get(msg.RunID)
+	sess, ok, lookupErr := h.Sessions.Lookup(msg.RunID)
+	if lookupErr != nil {
+		runSessionLifecycleMu.Unlock()
+		sendWSErrorAndClose(conn, "Run session storage is unavailable")
+		slog.Error("WS attach rejected: failed to read session", "runId", msg.RunID, "error", lookupErr)
+		return
+	}
 	if !ok {
-		h.Channels.CleanupRun(msg.RunID, h.Sessions)
+		// A confirmed missing session can never own executable work. Seal this
+		// generation before scheduling cleanup so later attaches cannot revive it.
+		channel.Close()
+		if cleanupErr := h.Channels.CleanupRun(msg.RunID, channel, h.Sessions); cleanupErr != nil {
+			slog.Error("Failed to clean orphan run channel", "runId", msg.RunID, "error", cleanupErr)
+		}
 		runSessionLifecycleMu.Unlock()
 		sendWSErrorAndClose(conn, "Unknown runId")
 		slog.Error("WS attach rejected: no session", "runId", msg.RunID)
@@ -133,14 +151,36 @@ func (h *WSHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.Sessions.MarkStarted(msg.RunID) {
-		runSessionLifecycleMu.Unlock()
-		sendWSErrorAndClose(conn, "Run already started")
-		slog.Error("WS attach rejected: already started", "runId", msg.RunID)
+	if startErr := h.Sessions.MarkStarted(msg.RunID); startErr != nil {
+		switch {
+		case errors.Is(startErr, storage.ErrSessionAlreadyStarted):
+			runSessionLifecycleMu.Unlock()
+			sendWSErrorAndClose(conn, "Run already started")
+			slog.Error("WS attach rejected: already started", "runId", msg.RunID)
+		case errors.Is(startErr, storage.ErrSessionNotFound):
+			channel.Close()
+			if cleanupErr := h.Channels.CleanupRun(msg.RunID, channel, h.Sessions); cleanupErr != nil {
+				slog.Error("Failed to clean disappeared run session", "runId", msg.RunID, "error", cleanupErr)
+			}
+			runSessionLifecycleMu.Unlock()
+			sendWSErrorAndClose(conn, "Unknown runId")
+			slog.Error("WS attach rejected: session disappeared", "runId", msg.RunID)
+		default:
+			runSessionLifecycleMu.Unlock()
+			sendWSErrorAndClose(conn, "Run session storage is unavailable")
+			slog.Error("WS attach rejected: failed to persist started state", "runId", msg.RunID, "error", startErr)
+		}
 		return
 	}
 
-	channel.Attach(conn)
+	if !channel.Attach(conn) {
+		cleanupErr := h.Channels.CleanupRun(msg.RunID, channel, h.Sessions)
+		runSessionLifecycleMu.Unlock()
+		if cleanupErr != nil {
+			slog.Error("Failed to clean closed run generation after attach rejection", "runId", msg.RunID, "error", cleanupErr)
+		}
+		return
+	}
 	runSessionLifecycleMu.Unlock()
 	conn.SetReadDeadline(time.Time{})
 	slog.Info("WS attached",
@@ -150,7 +190,7 @@ func (h *WSHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// 可取消的运行上下文：客户端发 {type:"cancel"} 即可中止运行
-	runCtx, cancelRun := context.WithCancel(context.Background())
+	runCtx, cancelRun := context.WithCancel(r.Context())
 	defer cancelRun()
 
 	// stdin 管道：客户端发 {type:"stdin", data:"..."} 时写入 stdinWrite，
@@ -197,7 +237,9 @@ func (h *WSHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	channel.WaitUntilClosed()
-	h.Channels.CleanupRun(msg.RunID, h.Sessions)
+	if cleanupErr := h.Channels.CleanupRun(msg.RunID, channel, h.Sessions); cleanupErr != nil {
+		slog.Error("Failed to clean completed run session", "runId", msg.RunID, "error", cleanupErr)
+	}
 
 	// ── 保存运行历史（仅 BoltDB 模式）──
 	if h.RunHistory != nil && runResult != nil {
@@ -312,7 +354,9 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 
 	defer func() {
 		channel.Close()
-		h.Channels.CleanupRun(runID, h.Sessions)
+		if err := h.Channels.CleanupRun(runID, channel, h.Sessions); err != nil {
+			slog.Error("Failed to clean run session", "run_id", runID, "error", err)
+		}
 	}()
 	defer func() {
 		if runResult != nil && ctx.Err() == context.Canceled {

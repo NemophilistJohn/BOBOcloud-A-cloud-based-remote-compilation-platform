@@ -310,11 +310,23 @@ func NewManager(dataDir string, options Options) *Manager {
 // RecoverOrphanedTransactions must run only after all Docker containers from
 // the previous server process have been confirmed removed.
 func (m *Manager) RecoverOrphanedTransactions() {
+	_ = m.RecoverOrphanedTransactionsContext(context.Background())
+}
+
+// RecoverOrphanedTransactionsContext performs startup recovery while allowing
+// process shutdown to interrupt mount cleanup, inventory scans, and stale-tree
+// removal. The legacy method above preserves the original best-effort API.
+func (m *Manager) RecoverOrphanedTransactionsContext(ctx context.Context) error {
 	if m == nil {
-		return
+		return nil
 	}
-	cleanupPublishedDependencyPins(m.root)
-	recoverDependencyTransactions(m.root)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := cleanupPublishedDependencyPinsContext(ctx, m.root); err != nil {
+		return err
+	}
+	return recoverDependencyTransactionsContext(ctx, m.root)
 }
 
 func (m *Manager) ScopeMode() string {

@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,17 +53,7 @@ var (
 var terminalUpgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
-	CheckOrigin: func(r *http.Request) bool {
-		// Electron has no Origin header. Browser clients are accepted only from
-		// the server host. Credentials are sent by Electron's main process in
-		// the first frame, never exposed through a renderer URL/query string.
-		origin := strings.TrimSpace(r.Header.Get("Origin"))
-		if origin == "" {
-			return true
-		}
-		parsed, err := url.Parse(origin)
-		return err == nil && strings.EqualFold(parsed.Host, r.Host)
-	},
+	CheckOrigin:     websocketOriginAllowed,
 }
 
 // terminalWorkspaceRequest contains only logical cloud-workspace identity.
@@ -756,12 +745,19 @@ func handoffTerminalContainerCleanup(discarder terminalContainerDiscarder, conta
 // HandleTerminalWebSocket is the canonical `/terminal` endpoint. Main keeps
 // `/term` as a routing alias only for internal backwards compatibility.
 func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Request) {
+	releaseWork, accepted := acquireLongLivedWork(w, h.Accepting, h.AcquireWork, "terminal-websocket")
+	if !accepted {
+		return
+	}
+	defer releaseWork()
 	conn, err := terminalUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Warn("Terminal WebSocket upgrade failed", "error", err)
 		return
 	}
 	defer conn.Close()
+	stopContextClose := closeWebSocketOnContext(r.Context(), conn)
+	defer stopContextClose()
 
 	limits := terminalProtocolLimits(h.Config)
 	conn.SetReadLimit(limits.MaxMessage)

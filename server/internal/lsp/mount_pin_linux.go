@@ -3,6 +3,7 @@
 package lsp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -110,8 +111,18 @@ func prepareDependencyMountRoot(value string) (string, error) {
 }
 
 func releaseDependencyMountAnchors(sessionRoot string, anchors []string) error {
+	return releaseDependencyMountAnchorsContext(context.Background(), sessionRoot, anchors)
+}
+
+func releaseDependencyMountAnchorsContext(ctx context.Context, sessionRoot string, anchors []string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var result error
 	for index := len(anchors) - 1; index >= 0; index-- {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(result, err)
+		}
 		anchor := anchors[index]
 		if err := unix.Unmount(anchor, unix.MNT_DETACH); err != nil && err != unix.EINVAL && err != unix.ENOENT {
 			result = errors.Join(result, fmt.Errorf("unmount LSP dependency anchor %q: %w", anchor, err))
@@ -122,6 +133,9 @@ func releaseDependencyMountAnchors(sessionRoot string, anchors []string) error {
 		}
 	}
 	if result == nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := os.Remove(sessionRoot); err != nil && !os.IsNotExist(err) {
 			result = fmt.Errorf("remove LSP dependency mount session %q: %w", sessionRoot, err)
 		}
@@ -132,6 +146,18 @@ func releaseDependencyMountAnchors(sessionRoot string, anchors []string) error {
 // CleanupDependencyMountOrphans releases anchors left after an unclean server
 // exit. It never recursively removes a mounted directory.
 func CleanupDependencyMountOrphans(mountRoot string) error {
+	return CleanupDependencyMountOrphansContext(context.Background(), mountRoot)
+}
+
+// CleanupDependencyMountOrphansContext is the cancellable startup-recovery
+// variant. Cancellation is checked between every managed session and anchor.
+func CleanupDependencyMountOrphansContext(ctx context.Context, mountRoot string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	root, err := prepareDependencyMountRoot(mountRoot)
 	if err != nil {
 		return fmt.Errorf("prepare LSP dependency mount cleanup: %w", err)
@@ -142,6 +168,9 @@ func CleanupDependencyMountOrphans(mountRoot string) error {
 	}
 	var result error
 	for _, session := range sessions {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(result, err)
+		}
 		if !strings.HasPrefix(session.Name(), "session-") {
 			continue
 		}
@@ -157,11 +186,18 @@ func CleanupDependencyMountOrphans(mountRoot string) error {
 		}
 		anchors := make([]string, 0, len(entries))
 		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return errors.Join(result, err)
+			}
 			if entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && strings.HasPrefix(entry.Name(), "mount-") {
 				anchors = append(anchors, filepath.Join(sessionRoot, entry.Name()))
 			}
 		}
-		result = errors.Join(result, releaseDependencyMountAnchors(sessionRoot, anchors))
+		releaseErr := releaseDependencyMountAnchorsContext(ctx, sessionRoot, anchors)
+		result = errors.Join(result, releaseErr)
+		if ctx.Err() != nil {
+			return errors.Join(result, ctx.Err())
+		}
 	}
 	return result
 }

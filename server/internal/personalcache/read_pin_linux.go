@@ -3,6 +3,7 @@
 package personalcache
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,12 +39,25 @@ func pinPublishedDependency(root, source string) (string, func(), error) {
 }
 
 func cleanupPublishedDependencyPins(root string) {
+	_ = cleanupPublishedDependencyPinsContext(context.Background(), root)
+}
+
+func cleanupPublishedDependencyPinsContext(ctx context.Context, root string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	mountRoot := filepath.Join(filepath.Dir(root), "personalcache-mounts")
 	entries, err := os.ReadDir(mountRoot)
 	if err != nil {
-		return
+		return nil
 	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 			continue
 		}
@@ -51,4 +65,5 @@ func cleanupPublishedDependencyPins(root string) {
 		_ = unix.Unmount(path, unix.MNT_DETACH)
 		_ = os.Remove(path)
 	}
+	return ctx.Err()
 }

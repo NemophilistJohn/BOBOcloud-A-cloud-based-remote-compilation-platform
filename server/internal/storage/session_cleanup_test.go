@@ -26,16 +26,23 @@ func TestBoltSessionCleanupKeepsStartedSessions(t *testing.T) {
 		}
 	})
 
-	store := NewBoltSessionStore(db)
+	store, err := NewBoltSessionStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
 	assertCleanupKeepsStartedSession(t, store)
 }
 
 func assertCleanupKeepsStartedSession(t *testing.T, store SessionStore) {
 	t.Helper()
-	store.Create(&model.RunSession{RunID: "expired-pending", UserID: "user"})
-	store.Create(&model.RunSession{RunID: "expired-started", UserID: "user"})
-	if !store.MarkStarted("expired-started") {
-		t.Fatal("failed to mark fixture session started")
+	if _, err := store.Create(&model.RunSession{RunID: "expired-pending", UserID: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(&model.RunSession{RunID: "expired-started", UserID: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkStarted("expired-started"); err != nil {
+		t.Fatalf("failed to mark fixture session started: %v", err)
 	}
 
 	time.Sleep(time.Millisecond)

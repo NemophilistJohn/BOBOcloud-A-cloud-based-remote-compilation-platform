@@ -217,6 +217,86 @@ func TestUserDeletionCleanupMarkerLifecycle(t *testing.T) {
 	})
 }
 
+func TestUserStoreUpdateExistingCannotRecreateDeletedAccount(t *testing.T) {
+	forEachUserStore(t, func(t *testing.T, store UserStore) {
+		original := testUser("stale-update", "Stale", "stale@example.com", "stale-key")
+		if err := store.Create(original); err != nil {
+			t.Fatal(err)
+		}
+		stale, err := store.Get(original.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.DeleteWithCleanupMarker(original.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.DeleteDeletionCleanup(original.ID); err != nil {
+			t.Fatal(err)
+		}
+		stale.ContainerLimit = 99
+		if err := store.UpdateExisting(stale); err == nil {
+			t.Fatal("stale update recreated an account after deletion completed")
+		}
+		if _, err := store.Get(original.ID); err == nil {
+			t.Fatal("deleted account exists after rejected stale update")
+		}
+	})
+}
+
+func TestUserStoreMutateExistingPreservesConcurrentFieldChanges(t *testing.T) {
+	forEachUserStore(t, func(t *testing.T, store UserStore) {
+		original := testUser("atomic-fields", "Atomic", "atomic@example.com", "atomic-key")
+		original.PasswordHash = "password-before"
+		original.ContainerLimit = 1
+		original.RateLimit = 10
+		if err := store.Create(original); err != nil {
+			t.Fatal(err)
+		}
+
+		firstEntered := make(chan struct{})
+		releaseFirst := make(chan struct{})
+		firstDone := make(chan error, 1)
+		go func() {
+			_, err := store.MutateExisting(original.ID, func(latest *User) error {
+				close(firstEntered)
+				<-releaseFirst
+				latest.PasswordHash = "password-after"
+				return nil
+			})
+			firstDone <- err
+		}()
+		<-firstEntered
+
+		secondStarted := make(chan struct{})
+		secondDone := make(chan error, 1)
+		go func() {
+			close(secondStarted)
+			_, err := store.MutateExisting(original.ID, func(latest *User) error {
+				latest.ContainerLimit = 8
+				latest.RateLimit = 80
+				return nil
+			})
+			secondDone <- err
+		}()
+		<-secondStarted
+		close(releaseFirst)
+
+		if err := <-firstDone; err != nil {
+			t.Fatalf("first mutation: %v", err)
+		}
+		if err := <-secondDone; err != nil {
+			t.Fatalf("second mutation: %v", err)
+		}
+		stored, err := store.Get(original.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.PasswordHash != "password-after" || stored.ContainerLimit != 8 || stored.RateLimit != 80 {
+			t.Fatalf("concurrent field mutations lost data: %+v", stored)
+		}
+	})
+}
+
 func TestBoltUserDeletionCleanupMarkerSurvivesStoreRecreation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cleanup-restart.db")
 	db, err := bolt.Open(path, 0600, nil)

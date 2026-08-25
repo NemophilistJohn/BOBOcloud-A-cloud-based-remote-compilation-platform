@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,12 +19,45 @@ import (
 )
 
 type cancelRunResponse struct {
-	Success bool   `json:"success"`
-	Error   string `json:"error"`
-	Data    struct {
+	Success   bool   `json:"success"`
+	Error     string `json:"error"`
+	ErrorCode string `json:"errorCode"`
+	Data      struct {
 		Status                  string `json:"status"`
 		RequiresWebSocketCancel bool   `json:"requiresWebSocketCancel"`
 	} `json:"data"`
+}
+
+type createFailingSessionStore struct {
+	*storage.MemorySessionStore
+	createErr error
+}
+
+func (s *createFailingSessionStore) Create(*model.RunSession) (*model.RunSession, error) {
+	return nil, s.createErr
+}
+
+type deleteFailingSessionStore struct {
+	*storage.MemorySessionStore
+	deleteErr error
+	failures  int
+}
+
+type lookupFailingSessionStore struct {
+	*storage.MemorySessionStore
+	err error
+}
+
+func (s *lookupFailingSessionStore) Lookup(string) (*model.RunSession, bool, error) {
+	return nil, false, s.err
+}
+
+func (s *deleteFailingSessionStore) Delete(runID string) error {
+	if s.failures > 0 {
+		s.failures--
+		return s.deleteErr
+	}
+	return s.MemorySessionStore.Delete(runID)
 }
 
 func newCancelRunTestHandler(t *testing.T) (*HTTPHandler, *storage.MemorySessionStore, *session.ChannelManager) {
@@ -116,6 +150,60 @@ func TestCancelRunBeforeCreateLeavesTombstone(t *testing.T) {
 	}
 }
 
+func TestCancelRunLookupFailureDoesNotMutateRun(t *testing.T) {
+	handler, base, channels := newRunLifecycleHTTPHandler(t)
+	if _, err := base.Create(&model.RunSession{RunID: "lookup-failure-run", UserID: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	originalChannel := channels.GetOrCreate("lookup-failure-run", true)
+	handler.Sessions = &lookupFailingSessionStore{
+		MemorySessionStore: base,
+		err:                errors.New("database is temporarily read-only"),
+	}
+
+	recorder, response := callCancelRun(t, handler, "lookup-failure-run")
+	if recorder.Code != http.StatusServiceUnavailable || response.Success || response.ErrorCode != "run_session_storage_unavailable" {
+		t.Fatalf("lookup failure response: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, exists := base.Get("lookup-failure-run"); !exists {
+		t.Fatal("lookup failure removed the persistent run")
+	}
+	if current := channels.GetOrCreate("lookup-failure-run", false); current != originalChannel {
+		t.Fatal("lookup failure removed or replaced the channel")
+	}
+	closed := make(chan struct{})
+	go func() {
+		originalChannel.WaitUntilClosed()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("lookup failure closed the channel")
+	default:
+	}
+	originalChannel.Close()
+	<-closed
+}
+
+func TestRunCodeLookupFailureDoesNotCreateHandshake(t *testing.T) {
+	handler, base, channels := newRunLifecycleHTTPHandler(t)
+	handler.Sessions = &lookupFailingSessionStore{
+		MemorySessionStore: base,
+		err:                errors.New("database is temporarily read-only"),
+	}
+
+	recorder, response := callRunCode(t, handler, "lookup-failure-create")
+	if recorder.Code != http.StatusServiceUnavailable || response.Success || response.ErrorCode != "run_session_storage_unavailable" {
+		t.Fatalf("lookup failure response: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, exists := base.Get("lookup-failure-create"); exists {
+		t.Fatal("lookup failure persisted a new run")
+	}
+	if channel := channels.GetOrCreate("lookup-failure-create", false); channel != nil {
+		t.Fatal("lookup failure created a channel")
+	}
+}
+
 func TestCancelRunAfterCreateRemovesHandshake(t *testing.T) {
 	handler, store, channels := newRunLifecycleHTTPHandler(t)
 
@@ -133,6 +221,72 @@ func TestCancelRunAfterCreateRemovesHandshake(t *testing.T) {
 	}
 	if channel := channels.GetOrCreate("created-run", false); channel != nil {
 		t.Fatal("cancelled-after-create channel was not removed")
+	}
+}
+
+func TestCancelRunDeleteFailureKeepsPairForRetry(t *testing.T) {
+	handler, base, channels := newRunLifecycleHTTPHandler(t)
+	deleteErr := errors.New("database is temporarily read-only")
+	store := &deleteFailingSessionStore{MemorySessionStore: base, deleteErr: deleteErr, failures: 1}
+	handler.Sessions = store
+
+	creationRecorder, creation := callRunCode(t, handler, "retry-cancel-run")
+	if creationRecorder.Code != http.StatusOK || !creation.Success {
+		t.Fatalf("runCode fixture failed: status=%d body=%s", creationRecorder.Code, creationRecorder.Body.String())
+	}
+	originalChannel := channels.GetOrCreate("retry-cancel-run", false)
+	if originalChannel == nil {
+		t.Fatal("runCode fixture did not create a channel")
+	}
+
+	failedRecorder, failed := callCancelRun(t, handler, "retry-cancel-run")
+	if failedRecorder.Code != http.StatusServiceUnavailable || failed.Success || failed.ErrorCode != "run_session_cleanup_failed" {
+		t.Fatalf("failed cleanup response: status=%d body=%s", failedRecorder.Code, failedRecorder.Body.String())
+	}
+	if _, exists := base.Get("retry-cancel-run"); !exists {
+		t.Fatal("failed cancellation lost its persistent retry state")
+	}
+	if current := channels.GetOrCreate("retry-cancel-run", false); current != originalChannel {
+		t.Fatal("failed cancellation released or replaced its channel generation")
+	}
+
+	retryRecorder, retried := callCancelRun(t, handler, "retry-cancel-run")
+	if retryRecorder.Code != http.StatusOK || !retried.Success || retried.Data.Status != "cancelled" {
+		t.Fatalf("retry cleanup response: status=%d body=%s", retryRecorder.Code, retryRecorder.Body.String())
+	}
+	if _, exists := base.Get("retry-cancel-run"); exists {
+		t.Fatal("successful cancellation retry retained its session")
+	}
+	if current := channels.GetOrCreate("retry-cancel-run", false); current != nil {
+		t.Fatal("successful cancellation retry retained its channel")
+	}
+}
+
+func TestCleanupExpiredRunsRetriesFailedStartedCleanup(t *testing.T) {
+	base := storage.NewMemorySessionStore()
+	deleteErr := errors.New("database is temporarily read-only")
+	store := &deleteFailingSessionStore{MemorySessionStore: base, deleteErr: deleteErr, failures: 1}
+	channels := session.NewChannelManager()
+	if _, err := base.Create(&model.RunSession{RunID: "started-cleanup-retry", UserID: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MarkStarted("started-cleanup-retry"); err != nil {
+		t.Fatal(err)
+	}
+	owned := channels.GetOrCreate("started-cleanup-retry", true)
+	owned.Close()
+	if err := channels.CleanupRun("started-cleanup-retry", owned, store); !errors.Is(err, deleteErr) {
+		t.Fatalf("first cleanup error = %v, want %v", err, deleteErr)
+	}
+
+	if expired := CleanupExpiredRuns(store, channels, time.Hour); len(expired) != 0 {
+		t.Fatalf("started cleanup retry was treated as TTL expiry: %v", expired)
+	}
+	if _, exists := base.Get("started-cleanup-retry"); exists {
+		t.Fatal("periodic cleanup retained the failed started session")
+	}
+	if current := channels.GetOrCreate("started-cleanup-retry", false); current != nil {
+		t.Fatal("periodic cleanup retained the failed channel generation")
 	}
 }
 
@@ -161,8 +315,8 @@ func TestCancelRunRemovesOwnedPendingSessionAndChannel(t *testing.T) {
 func TestCancelRunStartedSessionRequiresWebSocketCancellation(t *testing.T) {
 	handler, store, channels := newCancelRunTestHandler(t)
 	store.Create(&model.RunSession{RunID: "started-run", UserID: "default"})
-	if !store.MarkStarted("started-run") {
-		t.Fatal("failed to mark fixture session started")
+	if err := store.MarkStarted("started-run"); err != nil {
+		t.Fatalf("failed to mark fixture session started: %v", err)
 	}
 	originalChannel := channels.GetOrCreate("started-run", true)
 
@@ -357,13 +511,53 @@ func TestConcurrentRunCodeWithSameIDCreatesOneHandshake(t *testing.T) {
 	}
 }
 
+func TestRunHandshakeRejectsSessionPersistenceFailureWithoutOrphanChannel(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		issue func(*testing.T, http.Handler) (*httptest.ResponseRecorder, model.Response)
+	}{
+		{
+			name: "runCode",
+			issue: func(t *testing.T, handler http.Handler) (*httptest.ResponseRecorder, model.Response) {
+				return callRunCode(t, handler, "storage-failure")
+			},
+		},
+		{
+			name: "runTask",
+			issue: func(t *testing.T, handler http.Handler) (*httptest.ResponseRecorder, model.Response) {
+				return issueTaskRequest(t, handler, validTaskRequest("storage-failure"))
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			handler, _, channels := newRunLifecycleHTTPHandler(t)
+			store := &createFailingSessionStore{
+				MemorySessionStore: storage.NewMemorySessionStore(),
+				createErr:          errors.New("database is read-only"),
+			}
+			handler.Sessions = store
+
+			recorder, response := testCase.issue(t, handler)
+			if recorder.Code != http.StatusServiceUnavailable || response.Success || response.Error != "Failed to persist run session; run was not accepted" || response.ErrorCode != "run_session_persistence_failed" {
+				t.Fatalf("unexpected response: status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if _, exists := store.Get("storage-failure"); exists {
+				t.Fatal("failed handshake left a session")
+			}
+			if channel := channels.GetOrCreate("storage-failure", false); channel != nil {
+				t.Fatal("failed handshake left an orphan channel")
+			}
+		})
+	}
+}
+
 func TestCleanupExpiredRunsRemovesPendingSessionAndChannelTogether(t *testing.T) {
 	_, store, channels := newCancelRunTestHandler(t)
 	store.Create(&model.RunSession{RunID: "expired-pending-pair", UserID: "default"})
 	pendingChannel := channels.GetOrCreate("expired-pending-pair", true)
 	store.Create(&model.RunSession{RunID: "expired-started-pair", UserID: "default"})
-	if !store.MarkStarted("expired-started-pair") {
-		t.Fatal("failed to mark fixture session started")
+	if err := store.MarkStarted("expired-started-pair"); err != nil {
+		t.Fatalf("failed to mark fixture session started: %v", err)
 	}
 	startedChannel := channels.GetOrCreate("expired-started-pair", true)
 	time.Sleep(time.Millisecond)
@@ -404,8 +598,8 @@ func TestRunCodeCleansExpiredPendingHandshakeBeforeCreate(t *testing.T) {
 	store.Create(&model.RunSession{RunID: "old-pending", UserID: "default"})
 	channels.GetOrCreate("old-pending", true)
 	store.Create(&model.RunSession{RunID: "old-started", UserID: "default"})
-	if !store.MarkStarted("old-started") {
-		t.Fatal("failed to mark fixture session started")
+	if err := store.MarkStarted("old-started"); err != nil {
+		t.Fatalf("failed to mark fixture session started: %v", err)
 	}
 	startedChannel := channels.GetOrCreate("old-started", true)
 	time.Sleep(time.Millisecond)

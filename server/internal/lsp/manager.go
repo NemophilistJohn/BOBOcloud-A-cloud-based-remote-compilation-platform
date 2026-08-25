@@ -248,27 +248,29 @@ func (s *Session) readLoop() {
 }
 
 type Manager struct {
-	catalog        *Catalog
-	cache          *CacheManager
-	starter        ProcessStarter
-	opts           ManagerOptions
-	ctx            context.Context
-	cancel         context.CancelFunc
-	mu             sync.Mutex
-	sessions       map[string]*Session
-	starting       int
-	startingByUser map[string]int
-	startingKeys   map[string]struct{}
-	refreshMu      sync.Mutex
-	refreshing     map[string]*dependencyRefreshState
-	refreshGate    chan struct{}
-	refreshScan    func(*DependencyRegistry, DependencyRefreshScope) int
-	refreshAfter   func(time.Duration, func()) dependencyRefreshTimer
-	refreshDelay   time.Duration
-	refreshWG      sync.WaitGroup
-	refreshRunWG   sync.WaitGroup
-	refreshClosed  bool
-	resourceWait   time.Duration
+	catalog          *Catalog
+	cache            *CacheManager
+	starter          ProcessStarter
+	opts             ManagerOptions
+	ctx              context.Context
+	cancel           context.CancelFunc
+	mu               sync.Mutex
+	sessions         map[string]*Session
+	starting         int
+	startingByUser   map[string]int
+	startingKeys     map[string]struct{}
+	refreshMu        sync.Mutex
+	refreshing       map[string]*dependencyRefreshState
+	refreshGate      chan struct{}
+	refreshScan      func(*DependencyRegistry, DependencyRefreshScope) int
+	refreshAfter     func(time.Duration, func()) dependencyRefreshTimer
+	refreshDelay     time.Duration
+	refreshWG        sync.WaitGroup
+	refreshRunWG     sync.WaitGroup
+	refreshClosed    bool
+	refreshCloseOnce sync.Once
+	refreshCloseDone chan struct{}
+	resourceWait     time.Duration
 }
 
 type dependencyRefreshTimer interface {
@@ -322,8 +324,9 @@ func NewManager(catalog *Catalog, cache *CacheManager, starter ProcessStarter, o
 		refreshAfter: func(delay time.Duration, callback func()) dependencyRefreshTimer {
 			return time.AfterFunc(delay, callback)
 		},
-		refreshDelay: 500 * time.Millisecond,
-		resourceWait: 3 * time.Second,
+		refreshDelay:     500 * time.Millisecond,
+		refreshCloseDone: make(chan struct{}),
+		resourceWait:     3 * time.Second,
 	}
 	m.refreshScan = m.refreshDependencyViewsOnce
 	go m.cleanupLoop()
@@ -858,6 +861,13 @@ func (m *Manager) CatalogFingerprint() string {
 // StopOwner terminates matching processes before an account/team/project is
 // deleted. It waits briefly so cache leases are released deterministically.
 func (m *Manager) stopMatching(match func(*Session) bool) error {
+	return m.stopMatchingContext(context.Background(), match)
+}
+
+func (m *Manager) stopMatchingContext(ctx context.Context, match func(*Session) bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.mu.Lock()
 	sessions := make([]*Session, 0)
 	for _, session := range m.sessions {
@@ -878,6 +888,8 @@ func (m *Manager) stopMatching(match func(*Session) bool) error {
 	for _, session := range sessions {
 		select {
 		case <-session.ResourcesDone():
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-deadline.C:
 			return fmt.Errorf("analysis resources are still being released; retry shortly")
 		}
@@ -897,7 +909,13 @@ func (m *Manager) StopOwner(ownerKind, ownerID, projectID string) error {
 
 // StopUser terminates both personal and team sessions for one account.
 func (m *Manager) StopUser(userID string) error {
-	return m.stopMatching(func(session *Session) bool {
+	return m.StopUserContext(context.Background(), userID)
+}
+
+// StopUserContext terminates both personal and team sessions for one account
+// and bounds the resource-drain wait by ctx as well as the manager timeout.
+func (m *Manager) StopUserContext(ctx context.Context, userID string) error {
+	return m.stopMatchingContext(ctx, func(session *Session) bool {
 		return session.Context.UserID == userID
 	})
 }
@@ -922,6 +940,9 @@ func (m *Manager) StopUserWorkspace(userID, folderKey string) error {
 }
 
 func (m *Manager) Close() {
+	if m == nil {
+		return
+	}
 	m.cancel()
 	m.closeDependencyRefreshes()
 	m.mu.Lock()
@@ -935,7 +956,44 @@ func (m *Manager) Close() {
 	}
 }
 
-func (m *Manager) closeDependencyRefreshes() {
+// CloseContext stops new work and waits until every session and dependency
+// refresh has released the resources it owns. Cleanup can be retried with a
+// fresh context after a deadline.
+func (m *Manager) CloseContext(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.cancel()
+	refreshDone := m.beginDependencyRefreshClose()
+	m.mu.Lock()
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		sessions = append(sessions, session)
+	}
+	m.mu.Unlock()
+	for _, session := range sessions {
+		session.Stop()
+	}
+
+	select {
+	case <-refreshDone:
+	case <-ctx.Done():
+		return fmt.Errorf("wait for language dependency refreshes: %w", ctx.Err())
+	}
+	for _, session := range sessions {
+		select {
+		case <-session.ResourcesDone():
+		case <-ctx.Done():
+			return fmt.Errorf("wait for language session resources: %w", ctx.Err())
+		}
+	}
+	return nil
+}
+
+func (m *Manager) beginDependencyRefreshClose() <-chan struct{} {
 	m.refreshMu.Lock()
 	if !m.refreshClosed {
 		m.refreshClosed = true
@@ -948,6 +1006,16 @@ func (m *Manager) closeDependencyRefreshes() {
 		}
 	}
 	m.refreshMu.Unlock()
-	m.refreshWG.Wait()
-	m.refreshRunWG.Wait()
+	m.refreshCloseOnce.Do(func() {
+		go func() {
+			m.refreshWG.Wait()
+			m.refreshRunWG.Wait()
+			close(m.refreshCloseDone)
+		}()
+	})
+	return m.refreshCloseDone
+}
+
+func (m *Manager) closeDependencyRefreshes() {
+	<-m.beginDependencyRefreshClose()
 }

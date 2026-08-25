@@ -2,9 +2,11 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +17,66 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+type markStartedFailingSessionStore struct {
+	*storage.MemorySessionStore
+	startErr error
+}
+
+type wsDeleteFailingSessionStore struct {
+	*storage.MemorySessionStore
+	mu          sync.Mutex
+	deleteErr   error
+	deleteOK    bool
+	deleteCalls int
+}
+
+type wsTransientGetSessionStore struct {
+	*wsDeleteFailingSessionStore
+	mu        sync.Mutex
+	failures  int
+	lookupErr error
+}
+
+func (store *wsTransientGetSessionStore) Lookup(runID string) (*model.RunSession, bool, error) {
+	store.mu.Lock()
+	if store.failures > 0 {
+		store.failures--
+		lookupErr := store.lookupErr
+		store.mu.Unlock()
+		return nil, false, lookupErr
+	}
+	store.mu.Unlock()
+	return store.MemorySessionStore.Lookup(runID)
+}
+
+func (store *wsDeleteFailingSessionStore) Delete(runID string) error {
+	store.mu.Lock()
+	store.deleteCalls++
+	deleteOK := store.deleteOK
+	deleteErr := store.deleteErr
+	store.mu.Unlock()
+	if !deleteOK {
+		return deleteErr
+	}
+	return store.MemorySessionStore.Delete(runID)
+}
+
+func (store *wsDeleteFailingSessionStore) allowDelete() {
+	store.mu.Lock()
+	store.deleteOK = true
+	store.mu.Unlock()
+}
+
+func (store *wsDeleteFailingSessionStore) calls() int {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.deleteCalls
+}
+
+func (s *markStartedFailingSessionStore) MarkStarted(string) error {
+	return s.startErr
+}
 
 func TestWSAttachInvalidTokenKeepsPendingRun(t *testing.T) {
 	store := storage.NewMemorySessionStore()
@@ -43,6 +105,187 @@ func TestWSAttachInvalidTokenKeepsPendingRun(t *testing.T) {
 	}
 	if channel := channels.GetOrCreate("valid-run", false); channel != originalChannel {
 		t.Fatal("invalid token removed or replaced the pending channel")
+	}
+}
+
+func TestWSAttachStorageFailureKeepsRetryablePendingRun(t *testing.T) {
+	baseStore := storage.NewMemorySessionStore()
+	if _, err := baseStore.Create(&model.RunSession{RunID: "valid-run", Token: "valid-token", UserID: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	store := &markStartedFailingSessionStore{MemorySessionStore: baseStore, startErr: errors.New("database is read-only")}
+	channels := session.NewChannelManager()
+	originalChannel := channels.GetOrCreate("valid-run", true)
+	handler := &WSHandler{Config: config.Default(), Sessions: store, Channels: channels}
+
+	server := httptest.NewServer(http.HandlerFunc(handler.HandleWebSocket))
+	t.Cleanup(server.Close)
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.WriteJSON(model.WSMessage{Type: "attach", RunID: "valid-run", Token: "valid-token"}); err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := conn.ReadJSON(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response["type"] != "error" || response["message"] != "Run session storage is unavailable" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+
+	sess, exists := store.Get("valid-run")
+	if !exists || sess.Started {
+		t.Fatal("storage failure removed or started the pending session")
+	}
+	if channel := channels.GetOrCreate("valid-run", false); channel != originalChannel {
+		t.Fatal("storage failure removed or replaced the retryable channel")
+	}
+}
+
+func TestWSAttachClosedGenerationNeverStartsRunAndCleanupRetries(t *testing.T) {
+	baseStore := storage.NewMemorySessionStore()
+	if _, err := baseStore.Create(&model.RunSession{
+		RunID: "cancelled-run", Token: "valid-token", UserID: "default",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store := &wsDeleteFailingSessionStore{
+		MemorySessionStore: baseStore,
+		deleteErr:          errors.New("database is temporarily read-only"),
+	}
+	channels := session.NewChannelManager()
+	closedChannel := channels.GetOrCreate("cancelled-run", true)
+	closedChannel.Close()
+	handler := &WSHandler{Config: config.Default(), Sessions: store, Channels: channels}
+	done := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		handler.HandleWebSocket(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteJSON(model.WSMessage{Type: "attach", RunID: "cancelled-run", Token: "valid-token"}); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	_, _, _ = conn.ReadMessage()
+	_ = conn.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("closed-generation attach did not terminate")
+	}
+	if got := store.calls(); got != 1 {
+		t.Fatalf("persistent cleanup calls = %d, want 1; run execution likely continued after attach rejection", got)
+	}
+	stored, exists := baseStore.Get("cancelled-run")
+	if !exists || !stored.Started {
+		t.Fatal("failed attach cleanup lost its retryable started session")
+	}
+	if current := channels.GetOrCreate("cancelled-run", false); current != closedChannel {
+		t.Fatal("failed attach cleanup released its generation anchor")
+	}
+
+	store.allowDelete()
+	if err := channels.RetryPendingCleanups(store); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := baseStore.Get("cancelled-run"); exists {
+		t.Fatal("cleanup retry retained the rejected started session")
+	}
+	if current := channels.GetOrCreate("cancelled-run", false); current != nil {
+		t.Fatal("cleanup retry retained the rejected channel")
+	}
+}
+
+func TestWSTransientLookupFailureDoesNotCloseActiveGeneration(t *testing.T) {
+	baseStore := storage.NewMemorySessionStore()
+	if _, err := baseStore.Create(&model.RunSession{
+		RunID: "transient-read-run", Token: "valid-token", UserID: "default",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := baseStore.MarkStarted("transient-read-run"); err != nil {
+		t.Fatal(err)
+	}
+	deleteStore := &wsDeleteFailingSessionStore{
+		MemorySessionStore: baseStore,
+		deleteErr:          errors.New("delete must not be called"),
+	}
+	store := &wsTransientGetSessionStore{
+		wsDeleteFailingSessionStore: deleteStore,
+		failures:                    1,
+		lookupErr:                   errors.New("database is temporarily read-only"),
+	}
+	channels := session.NewChannelManager()
+	originalChannel := channels.GetOrCreate("transient-read-run", true)
+	handler := &WSHandler{Config: config.Default(), Sessions: store, Channels: channels}
+	done := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.HandleWebSocket(w, r)
+		done <- struct{}{}
+	}))
+	t.Cleanup(server.Close)
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteJSON(model.WSMessage{Type: "attach", RunID: "transient-read-run", Token: "valid-token"}); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := conn.ReadJSON(&response); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	if response["type"] != "error" || response["message"] != "Run session storage is unavailable" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	waitForWSHandler(t, done)
+
+	stored, exists := baseStore.Get("transient-read-run")
+	if !exists || !stored.Started {
+		t.Fatal("transient lookup failure changed the active persistent session")
+	}
+	if current := channels.GetOrCreate("transient-read-run", false); current != originalChannel {
+		t.Fatal("transient lookup failure replaced the active generation")
+	}
+	if got := deleteStore.calls(); got != 0 {
+		t.Fatalf("persistent cleanup calls = %d, want 0", got)
+	}
+	closed := make(chan struct{})
+	go func() {
+		originalChannel.WaitUntilClosed()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("transient lookup failure closed the active generation")
+	default:
+	}
+	originalChannel.Close()
+	<-closed
+}
+
+func waitForWSHandler(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("WebSocket handler did not terminate")
 	}
 }
 

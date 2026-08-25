@@ -66,6 +66,13 @@ type Config struct {
 	TLSEnabled     bool   `json:"tls_enabled"`
 	TLSCertFile    string `json:"tls_cert_file"`
 	TLSKeyFile     string `json:"tls_key_file"`
+	// Listener limits protect the public HTTP/WebSocket entry points without
+	// imposing a write deadline on long-running compilation or streaming flows.
+	HTTPReadHeaderTimeoutSeconds    int `json:"http_read_header_timeout_seconds"`
+	HTTPIdleTimeoutSeconds          int `json:"http_idle_timeout_seconds"`
+	HTTPMaxHeaderBytes              int `json:"http_max_header_bytes"`
+	ShutdownGracePeriodSeconds      int `json:"shutdown_grace_period_seconds"`
+	UserDeletionCleanupRetrySeconds int `json:"user_deletion_cleanup_retry_seconds"`
 
 	// 数据目录
 	DataDir string `json:"data_dir"`
@@ -216,20 +223,25 @@ type Config struct {
 // Default 返回带默认值的配置。
 func Default() *Config {
 	return &Config{
-		ServerRoot:                  "/shareOnling",
-		HTTPPort:                    3100,
-		WSPort:                      3101,
-		DAPChildWSPort:              3102,
-		TLSEnabled:                  false,
-		DataDir:                     "./data",
-		DockerHotPoolSize:           2,
-		DockerMaxContainers:         20,
-		DockerMaxIdle:               5,
-		DockerMemoryLimit:           "512m",
-		DockerCPULimit:              "1.0",
-		DockerTerminalTimeout:       300,
-		DockerPoolReplenishInterval: 10,
-		DockerDefaultNetwork:        true,
+		ServerRoot:                      "/shareOnling",
+		HTTPPort:                        3100,
+		WSPort:                          3101,
+		DAPChildWSPort:                  3102,
+		TLSEnabled:                      false,
+		HTTPReadHeaderTimeoutSeconds:    10,
+		HTTPIdleTimeoutSeconds:          90,
+		HTTPMaxHeaderBytes:              1 << 20,
+		ShutdownGracePeriodSeconds:      15,
+		UserDeletionCleanupRetrySeconds: 15,
+		DataDir:                         "./data",
+		DockerHotPoolSize:               2,
+		DockerMaxContainers:             20,
+		DockerMaxIdle:                   5,
+		DockerMemoryLimit:               "512m",
+		DockerCPULimit:                  "1.0",
+		DockerTerminalTimeout:           300,
+		DockerPoolReplenishInterval:     10,
+		DockerDefaultNetwork:            true,
 		DockerRegistryMirrors: []string{
 			"https://docker.m.daocloud.io",
 		},
@@ -419,6 +431,21 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.DockerQueueTimeoutSeconds <= 0 {
 		cfg.DockerQueueTimeoutSeconds = 60
+	}
+	if cfg.HTTPReadHeaderTimeoutSeconds <= 0 {
+		cfg.HTTPReadHeaderTimeoutSeconds = 10
+	}
+	if cfg.HTTPIdleTimeoutSeconds <= 0 {
+		cfg.HTTPIdleTimeoutSeconds = 90
+	}
+	if cfg.HTTPMaxHeaderBytes <= 0 {
+		cfg.HTTPMaxHeaderBytes = 1 << 20
+	}
+	if cfg.ShutdownGracePeriodSeconds <= 0 {
+		cfg.ShutdownGracePeriodSeconds = 15
+	}
+	if cfg.UserDeletionCleanupRetrySeconds <= 0 {
+		cfg.UserDeletionCleanupRetrySeconds = 15
 	}
 	cfg.DockerContainerResetStrategy = strings.ToLower(strings.TrimSpace(cfg.DockerContainerResetStrategy))
 	if cfg.DockerContainerResetStrategy == "" {
@@ -719,6 +746,31 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.WSPort = n
 		}
 	}
+	if v := os.Getenv("BOBOCLOUD_HTTP_READ_HEADER_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.HTTPReadHeaderTimeoutSeconds = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_HTTP_IDLE_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.HTTPIdleTimeoutSeconds = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_HTTP_MAX_HEADER_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.HTTPMaxHeaderBytes = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_SHUTDOWN_GRACE_PERIOD_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.ShutdownGracePeriodSeconds = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_USER_DELETION_CLEANUP_RETRY_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.UserDeletionCleanupRetrySeconds = n
+		}
+	}
 	if v := strings.TrimSpace(os.Getenv("BOBOCLOUD_DOCKER_CONTAINER_RESET_STRATEGY")); v != "" {
 		cfg.DockerContainerResetStrategy = v
 	}
@@ -918,6 +970,22 @@ func (c *Config) WSWriteWaitDuration() time.Duration {
 // WSPingDuration 返回 WebSocket ping 间隔的 time.Duration。
 func (c *Config) WSPingDuration() time.Duration {
 	return time.Duration(c.WSPingPeriod) * time.Second
+}
+
+func (c *Config) HTTPReadHeaderTimeout() time.Duration {
+	return time.Duration(c.HTTPReadHeaderTimeoutSeconds) * time.Second
+}
+
+func (c *Config) HTTPIdleTimeout() time.Duration {
+	return time.Duration(c.HTTPIdleTimeoutSeconds) * time.Second
+}
+
+func (c *Config) ShutdownGracePeriod() time.Duration {
+	return time.Duration(c.ShutdownGracePeriodSeconds) * time.Second
+}
+
+func (c *Config) UserDeletionCleanupRetryInterval() time.Duration {
+	return time.Duration(c.UserDeletionCleanupRetrySeconds) * time.Second
 }
 
 // TerminalHandshakeDuration returns the terminal start-frame deadline.

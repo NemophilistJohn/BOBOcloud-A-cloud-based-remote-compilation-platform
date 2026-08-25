@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -229,6 +230,99 @@ func TestStopUserKeepsDrainingSessionUntilResourcesRelease(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("drained session remained registered")
+}
+
+func TestStopUserContextCancelsResourceDrainWait(t *testing.T) {
+	process := newDrainingTestProcess()
+	_, cancelSession := context.WithCancel(context.Background())
+	manager := NewManager(nil, nil, nil, ManagerOptions{CleanupInterval: time.Hour})
+	manager.resourceWait = time.Hour
+	defer manager.Close()
+	var releaseProcess sync.Once
+	release := func() { releaseProcess.Do(func() { close(process.waitRelease) }) }
+	defer release()
+
+	session := &Session{
+		Key: "cancel-draining", Context: SessionContext{UserID: "user-cancel", WorkspaceKind: "personal"},
+		messages: make(chan []byte, 1), done: make(chan struct{}), resourcesDone: make(chan struct{}),
+		stopping: make(chan struct{}), process: process, writer: lockedWriter{w: process.Stdin()}, cancel: cancelSession,
+		maxBytes: 1 << 20,
+	}
+	session.onClose = manager.remove
+	manager.mu.Lock()
+	manager.sessions[session.Key] = session
+	manager.mu.Unlock()
+	go session.readLoop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- manager.StopUserContext(ctx, "user-cancel") }()
+	stopDeadline := time.Now().Add(time.Second)
+	for !process.killed.Load() && time.Now().Before(stopDeadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !process.killed.Load() {
+		t.Fatal("StopUserContext did not signal the language process to stop")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("StopUserContext() error = %v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("StopUserContext ignored cancellation while resources were draining")
+	}
+
+	release()
+	select {
+	case <-session.ResourcesDone():
+	case <-time.After(time.Second):
+		t.Fatal("language resources did not finish after releasing the process")
+	}
+}
+
+func TestCloseContextWaitsForSessionResourcesAndCanRetry(t *testing.T) {
+	process := newDrainingTestProcess()
+	_, cancelSession := context.WithCancel(context.Background())
+	manager := NewManager(nil, nil, nil, ManagerOptions{CleanupInterval: time.Hour})
+	defer manager.Close()
+	var releaseProcess sync.Once
+	release := func() { releaseProcess.Do(func() { close(process.waitRelease) }) }
+	defer release()
+
+	var released atomic.Bool
+	session := &Session{
+		Key: "close-context", Context: SessionContext{UserID: "user-close", WorkspaceKind: "personal"},
+		messages: make(chan []byte, 1), done: make(chan struct{}), resourcesDone: make(chan struct{}),
+		stopping: make(chan struct{}), process: process, writer: lockedWriter{w: process.Stdin()}, cancel: cancelSession,
+		sharedRelease: func() { released.Store(true) }, maxBytes: 1 << 20,
+	}
+	session.onClose = manager.remove
+	manager.mu.Lock()
+	manager.sessions[session.Key] = session
+	manager.mu.Unlock()
+	go session.readLoop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	err := manager.CloseContext(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CloseContext() error = %v, want deadline exceeded", err)
+	}
+	if released.Load() {
+		t.Fatal("CloseContext returned after releasing a lease whose process was still running")
+	}
+
+	release()
+	retryCtx, cancelRetry := context.WithTimeout(context.Background(), time.Second)
+	defer cancelRetry()
+	if err := manager.CloseContext(retryCtx); err != nil {
+		t.Fatalf("retry CloseContext() error = %v", err)
+	}
+	if !released.Load() {
+		t.Fatal("CloseContext completed without releasing the session resources")
+	}
 }
 
 func (s *captureStarter) Start(_ context.Context, spec LaunchSpec) (Process, error) {

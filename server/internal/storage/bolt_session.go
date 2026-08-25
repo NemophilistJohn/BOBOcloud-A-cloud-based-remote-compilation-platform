@@ -2,7 +2,10 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"bobocloud-server/internal/model"
@@ -16,52 +19,62 @@ import (
 
 var sessionsBucket = []byte("sessions")
 
+var errSessionsBucketUnavailable = errors.New("sessions bucket is unavailable")
+
 // BoltSessionStore 基于 BoltDB 的会话存储实现
 type BoltSessionStore struct {
 	db *bolt.DB
 }
 
 // NewBoltSessionStore 创建 BoltDB 会话存储，自动确保 bucket 存在
-func NewBoltSessionStore(db *bolt.DB) *BoltSessionStore {
+func NewBoltSessionStore(db *bolt.DB) (*BoltSessionStore, error) {
+	if db == nil {
+		return nil, errors.New("initialize session store: nil database")
+	}
 	err := db.Update(func(tx *bolt.Tx) error {
 		_, err := tx.CreateBucketIfNotExists(sessionsBucket)
 		return err
 	})
 	if err != nil {
-		slog.Error("Failed to create sessions bucket", "error", err)
+		return nil, fmt.Errorf("initialize session store: %w", err)
 	}
-	return &BoltSessionStore{db: db}
+	return &BoltSessionStore{db: db}, nil
 }
 
 // Create 创建新会话并持久化到 BoltDB
-func (s *BoltSessionStore) Create(sess *model.RunSession) *model.RunSession {
+func (s *BoltSessionStore) Create(sess *model.RunSession) (*model.RunSession, error) {
 	sess.CreatedAt = time.Now()
 	sess.Started = false
 
 	data, err := json.Marshal(sess)
 	if err != nil {
-		slog.Error("Failed to marshal session", "run_id", sess.RunID, "error", err)
-		return sess
+		return nil, fmt.Errorf("marshal run session %q: %w", sess.RunID, err)
 	}
 
 	err = s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(sessionsBucket)
+		if b == nil {
+			return errSessionsBucketUnavailable
+		}
 		return b.Put([]byte(sess.RunID), data)
 	})
 	if err != nil {
-		slog.Error("Failed to persist session", "run_id", sess.RunID, "error", err)
+		return nil, fmt.Errorf("persist run session %q: %w", sess.RunID, err)
 	}
 
-	return sess
+	return sess, nil
 }
 
-// Get 根据 runID 获取会话
-func (s *BoltSessionStore) Get(runID string) (*model.RunSession, bool) {
+// Lookup 根据 runID 获取会话，并区分不存在与存储读取失败。
+func (s *BoltSessionStore) Lookup(runID string) (*model.RunSession, bool, error) {
 	var sess model.RunSession
 	found := false
 
 	err := s.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(sessionsBucket)
+		if b == nil {
+			return errSessionsBucketUnavailable
+		}
 		data := b.Get([]byte(runID))
 		if data == nil {
 			return nil
@@ -73,25 +86,36 @@ func (s *BoltSessionStore) Get(runID string) (*model.RunSession, bool) {
 		return nil
 	})
 	if err != nil {
-		slog.Error("Failed to read session", "run_id", runID, "error", err)
-		return nil, false
+		return nil, false, fmt.Errorf("read run session %q: %w", runID, err)
 	}
 
 	if !found {
-		return nil, false
+		return nil, false, nil
 	}
-	return &sess, true
+	return &sess, true, nil
 }
 
-// MarkStarted 标记会话已启动。返回 false 表示已启动或不存在。
-func (s *BoltSessionStore) MarkStarted(runID string) bool {
-	marked := false
+// Get returns the legacy two-state view. Lifecycle code must use Lookup so a
+// transient Bolt error is never mistaken for an absent session.
+func (s *BoltSessionStore) Get(runID string) (*model.RunSession, bool) {
+	sess, found, err := s.Lookup(runID)
+	if err != nil {
+		slog.Error("Failed to read session", "run_id", runID, "error", err)
+		return nil, false
+	}
+	return sess, found
+}
 
+// MarkStarted 原子地声明一个待运行会话。
+func (s *BoltSessionStore) MarkStarted(runID string) error {
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(sessionsBucket)
+		if b == nil {
+			return errSessionsBucketUnavailable
+		}
 		data := b.Get([]byte(runID))
 		if data == nil {
-			return nil
+			return ErrSessionNotFound
 		}
 
 		var sess model.RunSession
@@ -99,7 +123,7 @@ func (s *BoltSessionStore) MarkStarted(runID string) bool {
 			return err
 		}
 		if sess.Started {
-			return nil // 已启动
+			return ErrSessionAlreadyStarted
 		}
 
 		sess.Started = true
@@ -107,26 +131,53 @@ func (s *BoltSessionStore) MarkStarted(runID string) bool {
 		if err != nil {
 			return err
 		}
-		marked = true
 		return b.Put([]byte(runID), updated)
 	})
 	if err != nil {
-		slog.Error("Failed to mark session started", "run_id", runID, "error", err)
-		return false
+		if errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrSessionAlreadyStarted) {
+			return err
+		}
+		return fmt.Errorf("mark run session %q started: %w", runID, err)
 	}
-
-	return marked
+	return nil
 }
 
 // Delete 删除会话
-func (s *BoltSessionStore) Delete(runID string) {
+func (s *BoltSessionStore) Delete(runID string) error {
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(sessionsBucket)
+		if b == nil {
+			return errSessionsBucketUnavailable
+		}
 		return b.Delete([]byte(runID))
 	})
 	if err != nil {
-		slog.Error("Failed to delete session", "run_id", runID, "error", err)
+		return fmt.Errorf("delete run session %q: %w", runID, err)
 	}
+	return nil
+}
+
+func (s *BoltSessionStore) DeleteAllProcessSessions() ([]string, error) {
+	ids := make([]string, 0)
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(sessionsBucket)
+		if bucket == nil {
+			return errSessionsBucketUnavailable
+		}
+		cursor := bucket.Cursor()
+		for key, _ := cursor.First(); key != nil; key, _ = cursor.Next() {
+			ids = append(ids, string(append([]byte(nil), key...)))
+			if err := cursor.Delete(); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("delete process-bound run sessions: %w", err)
+	}
+	sort.Strings(ids)
+	return ids, nil
 }
 
 // CleanupExpired 清理超过 TTL 的过期会话

@@ -437,6 +437,45 @@ func CleanupDockerOrphans() error {
 	return cleanupDockerOrphanIDs(ids, forceRemoveDockerContainer)
 }
 
+// CleanupDockerOrphansContext is the startup-recovery variant. It keeps the
+// legacy bounded API above while allowing SIGTERM to interrupt Docker commands
+// before the process-wide shutdown budget is exhausted.
+func CleanupDockerOrphansContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ids, err := listDockerLSPOrphanIDsContext(ctx, dockerLSPOrphanFilters())
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return cleanupDockerOrphanIDs(ids, func(id string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		commandCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		output, err := exec.CommandContext(commandCtx, "docker", "rm", "-f", id).CombinedOutput()
+		cancel()
+		if err == nil {
+			inspectCtx, cancelInspect := context.WithTimeout(ctx, 5*time.Second)
+			inspectOutput, inspectErr := exec.CommandContext(inspectCtx, "docker", "inspect", "--type", "container", id).CombinedOutput()
+			cancelInspect()
+			return dockerInspectConfirmsAbsent(id, inspectOutput, inspectErr)
+		}
+		detail := strings.TrimSpace(string(output))
+		lower := strings.ToLower(detail)
+		if strings.Contains(lower, "no such container") || strings.Contains(lower, "no such object") {
+			return nil
+		}
+		if detail == "" {
+			return fmt.Errorf("remove Docker container %q: %w", id, err)
+		}
+		return fmt.Errorf("remove Docker container %q: %w: %s", id, err, detail)
+	})
+}
+
 func dockerLSPOrphanFilters() []string {
 	return []string{
 		"label=bobocloud.lsp=true",
@@ -447,11 +486,24 @@ func dockerLSPOrphanFilters() []string {
 }
 
 func listDockerLSPOrphanIDs(filters []string) ([]string, error) {
+	return listDockerLSPOrphanIDsContext(context.Background(), filters)
+}
+
+func listDockerLSPOrphanIDsContext(ctx context.Context, filters []string) ([]string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	seen := make(map[string]struct{})
 	ids := make([]string, 0)
 	for _, filter := range filters {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		output, err := exec.CommandContext(ctx, "docker", "ps", "-aq", "--filter", filter).CombinedOutput()
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		commandCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		output, err := exec.CommandContext(commandCtx, "docker", "ps", "-aq", "--filter", filter).CombinedOutput()
 		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("list orphaned Docker LSP containers (%s): %w: %s", filter, err, strings.TrimSpace(string(output)))

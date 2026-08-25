@@ -1,6 +1,7 @@
 package personalcache
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -388,7 +389,11 @@ func writePackageInventory(root string, document packageInventoryDocument) error
 }
 
 func scanPythonPackageTree(root string) ([]InventoryPackage, string, int64, error) {
-	tree, err := scanPythonPackageTreeDetailed(root)
+	return scanPythonPackageTreeContext(context.Background(), root)
+}
+
+func scanPythonPackageTreeContext(ctx context.Context, root string) ([]InventoryPackage, string, int64, error) {
+	tree, err := scanPythonPackageTreeDetailedContext(ctx, root)
 	if err != nil {
 		return nil, "", 0, err
 	}
@@ -405,11 +410,21 @@ func exactPackageInventoryLanguage(language string) bool {
 }
 
 func scanManagedPackageTree(root, language string) ([]InventoryPackage, string, int64, error) {
+	return scanManagedPackageTreeContext(context.Background(), root, language)
+}
+
+func scanManagedPackageTreeContext(ctx context.Context, root, language string) ([]InventoryPackage, string, int64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, "", 0, err
+	}
 	switch strings.ToLower(strings.TrimSpace(language)) {
 	case "python":
-		return scanPythonPackageTree(filepath.Join(root, "python"))
+		return scanPythonPackageTreeContext(ctx, filepath.Join(root, "python"))
 	case "node":
-		return scanNodePackageTree(filepath.Join(root, "node_modules"))
+		return scanNodePackageTreeContext(ctx, filepath.Join(root, "node_modules"))
 	default:
 		return nil, "", 0, fmt.Errorf("exact package inventory is not available for %s", language)
 	}

@@ -43,8 +43,12 @@ func (h *HTTPHandler) handleHealthProbe(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, probeResponse{Status: "ok"})
 		return true
 	}
+	if h == nil || !serverAccepting(h.Accepting) {
+		writeJSON(w, http.StatusServiceUnavailable, probeResponse{Status: "not_ready"})
+		return true
+	}
 
-	if h == nil || h.Config == nil || h.Sessions == nil || h.Channels == nil || h.Readiness == nil {
+	if h.Config == nil || h.Sessions == nil || h.Channels == nil || h.Readiness == nil {
 		writeJSON(w, http.StatusServiceUnavailable, probeResponse{Status: "not_ready"})
 		return true
 	}

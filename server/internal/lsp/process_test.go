@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -11,6 +12,14 @@ import (
 	"testing"
 	"time"
 )
+
+func TestCleanupDockerOrphansContextRejectsCancelledStartup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := CleanupDockerOrphansContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CleanupDockerOrphansContext() error = %v, want context cancellation", err)
+	}
+}
 
 type dockerLifecycleTestProcess struct {
 	waits       atomic.Int32

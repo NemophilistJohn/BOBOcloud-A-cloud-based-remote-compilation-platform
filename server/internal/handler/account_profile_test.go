@@ -17,6 +17,7 @@ import (
 	"bobocloud-server/internal/auth"
 	"bobocloud-server/internal/collab"
 	"bobocloud-server/internal/config"
+	"bobocloud-server/internal/dap"
 	"bobocloud-server/internal/lifecycle"
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/personalcache"
@@ -279,7 +280,7 @@ func TestDeleteUserClearsCompileActivity(t *testing.T) {
 	}
 }
 
-func TestDeleteUserStopsWhenCompileActivityCleanupFails(t *testing.T) {
+func TestDeleteUserQueuesRetryWhenCompileActivityCleanupFails(t *testing.T) {
 	users := auth.NewMemoryUserStore()
 	root := &auth.User{ID: "root", Username: "root", Role: auth.RoleRoot}
 	target := &auth.User{ID: "target-cleanup-failure", Username: "target", Role: auth.RoleMember}
@@ -290,9 +291,13 @@ func TestDeleteUserStopsWhenCompileActivityCleanupFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := errors.New("activity cleanup failed")
+	activity := storage.NewMemoryCompileActivityStore()
+	if err := activity.Increment(target.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	handler := &HTTPHandler{
 		UserStore:       users,
-		CompileActivity: failingCompileActivityDeleteStore{CompileActivityStore: storage.NewMemoryCompileActivityStore(), err: want},
+		CompileActivity: failingCompileActivityDeleteStore{CompileActivityStore: activity, err: want},
 		authEnabled:     true,
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api", nil)
@@ -300,11 +305,28 @@ func TestDeleteUserStopsWhenCompileActivityCleanupFails(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	handler.handleDeleteUser(recorder, request, &model.Request{UserID: target.ID})
 
-	if recorder.Code != http.StatusInternalServerError {
+	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if _, err := users.Get(target.ID); err != nil {
-		t.Fatalf("user was deleted despite activity cleanup failure: %v", err)
+	if _, err := users.Get(target.ID); err == nil {
+		t.Fatal("account survived its atomic deletion commit")
+	}
+	pending, err := users.ListDeletionCleanup()
+	if err != nil || len(pending) != 1 || pending[0] != target.ID {
+		t.Fatalf("failed cleanup marker = %v, err=%v", pending, err)
+	}
+
+	handler.CompileActivity = activity
+	if err := handler.RetryPendingUserDeletionsContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = users.ListDeletionCleanup()
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("successful retry retained cleanup marker: %v, err=%v", pending, err)
+	}
+	days, err := activity.List(target.ID, time.Now().Add(-24*time.Hour), time.Now().Add(24*time.Hour))
+	if err != nil || len(days) != 0 {
+		t.Fatalf("successful retry retained compile activity: %v, err=%v", days, err)
 	}
 }
 
@@ -541,6 +563,418 @@ func TestRetryPendingUserDeletionsKeepsMarkerUntilCleanupSucceeds(t *testing.T) 
 	pending, err = users.ListDeletionCleanup()
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("successful retry retained marker: %v, err=%v", pending, err)
+	}
+}
+
+func TestPendingUserDeletionCleanupLoopCompletesDeferredJob(t *testing.T) {
+	users := auth.NewMemoryUserStore()
+	const userID = "background-cleanup-user"
+	if err := users.SaveDeletionCleanup(userID); err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	handler := &HTTPHandler{
+		UserStore: users,
+		OnUserDeleted: func(string) error {
+			attempts++
+			if attempts == 1 {
+				return errors.New("resources are still draining")
+			}
+			return nil
+		},
+	}
+	handler.RetryPendingUserDeletions()
+	pending, err := users.ListDeletionCleanup()
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("initial deferred cleanup marker = %v, err=%v", pending, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		handler.RunPendingUserDeletionCleanup(ctx, time.Millisecond)
+		close(done)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		pending, err = users.ListDeletionCleanup()
+		if err == nil && len(pending) == 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err != nil || len(pending) != 0 {
+		cancel()
+		t.Fatalf("background cleanup retained marker: pending=%v err=%v", pending, err)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("background cleanup loop ignored cancellation")
+	}
+	if attempts < 2 {
+		t.Fatalf("cleanup attempts = %d, want at least 2", attempts)
+	}
+}
+
+func TestRetryPendingUserDeletionsContextKeepsMarkerWhenInterrupted(t *testing.T) {
+	users := auth.NewMemoryUserStore()
+	const userID = "cancelled-cleanup-user"
+	if err := users.SaveDeletionCleanup(userID); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	handler := &HTTPHandler{
+		UserStore: users,
+		OnUserDeletedContext: func(ctx context.Context, gotUserID string) error {
+			if gotUserID != userID {
+				t.Fatalf("cleanup user = %q, want %q", gotUserID, userID)
+			}
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- handler.RetryPendingUserDeletionsContext(ctx) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("pending cleanup did not reach the context-aware resource hook")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("RetryPendingUserDeletionsContext() error = %v, want cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending cleanup ignored cancellation")
+	}
+	pending, err := users.ListDeletionCleanup()
+	if err != nil || len(pending) != 1 || pending[0] != userID {
+		t.Fatalf("interrupted cleanup cleared its durable marker: pending=%v err=%v", pending, err)
+	}
+
+	handler.OnUserDeletedContext = func(context.Context, string) error { return nil }
+	if err := handler.RetryPendingUserDeletionsContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = users.ListDeletionCleanup()
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("successful retry retained cleanup marker: pending=%v err=%v", pending, err)
+	}
+}
+
+func TestDeleteUserRetainsMarkerUntilDAPDownloadCacheCleanupSucceeds(t *testing.T) {
+	users := auth.NewMemoryUserStore()
+	root := &auth.User{ID: "root-dap-cleanup", Username: "root", Role: auth.RoleRoot}
+	target := &auth.User{ID: "target-dap-cleanup", Username: "target", Role: auth.RoleMember}
+	for _, user := range []*auth.User{root, target} {
+		if err := users.Create(user); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dataDir := t.TempDir()
+	cacheFile := filepath.Join(dataDir, "dap-cache", "downloads", target.ID, "runtime", "adapter.zip")
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cacheFile, []byte("adapter"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	handler := &HTTPHandler{
+		UserStore: users,
+		OnUserDeletedContext: func(ctx context.Context, userID string) error {
+			attempts++
+			if attempts == 1 {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+				return dap.CleanupUserDownloadCacheContext(cancelled, dataDir, userID)
+			}
+			return dap.CleanupUserDownloadCacheContext(ctx, dataDir, userID)
+		},
+		authEnabled: true,
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api", nil)
+	request = request.WithContext(context.WithValue(request.Context(), auth.ContextUser, root))
+	handler.handleDeleteUser(recorder, request, &model.Request{UserID: target.ID})
+
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "cleanup is pending") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := users.Get(target.ID); err == nil {
+		t.Fatal("account survived its deletion commit")
+	}
+	if _, err := os.Stat(cacheFile); err != nil {
+		t.Fatalf("failed DAP cleanup removed cache: %v", err)
+	}
+	pending, err := users.ListDeletionCleanup()
+	if err != nil || len(pending) != 1 || pending[0] != target.ID {
+		t.Fatalf("failed cleanup marker = %v, err=%v", pending, err)
+	}
+
+	if err := handler.RetryPendingUserDeletionsContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "dap-cache", "downloads", target.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("successful retry retained DAP cache: %v", err)
+	}
+	pending, err = users.ListDeletionCleanup()
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("successful retry retained cleanup marker: pending=%v err=%v", pending, err)
+	}
+	if attempts != 2 {
+		t.Fatalf("cleanup attempts = %d, want 2", attempts)
+	}
+}
+
+type failingDeletionCleanupListStore struct {
+	auth.UserStore
+	err error
+}
+
+func (store *failingDeletionCleanupListStore) ListDeletionCleanup() ([]string, error) {
+	return nil, store.err
+}
+
+func TestRetryPendingUserDeletionsContextFailsClosedWhenQueueCannotBeRead(t *testing.T) {
+	listErr := errors.New("deletion queue unavailable")
+	handler := &HTTPHandler{UserStore: &failingDeletionCleanupListStore{
+		UserStore: auth.NewMemoryUserStore(),
+		err:       listErr,
+	}}
+	err := handler.RetryPendingUserDeletionsContext(context.Background())
+	if !errors.Is(err, listErr) {
+		t.Fatalf("RetryPendingUserDeletionsContext() error = %v, want queue failure", err)
+	}
+}
+
+type observingExistingUserMutationStore struct {
+	auth.UserStore
+	mu                    sync.Mutex
+	mutationCount         int
+	secondMutationEntered chan struct{}
+}
+
+func (store *observingExistingUserMutationStore) MutateExisting(id string, mutate func(*auth.User) error) (*auth.User, error) {
+	store.mu.Lock()
+	store.mutationCount++
+	if store.mutationCount == 2 {
+		close(store.secondMutationEntered)
+	}
+	store.mu.Unlock()
+	return store.UserStore.MutateExisting(id, mutate)
+}
+
+func TestQuotaUpdateAndDeleteShareSerializationBarrier(t *testing.T) {
+	users := auth.NewMemoryUserStore()
+	root := &auth.User{ID: "root-stale-quota", Username: "root", Role: auth.RoleRoot}
+	target := &auth.User{ID: "target-stale-quota", Username: "target", Role: auth.RoleMember, ContainerLimit: 1}
+	for _, user := range []*auth.User{root, target} {
+		if err := users.Create(user); err != nil {
+			t.Fatal(err)
+		}
+	}
+	limitStarted := make(chan struct{})
+	releaseLimit := make(chan struct{})
+	setLimitCalls := 0
+	handler := &HTTPHandler{
+		UserStore:   users,
+		authEnabled: true,
+		SetUserLimit: func(string, int) {
+			setLimitCalls++
+			close(limitStarted)
+			<-releaseLimit
+		},
+	}
+	rootRequest := func() *http.Request {
+		request := httptest.NewRequest(http.MethodPost, "/api", nil)
+		return request.WithContext(context.WithValue(request.Context(), auth.ContextUser, root))
+	}
+
+	quotaRecorder := httptest.NewRecorder()
+	quotaDone := make(chan struct{})
+	go func() {
+		handler.handleUpdateUserQuota(quotaRecorder, rootRequest(), &model.Request{UserID: target.ID, ContainerLimit: 8})
+		close(quotaDone)
+	}()
+	select {
+	case <-limitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("quota update did not reach Docker admission")
+	}
+
+	deleteRecorder := httptest.NewRecorder()
+	deleteDone := make(chan struct{})
+	go func() {
+		handler.handleDeleteUser(deleteRecorder, rootRequest(), &model.Request{UserID: target.ID})
+		close(deleteDone)
+	}()
+	deletedBeforeQuotaSideEffect := false
+	select {
+	case <-deleteDone:
+		deletedBeforeQuotaSideEffect = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseLimit)
+	select {
+	case <-quotaDone:
+	case <-time.After(time.Second):
+		t.Fatal("quota update did not finish")
+	}
+	select {
+	case <-deleteDone:
+	case <-time.After(time.Second):
+		t.Fatal("delete did not finish after quota side effect")
+	}
+	if deletedBeforeQuotaSideEffect {
+		t.Fatal("delete completed while quota mutation and Docker side effect were still in progress")
+	}
+	if quotaRecorder.Code != http.StatusOK {
+		t.Fatalf("quota status=%d body=%s", quotaRecorder.Code, quotaRecorder.Body.String())
+	}
+	if deleteRecorder.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", deleteRecorder.Code, deleteRecorder.Body.String())
+	}
+	if _, err := users.Get(target.ID); err == nil {
+		t.Fatal("serialized quota request left the deleted account behind")
+	}
+	if setLimitCalls != 1 {
+		t.Fatalf("quota request changed Docker admission %d time(s)", setLimitCalls)
+	}
+}
+
+func TestConcurrentQuotaUpdatesKeepDockerLimitInSyncWithStoredUser(t *testing.T) {
+	users := auth.NewMemoryUserStore()
+	root := &auth.User{ID: "root-concurrent-quota", Username: "root", Role: auth.RoleRoot}
+	target := &auth.User{ID: "target-concurrent-quota", Username: "target", Role: auth.RoleMember, ContainerLimit: 1}
+	for _, user := range []*auth.User{root, target} {
+		if err := users.Create(user); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observed := &observingExistingUserMutationStore{
+		UserStore:             users,
+		secondMutationEntered: make(chan struct{}),
+	}
+	firstLimitStarted := make(chan struct{})
+	releaseFirstLimit := make(chan struct{})
+	var runtimeLimitMu sync.Mutex
+	runtimeLimit := target.ContainerLimit
+	handler := &HTTPHandler{
+		UserStore:   observed,
+		authEnabled: true,
+		SetUserLimit: func(_ string, limit int) {
+			if limit == 8 {
+				close(firstLimitStarted)
+				<-releaseFirstLimit
+			}
+			runtimeLimitMu.Lock()
+			runtimeLimit = limit
+			runtimeLimitMu.Unlock()
+		},
+	}
+	rootRequest := func() *http.Request {
+		request := httptest.NewRequest(http.MethodPost, "/api", nil)
+		return request.WithContext(context.WithValue(request.Context(), auth.ContextUser, root))
+	}
+
+	firstRecorder := httptest.NewRecorder()
+	firstDone := make(chan struct{})
+	go func() {
+		handler.handleUpdateUserQuota(firstRecorder, rootRequest(), &model.Request{UserID: target.ID, ContainerLimit: 8})
+		close(firstDone)
+	}()
+	select {
+	case <-firstLimitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first quota update did not reach Docker admission")
+	}
+
+	secondRecorder := httptest.NewRecorder()
+	secondDone := make(chan struct{})
+	go func() {
+		handler.handleUpdateUserQuota(secondRecorder, rootRequest(), &model.Request{UserID: target.ID, ContainerLimit: 11})
+		close(secondDone)
+	}()
+	secondEnteredBeforeFirstFinished := false
+	select {
+	case <-observed.secondMutationEntered:
+		secondEnteredBeforeFirstFinished = true
+		select {
+		case <-secondDone:
+		case <-time.After(time.Second):
+			t.Fatal("second quota update entered but did not finish")
+		}
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseFirstLimit)
+	for label, done := range map[string]<-chan struct{}{"first": firstDone, "second": secondDone} {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("%s quota update did not finish", label)
+		}
+	}
+	if secondEnteredBeforeFirstFinished {
+		t.Fatal("newer quota mutation entered before the older Docker side effect completed")
+	}
+	if firstRecorder.Code != http.StatusOK || secondRecorder.Code != http.StatusOK {
+		t.Fatalf("quota statuses: first=%d body=%s second=%d body=%s", firstRecorder.Code, firstRecorder.Body.String(), secondRecorder.Code, secondRecorder.Body.String())
+	}
+	stored, err := users.Get(target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeLimitMu.Lock()
+	gotRuntimeLimit := runtimeLimit
+	runtimeLimitMu.Unlock()
+	if stored.ContainerLimit != 11 || gotRuntimeLimit != stored.ContainerLimit {
+		t.Fatalf("quota drift: stored=%d runtime=%d", stored.ContainerLimit, gotRuntimeLimit)
+	}
+}
+
+func TestDeleteUserRequestCancellationKeepsCleanupMarker(t *testing.T) {
+	users := auth.NewMemoryUserStore()
+	root := &auth.User{ID: "root-cancelled-delete", Username: "root", Role: auth.RoleRoot}
+	target := &auth.User{ID: "target-cancelled-delete", Username: "target", Role: auth.RoleMember}
+	for _, user := range []*auth.User{root, target} {
+		if err := users.Create(user); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resourceCleanupCalled := false
+	handler := &HTTPHandler{
+		UserStore:   users,
+		authEnabled: true,
+		OnUserDeletedContext: func(context.Context, string) error {
+			resourceCleanupCalled = true
+			return nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), auth.ContextUser, root))
+	cancel()
+	request := httptest.NewRequest(http.MethodPost, "/api", nil).WithContext(ctx)
+	recorder := httptest.NewRecorder()
+	handler.handleDeleteUser(recorder, request, &model.Request{UserID: target.ID})
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := users.Get(target.ID); err == nil {
+		t.Fatal("cancelled post-commit cleanup restored a deleted account")
+	}
+	pending, err := users.ListDeletionCleanup()
+	if err != nil || len(pending) != 1 || pending[0] != target.ID {
+		t.Fatalf("cancelled cleanup marker = %v, err=%v", pending, err)
+	}
+	if resourceCleanupCalled {
+		t.Fatal("resource cleanup ran after the request context was cancelled")
 	}
 }
 

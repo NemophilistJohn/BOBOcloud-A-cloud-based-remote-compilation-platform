@@ -246,6 +246,86 @@ func TestDAPSessionKeepsResourcesAndRegistrationUntilProcessWaits(t *testing.T) 
 	manager.Close()
 }
 
+func TestStopUserContextCancelsResourceDrainWait(t *testing.T) {
+	process := newDrainingManagerTestProcess()
+	manager := NewManager(managerTestCatalog(), drainingManagerTestStarter{process: process}, ManagerOptions{
+		Inspector:          catalogTestInspector{available: true},
+		processWaitTimeout: 10 * time.Millisecond,
+		killWaitTimeout:    10 * time.Millisecond,
+	})
+	defer manager.Close()
+	var releaseProcess sync.Once
+	release := func() { releaseProcess.Do(func() { close(process.waitRelease) }) }
+	defer release()
+
+	session, err := manager.Start(managerTestContext(t.TempDir(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- manager.StopUserContext(ctx, "user-a") }()
+	select {
+	case <-session.Done():
+	case <-time.After(time.Second):
+		t.Fatal("StopUserContext did not stop the debug session")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("StopUserContext() error = %v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("StopUserContext ignored cancellation while resources were draining")
+	}
+
+	release()
+	select {
+	case <-session.ResourcesDone():
+	case <-time.After(time.Second):
+		t.Fatal("debug resources did not finish after releasing the process")
+	}
+}
+
+func TestCloseContextWaitsForSessionResourcesAndCanRetry(t *testing.T) {
+	process := newDrainingManagerTestProcess()
+	manager := NewManager(managerTestCatalog(), drainingManagerTestStarter{process: process}, ManagerOptions{
+		Inspector:          catalogTestInspector{available: true},
+		processWaitTimeout: 10 * time.Millisecond,
+		killWaitTimeout:    10 * time.Millisecond,
+	})
+	defer manager.Close()
+	var releaseProcess sync.Once
+	release := func() { releaseProcess.Do(func() { close(process.waitRelease) }) }
+	defer release()
+
+	var releases atomic.Int32
+	_, err := manager.Start(managerTestContext(t.TempDir(), func() { releases.Add(1) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	err = manager.CloseContext(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CloseContext() error = %v, want deadline exceeded", err)
+	}
+	if releases.Load() != 0 {
+		t.Fatal("CloseContext released a debug lease before Process.Wait completed")
+	}
+
+	release()
+	retryCtx, cancelRetry := context.WithTimeout(context.Background(), time.Second)
+	defer cancelRetry()
+	if err := manager.CloseContext(retryCtx); err != nil {
+		t.Fatalf("retry CloseContext() error = %v", err)
+	}
+	if releases.Load() != 1 {
+		t.Fatalf("release count = %d, want 1", releases.Load())
+	}
+}
+
 func TestSessionRecordsUnexpectedAdapterFrameFailure(t *testing.T) {
 	starter := &managerTestStarter{}
 	manager := NewManager(managerTestCatalog(), starter, ManagerOptions{Inspector: catalogTestInspector{available: true}})

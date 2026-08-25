@@ -1,6 +1,7 @@
 package personalcache
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
@@ -35,6 +36,16 @@ type pythonPackageTree struct {
 }
 
 func scanPythonPackageTreeDetailed(root string) (pythonPackageTree, error) {
+	return scanPythonPackageTreeDetailedContext(context.Background(), root)
+}
+
+func scanPythonPackageTreeDetailedContext(ctx context.Context, root string) (pythonPackageTree, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return pythonPackageTree{}, err
+	}
 	info, err := os.Lstat(root)
 	if err != nil {
 		return pythonPackageTree{}, err
@@ -59,6 +70,9 @@ func scanPythonPackageTreeDetailed(root string) (pythonPackageTree, error) {
 	ownedRoots := make(map[string]bool)
 
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return pythonPackageTree{}, err
+		}
 		lowerEntry := strings.ToLower(entry.Name())
 		if strings.HasSuffix(lowerEntry, ".egg-info") {
 			return pythonPackageTree{}, fmt.Errorf("unsupported Python distribution metadata directory %q", entry.Name())
@@ -110,6 +124,9 @@ func scanPythonPackageTreeDetailed(root string) (pythonPackageTree, error) {
 		}
 		imports := make(map[string]bool)
 		for _, record := range records {
+			if err := ctx.Err(); err != nil {
+				return pythonPackageTree{}, err
+			}
 			if len(record) == 0 || strings.TrimSpace(record[0]) == "" {
 				return pythonPackageTree{}, fmt.Errorf("empty Python installation record entry for %q", entry.Name())
 			}
@@ -177,6 +194,9 @@ func scanPythonPackageTreeDetailed(root string) (pythonPackageTree, error) {
 	}
 
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -214,6 +234,9 @@ func scanPythonPackageTreeDetailed(root string) (pythonPackageTree, error) {
 		return pythonPackageTree{}, err
 	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return pythonPackageTree{}, err
+		}
 		name := strings.ToLower(entry.Name())
 		if name == "__pycache__" {
 			continue
@@ -224,6 +247,9 @@ func scanPythonPackageTreeDetailed(root string) (pythonPackageTree, error) {
 	}
 	names := make([]string, 0, len(tree.Distributions))
 	for name := range tree.Distributions {
+		if err := ctx.Err(); err != nil {
+			return pythonPackageTree{}, err
+		}
 		names = append(names, name)
 	}
 	sort.Strings(names)

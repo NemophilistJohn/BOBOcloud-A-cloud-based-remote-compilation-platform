@@ -112,6 +112,8 @@ type HTTPHandler struct {
 	RuntimeMetadata     RuntimeMetadataProvider
 	Metrics             *metrics.Registry
 	Readiness           ReadinessProbe // 无认证 /readyz 的依赖检查；由 main 在组件装配后注入
+	Accepting           func() bool    // nil keeps legacy embedders accepting work
+	AcquireWork         func(string) (func(), error)
 
 	// SetUserLimit 把用户容器配额变更同步到 Docker 池（可为 nil，仅重启生效）
 	SetUserLimit func(userID string, limit int)
@@ -119,7 +121,8 @@ type HTTPHandler struct {
 	// OnUserDeleted runs after the user record is committed as deleted. It is
 	// idempotent cleanup for analyzers, containers, and the user's data directory;
 	// failures are logged because the account deletion itself cannot be rolled back.
-	OnUserDeleted func(userID string) error
+	OnUserDeleted        func(userID string) error
+	OnUserDeletedContext func(context.Context, string) error
 	// OnBuildCacheCleared releases idle Docker bind mounts after manual cache deletion.
 	OnBuildCacheCleared    func()
 	OnPersonalCacheCleared func()
@@ -182,6 +185,11 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.handleHealthProbe(w, r) {
 		return
 	}
+	releaseWork, accepted := acquireLongLivedWork(w, h.Accepting, h.AcquireWork, "http-request")
+	if !accepted {
+		return
+	}
+	defer releaseWork()
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, model.Response{Success: false, Error: "Method not allowed"})
 		return
@@ -663,14 +671,23 @@ func (h *HTTPHandler) handleRun(w http.ResponseWriter, r *http.Request, req *mod
 		writeRunCancelledBeforeStart(w)
 		return
 	}
-	if _, exists := h.Sessions.Get(runID); exists || h.Channels.GetOrCreate(runID, false) != nil {
+	_, exists, lookupErr := h.Sessions.Lookup(runID)
+	if lookupErr != nil {
+		runSessionLifecycleMu.Unlock()
+		slog.Error("Failed to check run session identity", "user_id", userID, "run_id", runID, "error", lookupErr)
+		writeJSON(w, http.StatusServiceUnavailable, model.Response{
+			Success:   false,
+			Error:     "Run session storage is temporarily unavailable",
+			ErrorCode: "run_session_storage_unavailable",
+		})
+		return
+	}
+	if exists || h.Channels.GetOrCreate(runID, false) != nil {
 		runSessionLifecycleMu.Unlock()
 		writeRunIDConflict(w, runID)
 		return
 	}
-	h.Channels.GetOrCreate(runID, true)
-
-	h.Sessions.Create(&model.RunSession{
+	if _, createErr := h.Sessions.Create(&model.RunSession{
 		RunID:         runID,
 		Token:         token,
 		FolderName:    req.FolderName,
@@ -686,13 +703,27 @@ func (h *HTTPHandler) handleRun(w http.ResponseWriter, r *http.Request, req *mod
 		TeamID:        req.TeamID,
 		ProjectID:     req.ProjectID,
 		Branch:        req.Branch,
-	})
+	}); createErr != nil {
+		runSessionLifecycleMu.Unlock()
+		slog.Error("Failed to persist run session", "user_id", userID, "run_id", runID, "error", createErr)
+		writeJSON(w, http.StatusServiceUnavailable, model.Response{
+			Success:   false,
+			Error:     "Failed to persist run session; run was not accepted",
+			ErrorCode: "run_session_persistence_failed",
+		})
+		return
+	}
+	h.Channels.GetOrCreate(runID, true)
+
 	if h.CompileActivity != nil {
 		if err := h.CompileActivity.Increment(userID, time.Now()); err != nil {
-			if channel := h.Channels.GetOrCreate(runID, false); channel != nil {
+			channel := h.Channels.GetOrCreate(runID, false)
+			if channel != nil {
 				channel.Close()
 			}
-			h.Channels.CleanupRun(runID, h.Sessions)
+			if cleanupErr := h.Channels.CleanupRun(runID, channel, h.Sessions); cleanupErr != nil {
+				slog.Error("Failed to clean rejected run session", "user_id", userID, "run_id", runID, "error", cleanupErr)
+			}
 			runSessionLifecycleMu.Unlock()
 			slog.Error("Failed to record compile activity", "user_id", userID, "run_id", runID, "error", err)
 			writeJSON(w, http.StatusServiceUnavailable, model.Response{Success: false, Error: "Failed to record compile activity; run was not accepted"})

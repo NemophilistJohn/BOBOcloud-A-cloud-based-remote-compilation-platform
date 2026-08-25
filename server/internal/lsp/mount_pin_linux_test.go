@@ -22,7 +22,7 @@ func TestPinnedDependencyMountSurvivesPathReplacement(t *testing.T) {
 	mountRoot := filepath.Join(root, "mounts")
 	mounts, release, err := pinDockerDependencyMounts(mountRoot, "test-session", []AnalysisDependencyMount{{
 		Role: DependencyRolePythonPackages, HostPath: source,
-		ContainerPath: pythonRuntimePackagesContainer, ReadOnly: true,
+		ContainerPath: AnalysisDependenciesRoot + "/python/test", ReadOnly: true,
 	}})
 	if err != nil {
 		t.Fatal(err)

@@ -14,6 +14,14 @@ import (
 	"time"
 )
 
+func TestCleanupDockerOrphansContextRejectsCancelledStartup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := CleanupDockerOrphansContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CleanupDockerOrphansContext() error = %v, want context cancellation", err)
+	}
+}
+
 func hasDAPArgPair(args []string, flag, value string) bool {
 	for index := 0; index+1 < len(args); index++ {
 		if args[index] == flag && args[index+1] == value {

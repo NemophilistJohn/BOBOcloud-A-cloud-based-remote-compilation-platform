@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -86,12 +87,15 @@ func CleanupExpiredRuns(store storage.SessionStore, channels *session.ChannelMan
 }
 
 func cleanupExpiredRunsLocked(store storage.SessionStore, channels *session.ChannelManager, ttl time.Duration) []string {
+	if err := channels.RetryPendingCleanups(store); err != nil {
+		slog.Error("Failed to retry pending run session cleanup", "error", err)
+	}
 	expired := store.CleanupExpired(ttl)
 	for _, runID := range expired {
 		if channel := channels.GetOrCreate(runID, false); channel != nil {
 			channel.Close()
+			channels.RemoveIfCurrent(runID, channel)
 		}
-		channels.CleanupRun(runID, store)
 	}
 	return expired
 }
@@ -109,14 +113,30 @@ func (h *HTTPHandler) handleCancelRun(w http.ResponseWriter, r *http.Request, re
 
 	userID := auth.UserIDFromContext(r.Context())
 	runSessionLifecycleMu.Lock()
-	sess, exists := h.Sessions.Get(runID)
+	sess, exists, lookupErr := h.Sessions.Lookup(runID)
+	if lookupErr != nil {
+		runSessionLifecycleMu.Unlock()
+		slog.Error("Failed to read run session for cancellation", "run_id", runID, "error", lookupErr)
+		writeJSON(w, http.StatusServiceUnavailable, model.Response{
+			Success:   false,
+			Error:     "Run session storage is temporarily unavailable",
+			ErrorCode: "run_session_storage_unavailable",
+		})
+		return
+	}
 	if !exists {
 		rememberRunCancellationLocked(userID, runID, time.Now())
-		if channel := h.Channels.GetOrCreate(runID, false); channel != nil {
+		channel := h.Channels.GetOrCreate(runID, false)
+		if channel != nil {
 			channel.Close()
 		}
-		h.Channels.CleanupRun(runID, h.Sessions)
+		cleanupErr := h.Channels.CleanupRun(runID, channel, h.Sessions)
 		runSessionLifecycleMu.Unlock()
+		if cleanupErr != nil {
+			slog.Error("Failed to clean absent run session", "run_id", runID, "error", cleanupErr)
+			writeJSON(w, http.StatusServiceUnavailable, model.Response{Success: false, Error: "Run session cleanup is temporarily unavailable", ErrorCode: "run_session_cleanup_failed"})
+			return
+		}
 		writeCancelRunResult(w, "absent", false, "Run session is already absent")
 		return
 	}
@@ -132,11 +152,17 @@ func (h *HTTPHandler) handleCancelRun(w http.ResponseWriter, r *http.Request, re
 	}
 
 	rememberRunCancellationLocked(userID, runID, time.Now())
-	if channel := h.Channels.GetOrCreate(runID, false); channel != nil {
+	channel := h.Channels.GetOrCreate(runID, false)
+	if channel != nil {
 		channel.Close()
 	}
-	h.Channels.CleanupRun(runID, h.Sessions)
+	cleanupErr := h.Channels.CleanupRun(runID, channel, h.Sessions)
 	runSessionLifecycleMu.Unlock()
+	if cleanupErr != nil {
+		slog.Error("Failed to cancel pending run session", "run_id", runID, "error", cleanupErr)
+		writeJSON(w, http.StatusServiceUnavailable, model.Response{Success: false, Error: "Run session cleanup is temporarily unavailable", ErrorCode: "run_session_cleanup_failed"})
+		return
+	}
 
 	writeCancelRunResult(w, "cancelled", false, "Pending run cancelled")
 }

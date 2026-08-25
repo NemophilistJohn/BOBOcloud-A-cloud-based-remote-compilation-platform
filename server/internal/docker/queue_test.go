@@ -160,6 +160,122 @@ func TestDestroyUserContainersWaitsForPendingAcquireBeforeDetaching(t *testing.T
 	}
 }
 
+func TestSetUserLimitDoesNotReactivateDeletedUser(t *testing.T) {
+	pool := &Pool{
+		userActiveContainers:  make(map[string]int),
+		userPendingContainers: make(map[string]int),
+		userBackgroundCreates: make(map[string]int),
+		userContainerLimits:   map[string]int{"alice": 1},
+		deletedUsers:          make(map[string]bool),
+		containerUser:         make(map[string]string),
+	}
+
+	if err := pool.DestroyUserContainersContext(context.Background(), "alice"); err != nil {
+		t.Fatal(err)
+	}
+	pool.SetUserLimit("alice", 7)
+
+	pool.mu.Lock()
+	deleted := pool.deletedUsers["alice"]
+	_, hasLimit := pool.userContainerLimits["alice"]
+	pool.mu.Unlock()
+	if !deleted {
+		t.Fatal("quota update removed the account deletion tombstone")
+	}
+	if hasLimit {
+		t.Fatal("quota update retained stale state for a deleted user")
+	}
+	if _, err := pool.AcquireForUser(context.Background(), "alice", "python", nil); err == nil || !strings.Contains(err.Error(), "no longer available") {
+		t.Fatalf("deleted user acquisition error = %v, want no longer available", err)
+	}
+}
+
+func TestSetUserLimitCannotReactivateUserDuringContainerDeletion(t *testing.T) {
+	const containerID = "deleting-account-container-123456"
+	removalStarted := make(chan struct{})
+	releaseRemoval := make(chan struct{})
+	defer func() {
+		select {
+		case <-releaseRemoval:
+		default:
+			close(releaseRemoval)
+		}
+	}()
+
+	pool := &Pool{
+		userActiveContainers:  map[string]int{"alice": 1},
+		userPendingContainers: make(map[string]int),
+		userBackgroundCreates: make(map[string]int),
+		userContainerLimits:   map[string]int{"alice": 1},
+		deletedUsers:          make(map[string]bool),
+		containerUser:         map[string]string{containerID: "alice"},
+		imageByContainerID:    map[string]string{containerID: "python"},
+		activeCount:           1,
+	}
+	pool.runDockerCommand = func(ctx context.Context, args ...string) ([]byte, error) {
+		if len(args) == 0 || args[0] != "rm" {
+			return nil, fmt.Errorf("unexpected docker command: %v", args)
+		}
+		close(removalStarted)
+		select {
+		case <-releaseRemoval:
+			return nil, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	destroyCtx, cancelDestroy := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelDestroy()
+	destroyed := make(chan error, 1)
+	go func() {
+		destroyed <- pool.DestroyUserContainersContext(destroyCtx, "alice")
+	}()
+
+	select {
+	case <-removalStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("container deletion did not reach Docker removal")
+	}
+
+	// Docker removal starts only after DestroyUserContainersContext publishes the
+	// tombstone. This quota update therefore exercises the deletion race without
+	// relying on scheduler ordering.
+	pool.SetUserLimit("alice", 9)
+	pool.mu.Lock()
+	deletedDuringCleanup := pool.deletedUsers["alice"]
+	limitDuringCleanup := pool.userContainerLimits["alice"]
+	pool.mu.Unlock()
+	if !deletedDuringCleanup || limitDuringCleanup != 1 {
+		t.Fatalf("quota update changed deleting user state: deleted=%t limit=%d", deletedDuringCleanup, limitDuringCleanup)
+	}
+	if _, err := pool.AcquireForUser(context.Background(), "alice", "python", nil); err == nil || !strings.Contains(err.Error(), "no longer available") {
+		t.Fatalf("deleting user acquisition error = %v, want no longer available", err)
+	}
+
+	close(releaseRemoval)
+	select {
+	case err := <-destroyed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("container deletion did not finish")
+	}
+
+	pool.SetUserLimit("alice", 11)
+	pool.mu.Lock()
+	deletedAfterCleanup := pool.deletedUsers["alice"]
+	_, hasLimitAfterCleanup := pool.userContainerLimits["alice"]
+	pool.mu.Unlock()
+	if !deletedAfterCleanup || hasLimitAfterCleanup {
+		t.Fatalf("completed deletion was reactivated: deleted=%t has_limit=%t", deletedAfterCleanup, hasLimitAfterCleanup)
+	}
+	if _, err := pool.AcquireForUser(context.Background(), "alice", "python", nil); err == nil || !strings.Contains(err.Error(), "no longer available") {
+		t.Fatalf("deleted user acquisition error = %v, want no longer available", err)
+	}
+}
+
 func TestReleaseUnknownContainerIsIdempotent(t *testing.T) {
 	pool := &Pool{
 		containerUser:        map[string]string{"known": "other"},

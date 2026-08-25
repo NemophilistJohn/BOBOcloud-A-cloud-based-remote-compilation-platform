@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -36,6 +37,7 @@ import (
 	"bobocloud-server/internal/runner"
 	"bobocloud-server/internal/safefile"
 	"bobocloud-server/internal/security"
+	"bobocloud-server/internal/serverruntime"
 	"bobocloud-server/internal/session"
 	"bobocloud-server/internal/storage"
 
@@ -46,21 +48,112 @@ import (
 const ServerVersion = "2.5.0"
 
 type dependencyRecoverySteps struct {
-	cleanupManagedContainers func() error
-	cleanupLSPContainers     func() error
-	cleanupLSPMounts         func(string) error
-	cleanupDAPContainers     func() error
-	cleanupDAPMounts         func(string) error
-	recoverTransactions      func()
+	cleanupManagedContainers func(context.Context) error
+	cleanupLSPContainers     func(context.Context) error
+	cleanupLSPMounts         func(context.Context, string) error
+	cleanupDAPContainers     func(context.Context) error
+	cleanupDAPMounts         func(context.Context, string) error
+	recoverTransactions      func(context.Context) error
 }
 
 type userContainerDestroyer interface {
 	DestroyUserContainers(string) error
 }
 
+type userContainerContextDestroyer interface {
+	DestroyUserContainersContext(context.Context, string) error
+}
+
+type runtimeShutdowner interface {
+	Shutdown(context.Context) error
+}
+
+const (
+	shutdownRetryInitialDelay = 20 * time.Millisecond
+	shutdownRetryMaximumDelay = 250 * time.Millisecond
+)
+
+// finishRuntimeShutdown keeps advancing retryable stopSteps within one caller
+// grace period. Runtime.Shutdown may return at an intermediate phase checkpoint
+// to preserve dependency ordering even though the caller still has time left.
+func finishRuntimeShutdown(ctx context.Context, runtime runtimeShutdowner, initialDelay time.Duration) error {
+	if runtime == nil {
+		return errors.New("server runtime is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if initialDelay <= 0 {
+		initialDelay = shutdownRetryInitialDelay
+	}
+	if initialDelay > shutdownRetryMaximumDelay {
+		initialDelay = shutdownRetryMaximumDelay
+	}
+	delay := initialDelay
+	var firstErr error
+	var lastErr error
+	attempts := 0
+	for {
+		attempts++
+		lastErr = runtime.Shutdown(ctx)
+		if lastErr == nil {
+			return nil
+		}
+		if firstErr == nil {
+			firstErr = lastErr
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("server shutdown incomplete after %d attempts: %w", attempts, errors.Join(firstErr, lastErr, ctxErr))
+		}
+		// A non-cancellable context gives ordinary permanent errors no natural
+		// upper bound. Preserve the one-attempt behavior for such callers.
+		if ctx.Done() == nil {
+			return lastErr
+		}
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return fmt.Errorf("server shutdown incomplete after %d attempts: %w", attempts, errors.Join(firstErr, lastErr, ctx.Err()))
+		}
+		if delay < shutdownRetryMaximumDelay {
+			delay *= 2
+			if delay > shutdownRetryMaximumDelay {
+				delay = shutdownRetryMaximumDelay
+			}
+		}
+	}
+}
+
 func removeUserDataAfterContainerCleanup(destroyer userContainerDestroyer, userID, userDir string) error {
-	if err := destroyer.DestroyUserContainers(userID); err != nil {
+	return removeUserDataAfterContainerCleanupContext(context.Background(), destroyer, userID, userDir)
+}
+
+func removeUserDataAfterContainerCleanupContext(ctx context.Context, destroyer userContainerDestroyer, userID, userDir string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var err error
+	if contextual, ok := destroyer.(userContainerContextDestroyer); ok {
+		err = contextual.DestroyUserContainersContext(ctx, userID)
+	} else {
+		err = destroyer.DestroyUserContainers(userID)
+	}
+	if err != nil {
 		return fmt.Errorf("destroy user containers before deleting data: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("delete user data directory: %w", err)
 	}
 	if err := os.RemoveAll(userDir); err != nil {
 		return fmt.Errorf("delete user data directory: %w", err)
@@ -71,24 +164,41 @@ func removeUserDataAfterContainerCleanup(destroyer userContainerDestroyer, userI
 // recoverDependencyRuntimeState is intentionally independent of feature
 // enablement. A previous binary may have left analyzer/debugger containers or
 // mount anchors behind even when the current configuration disables them.
-func recoverDependencyRuntimeState(dataDir string, steps dependencyRecoverySteps) error {
-	if err := steps.cleanupManagedContainers(); err != nil {
+func recoverDependencyRuntimeState(ctx context.Context, dataDir string, steps dependencyRecoverySteps) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := steps.cleanupManagedContainers(ctx); err != nil {
 		return fmt.Errorf("cleanup managed Docker containers: %w", err)
 	}
-	if err := steps.cleanupLSPContainers(); err != nil {
+	if err := steps.cleanupLSPContainers(ctx); err != nil {
 		return fmt.Errorf("cleanup Docker LSP containers: %w", err)
 	}
-	if err := steps.cleanupDAPContainers(); err != nil {
+	if err := steps.cleanupDAPContainers(ctx); err != nil {
 		return fmt.Errorf("cleanup Docker DAP containers: %w", err)
 	}
-	if err := steps.cleanupLSPMounts(filepath.Join(dataDir, "lsp-cache", "mounts")); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := steps.cleanupLSPMounts(ctx, filepath.Join(dataDir, "lsp-cache", "mounts")); err != nil {
 		return fmt.Errorf("cleanup LSP dependency projections: %w", err)
 	}
-	if err := steps.cleanupDAPMounts(filepath.Join(dataDir, "dap-cache", "mounts")); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := steps.cleanupDAPMounts(ctx, filepath.Join(dataDir, "dap-cache", "mounts")); err != nil {
 		return fmt.Errorf("cleanup DAP dependency projections: %w", err)
 	}
-	steps.recoverTransactions()
-	return nil
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := steps.recoverTransactions(ctx); err != nil {
+		return fmt.Errorf("recover personal dependency transactions: %w", err)
+	}
+	return ctx.Err()
 }
 
 func main() {
@@ -141,6 +251,19 @@ func main() {
 	logger := customlog.NewLogger(cfg.LogLevel, cfg.LogFormat)
 	slog.SetDefault(logger)
 	customlog.L = logger
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	serverRuntime := serverruntime.New(signalCtx)
+	shutdownStartupAndExit := func(cause error) {
+		serverRuntime.BeginDrain(cause)
+		stopSignals()
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.ShutdownGracePeriod())
+		shutdownErr := finishRuntimeShutdown(shutdownCtx, serverRuntime, shutdownRetryInitialDelay)
+		cancelShutdown()
+		if shutdownErr != nil {
+			slog.Error("Startup shutdown did not complete", "error", shutdownErr, "grace_period", cfg.ShutdownGracePeriod())
+		}
+		os.Exit(1)
+	}
 	slog.Info("BOBOCLOUD Server v2 starting",
 		"http_port", cfg.HTTPPort,
 		"ws_port", cfg.WSPort,
@@ -197,9 +320,17 @@ func main() {
 		db, err = bolt.Open(cfg.DBPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
 		if err != nil {
 			slog.Error("Failed to open BoltDB", "path", cfg.DBPath, "error", err)
-			os.Exit(1)
+			shutdownStartupAndExit(err)
+			return
 		}
-		sessionStore = storage.NewBoltSessionStore(db)
+		boltSessionStore, err := storage.NewBoltSessionStore(db)
+		if err != nil {
+			_ = db.Close()
+			slog.Error("Failed to initialize run session persistence", "error", err)
+			shutdownStartupAndExit(err)
+			return
+		}
+		sessionStore = boltSessionStore
 		runHistory = storage.NewBoltRunHistory(db)
 		compileActivity = storage.NewBoltCompileActivityStore(db)
 		userStore = auth.NewBoltUserStore(db)
@@ -208,6 +339,14 @@ func main() {
 		auditStore = storage.NewBoltAuditStore(db)
 		collaborationStore = collab.NewBoltStore(db)
 		slog.Info("BoltDB persistence enabled", "path", cfg.DBPath)
+		if err := serverRuntime.RegisterStopHook(serverruntime.PhaseStorage, "bolt-database", func(context.Context) error {
+			return db.Close()
+		}); err != nil {
+			_ = db.Close()
+			slog.Error("Failed to register database shutdown", "error", err)
+			shutdownStartupAndExit(err)
+			return
+		}
 	} else {
 		// 内存模式（向后兼容）
 		sessionStore = storage.NewMemorySessionStore()
@@ -218,6 +357,32 @@ func main() {
 		invites = auth.NewMemoryInviteStore()
 		collaborationStore = collab.NewMemoryStore()
 		slog.Info("BoltDB disabled, using in-memory storage")
+	}
+	staleRunIDs, err := sessionStore.DeleteAllProcessSessions()
+	if err != nil {
+		slog.Error("Failed to recover process-bound run sessions", "error", err)
+		shutdownStartupAndExit(err)
+		return
+	}
+	if len(staleRunIDs) > 0 {
+		slog.Warn("Recovered stale run sessions from a previous process", "count", len(staleRunIDs))
+	}
+	if err := serverRuntime.RegisterStopHook(serverruntime.PhaseServices, "run-session-store", func(ctx context.Context) error {
+		ids, err := sessionStore.DeleteAllProcessSessions()
+		if err != nil {
+			return err
+		}
+		for _, runID := range ids {
+			if channel := channelMgr.GetOrCreate(runID, false); channel != nil {
+				channel.Close()
+				channelMgr.RemoveIfCurrent(runID, channel)
+			}
+		}
+		return nil
+	}); err != nil {
+		slog.Error("Failed to register run session shutdown", "error", err)
+		shutdownStartupAndExit(err)
+		return
 	}
 
 	// ──── 8. Docker 容器池 ────
@@ -241,6 +406,16 @@ func main() {
 	dockerPool.SetResetStrategy(cfg.DockerContainerResetStrategy)
 	dockerPool.SetMetrics(performanceMetrics)
 	dockerPool.SetOutputRetentionLimit(cfg.RunOutputRetainedBytes)
+	if err := serverRuntime.RegisterStopHook(serverruntime.PhaseResources, "docker-pool", func(ctx context.Context) error {
+		return dockerPool.ShutdownContext(ctx)
+	}); err != nil {
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.ShutdownGracePeriod())
+		_ = dockerPool.ShutdownContext(shutdownCtx)
+		cancelShutdown()
+		slog.Error("Failed to register Docker shutdown", "error", err)
+		shutdownStartupAndExit(err)
+		return
+	}
 	personalCache := personalcache.NewManager(cfg.DataDir, personalcache.Options{
 		ReservationBytes:          int64(cfg.PersonalPersistReservationMB) * 1_000_000,
 		MaxFiles:                  cfg.PersonalPersistMaxFiles,
@@ -256,16 +431,17 @@ func main() {
 	// Recovery can rename or delete transaction directories. It is safe only
 	// after every old writer/reader container is confirmed absent and every
 	// analyzer/debugger projection is confirmed unmounted.
-	if err := recoverDependencyRuntimeState(cfg.DataDir, dependencyRecoverySteps{
-		cleanupManagedContainers: dockerPool.CleanupOrphanedContainers,
-		cleanupLSPContainers:     lsp.CleanupDockerOrphans,
-		cleanupLSPMounts:         lsp.CleanupDependencyMountOrphans,
-		cleanupDAPContainers:     dap.CleanupDockerOrphans,
-		cleanupDAPMounts:         dap.CleanupDependencyMountOrphans,
-		recoverTransactions:      personalCache.RecoverOrphanedTransactions,
+	if err := recoverDependencyRuntimeState(serverRuntime.Context(), cfg.DataDir, dependencyRecoverySteps{
+		cleanupManagedContainers: dockerPool.CleanupOrphanedContainersContext,
+		cleanupLSPContainers:     lsp.CleanupDockerOrphansContext,
+		cleanupLSPMounts:         lsp.CleanupDependencyMountOrphansContext,
+		cleanupDAPContainers:     dap.CleanupDockerOrphansContext,
+		cleanupDAPMounts:         dap.CleanupDependencyMountOrphansContext,
+		recoverTransactions:      personalCache.RecoverOrphanedTransactionsContext,
 	}); err != nil {
 		slog.Error("Cannot safely recover personal dependency transactions", "error", err)
-		os.Exit(1)
+		shutdownStartupAndExit(err)
+		return
 	}
 
 	slog.Info("Docker pool initialized",
@@ -278,30 +454,6 @@ func main() {
 		"readonly_rootfs", cfg.DockerReadOnlyRootfs,
 		"reset_strategy", cfg.DockerContainerResetStrategy,
 	)
-
-	// ──── 优雅关闭 ────
-	// 收到 SIGINT/SIGTERM：先回收所有容器（避免孤儿泄漏），再关闭 BoltDB，最后退出。
-	// 无论是否启用 BoltDB 都注册信号处理（旧版仅 db!=nil 时注册，非 BoltDB 模式无法优雅退出）。
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
-		slog.Info("Signal received, shutting down", "signal", sig)
-		if lspManager != nil {
-			lspManager.Close()
-		}
-		if dapManager != nil {
-			dapManager.Close()
-		}
-		dockerPool.Shutdown()
-		if db != nil {
-			if err := db.Close(); err != nil {
-				slog.Error("Error closing BoltDB", "error", err)
-			}
-		}
-		slog.Info("Shutdown complete, exiting")
-		os.Exit(0)
-	}()
 
 	// ──── 9. 认证与用户管理 ────
 	multiUser := cfg.IsMultiUser()
@@ -328,12 +480,24 @@ func main() {
 	} else if !multiUser {
 		// 向后兼容：单机模式且无 users 配置时使用 admin_api_key 创建默认用户
 		defaultUser := userStore.SeedDefaultUser(cfg.AdminAPIKey)
-		// 用配置中的默认值覆盖
-		if cfg.DefaultQuota > 0 {
-			defaultUser.ContainerLimit = cfg.DefaultQuota
-		}
-		if cfg.DefaultRateLimit > 0 {
-			defaultUser.RateLimit = cfg.DefaultRateLimit
+		// Persist configured defaults rather than changing only the startup copy.
+		// This keeps account APIs and Docker admission on the same source of truth.
+		if cfg.DefaultQuota > 0 || cfg.DefaultRateLimit > 0 {
+			updatedDefault, updateErr := userStore.MutateExisting(defaultUser.ID, func(latest *auth.User) error {
+				if cfg.DefaultQuota > 0 {
+					latest.ContainerLimit = cfg.DefaultQuota
+				}
+				if cfg.DefaultRateLimit > 0 {
+					latest.RateLimit = cfg.DefaultRateLimit
+				}
+				return nil
+			})
+			if updateErr != nil {
+				slog.Error("Failed to persist default user limits", "error", updateErr)
+				shutdownStartupAndExit(updateErr)
+				return
+			}
+			defaultUser = updatedDefault
 		}
 		createdUsers = []*auth.User{defaultUser}
 		slog.Info("Default user created", "user_id", defaultUser.ID)
@@ -350,7 +514,8 @@ func main() {
 	// versions. Internal IDs remain unchanged because they own workspace paths.
 	if err := auth.EnsureSocialIdentities(userStore); err != nil {
 		slog.Error("Failed to migrate user social identities", "error", err)
-		os.Exit(1)
+		shutdownStartupAndExit(err)
+		return
 	}
 
 	teamCache := buildcache.NewManager(teamCacheV2Root(cfg.DataDir), cfg.TeamCacheDefaultQuotaMB)
@@ -371,6 +536,14 @@ func main() {
 			MemoryLimit:     cfg.LSPMemoryLimit, CPULimit: cfg.LSPCPULimit,
 			DependencyRegistry: dependencyViews,
 		})
+		if err := serverRuntime.RegisterStopHook(serverruntime.PhaseServices, "lsp-manager", func(ctx context.Context) error {
+			return lspManager.CloseContext(ctx)
+		}); err != nil {
+			lspManager.Close()
+			slog.Error("Failed to register LSP shutdown", "error", err)
+			shutdownStartupAndExit(err)
+			return
+		}
 		slog.Info("Remote LSP initialized", "manifest", manifestPath, "languages", catalog.Languages(), "max_sessions", cfg.LSPMaxSessions, "max_per_user", cfg.LSPMaxSessionsPerUser, "cache_quota_mb", cfg.LSPCacheQuotaMB)
 	}
 	if cfg.DAPEnabled {
@@ -387,6 +560,14 @@ func main() {
 				MemoryLimit:     cfg.DAPMemoryLimit, CPULimit: cfg.DAPCPULimit,
 				NetworkEnable: cfg.DAPNetworkEnabled,
 			})
+			if err := serverRuntime.RegisterStopHook(serverruntime.PhaseServices, "dap-manager", func(ctx context.Context) error {
+				return dapManager.CloseContext(ctx)
+			}); err != nil {
+				dapManager.Close()
+				slog.Error("Failed to register DAP shutdown", "error", err)
+				shutdownStartupAndExit(err)
+				return
+			}
 			slog.Info("Remote DAP initialized", "manifest", manifestPath, "catalog_version", catalog.Version(), "max_sessions", cfg.DAPMaxSessions, "max_per_user", cfg.DAPMaxSessionsPerUser)
 		}
 	}
@@ -408,13 +589,17 @@ func main() {
 		})
 	}
 
-	// 同步所有用户的配额到 DockerPool
-	for _, u := range createdUsers {
-		dockerPool.SetUserLimit(u.ID, u.ContainerLimit)
+	// Persistent users, not just accounts touched by this startup's seed config,
+	// are the runtime quota source of truth after every process restart.
+	currentUsers, err := synchronizeUserContainerLimits(userStore, dockerPool.SetUserLimit)
+	if err != nil {
+		slog.Error("Failed to initialize user container limits", "error", err)
+		shutdownStartupAndExit(err)
+		return
 	}
 	slog.Info("Auth initialized",
 		"multi_user", multiUser,
-		"user_count", len(createdUsers),
+		"user_count", len(currentUsers),
 	)
 
 	// cache-v2 mounts are bound to an exact project/toolchain identity, so the
@@ -424,7 +609,7 @@ func main() {
 	// Startup logs are retained by systemd/journald. Never put reusable
 	// credentials in them; administrators distribute API keys through the
 	// authenticated account flow instead.
-	for _, u := range createdUsers {
+	for _, u := range currentUsers {
 		slog.Info("User ready",
 			"id", u.ID,
 			"name", u.Name,
@@ -495,7 +680,8 @@ func main() {
 	)
 	if planStoreErr != nil {
 		slog.Error("Failed to initialize package operation persistence", "error", planStoreErr)
-		os.Exit(1)
+		shutdownStartupAndExit(planStoreErr)
+		return
 	}
 	httpHandler.PackagePlans = packagePlans
 	if cfg.PackageCenterEnabled {
@@ -508,6 +694,8 @@ func main() {
 	}
 	httpHandler.Metrics = performanceMetrics
 	httpHandler.Readiness = serverReadinessProbe(db, dockerPool, cfg, lspManager, dapManager)
+	httpHandler.Accepting = serverRuntime.IsAccepting
+	httpHandler.AcquireWork = serverRuntime.Acquire
 	httpHandler.EnvironmentSetup = makeEnvironmentSetupExecutor(dockerPool, sec)
 	httpHandler.PackageLockResolver = makePackageLockResolver(dockerPool, sec, cfg.PackageNodePNPMVersion)
 	httpHandler.OnBuildCacheCleared = dockerPool.InvalidateIdleBuildCacheContainers
@@ -515,19 +703,25 @@ func main() {
 	httpHandler.SetUserLimit = func(userID string, limit int) {
 		dockerPool.SetUserLimit(userID, limit)
 	}
-	httpHandler.OnUserDeleted = func(userID string) error {
+	cleanupDeletedUserResources := func(ctx context.Context, userID string) error {
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		var stopErrors []error
 		if lspManager != nil {
-			if err := lspManager.StopUser(userID); err != nil {
+			if err := lspManager.StopUserContext(ctx, userID); err != nil {
 				stopErrors = append(stopErrors, fmt.Errorf("stop LSP sessions: %w", err))
 			}
 		}
 		if dapManager != nil {
-			if err := dapManager.StopUser(userID); err != nil {
+			if err := dapManager.StopUserContext(ctx, userID); err != nil {
 				stopErrors = append(stopErrors, fmt.Errorf("stop DAP sessions: %w", err))
 			}
 		}
 		if err := errors.Join(stopErrors...); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if lspManager != nil {
@@ -535,11 +729,14 @@ func main() {
 				return err
 			}
 		}
+		if err := dap.CleanupUserDownloadCacheContext(ctx, cfg.DataDir, userID); err != nil {
+			return fmt.Errorf("delete DAP download cache: %w", err)
+		}
 		// Docker must confirm every user-owned container is absent before the
 		// bind-mounted directory can be removed. A cleanup error remains in the
 		// durable deletion queue and is retried without losing ownership state.
 		userDir := filepath.Join(cfg.DataDir, "users", userID)
-		if err := removeUserDataAfterContainerCleanup(dockerPool, userID, userDir); err != nil {
+		if err := removeUserDataAfterContainerCleanupContext(ctx, dockerPool, userID, userDir); err != nil {
 			slog.Error("Failed to delete user data directory",
 				"user_id", userID, "path", userDir, "error", err)
 			return err
@@ -551,9 +748,17 @@ func main() {
 		}
 		return nil
 	}
+	httpHandler.OnUserDeletedContext = cleanupDeletedUserResources
+	httpHandler.OnUserDeleted = func(userID string) error {
+		return cleanupDeletedUserResources(context.Background(), userID)
+	}
 	// Cleanup jobs survive process restarts and are retried only after every
 	// dependency used by the idempotent cleanup pipeline is wired.
-	httpHandler.RetryPendingUserDeletions()
+	if err := httpHandler.RetryPendingUserDeletionsContext(serverRuntime.Context()); err != nil {
+		slog.Error("Pending user deletion recovery interrupted", "error", err)
+		shutdownStartupAndExit(err)
+		return
+	}
 
 	wsHandler := &handler.WSHandler{
 		Config:          cfg,
@@ -575,143 +780,211 @@ func main() {
 		PersonalCache:   personalCache,
 		RuntimeMetadata: runtimeMetadata,
 		Metrics:         performanceMetrics,
+		Accepting:       serverRuntime.IsAccepting,
+		AcquireWork:     serverRuntime.Acquire,
 	}
 	dapHandler := &handler.DAPHandler{
 		Config: cfg, Manager: dapManager, AuthEnabled: multiUser,
 		Authenticator: authenticator, UserStore: userStore, AuthSessions: authSessions,
 		Collaboration: collaborationManager, Lifecycle: resourceLifecycle, ChildTickets: dap.NewChildTicketBroker(),
 		PersonalCache: personalCache, RuntimeMetadata: runtimeMetadata,
+		Accepting: serverRuntime.IsAccepting, AcquireWork: serverRuntime.Acquire,
 	}
 
 	// ──── 12. 后台任务 ────
+	startManaged := func(name string, task func(context.Context)) {
+		if err := serverRuntime.Go(name, task); err != nil {
+			slog.Error("Failed to register managed server task", "task", name, "error", err)
+			shutdownStartupAndExit(err)
+		}
+	}
 	// 会话清理
-	go cleanupLoop(context.Background(), sessionStore, channelMgr, cfg.SessionCleanupDuration(), cfg.SessionTTLDuration())
+	startManaged("session-cleanup", func(ctx context.Context) {
+		cleanupLoop(ctx, sessionStore, channelMgr, cfg.SessionCleanupDuration(), cfg.SessionTTLDuration())
+	})
+	startManaged("user-deletion-cleanup", func(ctx context.Context) {
+		httpHandler.RunPendingUserDeletionCleanup(ctx, cfg.UserDeletionCleanupRetryInterval())
+	})
 	// Activity is compacted independently of run history so inactive accounts
 	// cannot retain daily counters beyond the heatmap window indefinitely.
 	if err := compileActivity.Cleanup(time.Now()); err != nil {
 		slog.Warn("Initial compile activity cleanup failed", "error", err)
 	}
-	go func() {
-		ticker := time.NewTicker(24 * time.Hour)
-		defer ticker.Stop()
-		for now := range ticker.C {
-			if err := compileActivity.Cleanup(now); err != nil {
+	startManaged("compile-activity-cleanup", func(ctx context.Context) {
+		periodicLoop(ctx, 24*time.Hour, func() {
+			if err := compileActivity.Cleanup(time.Now()); err != nil {
 				slog.Warn("Compile activity cleanup failed", "error", err)
 			}
-		}
-	}()
+		})
+	})
 	// 运行历史清理（BoltDB 模式，每 5 分钟）
 	if runHistory != nil {
-		go func() {
-			ticker := time.NewTicker(5 * time.Minute)
-			defer ticker.Stop()
+		startManaged("run-history-cleanup", func(ctx context.Context) {
 			slog.Info("Run history cleanup started", "interval", "5m",
 				"max_per_user", cfg.HistoryMaxPerUser, "max_age", "7d", "max_total", 10000)
-			for range ticker.C {
+			periodicLoop(ctx, 5*time.Minute, func() {
 				runHistory.Cleanup(cfg.HistoryMaxPerUser, 7*24*time.Hour, 10000)
-			}
-		}()
+			})
+		})
 	}
-	go teamCacheCleanupLoop(teamCache, collaborationStore, time.Duration(cfg.TeamCacheCleanupIntervalMin)*time.Minute)
-	go func() {
-		ticker := time.NewTicker(time.Duration(cfg.PersonalPersistCleanupIntervalMin) * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
+	startManaged("team-cache-cleanup", func(ctx context.Context) {
+		teamCacheCleanupLoop(ctx, teamCache, collaborationStore, time.Duration(cfg.TeamCacheCleanupIntervalMin)*time.Minute)
+	})
+	startManaged("personal-cache-cleanup", func(ctx context.Context) {
+		periodicLoop(ctx, time.Duration(cfg.PersonalPersistCleanupIntervalMin)*time.Minute, func() {
 			users, err := userStore.List()
 			if err != nil {
 				slog.Warn("Personal cache cleanup could not list users", "error", err)
-				continue
+				return
 			}
 			for _, user := range users {
 				personalCache.Enforce(user.ID, int64(user.DiskQuotaMB)*1_000_000)
 			}
-		}
-	}()
+		})
+	})
 	// 审计日志清理（保留 90 天 / 最多 20000 条，每小时）
 	if auditStore != nil {
-		go func() {
-			ticker := time.NewTicker(time.Hour)
-			defer ticker.Stop()
-			for range ticker.C {
+		startManaged("audit-cleanup", func(ctx context.Context) {
+			periodicLoop(ctx, time.Hour, func() {
 				auditStore.Cleanup(20000, 90*24*time.Hour)
-			}
-		}()
+			})
+		})
 	}
 	// 登录会话过期清理（每 10 分钟）
 	if authSessions != nil {
-		go func() {
-			ticker := time.NewTicker(10 * time.Minute)
-			defer ticker.Stop()
-			for range ticker.C {
+		startManaged("auth-session-cleanup", func(ctx context.Context) {
+			periodicLoop(ctx, 10*time.Minute, func() {
 				authSessions.CleanupExpired()
-			}
-		}()
+			})
+		})
 	}
 	// 限流器旧桶清理（每 5 分钟）
 	if rateLimiter != nil {
-		go func() {
-			ticker := time.NewTicker(5 * time.Minute)
-			defer ticker.Stop()
-			for range ticker.C {
+		startManaged("rate-limit-cleanup", func(ctx context.Context) {
+			periodicLoop(ctx, 5*time.Minute, func() {
 				rateLimiter.CleanupExpired(10 * time.Minute)
-			}
-		}()
+			})
+		})
 	}
 
 	// ──── 13. 启动服务 ────
 	// DAP child sessions (currently js-debug) have their own broker port. The
 	// port exposes only TLS WebSocket controls; Docker adapter ports remain on
 	// host loopback and are ticket-bound in the handler.
-	go func() {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/dap-child", dapHandler.HandleChildWebSocket)
-		addr := fmt.Sprintf(":%d", cfg.DAPChildWSPort)
-		slog.Info("DAP child WebSocket server starting", "addr", addr, "tls", cfg.TLSEnabled)
-		if err := serveBOBOHTTP(&http.Server{Addr: addr, Handler: mux}, cfg); err != nil {
-			slog.Error("DAP child WebSocket server failed", "error", err)
-			if db != nil {
-				db.Close()
-			}
-			os.Exit(1)
-		}
-	}()
+	dapChildMux := http.NewServeMux()
+	dapChildMux.HandleFunc("/dap-child", dapHandler.HandleChildWebSocket)
+	dapChildAddr := fmt.Sprintf(":%d", cfg.DAPChildWSPort)
+	dapChildServer := newBOBOHTTPServer(dapChildAddr, dapChildMux, cfg, serverRuntime.Context())
 
 	// WebSocket 服务（端口 3101）
-	go func() {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/ws", wsHandler.HandleWebSocket)
-		mux.HandleFunc("/terminal", wsHandler.HandleTerminalWebSocket)
-		// Compatibility alias for pre-streaming internal clients. New clients use
-		// /terminal and the terminal.* protocol exclusively.
-		mux.HandleFunc("/term", wsHandler.HandleTerminalWebSocket)
-		mux.HandleFunc("/lsp", wsHandler.HandleLSPWebSocket)
-		mux.HandleFunc("/dap", dapHandler.HandleWebSocket)
-		addr := fmt.Sprintf(":%d", cfg.WSPort)
-		slog.Info("WebSocket server starting", "addr", addr)
-		if err := serveBOBOHTTP(&http.Server{Addr: addr, Handler: mux}, cfg); err != nil {
-			slog.Error("WebSocket server failed", "error", err)
-			if db != nil {
-				db.Close()
-			}
-			os.Exit(1)
-		}
-	}()
+	wsMux := http.NewServeMux()
+	wsMux.HandleFunc("/ws", wsHandler.HandleWebSocket)
+	wsMux.HandleFunc("/terminal", wsHandler.HandleTerminalWebSocket)
+	// Compatibility alias for pre-streaming internal clients. New clients use
+	// /terminal and the terminal.* protocol exclusively.
+	wsMux.HandleFunc("/term", wsHandler.HandleTerminalWebSocket)
+	wsMux.HandleFunc("/lsp", wsHandler.HandleLSPWebSocket)
+	wsMux.HandleFunc("/dap", dapHandler.HandleWebSocket)
+	wsAddr := fmt.Sprintf(":%d", cfg.WSPort)
+	wsServer := newBOBOHTTPServer(wsAddr, wsMux, cfg, serverRuntime.Context())
 
 	// HTTP API 服务（端口 3100）。LSP 同时复用该已公开端口；独立的
 	// WebSocket 端口仍保留 /lsp，兼容旧客户端和内网部署。
 	addr := fmt.Sprintf(":%d", cfg.HTTPPort)
-	slog.Info("HTTP server starting", "addr", addr)
 	httpMux := http.NewServeMux()
 	httpMux.HandleFunc("/lsp", wsHandler.HandleLSPWebSocket)
 	httpMux.HandleFunc("/dap", dapHandler.HandleWebSocket)
 	httpMux.Handle("/", httpHandler)
-	if err := serveBOBOHTTP(&http.Server{Addr: addr, Handler: httpMux}, cfg); err != nil {
-		slog.Error("HTTP server failed", "error", err)
-		if db != nil {
-			db.Close()
+	httpServer := newBOBOHTTPServer(addr, httpMux, cfg, serverRuntime.Context())
+
+	for name, listener := range map[string]*http.Server{
+		"http-api": httpServer, "websocket": wsServer, "dap-child": dapChildServer,
+	} {
+		if err := serverRuntime.RegisterListener(name, listener); err != nil {
+			slog.Error("Failed to register server listener", "listener", name, "error", err)
+			shutdownStartupAndExit(err)
+			return
 		}
+	}
+
+	listenerErrors := make(chan error, 3)
+	startListener := func(name string, listener *http.Server) {
+		startManaged("listener-"+name, func(context.Context) {
+			if err := serveBOBOHTTP(listener, cfg); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				select {
+				case listenerErrors <- fmt.Errorf("%s listener: %w", name, err):
+				default:
+				}
+			}
+		})
+	}
+	slog.Info("DAP child WebSocket server starting", "addr", dapChildAddr, "tls", cfg.TLSEnabled)
+	startListener("dap-child", dapChildServer)
+	slog.Info("WebSocket server starting", "addr", wsAddr, "tls", cfg.TLSEnabled)
+	startListener("websocket", wsServer)
+	slog.Info("HTTP server starting", "addr", addr, "tls", cfg.TLSEnabled)
+	startListener("http-api", httpServer)
+
+	var shutdownCause error
+	listenerFailed := false
+	select {
+	case <-signalCtx.Done():
+		shutdownCause = fmt.Errorf("received termination signal: %w", context.Cause(signalCtx))
+		slog.Info("Signal received, beginning graceful shutdown")
+	case listenerErr := <-listenerErrors:
+		shutdownCause = listenerErr
+		listenerFailed = true
+		slog.Error("Server listener failed, beginning coordinated shutdown", "error", listenerErr)
+	}
+	serverRuntime.BeginDrain(shutdownCause)
+	stopSignals()
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.ShutdownGracePeriod())
+	shutdownErr := finishRuntimeShutdown(shutdownCtx, serverRuntime, shutdownRetryInitialDelay)
+	cancelShutdown()
+	if shutdownErr != nil {
+		slog.Error("Graceful shutdown did not complete", "error", shutdownErr, "grace_period", cfg.ShutdownGracePeriod())
+		listenerFailed = true
+	} else {
+		slog.Info("Shutdown complete")
+	}
+	if listenerFailed {
 		os.Exit(1)
 	}
+}
+
+func synchronizeUserContainerLimits(store auth.UserStore, setLimit func(string, int)) ([]*auth.User, error) {
+	if store == nil || setLimit == nil {
+		return nil, errors.New("user store and container limit setter are required")
+	}
+	users, err := store.List()
+	if err != nil {
+		return nil, fmt.Errorf("list users for container limits: %w", err)
+	}
+	for _, user := range users {
+		if user == nil || strings.TrimSpace(user.ID) == "" {
+			continue
+		}
+		setLimit(user.ID, user.ContainerLimit)
+	}
+	return users, nil
+}
+
+func newBOBOHTTPServer(addr string, handler http.Handler, cfg *config.Config, baseContext context.Context) *http.Server {
+	if cfg == nil {
+		cfg = config.Default()
+	}
+	if baseContext == nil {
+		baseContext = context.Background()
+	}
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout(),
+		IdleTimeout:       cfg.HTTPIdleTimeout(),
+		MaxHeaderBytes:    cfg.HTTPMaxHeaderBytes,
+	}
+	server.BaseContext = func(net.Listener) context.Context { return baseContext }
+	return server
 }
 
 // serveBOBOHTTP is shared only by the server listeners. TLS is transport
@@ -767,11 +1040,27 @@ func cleanupLoop(ctx context.Context, store storage.SessionStore, channels *sess
 	}
 }
 
+func periodicLoop(ctx context.Context, interval time.Duration, run func()) {
+	if interval <= 0 || run == nil {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
+}
+
 func teamCacheV2Root(dataDir string) string {
 	return filepath.Join(dataDir, "cache-v2", "teams")
 }
 
-func teamCacheCleanupLoop(cache *buildcache.Manager, store collab.Store, interval time.Duration) {
+func teamCacheCleanupLoop(ctx context.Context, cache *buildcache.Manager, store collab.Store, interval time.Duration) {
 	if cache == nil || store == nil {
 		return
 	}
@@ -797,8 +1086,13 @@ func teamCacheCleanupLoop(cache *buildcache.Manager, store collab.Store, interva
 	run()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	for range ticker.C {
-		run()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
 	}
 }
 
