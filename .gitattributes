@@ -1,0 +1,2 @@
+# Integrity-bound plugin runtime bytes must be identical on every checkout.
+client/examples/plugins/hello-plugin/dist/extension.js text eol=lf
