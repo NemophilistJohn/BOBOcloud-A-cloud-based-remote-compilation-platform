@@ -25,6 +25,7 @@
   var contextMenuTrigger = null;
   var inlineEditorCleanup = null;
   var syncDirtyPaths = new Set();
+  var workspaceSaveSequence = 0;
   var fileDecorationSubscription = null;
   var FILE_DECORATION_LANES = ['sync', 'scm', 'diagnostic'];
   // Workbench pages such as extension details are deliberately kept outside
@@ -723,27 +724,41 @@
 
   // ──── Incremental file event handling ────
   function handleFileEvent(data) {
-    if (!data || !data.event) return;
-    if (BOBO.workspaceSyncStatus) BOBO.workspaceSyncStatus.handleFileEvent(data);
+    if (!data || !data.event) return false;
+    var accepted = BOBO.workspaceSyncStatus ? BOBO.workspaceSyncStatus.handleFileEvent(data) : true;
 
     var container = document.getElementById('file-tree');
     var rootUl = container.querySelector('ul');
-    if (!rootUl) return;
+    if (!rootUl) return accepted;
 
     if (data.event === 'file-created') {
       insertTreeModelNode(data.parentPath, {
         name: data.name, path: data.path, type: data.nodeType || 'file', children: data.nodeType === 'folder' ? [] : undefined
       });
       renderTree(S.workspaceTree);
-      return;
+      return accepted;
     } else if (data.event === 'file-deleted') {
       removeTreeModelNode(data.path);
       renderTree(S.workspaceTree);
-      return;
+      return accepted;
     } else if (data.event === 'file-changed') {
       // Content-only changes do not affect the tree or Ctrl+P index.
-      return;
+      return accepted;
     }
+    return accepted;
+  }
+
+  function nextWorkspaceSaveMutationId() {
+    workspaceSaveSequence = workspaceSaveSequence >= 2147483647 ? 1 : workspaceSaveSequence + 1;
+    return 'workspace-save-' + String(S.workspaceIdentity || 0) + '-' + String(S.workspaceGeneration || 0) + '-' + workspaceSaveSequence;
+  }
+
+  function recordSavedFileChange(filePath, mutationId) {
+    var accepted = BOBO.workspaceSyncStatus
+      ? BOBO.workspaceSyncStatus.markChanged(filePath, { mutationId: mutationId })
+      : true;
+    if (accepted && BOBO.runner && BOBO.runner.markWorkspaceChanged) BOBO.runner.markWorkspaceChanged();
+    return accepted;
   }
 
   function findTreeModelNode(node, targetPath) {
@@ -1504,17 +1519,31 @@
     if (S.workspaceTransitionLocked) return false;
     var tab = S.tabs.find(function(t) { return t.path === S.activeTabPath; });
     if (!tab || !tab.model) return false;
+    var savedWorkspaceIdentity = S.workspaceIdentity;
+    var savedWorkspaceGeneration = S.workspaceGeneration || 0;
+    var savedPath = tab.path;
     try {
-      var content = tab.model.getValue();
-      await window.api.saveFile({ filePath: tab.path, content: content });
-      if (BOBO.workspaceSyncStatus) BOBO.workspaceSyncStatus.markChanged(tab.path);
+      var savedModel = tab.model;
+      var savedVersion = savedModel.getVersionId();
+      var content = savedModel.getValue();
+      var mutationId = nextWorkspaceSaveMutationId();
+      await window.api.saveFile({ filePath: savedPath, content: content, mutationId: mutationId });
+      if (S.workspaceIdentity !== savedWorkspaceIdentity || (S.workspaceGeneration || 0) !== savedWorkspaceGeneration) return false;
+      recordSavedFileChange(savedPath, mutationId);
+      var savedCurrentVersion = tab.path === savedPath && tab.model === savedModel &&
+        (typeof savedModel.isDisposed !== 'function' || !savedModel.isDisposed()) &&
+        savedModel.getVersionId() === savedVersion;
+      if (!savedCurrentVersion) {
+        updateTitlebar();
+        return false;
+      }
       tab.dirty = false;
       updateTabDirtyFlag(S.tabs.indexOf(tab), false);
       updateTitlebar();
       if (BOBO.toast) BOBO.toast.success('Saved ' + tab.name);
       // In 'checkOn: save' mode, run diagnostics now (in 'type' mode they are already live).
       if (BOBO.editorCore && BOBO.editorCore.checkActiveOnSave) BOBO.editorCore.checkActiveOnSave();
-      if (BOBO.lsp && BOBO.lsp.documentSaved) BOBO.lsp.documentSaved(tab.model);
+      if (BOBO.lsp && BOBO.lsp.documentSaved) BOBO.lsp.documentSaved(savedModel);
       return true;
     } catch (error) {
       showFileOperationError('Save', error);
@@ -1526,17 +1555,32 @@
     options = options || {};
     if (S.workspaceTransitionLocked && !options.allowDuringTransition) return false;
     var dirtyTabs = S.tabs.filter(function(tab) { return tab.dirty && tab.model; });
+    var savedWorkspaceIdentity = S.workspaceIdentity;
+    var savedWorkspaceGeneration = S.workspaceGeneration || 0;
+    var allCurrent = true;
     try {
       for (var i = 0; i < dirtyTabs.length; i++) {
         var tab = dirtyTabs[i];
-        await window.api.saveFile({ filePath: tab.path, content: tab.model.getValue() });
-        if (BOBO.workspaceSyncStatus) BOBO.workspaceSyncStatus.markChanged(tab.path);
-        tab.dirty = false;
-        if (BOBO.lsp && BOBO.lsp.documentSaved) BOBO.lsp.documentSaved(tab.model);
-        updateTabDirtyFlag(S.tabs.indexOf(tab), false);
+        var savedPath = tab.path;
+        var savedModel = tab.model;
+        var savedVersion = savedModel.getVersionId();
+        var mutationId = nextWorkspaceSaveMutationId();
+        await window.api.saveFile({ filePath: savedPath, content: savedModel.getValue(), mutationId: mutationId });
+        if (S.workspaceIdentity !== savedWorkspaceIdentity || (S.workspaceGeneration || 0) !== savedWorkspaceGeneration) return false;
+        recordSavedFileChange(savedPath, mutationId);
+        var savedCurrentVersion = tab.path === savedPath && tab.model === savedModel &&
+          (typeof savedModel.isDisposed !== 'function' || !savedModel.isDisposed()) &&
+          savedModel.getVersionId() === savedVersion;
+        if (savedCurrentVersion) {
+          tab.dirty = false;
+          if (BOBO.lsp && BOBO.lsp.documentSaved) BOBO.lsp.documentSaved(savedModel);
+          updateTabDirtyFlag(S.tabs.indexOf(tab), false);
+        } else {
+          allCurrent = false;
+        }
       }
       if (dirtyTabs.length) updateTitlebar();
-      return true;
+      return allCurrent;
     } catch (error) {
       showFileOperationError('Save', error);
       return false;

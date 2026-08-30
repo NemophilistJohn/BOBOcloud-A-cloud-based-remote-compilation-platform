@@ -870,6 +870,7 @@
     var needsSave = isProjectTask ? S.tabs.some(function(candidate) { return candidate.dirty; }) : Boolean(tab && tab.dirty);
     if (needsSave) {
       if (BOBO.workspace) {
+        var versionBeforeSave = S.workspaceChangeVersion;
         var saved = isProjectTask && BOBO.workspace.saveAllTabs
           ? await BOBO.workspace.saveAllTabs()
           : await BOBO.workspace.saveActiveTab();
@@ -887,9 +888,7 @@
           settleTaskExecution(executionHandle, { success: false, code: 'save-failed', message: tr('Project files could not be saved.') });
           return false;
         }
-        // File watcher delivery is asynchronous. Mark this save immediately so
-        // the pre-run version check can never race ahead of the watcher event.
-        markWorkspaceChanged();
+        if (S.workspaceChangeVersion === versionBeforeSave) markWorkspaceChanged();
       }
     }
 

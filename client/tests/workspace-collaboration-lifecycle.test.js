@@ -225,6 +225,58 @@ test('failed Save choice unlocks and preserves the dirty model', async () => {
   assert.equal(originalModel.getValue(), 'editing resumes');
 });
 
+test('a newer editor version stays dirty when an older save finishes', async () => {
+  const save = deferred();
+  const payloads = [];
+  const fixture = loadWorkspace({
+    api: {
+      saveFile(payload) {
+        payloads.push(payload);
+        return save.promise;
+      }
+    }
+  });
+
+  const saving = fixture.BOBO.workspace.saveAllTabs();
+  await waitFor(() => payloads.length === 1, 'save did not start');
+  fixture.model.setValue('newer unsaved content');
+  save.resolve(true);
+
+  assert.equal(await saving, false);
+  assert.equal(payloads[0].content, 'dirty content');
+  assert.match(payloads[0].mutationId, /^workspace-save-7-3-/);
+  assert.equal(fixture.tab.dirty, true);
+  assert.equal(fixture.model.getValue(), 'newer unsaved content');
+});
+
+test('a renamed tab and a replaced workspace cannot be cleared by an older save', async () => {
+  for (const changeContext of ['path', 'workspace']) {
+    const save = deferred();
+    const payloads = [];
+    const fixture = loadWorkspace({
+      api: {
+        saveFile(payload) {
+          payloads.push(payload);
+          return save.promise;
+        }
+      }
+    });
+    const originalPath = fixture.tab.path;
+    const saving = fixture.BOBO.workspace.saveAllTabs();
+    await waitFor(() => payloads.length === 1, 'save did not start');
+    if (changeContext === 'path') fixture.tab.path = 'C:\\workspace\\renamed.txt';
+    else {
+      fixture.state.workspaceIdentity += 1;
+      fixture.state.workspaceGeneration += 1;
+    }
+    save.resolve(true);
+
+    assert.equal(await saving, false, changeContext + ' change must invalidate the save result');
+    assert.equal(payloads[0].filePath, originalPath);
+    assert.equal(fixture.tab.dirty, true);
+  }
+});
+
 function createMemoryStorage(initialEntries) {
   const entries = new Map(initialEntries || []);
   return {

@@ -267,10 +267,11 @@
   window.api.onFileEvent(function(data) {
     try {
       if (!data || data.rootPath !== S.workspaceRoot || data.workspaceIdentity !== S.workspaceIdentity) return;
-      if (BOBO.runner && BOBO.runner.markWorkspaceChanged) BOBO.runner.markWorkspaceChanged();
+      var accepted = true;
       if (BOBO.workspace && BOBO.workspace.handleFileEvent) {
-        BOBO.workspace.handleFileEvent(data);
+        accepted = BOBO.workspace.handleFileEvent(data) !== false;
       }
+      if (accepted && BOBO.runner && BOBO.runner.markWorkspaceChanged) BOBO.runner.markWorkspaceChanged();
     } catch (e) { console.error(e); }
   });
 

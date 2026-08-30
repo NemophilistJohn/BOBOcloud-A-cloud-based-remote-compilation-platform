@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { createWorkspaceWriteQueue, createWorkspaceWriteTracker } = require('./workspace-write-tracker');
 
 const IGNORED_DIRECTORIES = new Set([
   '.git', '.hg', '.svn', 'node_modules', '.venv', 'venv', '__pycache__', '.bobocloud'
@@ -20,6 +21,8 @@ function createWorkspaceController(options) {
   const settings = options.settings;
   const assertSafeLocalRoot = options.assertSafeLocalRoot || ((candidate) => path.resolve(candidate));
   const localDirectoryAuthority = options.localDirectoryAuthority || null;
+  const workspaceWrites = options.workspaceWriteTracker || createWorkspaceWriteTracker();
+  const workspaceWriteQueue = options.workspaceWriteQueue || createWorkspaceWriteQueue();
 
   const watchers = new Map();
   const watcherDebounceTimers = new Map();
@@ -109,6 +112,7 @@ function createWorkspaceController(options) {
       watcherDebounceTimers.delete(rootPath);
     }
     watcherMode = null;
+    workspaceWrites.clear();
   }
 
   function pathIsOutside(root, target) {
@@ -251,15 +255,43 @@ function createWorkspaceController(options) {
     return treeCacheIndex.get(targetPath) || null;
   }
 
-  function sendIncrementalFileChange(rootPath, identity, changedPath) {
+  function sendIncrementalFileChange(rootPath, identity, changedPath, mutationId) {
     if (rootPath !== workspaceRoot || identity !== workspaceIdentity) return;
-    send('file-event', {
+    const payload = {
       event: 'file-changed',
       path: changedPath,
       name: path.basename(changedPath),
       rootPath,
       workspaceIdentity: identity
-    });
+    };
+    if (mutationId) payload.mutationId = mutationId;
+    send('file-event', payload);
+  }
+
+  function sendCurrentFileState(rootPath, identity, changedPath) {
+    if (rootPath !== workspaceRoot || identity !== workspaceIdentity) return;
+    let stat = null;
+    try { stat = fs.lstatSync(changedPath); } catch (_) {}
+    if (!stat) {
+      send('file-event', { event: 'file-deleted', path: changedPath, rootPath, workspaceIdentity: identity });
+    } else if (stat.isFile() && !stat.isSymbolicLink()) {
+      sendIncrementalFileChange(rootPath, identity, changedPath);
+    } else {
+      scheduleTreeRefresh(rootPath, identity);
+    }
+  }
+
+  function refreshTreeCacheSilently(rootPath, identity) {
+    if (!rootPath || rootPath !== workspaceRoot || identity !== workspaceIdentity) return;
+    // A visible structural refresh owns both the cache and renderer update.
+    // Never make it stale with a cache-only read.
+    if (watcherDebounceTimers.has(rootPath)) return;
+    const refreshSequence = ++treeRefreshSequence;
+    invalidateTreeCache();
+    void readTree(rootPath, false).then((fullTree) => {
+      if (rootPath !== workspaceRoot || identity !== workspaceIdentity || refreshSequence !== treeRefreshSequence || !fullTree) return;
+      setTreeCache(fullTree);
+    }).catch(() => {});
   }
 
   function scheduleTreeRefresh(rootPath, identity) {
@@ -295,10 +327,15 @@ function createWorkspaceController(options) {
         const changedPath = filename ? path.resolve(directory, String(filename)) : null;
         onWorkspaceFilesystemEvent(root, identity, changedPath);
         if (changedPath && isIgnoredPath(root, changedPath)) return;
-        if (eventType === 'change' && changedPath) {
+        if (changedPath) {
+          const writeEvent = workspaceWrites.classify(changedPath, identity);
+          if (writeEvent) return;
           const changedStat = safeStat(changedPath);
           const cachedNode = findTreeNode(changedPath);
-          if (changedStat && changedStat.isFile() && cachedNode && cachedNode.type === 'file') {
+          // Atomic-save editors commonly report an existing file replacement
+          // as "rename". If the path is still the same cached file, this is a
+          // content change rather than a structural tree mutation.
+          if ((eventType === 'change' || eventType === 'rename') && changedStat && changedStat.isFile() && cachedNode && cachedNode.type === 'file') {
             sendIncrementalFileChange(root, identity, changedPath);
             return;
           }
@@ -585,8 +622,66 @@ function createWorkspaceController(options) {
       return result;
     });
     ipcMain.handle('save-file', async (_event, payload) => {
-      await fs.promises.writeFile(resolveWorkspacePath(payload.filePath), payload.content, 'utf-8');
-      return true;
+      const filePath = resolveWorkspacePath(payload.filePath);
+      const writeRoot = workspaceRoot;
+      const writeIdentity = workspaceIdentity;
+      return workspaceWriteQueue.run(filePath, async () => {
+        if (writeRoot !== workspaceRoot || writeIdentity !== workspaceIdentity) {
+          throw new Error(t('The workspace changed while saving the file.'));
+        }
+        const targetPath = resolveWorkspacePath(filePath);
+        const existed = Boolean(safeStat(targetPath)?.isFile());
+        let trackedWrite = null;
+        let conflictNotified = false;
+        try {
+          try {
+            trackedWrite = workspaceWrites.begin(targetPath, writeIdentity, payload.mutationId, payload.content, 'utf8');
+          } catch (error) {
+            if (error && (error.code === 'WORKSPACE_WRITE_LIMIT' || error.code === 'WORKSPACE_WRITE_IN_PROGRESS')) {
+              throw new Error(t('Too many file saves are in progress. Wait for them to finish and try again.'));
+            }
+            throw error;
+          }
+          await fs.promises.writeFile(targetPath, payload.content, 'utf-8');
+          if (writeRoot !== workspaceRoot || writeIdentity !== workspaceIdentity) {
+            workspaceWrites.fail(trackedWrite);
+            throw new Error(t('The workspace changed while saving the file.'));
+          }
+          const committed = await workspaceWrites.complete(trackedWrite);
+          if (writeRoot !== workspaceRoot || writeIdentity !== workspaceIdentity) {
+            workspaceWrites.fail(trackedWrite);
+            throw new Error(t('The workspace changed while saving the file.'));
+          }
+          if (!committed) {
+            sendCurrentFileState(writeRoot, writeIdentity, targetPath);
+            conflictNotified = true;
+            throw new Error(t('The file changed on disk while it was being saved. Review the latest contents and save again.'));
+          }
+          try { onWorkspaceFilesystemEvent(writeRoot, writeIdentity, targetPath); } catch (_) {}
+          if (existed) {
+            sendIncrementalFileChange(writeRoot, writeIdentity, targetPath, trackedWrite.id);
+          } else if (writeRoot === workspaceRoot && writeIdentity === workspaceIdentity) {
+            refreshTreeCacheSilently(writeRoot, writeIdentity);
+            send('file-event', {
+              event: 'file-created',
+              parentPath: path.dirname(targetPath),
+              path: targetPath,
+              name: path.basename(targetPath),
+              nodeType: 'file',
+              rootPath: writeRoot,
+              workspaceIdentity: writeIdentity,
+              mutationId: trackedWrite.id
+            });
+          }
+          return true;
+        } catch (error) {
+          if (!conflictNotified && workspaceWrites.fail(trackedWrite) &&
+              writeRoot === workspaceRoot && writeIdentity === workspaceIdentity) {
+            sendCurrentFileState(writeRoot, writeIdentity, targetPath);
+          }
+          throw error;
+        }
+      });
     });
     ipcMain.handle('save-binary-file', async (_event, payload) => {
       await fs.promises.writeFile(resolveWorkspacePath(payload.filePath), Buffer.from(payload.content, 'base64'));
@@ -671,30 +766,48 @@ function createWorkspaceController(options) {
       return { path: fullPath };
     });
     ipcMain.handle('rename-entry', async (_event, payload) => {
-      const oldPath = resolveWorkspacePath(payload.oldPath);
+      const requestedOldPath = resolveWorkspacePath(payload.oldPath);
       const newName = validateEntryName(payload.newName);
-      const directory = path.dirname(oldPath);
-      const newPath = resolveWorkspacePath(path.join(directory, newName));
-      const samePath = process.platform === 'win32' ? oldPath.toLowerCase() === newPath.toLowerCase() : oldPath === newPath;
-      if (!samePath && fs.existsSync(newPath)) throw new Error('An entry with that name already exists');
-      await fs.promises.rename(oldPath, newPath);
-      invalidateTreeCache();
-      send('file-event', { event: 'file-deleted', path: oldPath, rootPath: workspaceRoot, workspaceIdentity });
-      send('file-event', {
-        event: 'file-created', parentPath: directory, path: newPath, name: newName,
-        nodeType: safeStat(newPath)?.isDirectory() ? 'folder' : 'file', rootPath: workspaceRoot, workspaceIdentity
+      const operationRoot = workspaceRoot;
+      const operationIdentity = workspaceIdentity;
+      return workspaceWriteQueue.run(requestedOldPath, async () => {
+        if (operationRoot !== workspaceRoot || operationIdentity !== workspaceIdentity) {
+          throw new Error(t('The entry is no longer visible.'));
+        }
+        const oldPath = resolveWorkspacePath(requestedOldPath);
+        const directory = path.dirname(oldPath);
+        const newPath = resolveWorkspacePath(path.join(directory, newName));
+        const samePath = process.platform === 'win32' ? oldPath.toLowerCase() === newPath.toLowerCase() : oldPath === newPath;
+        if (!samePath && fs.existsSync(newPath)) throw new Error('An entry with that name already exists');
+        await fs.promises.rename(oldPath, newPath);
+        if (operationRoot !== workspaceRoot || operationIdentity !== workspaceIdentity) {
+          throw new Error(t('The entry is no longer visible.'));
+        }
+        invalidateTreeCache();
+        send('file-event', { event: 'file-deleted', path: oldPath, rootPath: operationRoot, workspaceIdentity: operationIdentity });
+        send('file-event', {
+          event: 'file-created', parentPath: directory, path: newPath, name: newName,
+          nodeType: safeStat(newPath)?.isDirectory() ? 'folder' : 'file', rootPath: operationRoot, workspaceIdentity: operationIdentity
+        });
+        return { path: newPath };
       });
-      return { path: newPath };
     });
     ipcMain.handle('delete-entry', async (_event, payload) => {
-      const entryPath = resolveWorkspacePath(payload.entryPath);
-      const stat = safeStat(entryPath);
-      if (!stat) return false;
-      if (stat.isDirectory()) await fs.promises.rm(entryPath, { recursive: true, force: true });
-      else await fs.promises.unlink(entryPath);
-      invalidateTreeCache();
-      send('file-event', { event: 'file-deleted', path: entryPath, rootPath: workspaceRoot, workspaceIdentity });
-      return true;
+      const requestedEntryPath = resolveWorkspacePath(payload.entryPath);
+      const operationRoot = workspaceRoot;
+      const operationIdentity = workspaceIdentity;
+      return workspaceWriteQueue.run(requestedEntryPath, async () => {
+        if (operationRoot !== workspaceRoot || operationIdentity !== workspaceIdentity) return false;
+        const entryPath = resolveWorkspacePath(requestedEntryPath);
+        const stat = safeStat(entryPath);
+        if (!stat) return false;
+        if (stat.isDirectory()) await fs.promises.rm(entryPath, { recursive: true, force: true });
+        else await fs.promises.unlink(entryPath);
+        if (operationRoot !== workspaceRoot || operationIdentity !== workspaceIdentity) return false;
+        invalidateTreeCache();
+        send('file-event', { event: 'file-deleted', path: entryPath, rootPath: operationRoot, workspaceIdentity: operationIdentity });
+        return true;
+      });
     });
     ipcMain.handle('calculate-dir-size', async (_event, directory) => calculateDirectorySize(directory));
     ipcMain.handle('read-project-names', async () => settings.readProjectNames());

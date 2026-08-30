@@ -20,6 +20,8 @@ const STATUS_LABELS = Object.freeze({
   conflict: 'Cloud sync conflict'
 });
 
+const MAX_RECENT_MUTATIONS = 2048;
+
 function createWorkspaceSyncStatus(globalObject) {
   const global = globalObject;
   const listeners = new Set();
@@ -28,6 +30,7 @@ function createWorkspaceSyncStatus(globalObject) {
   const conflicts = new Set();
   const treeIndex = new Map();
   const aggregate = new Map();
+  const recentMutations = new Map();
   let rootPath = '';
   let rootKey = '';
   let tree = null;
@@ -281,6 +284,7 @@ function createWorkspaceSyncStatus(globalObject) {
     entries.clear();
     bufferDirty.clear();
     conflicts.clear();
+    recentMutations.clear();
     rebuildTreeIndex(nextTree);
     markAggregateDirty();
   }
@@ -307,6 +311,15 @@ function createWorkspaceSyncStatus(globalObject) {
   function setEntry(pathValue, state, options) {
     const key = resolveKey(pathValue);
     if (!isInsideWorkspace(key)) return false;
+    const mutationId = options && typeof options.mutationId === 'string' ? options.mutationId : '';
+    if (mutationId) {
+      const mutationKey = key + '\0' + mutationId;
+      if (recentMutations.has(mutationKey)) return false;
+      recentMutations.set(mutationKey, true);
+      while (recentMutations.size > MAX_RECENT_MUTATIONS) {
+        recentMutations.delete(recentMutations.keys().next().value);
+      }
+    }
     revision += 1;
     entries.set(key, {
       state: state,
@@ -319,8 +332,8 @@ function createWorkspaceSyncStatus(globalObject) {
     return true;
   }
 
-  function markChanged(pathValue) {
-    return setEntry(pathValue, 'queued');
+  function markChanged(pathValue, options) {
+    return setEntry(pathValue, 'queued', options);
   }
 
   function markDeleted(pathValue) {
@@ -345,9 +358,12 @@ function createWorkspaceSyncStatus(globalObject) {
   }
 
   function handleFileEvent(event) {
-    if (!event || !event.path) return;
-    if (event.event === 'file-deleted') markDeleted(event.path);
-    else if (event.event === 'file-created' || event.event === 'file-changed') markChanged(event.path);
+    if (!event || !event.path) return false;
+    if (event.event === 'file-deleted') return markDeleted(event.path);
+    if (event.event === 'file-created' || event.event === 'file-changed') {
+      return markChanged(event.path, { mutationId: event.mutationId });
+    }
+    return false;
   }
 
   function beginSync(options) {

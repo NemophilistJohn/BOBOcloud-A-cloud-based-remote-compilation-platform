@@ -2119,8 +2119,11 @@
     clearConsole();
     try {
       var hadDirtyTabs = Array.isArray(S.tabs) && S.tabs.some(function(tab) { return tab && tab.dirty; });
+      var versionBeforeSave = S.workspaceChangeVersion;
       if (!BOBO.workspace || !await BOBO.workspace.saveAllTabs()) throw new Error(tr('Project files could not be saved.'));
-      if (hadDirtyTabs && BOBO.runner && typeof BOBO.runner.markWorkspaceChanged === 'function') BOBO.runner.markWorkspaceChanged();
+      if (hadDirtyTabs && S.workspaceChangeVersion === versionBeforeSave && BOBO.runner && typeof BOBO.runner.markWorkspaceChanged === 'function') {
+        BOBO.runner.markWorkspaceChanged();
+      }
       if (!contextIsCurrent(initialContext)) throw new Error(tr('The workspace changed while starting the debug session.'));
       await refreshConfigurations();
       if (!contextIsCurrent(initialContext)) throw new Error(tr('The workspace changed while starting the debug session.'));

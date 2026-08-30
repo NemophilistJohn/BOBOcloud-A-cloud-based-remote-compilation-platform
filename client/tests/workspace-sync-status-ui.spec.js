@@ -156,6 +156,36 @@ test('workspace tree cloud rail tracks local, queued, syncing, success, error an
     await expect(beta.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'error');
     await expect(beta.locator('.tree-sync-rail')).toHaveAttribute('title', /fixture upload failed/);
 
+    // A delayed watcher echo from the same managed save is idempotent, even
+    // after the synchronized entry has been cleared. A real later mutation
+    // must still remain queued across a successful sync.
+    await page.evaluate(betaPath => {
+      const status = window.BOBO.workspaceSyncStatus;
+      status.markChanged(betaPath, { mutationId: 'fixture-managed-save-1' });
+      window.__syncRailContext = status.beginSync();
+      status.handleFileEvent({ event: 'file-changed', path: betaPath, mutationId: 'fixture-managed-save-1' });
+    }, path.join(workspace, 'src', 'beta.js'));
+    await expect(beta.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'syncing');
+    await page.evaluate(() => window.BOBO.workspaceSyncStatus.finishSync(window.__syncRailContext, { success: true }));
+    await page.evaluate(betaPath => {
+      window.BOBO.workspaceSyncStatus.handleFileEvent({
+        event: 'file-changed',
+        path: betaPath,
+        mutationId: 'fixture-managed-save-1'
+      });
+    }, path.join(workspace, 'src', 'beta.js'));
+    await expect(beta.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'synced');
+
+    await page.evaluate(betaPath => {
+      const status = window.BOBO.workspaceSyncStatus;
+      status.markChanged(betaPath, { mutationId: 'fixture-managed-save-2' });
+      window.__syncRailContext = status.beginSync();
+      status.handleFileEvent({ event: 'file-changed', path: betaPath });
+    }, path.join(workspace, 'src', 'beta.js'));
+    await expect(beta.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'queued');
+    await page.evaluate(() => window.BOBO.workspaceSyncStatus.finishSync(window.__syncRailContext, { success: true }));
+    await expect(beta.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'queued');
+
     await page.evaluate(() => window.BOBO.workspaceSyncStatus.setConflicts(['src/beta.js']));
     await expect(beta.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'conflict');
     await expect(source.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'conflict');

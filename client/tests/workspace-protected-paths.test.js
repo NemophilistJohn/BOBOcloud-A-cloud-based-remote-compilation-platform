@@ -54,6 +54,13 @@ test('workspace write APIs cannot reach app resources or rclone private storage'
   await assert.rejects(handlers.get('pick-workspace')({ sender: { id: 1 } }, root), /reserved by BOBOCLOUD/);
 
   await handlers.get('pick-workspace')({ sender: { id: 1 } }, safeWorkspace);
+  const textSave = await handlers.get('save-file')({ sender: { id: 1 } }, {
+    filePath: path.join(safeWorkspace, 'main.js'),
+    content: 'console.log("safe");\n',
+    mutationId: 'workspace-save-test-1'
+  });
+  assert.equal(textSave, true);
+  assert.equal(fs.readFileSync(path.join(safeWorkspace, 'main.js'), 'utf8'), 'console.log("safe");\n');
   await handlers.get('save-binary-file')({ sender: { id: 1 } }, {
     filePath: path.join(safeWorkspace, 'asset.bin'),
     content: Buffer.from('safe').toString('base64')
