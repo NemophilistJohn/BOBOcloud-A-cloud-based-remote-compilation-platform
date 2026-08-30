@@ -48,7 +48,15 @@ function Get-NativeCommandPath {
         [string]$Name
     )
 
-    return (Get-Command -Name $Name -CommandType Application -ErrorAction Stop).Source
+    $commands = @(Get-Command -Name $Name -CommandType Application -ErrorAction Stop)
+    if ($commands.Count -eq 0) {
+        throw "Native command was not found: $Name"
+    }
+    $resolved = [string]$commands[0].Source
+    if ([string]::IsNullOrWhiteSpace($resolved) -or -not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+        throw "Native command did not resolve to an executable file: $Name"
+    }
+    return $resolved
 }
 
 function Invoke-NativeCommand {

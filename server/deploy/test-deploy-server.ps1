@@ -43,6 +43,10 @@ try {
     # Dot-source the offline preflight so the remote command generator can be
     # exercised without resolving SSH or opening a network connection.
     . $deployScript -Target production-81.70.51.43 -BinaryPath $fixturePath | Out-Null
+    $resolvedGo = Get-NativeCommandPath -Name 'go'
+    if ($resolvedGo -isnot [string] -or [string]::IsNullOrWhiteSpace($resolvedGo) -or -not (Test-Path -LiteralPath $resolvedGo -PathType Leaf)) {
+        throw 'Native command resolution must return exactly one executable path.'
+    }
     $remoteProfile = [pscustomobject]@{
         Host        = '81.70.51.43'
         User        = 'root'
