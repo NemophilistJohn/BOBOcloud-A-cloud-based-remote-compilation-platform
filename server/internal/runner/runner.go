@@ -14,6 +14,7 @@ import (
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/ringbuffer"
 	"bobocloud-server/internal/session"
+	"bobocloud-server/internal/streamoutput"
 )
 
 var retainedOutputBytes atomic.Int64
@@ -35,10 +36,10 @@ func outputRetentionLimit() int { return int(retainedOutputBytes.Load()) }
 // 本文件只保留最底层的进程执行与输出流转发。
 // ============================================================
 
-// StreamProcess 启动一个外部进程，实时将 stdout/stderr 逐行推送到 OutputWriter。
+// StreamProcess 启动一个外部进程，实时将 stdout/stderr 推送到 OutputWriter。
 // stdin 非空时连接到进程的标准输入（用于交互式 input/scanf 等）。
-// 使用 Read(buf) 而非 bufio.Scanner，以便无换行符的部分行（如 input() 的提示文字）
-// 也能立即发送给客户端。
+// Shared fragment framing keeps prompts immediate without turning bounded Read
+// chunks into user-visible line breaks.
 func StreamProcess(ctx context.Context, command []string, workDir string, output session.OutputWriter, stage string, extraEnv map[string]string, stdin io.Reader) *model.RunResult {
 	cmdDisplay := strings.Join(command, " ")
 	output.WriteStatus(stage, cmdDisplay)
@@ -93,53 +94,16 @@ func StreamProcess(ctx context.Context, command []string, workDir string, output
 	stderrLines := ringbuffer.New(outputRetentionLimit())
 	var wg sync.WaitGroup
 
-	// stdout：用 Read(buf) 读取，按换行分割后逐行发送。
-	// 不用 bufio.Scanner 是因为它只在遇到换行符时才产生一行，
-	// 而 input("prompt") 的提示文字没有换行符，会卡在 Scanner 缓冲区里。
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 4096)
-		for {
-			n, err := stdoutPipe.Read(buf)
-			if n > 0 {
-				for _, line := range strings.Split(strings.TrimSuffix(string(buf[:n]), "\n"), "\n") {
-					if ctx.Err() != nil {
-						return
-					}
-					if line != "" {
-						stdoutLines.WriteLine(line)
-						output.WriteStdout(line, stage)
-					}
-				}
-			}
-			if err != nil || ctx.Err() != nil {
-				break
-			}
-		}
+		_ = streamoutput.Forward(ctx, stdoutPipe, stdoutLines, output, stage, false)
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 4096)
-		for {
-			n, err := stderrPipe.Read(buf)
-			if n > 0 {
-				for _, line := range strings.Split(strings.TrimSuffix(string(buf[:n]), "\n"), "\n") {
-					if ctx.Err() != nil {
-						return
-					}
-					if line != "" {
-						stderrLines.WriteLine(line)
-						output.WriteStderr(line, stage)
-					}
-				}
-			}
-			if err != nil || ctx.Err() != nil {
-				break
-			}
-		}
+		_ = streamoutput.Forward(ctx, stderrPipe, stderrLines, output, stage, true)
 	}()
 
 	wg.Wait()

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"bobocloud-server/internal/containercleanup"
 	"bobocloud-server/internal/files"
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/model"
@@ -19,6 +20,8 @@ import (
 )
 
 func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *model.RunSession, channel *session.RunChannel, stdinReader io.Reader) (runResult *model.RunResult) {
+	ctx, cleanupGate := containercleanup.WithReleaseGate(ctx)
+	defer cleanupGate.Finalize()
 	output := session.NewWebSocketWriter(channel, h.Config.ChunkSize)
 	started := time.Now()
 	output.WriteStatus("setup", "Validating task request")
@@ -58,7 +61,7 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 		fail(resourcePressureMessage)
 		return
 	}
-	defer releaseHandlerResource(resourceLease)
+	cleanupGate.Add(func() { releaseHandlerResource(resourceLease) })
 	output.WriteStatus("setup", "Task accepted; resolving cloud workspace")
 	output.WriteStatus("setup", fmt.Sprintf("Using Docker runtime: %s (%s)", runtimeDef.DisplayName, runtimeDef.DockerImage))
 	if h.Lifecycle != nil && sess.UserID != "" {
@@ -74,7 +77,7 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 			fail(err.Error())
 			return
 		}
-		defer activity.Release()
+		cleanupGate.Add(activity.Release)
 	}
 	if sess.TeamID != "" && sess.ProjectID != "" && h.Collaboration != nil {
 		activity, err := h.Collaboration.AcquireProjectActivity(sess.UserID, sess.TeamID, sess.ProjectID)
@@ -82,7 +85,7 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 			fail(err.Error())
 			return
 		}
-		defer activity.Release()
+		cleanupGate.Add(activity.Release)
 	}
 
 	projectPath, err := h.resolveWorkspace(ctx, sess)
@@ -101,7 +104,9 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 		if folderKey == "" {
 			folderKey = sess.FolderName
 		}
-		defer h.releasePersonalCacheLease(personalLease, personalDependencyRefreshScope(sess.UserID, folderKey, runtimeDef.RuntimeID, runtimeDef.Language))
+		cleanupGate.Add(func() {
+			h.releasePersonalCacheLease(personalLease, personalDependencyRefreshScope(sess.UserID, folderKey, runtimeDef.RuntimeID, runtimeDef.Language))
+		})
 		guard := personalLease.StartGuard(ctx)
 		if guard != nil {
 			executionCtx = guard.Context
@@ -116,7 +121,7 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 			return
 		}
 		if persistOperation != nil {
-			defer persistOperation.Release()
+			cleanupGate.Add(persistOperation.Release)
 			executionCtx = persistOperation.Context()
 		}
 	}
@@ -146,7 +151,7 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 				return
 			}
 			if toolchainLease != nil {
-				defer toolchainLease.Release()
+				cleanupGate.Add(toolchainLease.Release)
 			}
 		}
 	}
@@ -168,7 +173,7 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 				return
 			}
 			if buildLease != nil {
-				defer buildLease.Release()
+				cleanupGate.Add(buildLease.Release)
 			}
 		}
 	}

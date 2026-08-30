@@ -2258,5 +2258,6 @@
   "The output stream closed before the run result was received.": "尚未收到运行结果，输出流便已关闭。",
   "Artifacts completed with {count} save error(s).": "产物处理完成，但有 {count} 个保存错误。",
   "Run completed, but {count} artifact(s) could not be saved.": "运行已完成，但有 {count} 个产物无法保存。",
-  "Earlier output omitted: {count} lines (latest {limit} kept).": "已省略较早的 {count} 行输出（保留最近 {limit} 行）。"
+  "Earlier output omitted: {count} lines (recent output kept within safety limits).": "已省略较早的 {count} 行输出（最近输出按安全上限保留）。",
+  "[bobocloud] Live output line truncated at {limit} characters.": "[bobocloud] 实时输出单行超过 {limit} 个字符，后续内容已省略。"
 }

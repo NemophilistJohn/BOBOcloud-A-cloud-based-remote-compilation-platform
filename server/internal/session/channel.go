@@ -233,6 +233,21 @@ func MakeStreamLine(msgType, line, stage string) map[string]interface{} {
 	}
 }
 
+// MakeStreamFragment preserves logical-line state across bounded process reads.
+// Legacy clients still see the line field; current clients use the explicit
+// fragment controls to append, replace after CR, or complete on LF.
+func MakeStreamFragment(msgType string, fragment OutputFragment, stage string) map[string]interface{} {
+	return map[string]interface{}{
+		"type":     msgType,
+		"line":     fragment.Text,
+		"stage":    stage,
+		"fragment": true,
+		"append":   fragment.Append,
+		"replace":  fragment.Replace,
+		"newline":  fragment.Newline,
+	}
+}
+
 // MakeArtifact 构建一条产物分块消息
 func MakeArtifact(relPath, fileType string, chunkIdx, chunkCount int, data string) map[string]interface{} {
 	return map[string]interface{}{

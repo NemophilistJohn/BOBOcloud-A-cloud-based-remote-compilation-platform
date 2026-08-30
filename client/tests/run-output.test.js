@@ -214,6 +214,22 @@ test('program and technical-detail retention limits are independent', async () =
   assert.match(omission[0].textContent, /Earlier output omitted: 50 lines/);
 });
 
+test('setup fragment continuations do not inflate the detail count', () => {
+  const fixture = createFixture();
+  const BOBO = fixture.windowObject.BOBO;
+  BOBO.runOutput.begin({ target: 'main.py' });
+  BOBO.runOutput.detail('install 1%', {
+    stage: 'setup', streamFragment: true, streamKey: 'stdout:setup'
+  });
+  BOBO.runOutput.detail('install 50%', {
+    stage: 'setup', streamFragment: true, streamKey: 'stdout:setup', replace: true
+  });
+  BOBO.runOutput.detail('', {
+    stage: 'setup', streamFragment: true, streamKey: 'stdout:setup', append: true, newline: true
+  });
+  assert.equal(fixture.elements['run-details-count'].textContent, '2');
+});
+
 test('locale refresh changes the summary controls without rewriting program output', async () => {
   const fixture = createFixture();
   const BOBO = fixture.windowObject.BOBO;

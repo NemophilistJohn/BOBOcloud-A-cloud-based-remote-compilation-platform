@@ -64,6 +64,7 @@ function loadRunner(overrides) {
     lastSyncedVersion: 1
   }, overrides.state || {});
   const outputs = [];
+  const outputCalls = [];
   const apiCalls = [];
   const api = Object.assign({
     setArtifactRunContext(payload) {
@@ -78,7 +79,10 @@ function loadRunner(overrides) {
   }, overrides.api || {});
   const BOBO = Object.assign({
     state,
-    updateRunOutput(message) { outputs.push(String(message)); },
+    updateRunOutput(message, options) {
+      outputs.push(String(message));
+      outputCalls.push({ message: String(message), options: options || null });
+    },
     clearRunOutput() {},
     projectKey() { return 'workspace-key'; },
     cloudFeaturePolicy: { evaluate() { return { available: true, state: 'legacy', reason: '' }; } },
@@ -125,6 +129,7 @@ function loadRunner(overrides) {
     state,
     elements,
     outputs,
+    outputCalls,
     apiCalls,
     webSockets,
     focusedElement: () => focusedElement,
@@ -627,6 +632,66 @@ test('a completed stream produces one structured result and normal close stays s
   assert.equal(fixture.outputs.includes('WebSocket stream connected'), false);
   assert.equal(fixture.outputs.includes('WebSocket stream closed'), false);
   assert.equal(fixture.outputs.some(line => /^Return code:/.test(line)), false);
+});
+
+test('stream fragments reach rendering immediately but problem matching receives complete lines', async () => {
+  const consumed = [];
+  let matcherFinished = 0;
+  const execution = {
+    schemaVersion: 1,
+    label: 'Fragmented diagnostics',
+    kind: 'build',
+    problemMatcher: '$gcc',
+    steps: [{ id: 'build', label: 'Build', kind: 'build', type: 'process', argv: ['gcc', 'main.c'], cwd: '', env: {}, dependsOn: [] }]
+  };
+  const fixture = loadRunner({
+    BOBO: {
+      taskProblemMatcher: {
+        begin() {
+          return {
+            consume(line, stage) { consumed.push({ line: String(line), stage: String(stage || '') }); },
+            finish() { matcherFinished += 1; }
+          };
+        }
+      },
+      sendToServer(action) {
+        if (action === 'runTask') return Promise.resolve({ success: true, token: 'task-token', wsPath: '/ws' });
+        if (action === 'cancelRun') return Promise.resolve({ success: true });
+        throw new Error('Unexpected server action: ' + action);
+      }
+    }
+  });
+
+  const handle = fixture.BOBO.runner.startProjectTaskExecution(execution, { owner: 'fragment-test' });
+  await waitFor(() => fixture.webSockets.length === 1);
+  const socket = fixture.webSockets[0];
+  socket.readyState = 1;
+  socket.onopen();
+  socket.onmessage({ data: JSON.stringify({
+    type: 'stderr', stage: 'task:build', line: 'main.c:10:', fragment: true,
+    append: false, replace: false, newline: false
+  }) });
+  assert.equal(consumed.length, 0, 'partial diagnostics must not reach the matcher');
+  socket.onmessage({ data: JSON.stringify({
+    type: 'stderr', stage: 'task:build', line: '5: error: broken', fragment: true,
+    append: true, replace: false, newline: true
+  }) });
+  socket.onmessage({ data: JSON.stringify({
+    type: 'stdout', stage: 'task:build', line: 'unterminated tail', fragment: true,
+    append: false, replace: false, newline: false
+  }) });
+  await socket.onmessage({ data: JSON.stringify({ type: 'result', success: false, returncode: 1 }) });
+  await handle.completion;
+
+  assert.deepEqual(consumed, [
+    { line: 'main.c:10:5: error: broken', stage: 'task:build' },
+    { line: 'unterminated tail', stage: 'task:build' }
+  ]);
+  assert.ok(matcherFinished >= 1);
+  const fragmentCalls = fixture.outputCalls.filter(call => call.options && call.options.streamFragment === true);
+  assert.equal(fragmentCalls.length, 3);
+  assert.equal(fragmentCalls[1].options.append, true);
+  assert.equal(fragmentCalls[1].options.newline, true);
 });
 
 test('a run result waits for artifact persistence and reports save failures before finishing', async () => {

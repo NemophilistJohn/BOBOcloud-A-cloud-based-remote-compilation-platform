@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"bobocloud-server/internal/config"
+	"bobocloud-server/internal/lifecycle"
 	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/session"
 	"bobocloud-server/internal/storage"
@@ -32,6 +33,7 @@ func TestHTTPTerminalRetainsOperationUntilContainerRemoval(t *testing.T) {
 	handler := NewHTTPHandler(cfg, storage.NewMemorySessionStore(), session.NewChannelManager(), false, nil, nil, executor, nil, nil)
 	handler.PersonalCache = newPersonalCacheManagerForTest(cfg.DataDir, personalcache.Options{ReservationBytes: 8, ReservationFiles: 1})
 	handler.Resources = newTestResourceController(t, 1)
+	handler.Lifecycle = lifecycle.NewManager()
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api", strings.NewReader(`{"action":"terminal","runtime":"python:3.11","command":"true"}`))
@@ -51,12 +53,22 @@ func TestHTTPTerminalRetainsOperationUntilContainerRemoval(t *testing.T) {
 	if snapshot := handler.Resources.Snapshot(); snapshot.Used.Slots != 1 || len(snapshot.Leases) != 1 {
 		t.Fatalf("terminal operation released node resources before container removal: %+v", snapshot)
 	}
+	if mutation, err := handler.Lifecycle.BeginUserMutation("default"); !errors.Is(err, lifecycle.ErrResourcesInUse) {
+		if mutation != nil {
+			mutation.Release()
+		}
+		t.Fatalf("terminal cleanup released lifecycle activity before container removal: %v", err)
+	}
 
 	close(cleanup)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if info := handler.PersonalCache.Inspect("default", 0); info.ReservedBytes == 0 && info.ReservedFiles == 0 && handler.Resources.Snapshot().Used.Slots == 0 {
-			return
+			mutation, err := handler.Lifecycle.BeginUserMutation("default")
+			if err == nil {
+				mutation.Release()
+				return
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

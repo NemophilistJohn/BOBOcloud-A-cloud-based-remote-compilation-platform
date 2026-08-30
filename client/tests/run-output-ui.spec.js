@@ -156,3 +156,65 @@ test('run output separates program output from collapsible infrastructure detail
     await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
   }
 });
+
+test('stream fragments preserve long lines and carriage-return progress in the rendered output', async () => {
+  test.setTimeout(60000);
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-run-fragments-ui-'));
+  const screenshot = path.join(os.tmpdir(), 'bobocloud-run-output-fragments.png');
+  let fixture;
+
+  try {
+    fixture = await launch(sandbox);
+    const { app, page } = fixture;
+    const consoleErrors = [];
+    page.on('console', message => { if (message.type() === 'error') consoleErrors.push(message.text()); });
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(900, 620));
+    await page.evaluate(() => {
+      window.BOBO.switchToPanel('output');
+      window.BOBO.clearRunOutput();
+      window.BOBO.updateRunOutput('a'.repeat(4096), {
+        streamFragment: true, streamKey: 'stdout:run'
+      });
+      window.BOBO.updateRunOutput('b'.repeat(4904), {
+        streamFragment: true, streamKey: 'stdout:run', append: true
+      });
+      window.BOBO.updateRunOutput('', {
+        streamFragment: true, streamKey: 'stdout:run', append: true, newline: true
+      });
+      window.BOBO.updateRunOutput('download 1%', {
+        streamFragment: true, streamKey: 'stderr:setup', outputPrefix: '[stderr] '
+      });
+      window.BOBO.updateRunOutput('download 100%', {
+        streamFragment: true, streamKey: 'stderr:setup', outputPrefix: '[stderr] ', replace: true, newline: true
+      });
+      window.BOBO.updateRunOutput('Traceback: File "src/ma', {
+        streamFragment: true, streamKey: 'stderr:run', outputPrefix: '[stderr] '
+      });
+      window.BOBO.updateRunOutput('in.py", line 10', {
+        streamFragment: true, streamKey: 'stderr:run', append: true, newline: true
+      });
+    });
+
+    const lines = page.locator('#run-log .run-output-line');
+    await expect(lines).toHaveCount(3);
+    const longLine = await lines.nth(0).textContent();
+    expect(longLine.replace(/^\[[^\]]+\] /, '').replace(/\n$/, '')).toBe('a'.repeat(4096) + 'b'.repeat(4904));
+    await expect(lines.nth(1)).toContainText('[stderr] download 100%');
+    await expect(lines.nth(1)).not.toContainText('download 1%');
+    await expect(lines.nth(2).locator('.err-link')).toHaveAttribute('data-file', 'src/main.py');
+    const geometry = await page.evaluate(() => {
+      const panel = document.getElementById('panel-output');
+      const log = document.getElementById('run-log');
+      return { panelOverflow: panel.scrollWidth - panel.clientWidth, lineCount: log.children.length };
+    });
+    expect(geometry.panelOverflow).toBeLessThanOrEqual(1);
+    expect(geometry.lineCount).toBe(3);
+    await page.screenshot({ path: screenshot });
+    await page.locator('#panel-clear').click();
+    await expect(page.locator('#run-log')).toHaveText('');
+    expect(consoleErrors).toEqual([]);
+  } finally {
+    if (fixture) await stop(fixture.app);
+    await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+  }
+});

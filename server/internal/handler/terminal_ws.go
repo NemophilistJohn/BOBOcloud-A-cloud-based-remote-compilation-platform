@@ -701,15 +701,20 @@ type terminalContainerDiscarder interface {
 	DiscardForUserAndWait(containerID, userID string) error
 }
 
+type retainedTerminalContainerDiscarder interface {
+	terminalContainerDiscarder
+	DiscardForUserRetained(containerID, userID string, onRemoved func())
+}
+
 const (
 	terminalCleanupInitialRetry = 250 * time.Millisecond
 	terminalCleanupMaxRetry     = 30 * time.Second
+	terminalCleanupAttempts     = 3
 )
 
-// retryTerminalContainerCleanup retains ownership of the cache release until
-// Docker confirms that the container is absent or stopped. The capped backoff
-// gives a temporarily unavailable daemon a continuing owner without spinning or
-// turning the cache lease into ownerless, permanently active state.
+// retryTerminalContainerCleanup is a bounded compatibility fallback for test
+// doubles or older discarders. The production Pool owns continued maintenance
+// and the retained release callback through DiscardForUserRetained.
 func retryTerminalContainerCleanup(discarder terminalContainerDiscarder, containerID, userID string, release func(), wait func(time.Duration)) {
 	if discarder == nil {
 		return
@@ -718,7 +723,7 @@ func retryTerminalContainerCleanup(discarder terminalContainerDiscarder, contain
 		wait = time.Sleep
 	}
 	delay := terminalCleanupInitialRetry
-	for attempt := 1; ; attempt++ {
+	for attempt := 1; attempt <= terminalCleanupAttempts; attempt++ {
 		wait(delay)
 		if err := discarder.DiscardForUserAndWait(containerID, userID); err == nil {
 			if release != nil {
@@ -736,10 +741,16 @@ func retryTerminalContainerCleanup(discarder terminalContainerDiscarder, contain
 			}
 		}
 	}
+	slog.Error("Deferred terminal cleanup retry budget exhausted; resource leases remain retained",
+		"container_id", containerID, "user_id", userID, "attempts", terminalCleanupAttempts)
 }
 
 func handoffTerminalContainerCleanup(discarder terminalContainerDiscarder, containerID, userID string, release func(), cleanupErr error) {
 	slog.Warn("Terminal cleanup was not immediately confirmed; retaining resource leases for background cleanup", "container_id", containerID, "user_id", userID, "error", cleanupErr)
+	if retained, ok := discarder.(retainedTerminalContainerDiscarder); ok {
+		retained.DiscardForUserRetained(containerID, userID, release)
+		return
+	}
 	go retryTerminalContainerCleanup(discarder, containerID, userID, release, time.Sleep)
 }
 

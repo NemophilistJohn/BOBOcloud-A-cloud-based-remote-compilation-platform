@@ -1971,6 +1971,8 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 			releaseEnvironmentResource()
 		}
 	}()
+	var environmentActivityReleases []func()
+	defer func() { runReleaseCallbacksReverse(environmentActivityReleases) }()
 	if h.Lifecycle != nil {
 		if action == "rebuild" {
 			mutation, leaseErr := h.Lifecycle.BeginUserMutation(userID)
@@ -1978,14 +1980,14 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 				writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: leaseErr.Error()})
 				return
 			}
-			defer mutation.Release()
+			environmentActivityReleases = append(environmentActivityReleases, mutation.Release)
 		} else {
 			activity, leaseErr := h.Lifecycle.AcquireActivity(userID, workspaceKey)
 			if leaseErr != nil {
 				writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: leaseErr.Error()})
 				return
 			}
-			defer activity.Release()
+			environmentActivityReleases = append(environmentActivityReleases, activity.Release)
 		}
 	}
 	if environment.Workspace.Kind == "team" && h.Collaboration != nil {
@@ -1994,7 +1996,7 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: leaseErr.Error()})
 			return
 		}
-		defer activity.Release()
+		environmentActivityReleases = append(environmentActivityReleases, activity.Release)
 	}
 	if action == "rebuild" {
 		if err := h.clearProjectEnvironmentDependencyScope(r, req, environment, resolved); err != nil {
@@ -2022,9 +2024,12 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 			dependencyLease.Abort()
 		}
 		environmentResourceOwnedByRequest = false
+		activityReleases := environmentActivityReleases
+		environmentActivityReleases = nil
 		finalizeContainerCleanup(func() {
 			h.releasePersonalCacheLease(dependencyLease, personalDependencyRefreshScope(userID, resolved.folderKey, environment.Runtime.ID, environment.Language.ID))
 			releaseEnvironmentResource()
+			runReleaseCallbacksReverse(activityReleases)
 			if released != nil {
 				released()
 			}

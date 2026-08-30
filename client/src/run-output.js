@@ -151,8 +151,14 @@
     if (!sessionMatches(options.sessionId)) return false;
     if (!activeRun) return false;
     if (activeRun.finishedAt) return false;
-    activeRun.detailCount += 1;
-    BOBO.updateRunOutput(message, { kind: 'detail', stage: options.stage || '', raw: options.raw || '' });
+    if (!(options.streamFragment === true && (options.append === true || options.replace === true))) {
+      activeRun.detailCount += 1;
+    }
+    BOBO.updateRunOutput(message, Object.assign({}, options, {
+      kind: 'detail',
+      stage: options.stage || '',
+      raw: options.raw || ''
+    }));
     updateToggle(elements());
     return true;
   }

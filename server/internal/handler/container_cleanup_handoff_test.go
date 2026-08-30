@@ -8,9 +8,9 @@ import (
 
 func TestDeferredContainerCleanupRetainsReleaseUntilRemovalCompletes(t *testing.T) {
 	ctx, finalize := WithDeferredContainerCleanup(context.Background())
-	cleanup := make(chan struct{})
+	var cleanupComplete func()
 	released := make(chan struct{})
-	if !RetainResourcesUntilContainerRemoved(ctx, func() { <-cleanup }) {
+	if !RegisterResourcesUntilContainerRemoved(ctx, func(complete func()) { cleanupComplete = complete }) {
 		t.Fatal("container cleanup ownership was not transferred")
 	}
 	finalize(func() { close(released) })
@@ -19,7 +19,7 @@ func TestDeferredContainerCleanupRetainsReleaseUntilRemovalCompletes(t *testing.
 		t.Fatal("storage resources were released before container removal")
 	default:
 	}
-	close(cleanup)
+	cleanupComplete()
 	select {
 	case <-released:
 	case <-time.After(time.Second):
@@ -30,7 +30,10 @@ func TestDeferredContainerCleanupRetainsReleaseUntilRemovalCompletes(t *testing.
 func TestDeferredContainerCleanupHandlesRemovalBeforeFinalization(t *testing.T) {
 	ctx, finalize := WithDeferredContainerCleanup(context.Background())
 	cleanupComplete := make(chan struct{})
-	if !RetainResourcesUntilContainerRemoved(ctx, func() { close(cleanupComplete) }) {
+	if !RegisterResourcesUntilContainerRemoved(ctx, func(complete func()) {
+		complete()
+		close(cleanupComplete)
+	}) {
 		t.Fatal("container cleanup ownership was not transferred")
 	}
 	select {

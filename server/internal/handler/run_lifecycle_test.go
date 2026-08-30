@@ -48,8 +48,17 @@ type lookupFailingSessionStore struct {
 	err error
 }
 
+type cleanupFailingSessionStore struct {
+	*storage.MemorySessionStore
+	err error
+}
+
 func (s *lookupFailingSessionStore) Lookup(string) (*model.RunSession, bool, error) {
 	return nil, false, s.err
+}
+
+func (s *cleanupFailingSessionStore) CleanupExpired(time.Duration) ([]string, error) {
+	return nil, s.err
 }
 
 func (s *deleteFailingSessionStore) Delete(runID string) error {
@@ -296,7 +305,11 @@ func TestCleanupExpiredRunsRetriesFailedStartedCleanup(t *testing.T) {
 		t.Fatalf("first cleanup error = %v, want %v", err, deleteErr)
 	}
 
-	if expired := CleanupExpiredRuns(store, channels, time.Hour); len(expired) != 0 {
+	expired, err := CleanupExpiredRuns(store, channels, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expired) != 0 {
 		t.Fatalf("started cleanup retry was treated as TTL expiry: %v", expired)
 	}
 	if _, exists := base.Get("started-cleanup-retry"); exists {
@@ -305,6 +318,29 @@ func TestCleanupExpiredRunsRetriesFailedStartedCleanup(t *testing.T) {
 	if current := channels.GetOrCreate("started-cleanup-retry", false); current != nil {
 		t.Fatal("periodic cleanup retained the failed channel generation")
 	}
+}
+
+func TestCleanupExpiredRunsPreservesSessionAndChannelOnStoreFailure(t *testing.T) {
+	base := storage.NewMemorySessionStore()
+	if _, err := base.Create(&model.RunSession{RunID: "cleanup-read-failure"}); err != nil {
+		t.Fatal(err)
+	}
+	channels := session.NewChannelManager()
+	channel := channels.GetOrCreate("cleanup-read-failure", true)
+	cleanupErr := errors.New("database is temporarily read-only")
+	store := &cleanupFailingSessionStore{MemorySessionStore: base, err: cleanupErr}
+
+	expired, err := CleanupExpiredRuns(store, channels, 0)
+	if !errors.Is(err, cleanupErr) || expired != nil {
+		t.Fatalf("cleanup result = %v, error %v; want nil and %v", expired, err, cleanupErr)
+	}
+	if _, exists := base.Get("cleanup-read-failure"); !exists {
+		t.Fatal("failed cleanup removed the persistent session")
+	}
+	if current := channels.GetOrCreate("cleanup-read-failure", false); current != channel {
+		t.Fatal("failed cleanup removed or replaced the run channel")
+	}
+	channel.Close()
 }
 
 func TestCancelRunRemovesOwnedPendingSessionAndChannel(t *testing.T) {
@@ -423,7 +459,11 @@ func TestRunCodeRejectsInvalidRunID(t *testing.T) {
 			}
 		})
 	}
-	if store.GetActiveCount("default") != 0 {
+	count, err := store.GetActiveCount("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
 		t.Fatal("invalid run ID created a session")
 	}
 	if channel := channels.GetOrCreate("bad/run", false); channel != nil {
@@ -520,7 +560,11 @@ func TestConcurrentRunCodeWithSameIDCreatesOneHandshake(t *testing.T) {
 	if accepted != 1 || conflicted != 1 {
 		t.Fatalf("expected one accepted and one conflicted request, got accepted=%d conflicted=%d", accepted, conflicted)
 	}
-	if store.GetActiveCount("default") != 1 {
+	count, err := store.GetActiveCount("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
 		t.Fatal("concurrent duplicate requests did not leave exactly one session")
 	}
 	if channel := channels.GetOrCreate("concurrent-run", false); channel == nil {
@@ -579,7 +623,10 @@ func TestCleanupExpiredRunsRemovesPendingSessionAndChannelTogether(t *testing.T)
 	startedChannel := channels.GetOrCreate("expired-started-pair", true)
 	time.Sleep(time.Millisecond)
 
-	expired := CleanupExpiredRuns(store, channels, 0)
+	expired, err := CleanupExpiredRuns(store, channels, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(expired) != 1 || expired[0] != "expired-pending-pair" {
 		t.Fatalf("unexpected expired run IDs: %v", expired)
 	}
@@ -609,11 +656,11 @@ func TestCleanupExpiredRunsRemovesPendingSessionAndChannelTogether(t *testing.T)
 	}
 }
 
-func TestRunCodeCleansExpiredPendingHandshakeBeforeCreate(t *testing.T) {
+func TestRunCodeReplacesExpiredPendingHandshakeForSameID(t *testing.T) {
 	handler, store, channels := newRunLifecycleHTTPHandler(t)
 	handler.Config.SessionTTL = 0
-	store.Create(&model.RunSession{RunID: "old-pending", UserID: "default"})
-	channels.GetOrCreate("old-pending", true)
+	store.Create(&model.RunSession{RunID: "expired-reused", UserID: "default"})
+	oldChannel := channels.GetOrCreate("expired-reused", true)
 	store.Create(&model.RunSession{RunID: "old-started", UserID: "default"})
 	if err := store.MarkStarted("old-started"); err != nil {
 		t.Fatalf("failed to mark fixture session started: %v", err)
@@ -621,15 +668,12 @@ func TestRunCodeCleansExpiredPendingHandshakeBeforeCreate(t *testing.T) {
 	startedChannel := channels.GetOrCreate("old-started", true)
 	time.Sleep(time.Millisecond)
 
-	recorder, response := callRunCode(t, handler, "new-run-after-cleanup")
+	recorder, response := callRunCode(t, handler, "expired-reused")
 	if recorder.Code != http.StatusOK || !response.Success {
 		t.Fatalf("runCode failed: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if _, exists := store.Get("old-pending"); exists {
-		t.Fatal("runCode cleanup retained expired pending session")
-	}
-	if channel := channels.GetOrCreate("old-pending", false); channel != nil {
-		t.Fatal("runCode cleanup retained expired pending channel")
+	if current := channels.GetOrCreate("expired-reused", false); current == nil || current == oldChannel {
+		t.Fatal("runCode did not replace the expired pending channel generation")
 	}
 	if _, exists := store.Get("old-started"); !exists {
 		t.Fatal("runCode cleanup removed started session")
@@ -637,7 +681,7 @@ func TestRunCodeCleansExpiredPendingHandshakeBeforeCreate(t *testing.T) {
 	if channel := channels.GetOrCreate("old-started", false); channel != startedChannel {
 		t.Fatal("runCode cleanup removed or replaced started channel")
 	}
-	if _, exists := store.Get("new-run-after-cleanup"); !exists {
+	if replacement, exists := store.Get("expired-reused"); !exists || replacement.Started {
 		t.Fatal("runCode cleanup removed the newly created session")
 	}
 }

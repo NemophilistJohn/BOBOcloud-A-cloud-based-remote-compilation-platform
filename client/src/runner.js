@@ -62,8 +62,57 @@
       var handled = BOBO.runOutput.detail(message, runOutputOptions(options, runContext));
       if (handled !== false || runContext) return handled;
     }
-    BOBO.updateRunOutput(message);
+    BOBO.updateRunOutput(message, options);
     return true;
+  }
+
+  function streamOutputOptions(payload, stream) {
+    if (!payload || payload.fragment !== true) return null;
+    var stage = String(payload.stage || '');
+    return {
+      streamFragment: true,
+      streamKey: stream + ':' + stage,
+      stage: stage,
+      append: payload.append === true,
+      replace: payload.replace === true,
+      newline: payload.newline === true,
+      outputPrefix: stream === 'stderr' ? '[stderr] ' : ''
+    };
+  }
+
+  function consumeTaskProblemOutput(session, buffers, payload) {
+    if (!session || !payload) return;
+    if (payload.fragment !== true) {
+      session.consume(payload.line, payload.stage);
+      return;
+    }
+    var key = String(payload.type || '') + ':' + String(payload.stage || '');
+    var hasCurrent = Object.prototype.hasOwnProperty.call(buffers, key);
+    var current = hasCurrent ? buffers[key] : '';
+    if (payload.replace === true) current = String(payload.line || '');
+    else if (payload.append === true) current += String(payload.line || '');
+    else {
+      if (hasCurrent) session.consume(current, payload.stage);
+      current = String(payload.line || '');
+    }
+    // The matcher ignores lines over 8192 code units. Retain one extra unit to
+    // preserve that decision without buffering an unbounded program line.
+    if (current.length > 8193) current = current.slice(0, 8193);
+    if (payload.newline === true) {
+      session.consume(current, payload.stage);
+      delete buffers[key];
+    } else {
+      buffers[key] = current;
+    }
+  }
+
+  function finishTaskProblemOutput(session, buffers) {
+    if (!session) return;
+    Object.keys(buffers).forEach(function(key) {
+      session.consume(buffers[key], key.slice(key.indexOf(':') + 1));
+      delete buffers[key];
+    });
+    session.finish();
   }
 
   function runOutputPhase(phase, message, options, runContext) {
@@ -801,6 +850,7 @@
     var taskRequest = options.taskRequest;
     var executionHandle = options.taskExecutionHandle || null;
     var taskProblemSession = null;
+    var taskProblemFragments = Object.create(null);
     var presentationApplied = false;
     var isProjectTask = Boolean(taskExecution || taskRequest);
     var cloudFeature = isProjectTask ? 'tasks' : 'run';
@@ -1152,15 +1202,20 @@
               }
             }
             if (payload.type === 'stdout' && payload.line !== undefined && !S.activeRunCancelled) {
-              if (String(payload.stage || '') === 'setup') runOutputDetail(payload.line, { stage: 'setup' }, runContext);
-              else BOBO.updateRunOutput(payload.line);
-              if (taskProblemSession) taskProblemSession.consume(payload.line, payload.stage);
+              var stdoutOptions = streamOutputOptions(payload, 'stdout');
+              if (String(payload.stage || '') === 'setup') {
+                runOutputDetail(payload.line, Object.assign({ stage: 'setup' }, stdoutOptions || {}), runContext);
+              } else {
+                BOBO.updateRunOutput(payload.line, stdoutOptions || undefined);
+              }
+              consumeTaskProblemOutput(taskProblemSession, taskProblemFragments, payload);
               // 程序有输出（如 input() 的提示文字）：立即显示输入框
               if (!taskExecution || payload.stage === interactiveTaskStage) showStdinOnce();
             }
             if (payload.type === 'stderr' && payload.line !== undefined && !S.activeRunCancelled) {
-              BOBO.updateRunOutput('[stderr] ' + payload.line);
-              if (taskProblemSession) taskProblemSession.consume(payload.line, payload.stage);
+              var stderrOptions = streamOutputOptions(payload, 'stderr');
+              BOBO.updateRunOutput(stderrOptions ? payload.line : '[stderr] ' + payload.line, stderrOptions || undefined);
+              consumeTaskProblemOutput(taskProblemSession, taskProblemFragments, payload);
             }
             if (payload.type === 'artifact') {
               if (payload.path) artifactPaths.add(String(payload.path));
@@ -1223,7 +1278,7 @@
                 });
                 if (stdinFallbackTimer) { clearTimeout(stdinFallbackTimer); stdinFallbackTimer = null; }
                 bestEffort(hideStdinInput);
-                bestEffort(function() { if (taskProblemSession) taskProblemSession.finish(); });
+                bestEffort(function() { finishTaskProblemOutput(taskProblemSession, taskProblemFragments); });
                 try { await clearRunContext(runContext, runId); } finally { try { socket.close(); } catch (_) {} }
               })();
               await terminalFinalization;
@@ -1242,7 +1297,7 @@
                 settleTaskExecution(executionHandle, { success: false, code: String(payload.code || 'stream-error'), message: payload.message, runId: runId });
                 bestEffort(function() { finishRunOutput({ success: false, message: lastRunError }, runContext); });
                 bestEffort(function() { BOBO.updateRunOutput('Error: ' + payload.message); });
-                bestEffort(function() { if (taskProblemSession) taskProblemSession.finish(); });
+                bestEffort(function() { finishTaskProblemOutput(taskProblemSession, taskProblemFragments); });
                 try { await clearRunContext(runContext, runId); } finally { try { socket.close(); } catch (_) {} }
               })();
               await terminalFinalization;
@@ -1279,7 +1334,7 @@
               bestEffort(function() { BOBO.updateRunOutput('Error: The output stream closed before the run result was received.'); });
               bestEffort(function() { finishRunOutput({ success: false, message: lastRunError || tr('The output stream closed before the run result was received.') }, runContext); });
             }
-            bestEffort(function() { if (taskProblemSession) taskProblemSession.finish(); });
+            bestEffort(function() { finishTaskProblemOutput(taskProblemSession, taskProblemFragments); });
             Promise.resolve(cleanup).catch(function(error) {
               bestEffort(function() { BOBO.updateRunOutput('Run cleanup failed: ' + error.message); });
             });
@@ -1294,7 +1349,7 @@
           BOBO.updateRunOutput('Error: Failed to establish output stream (check server port 3101 and WS endpoint)');
           await cancelActiveRun();
         }
-        if (taskProblemSession) taskProblemSession.finish();
+        finishTaskProblemOutput(taskProblemSession, taskProblemFragments);
       }
       return streamReady;
     } catch (error) {
@@ -1305,7 +1360,7 @@
       finishRunPreparation(runContext);
       settleTaskExecution(executionHandle, { success: false, code: 'run-error', message: error.message, runId: executionHandle && executionHandle.runId });
       if (isRunContextCurrent(runContext)) await cancelActiveRun();
-      if (taskProblemSession) taskProblemSession.finish();
+      finishTaskProblemOutput(taskProblemSession, taskProblemFragments);
       return false;
     }
   }

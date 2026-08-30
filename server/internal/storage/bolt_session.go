@@ -181,18 +181,21 @@ func (s *BoltSessionStore) DeleteAllProcessSessions() ([]string, error) {
 }
 
 // CleanupExpired 清理超过 TTL 的过期会话
-func (s *BoltSessionStore) CleanupExpired(ttl time.Duration) []string {
+func (s *BoltSessionStore) CleanupExpired(ttl time.Duration) ([]string, error) {
 	now := time.Now()
 	var expired []string
 
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(sessionsBucket)
+		if b == nil {
+			return errSessionsBucketUnavailable
+		}
 		c := b.Cursor()
 
 		for k, v := c.First(); k != nil; k, v = c.Next() {
 			var sess model.RunSession
 			if err := json.Unmarshal(v, &sess); err != nil {
-				continue
+				return fmt.Errorf("decode run session %q: %w", string(k), err)
 			}
 			if !sess.Started && now.Sub(sess.CreatedAt) > ttl {
 				runID := string(k)
@@ -205,26 +208,28 @@ func (s *BoltSessionStore) CleanupExpired(ttl time.Duration) []string {
 		return nil
 	})
 	if err != nil {
-		slog.Error("Session cleanup failed", "error", err)
-		return nil
+		return nil, fmt.Errorf("cleanup expired run sessions: %w", err)
 	}
 	if len(expired) > 0 {
 		slog.Info("Expired sessions cleaned", "count", len(expired))
 	}
-	return expired
+	return expired, nil
 }
 
 // GetByUser 返回指定用户的所有活跃会话
-func (s *BoltSessionStore) GetByUser(userID string) []*model.RunSession {
+func (s *BoltSessionStore) GetByUser(userID string) ([]*model.RunSession, error) {
 	var result []*model.RunSession
 
-	s.db.View(func(tx *bolt.Tx) error {
+	err := s.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(sessionsBucket)
+		if b == nil {
+			return errSessionsBucketUnavailable
+		}
 		c := b.Cursor()
 		for k, v := c.First(); k != nil; k, v = c.Next() {
 			var sess model.RunSession
 			if err := json.Unmarshal(v, &sess); err != nil {
-				continue
+				return fmt.Errorf("decode run session %q: %w", string(k), err)
 			}
 			if sess.UserID == userID {
 				// 复制一份避免闭包问题
@@ -234,20 +239,26 @@ func (s *BoltSessionStore) GetByUser(userID string) []*model.RunSession {
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, fmt.Errorf("list run sessions for user %q: %w", userID, err)
+	}
 
-	return result
+	return result, nil
 }
 
 // GetActiveCount 返回指定用户的活跃会话数
-func (s *BoltSessionStore) GetActiveCount(userID string) int {
+func (s *BoltSessionStore) GetActiveCount(userID string) (int, error) {
 	count := 0
-	s.db.View(func(tx *bolt.Tx) error {
+	err := s.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(sessionsBucket)
+		if b == nil {
+			return errSessionsBucketUnavailable
+		}
 		c := b.Cursor()
 		for k, v := c.First(); k != nil; k, v = c.Next() {
 			var sess model.RunSession
 			if err := json.Unmarshal(v, &sess); err != nil {
-				continue
+				return fmt.Errorf("decode run session %q: %w", string(k), err)
 			}
 			if sess.UserID == userID {
 				count++
@@ -255,5 +266,8 @@ func (s *BoltSessionStore) GetActiveCount(userID string) int {
 		}
 		return nil
 	})
-	return count
+	if err != nil {
+		return 0, fmt.Errorf("count active run sessions for user %q: %w", userID, err)
+	}
+	return count, nil
 }

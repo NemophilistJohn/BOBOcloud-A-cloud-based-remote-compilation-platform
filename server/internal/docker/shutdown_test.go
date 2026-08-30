@@ -519,6 +519,56 @@ func TestDiscardRetryYieldsToFinalShutdownSnapshot(t *testing.T) {
 	}
 }
 
+func TestShutdownReleasesRetainedRemovalCallbackOnlyAfterConfirmedAbsence(t *testing.T) {
+	const containerID = "retained-until-shutdown"
+	failRemoval := true
+	released := 0
+	pool := &Pool{
+		containerUser:        map[string]string{containerID: "alice"},
+		containerContext:     map[string]string{containerID: "personal/cache:rw"},
+		taintedContainers:    make(map[string]bool),
+		pendingRemoval:       make(map[string]bool),
+		imageByContainerID:   map[string]string{containerID: "python"},
+		lruByImage:           make(map[string]time.Time),
+		idlePool:             make(map[string][]string),
+		userActiveContainers: map[string]int{"alice": 1},
+		activeCount:          1,
+	}
+	pool.waitDockerRetry = func(time.Duration) {}
+	pool.runDockerCommand = func(_ context.Context, args ...string) ([]byte, error) {
+		switch args[0] {
+		case "rm":
+			if failRemoval {
+				return []byte("daemon unavailable"), errors.New("remove failed")
+			}
+			return nil, nil
+		case "inspect":
+			return []byte("true\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected Docker command: %v", args)
+		}
+	}
+
+	pool.DiscardForUserRetained(containerID, "alice", func() { released++ })
+	pool.internalTasks.Wait()
+	if released != 0 {
+		t.Fatal("failed removal released callback before shutdown")
+	}
+	failRemoval = false
+	if err := pool.ShutdownContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if released != 1 {
+		t.Fatalf("shutdown release count = %d, want 1", released)
+	}
+	if err := pool.ShutdownContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if released != 1 {
+		t.Fatalf("idempotent shutdown reran callback: %d", released)
+	}
+}
+
 func TestContainerRunningStateContextHonorsCancellation(t *testing.T) {
 	inspectStarted := make(chan struct{})
 	pool := &Pool{runDockerCommand: func(ctx context.Context, args ...string) ([]byte, error) {

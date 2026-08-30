@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"bobocloud-server/internal/containercleanup"
 	"bobocloud-server/internal/metrics"
 )
 
@@ -377,7 +378,7 @@ func TestReleaseUnknownContainerIsIdempotent(t *testing.T) {
 		userActiveContainers: map[string]int{"other": 1},
 		activeCount:          1,
 	}
-	pool.releaseInternal("already-destroyed", "removed")
+	pool.releaseInternal("already-destroyed", "removed", nil)
 	if pool.activeCount != 1 || pool.userActiveContainers["other"] != 1 {
 		t.Fatal("unknown release changed pool accounting")
 	}
@@ -528,11 +529,135 @@ func TestDiscardForUserRetriesWithoutDroppingWritableContainerOwnership(t *testi
 	}
 
 	pool.DiscardForUser(containerID, "alice")
+	pool.internalTasks.Wait()
 	if removeAttempts != 2 || waits != 1 {
 		t.Fatalf("discard attempts=%d waits=%d", removeAttempts, waits)
 	}
 	if _, exists := pool.containerUser[containerID]; exists || pool.activeCount != 0 {
 		t.Fatalf("confirmed discard retained ownership: %#v", pool)
+	}
+}
+
+func TestDiscardForUserExhaustsBoundedCycleThenPeriodicRetryReleasesCallback(t *testing.T) {
+	containerID := "container-bounded-retry-123456"
+	failRemoval := true
+	removeAttempts := 0
+	waits := 0
+	released := 0
+	pool := &Pool{
+		containerUser:        map[string]string{containerID: "alice"},
+		containerContext:     map[string]string{containerID: "project-cache"},
+		imageByContainerID:   map[string]string{containerID: "python"},
+		userActiveContainers: map[string]int{"alice": 1},
+		activeCount:          1,
+	}
+	pool.waitDockerRetry = func(time.Duration) { waits++ }
+	pool.runDockerCommand = func(_ context.Context, args ...string) ([]byte, error) {
+		switch args[0] {
+		case "rm":
+			removeAttempts++
+			if failRemoval {
+				return []byte("daemon unavailable"), errors.New("remove failed")
+			}
+			return nil, nil
+		case "inspect":
+			return []byte("true\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected Docker command: %v", args)
+		}
+	}
+
+	pool.DiscardForUserRetained(containerID, "alice", func() { released++ })
+	pool.internalTasks.Wait()
+	if removeAttempts != 1+containerRemovalBackgroundAttempts || waits != containerRemovalBackgroundAttempts {
+		t.Fatalf("bounded cleanup attempts=%d waits=%d", removeAttempts, waits)
+	}
+	pool.mu.Lock()
+	owner := pool.containerUser[containerID]
+	retrying, pending := pool.discardRetrying[containerID]
+	pendingCount := pool.pendingContainerRemovalCountLocked()
+	pool.mu.Unlock()
+	if owner != "alice" || !pending || retrying || pendingCount != 1 || released != 0 {
+		t.Fatalf("exhausted cleanup owner=%q pending=%t retrying=%t pending_count=%d released=%d", owner, pending, retrying, pendingCount, released)
+	}
+
+	failRemoval = false
+	pool.retryExhaustedContainerRemovals()
+	pool.internalTasks.Wait()
+	if released != 1 {
+		t.Fatalf("later successful cleanup released callback %d times", released)
+	}
+	pool.retryExhaustedContainerRemovals()
+	pool.internalTasks.Wait()
+	if released != 1 {
+		t.Fatalf("completed cleanup callback ran again: %d", released)
+	}
+	pool.mu.Lock()
+	_, owned := pool.containerUser[containerID]
+	pendingCount = pool.pendingContainerRemovalCountLocked()
+	pool.mu.Unlock()
+	if owned || pendingCount != 0 {
+		t.Fatalf("successful reconciliation retained ownership=%t pending=%d", owned, pendingCount)
+	}
+}
+
+func TestRetainedReleaseKeepsGateClosedWhenResetFallsBackToAsyncRemoval(t *testing.T) {
+	containerID := "container-reset-retry-123456"
+	retryStarted := make(chan struct{})
+	allowRetry := make(chan struct{})
+	var retryOnce sync.Once
+	removeAttempts := 0
+	pool := &Pool{
+		containerUser:        map[string]string{containerID: "alice"},
+		containerContext:     map[string]string{containerID: "personal/cache:rw"},
+		imageByContainerID:   map[string]string{containerID: "python"},
+		userActiveContainers: map[string]int{"alice": 1},
+		activeCount:          1,
+	}
+	pool.waitDockerRetry = func(time.Duration) {
+		retryOnce.Do(func() { close(retryStarted) })
+		<-allowRetry
+	}
+	pool.runDockerCommand = func(_ context.Context, args ...string) ([]byte, error) {
+		switch args[0] {
+		case "top":
+			return []byte("daemon unavailable"), errors.New("top failed")
+		case "restart":
+			return []byte("restart failed"), errors.New("restart failed")
+		case "rm":
+			removeAttempts++
+			if removeAttempts == 1 {
+				return []byte("daemon unavailable"), errors.New("remove failed")
+			}
+			return nil, nil
+		case "inspect":
+			return []byte("true\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected Docker command: %v", args)
+		}
+	}
+
+	ctx, gate := containercleanup.WithReleaseGate(context.Background())
+	released := 0
+	gate.Add(func() { released++ })
+	if !containercleanup.Retain(ctx, func(done func()) {
+		pool.ReleaseForUserRetained(containerID, "alice", done)
+	}) {
+		t.Fatal("release gate was not retained")
+	}
+	gate.Finalize()
+	select {
+	case <-retryStarted:
+	case <-time.After(time.Second):
+		t.Fatal("reset failure did not start bounded removal")
+	}
+	if released != 0 || pool.containerUser[containerID] != "alice" {
+		t.Fatalf("reset failure released gate=%d owner=%q", released, pool.containerUser[containerID])
+	}
+	close(allowRetry)
+	pool.internalTasks.Wait()
+	if released != 1 {
+		t.Fatalf("confirmed async removal release count = %d", released)
 	}
 }
 
@@ -770,6 +895,53 @@ func TestIdleInvalidationRetainsOwnershipUntilTransientRemovalRetrySucceeds(t *t
 	commandMu.Unlock()
 	if attempts != 2 {
 		t.Fatalf("removal attempts = %d, want 2", attempts)
+	}
+}
+
+func TestQuarantinedRemovalExhaustionIsRetriedByMaintenanceBatch(t *testing.T) {
+	containerID := "quarantined-maintenance-container-123456"
+	failRemoval := true
+	pool := &Pool{
+		containerUser:      map[string]string{containerID: "alice"},
+		containerContext:   map[string]string{containerID: "team/cache-generation"},
+		imageByContainerID: map[string]string{containerID: "python"},
+		pendingRemoval:     map[string]bool{containerID: false},
+	}
+	pool.waitDockerRetry = func(time.Duration) {}
+	pool.runDockerCommand = func(_ context.Context, args ...string) ([]byte, error) {
+		switch args[0] {
+		case "rm":
+			if failRemoval {
+				return []byte("daemon unavailable"), errors.New("remove failed")
+			}
+			return nil, nil
+		case "inspect":
+			return []byte("true\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected Docker command: %v", args)
+		}
+	}
+
+	if err := pool.removeQuarantinedContainer(containerID); err == nil {
+		t.Fatal("persistent removal failure was hidden")
+	}
+	pool.internalTasks.Wait()
+	pool.mu.Lock()
+	retrying, tracked := pool.pendingRemoval[containerID]
+	pool.mu.Unlock()
+	if !tracked || retrying || pool.containerUser[containerID] != "alice" {
+		t.Fatalf("exhausted quarantine tracked=%t retrying=%t owner=%q", tracked, retrying, pool.containerUser[containerID])
+	}
+
+	failRemoval = false
+	pool.retryExhaustedContainerRemovals()
+	pool.internalTasks.Wait()
+	pool.mu.Lock()
+	_, tracked = pool.pendingRemoval[containerID]
+	_, owned := pool.containerUser[containerID]
+	pool.mu.Unlock()
+	if tracked || owned {
+		t.Fatalf("maintenance success retained quarantine=%t ownership=%t", tracked, owned)
 	}
 }
 

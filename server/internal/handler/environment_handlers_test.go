@@ -913,6 +913,7 @@ func TestProjectEnvironmentRetainsCacheAndQuotaUntilContainerRemoval(t *testing.
 	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
 	handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ReservationBytes: 8, ReservationFiles: 1})
 	handler.Resources = newTestResourceController(t, 1)
+	handler.Lifecycle = lifecycle.NewManager()
 	workspace := filepath.Join(serverRoot, "project-key")
 	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
 	cleanup := make(chan struct{})
@@ -952,6 +953,12 @@ func TestProjectEnvironmentRetainsCacheAndQuotaUntilContainerRemoval(t *testing.
 	if snapshot := handler.Resources.Snapshot(); snapshot.Used.Slots != 1 || len(snapshot.Leases) != 1 {
 		t.Fatalf("active cleanup released package resources: %+v", snapshot)
 	}
+	if mutation, err := handler.Lifecycle.BeginUserMutation("default"); !errors.Is(err, lifecycle.ErrResourcesInUse) {
+		if mutation != nil {
+			mutation.Release()
+		}
+		t.Fatalf("environment cleanup released lifecycle activity before container removal: %v", err)
+	}
 
 	close(cleanup)
 	deadline := time.Now().Add(2 * time.Second)
@@ -959,7 +966,11 @@ func TestProjectEnvironmentRetainsCacheAndQuotaUntilContainerRemoval(t *testing.
 		info := handler.PersonalCache.Inspect("default", 0)
 		_, statErr := os.Stat(dependencyRoot)
 		if info.ReservedBytes == 0 && info.ReservedFiles == 0 && os.IsNotExist(statErr) && handler.Resources.Snapshot().Used.Slots == 0 {
-			return
+			mutation, err := handler.Lifecycle.BeginUserMutation("default")
+			if err == nil {
+				mutation.Release()
+				return
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

@@ -20,6 +20,45 @@ type OutputWriter interface {
 	WriteError(msg string)
 }
 
+// OutputFragment describes one bounded piece of a logical process-output line.
+// Newline completes the current line, Append continues it, and Replace applies
+// terminal carriage-return semantics without creating another visible line.
+type OutputFragment struct {
+	Text    string
+	Append  bool
+	Replace bool
+	Newline bool
+}
+
+// FragmentOutputWriter is optional so existing OutputWriter implementations and
+// test fakes retain source compatibility. Process streaming uses it when present.
+type FragmentOutputWriter interface {
+	WriteStdoutFragment(fragment OutputFragment, stage string)
+	WriteStderrFragment(fragment OutputFragment, stage string)
+}
+
+func WriteStdoutFragment(output OutputWriter, fragment OutputFragment, stage string) {
+	if output == nil {
+		return
+	}
+	if fragmentOutput, ok := output.(FragmentOutputWriter); ok {
+		fragmentOutput.WriteStdoutFragment(fragment, stage)
+		return
+	}
+	output.WriteStdout(fragment.Text, stage)
+}
+
+func WriteStderrFragment(output OutputWriter, fragment OutputFragment, stage string) {
+	if output == nil {
+		return
+	}
+	if fragmentOutput, ok := output.(FragmentOutputWriter); ok {
+		fragmentOutput.WriteStderrFragment(fragment, stage)
+		return
+	}
+	output.WriteStderr(fragment.Text, stage)
+}
+
 // WebSocketWriter 通过 RunChannel 将输出写入 WebSocket 连接
 type WebSocketWriter struct {
 	channel   *RunChannel
@@ -41,6 +80,14 @@ func (w *WebSocketWriter) WriteStdout(line, stage string) {
 
 func (w *WebSocketWriter) WriteStderr(line, stage string) {
 	w.channel.SendJSON(MakeStreamLine("stderr", line, stage))
+}
+
+func (w *WebSocketWriter) WriteStdoutFragment(fragment OutputFragment, stage string) {
+	w.channel.SendJSON(MakeStreamFragment("stdout", fragment, stage))
+}
+
+func (w *WebSocketWriter) WriteStderrFragment(fragment OutputFragment, stage string) {
+	w.channel.SendJSON(MakeStreamFragment("stderr", fragment, stage))
 }
 
 func (w *WebSocketWriter) WriteArtifactBegin() {

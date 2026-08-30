@@ -602,3 +602,39 @@ func TestTerminalCleanupRetryReleasesResourcesOnlyAfterContainerIsWriteSafe(t *t
 		t.Fatalf("deferred cleanup order = %q", got)
 	}
 }
+
+func TestTerminalCleanupRetryBudgetExhaustionDoesNotReleaseResources(t *testing.T) {
+	fake := &terminalCleanupDiscardFake{failures: terminalCleanupAttempts + 1}
+	released := false
+	retryTerminalContainerCleanup(fake, "container-id", "alice", func() { released = true }, func(time.Duration) {})
+	if fake.attempts != terminalCleanupAttempts {
+		t.Fatalf("cleanup attempts = %d, want %d", fake.attempts, terminalCleanupAttempts)
+	}
+	if released {
+		t.Fatal("exhausted cleanup released resources before confirmed container removal")
+	}
+}
+
+type retainedTerminalCleanupFake struct {
+	terminalCleanupDiscardFake
+	complete func()
+}
+
+func (fake *retainedTerminalCleanupFake) DiscardForUserRetained(_, _ string, onRemoved func()) {
+	fake.complete = onRemoved
+}
+
+func TestTerminalCleanupHandoffUsesPoolOwnedBoundedRemoval(t *testing.T) {
+	fake := &retainedTerminalCleanupFake{}
+	released := 0
+	release := combineTerminalResourceReleases(func() { released++ })
+	handoffTerminalContainerCleanup(fake, "container-id", "alice", release, errors.New("initial failure"))
+	if fake.complete == nil || fake.attempts != 0 || released != 0 {
+		t.Fatalf("retained handoff = complete:%v attempts:%d released:%d", fake.complete != nil, fake.attempts, released)
+	}
+	fake.complete()
+	fake.complete()
+	if released != 1 {
+		t.Fatalf("terminal release callback count = %d, want 1", released)
+	}
+}

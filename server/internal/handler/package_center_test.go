@@ -17,6 +17,7 @@ import (
 
 	"bobocloud-server/internal/cachev2"
 	"bobocloud-server/internal/config"
+	"bobocloud-server/internal/lifecycle"
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/packagecatalog"
@@ -241,6 +242,7 @@ func TestPackageCenterApplyPanicReleasesPackageCacheLeases(t *testing.T) {
 	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
 	configurePackageCenterTestHandler(handler, dataRoot)
 	handler.Resources = newTestResourceController(t, 1)
+	handler.Lifecycle = lifecycle.NewManager()
 	handler.EnvironmentSetup = func(context.Context, string, string, string, []string) (string, string, int, error) {
 		return "", "", 0, nil
 	}
@@ -298,6 +300,12 @@ func TestPackageCenterApplyPanicReleasesPackageCacheLeases(t *testing.T) {
 	if snapshot := handler.Resources.Snapshot(); snapshot.Used.Slots != 1 || len(snapshot.Leases) != 1 {
 		t.Fatalf("package panic released resources before container cleanup: %+v", snapshot)
 	}
+	if mutation, err := handler.Lifecycle.BeginWorkspaceMutation("default", "project-key"); !errors.Is(err, lifecycle.ErrResourcesInUse) {
+		if mutation != nil {
+			mutation.Release()
+		}
+		t.Fatalf("package cleanup released workspace activity before container removal: %v", err)
+	}
 	close(allowCleanup)
 	select {
 	case <-cleanupReturned:
@@ -308,6 +316,18 @@ func TestPackageCenterApplyPanicReleasesPackageCacheLeases(t *testing.T) {
 	for handler.Resources.Snapshot().Used.Slots != 0 {
 		if time.Now().After(deadline) {
 			t.Fatalf("package panic cleanup leaked resource lease: %+v", handler.Resources.Snapshot())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	deadline = time.Now().Add(time.Second)
+	for {
+		mutation, err := handler.Lifecycle.BeginWorkspaceMutation("default", "project-key")
+		if err == nil {
+			mutation.Release()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("package cleanup retained workspace activity: %v", err)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

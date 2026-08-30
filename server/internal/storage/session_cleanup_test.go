@@ -46,7 +46,10 @@ func assertCleanupKeepsStartedSession(t *testing.T, store SessionStore) {
 	}
 
 	time.Sleep(time.Millisecond)
-	expired := store.CleanupExpired(0)
+	expired, err := store.CleanupExpired(0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(expired) != 1 || expired[0] != "expired-pending" {
 		t.Fatalf("unexpected expired run IDs: %v", expired)
 	}
@@ -58,7 +61,11 @@ func assertCleanupKeepsStartedSession(t *testing.T, store SessionStore) {
 	if !exists || !started.Started {
 		t.Fatal("expired started session was removed or reset")
 	}
-	if repeated := store.CleanupExpired(0); len(repeated) != 0 {
+	repeated, err := store.CleanupExpired(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repeated) != 0 {
 		t.Fatalf("cleanup returned already removed or started sessions: %v", repeated)
 	}
 }

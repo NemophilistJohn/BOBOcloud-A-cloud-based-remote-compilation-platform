@@ -17,6 +17,7 @@ import (
 	"bobocloud-server/internal/buildcache"
 	"bobocloud-server/internal/collab"
 	"bobocloud-server/internal/config"
+	"bobocloud-server/internal/containercleanup"
 	"bobocloud-server/internal/docker"
 	"bobocloud-server/internal/files"
 	"bobocloud-server/internal/lifecycle"
@@ -350,6 +351,8 @@ func readRunMessages(conn *websocket.Conn, runID string, stdinQueue *stdinWriteQ
 
 // runCodeTask 在 Channel 上执行代码，返回运行结果
 func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.RunSession, channel *session.RunChannel, stdinReader io.Reader) (runResult *model.RunResult) {
+	ctx, cleanupGate := containercleanup.WithReleaseGate(ctx)
+	defer cleanupGate.Finalize()
 	output := session.NewWebSocketWriter(channel, h.Config.ChunkSize)
 	taskStarted := time.Now()
 	output.WriteStatus("setup", "Validating run request")
@@ -443,7 +446,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		fail(resourcePressureMessage)
 		return
 	}
-	defer releaseHandlerResource(resourceLease)
+	cleanupGate.Add(func() { releaseHandlerResource(resourceLease) })
 	output.WriteStatus("setup", "Run accepted; resolving workspace")
 	if useDocker {
 		output.WriteStatus("setup", fmt.Sprintf("Using Docker runtime: %s (%s) [user=%s]",
@@ -468,7 +471,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 			fail(leaseErr.Error())
 			return
 		}
-		defer activity.Release()
+		cleanupGate.Add(activity.Release)
 	}
 	if sess.TeamID != "" && sess.ProjectID != "" && h.Collaboration != nil {
 		projectActivity, leaseErr := h.Collaboration.AcquireProjectActivity(sess.UserID, sess.TeamID, sess.ProjectID)
@@ -476,7 +479,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 			fail(leaseErr.Error())
 			return
 		}
-		defer projectActivity.Release()
+		cleanupGate.Add(projectActivity.Release)
 	}
 
 	// Phase 2: 使用用户隔离的工作区路径
@@ -517,11 +520,11 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		if team, teamErr := h.Collaboration.Store().GetTeam(sess.TeamID); teamErr == nil {
 			teamCacheQuotaMB = team.CacheQuotaMB
 		}
-		defer func() {
+		cleanupGate.Add(func() {
 			_ = os.RemoveAll(preparedCache.Buildspace)
 			preparedCache.Release()
 			h.BuildCache.RequestEnforce(sess.TeamID, teamCacheQuotaMB)
-		}()
+		})
 		output.WriteStatus("cache", fmt.Sprintf("Team cache namespace ready: %s / %s / %s", sess.Branch, runtimeKey, plugin.Language()))
 	}
 	var personalLease *personalcache.Lease
@@ -537,7 +540,9 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 			if folderKey == "" {
 				folderKey = sess.FolderName
 			}
-			defer h.releasePersonalCacheLease(personalLease, personalDependencyRefreshScope(sess.UserID, folderKey, rt.RuntimeID, plugin.Language()))
+			cleanupGate.Add(func() {
+				h.releasePersonalCacheLease(personalLease, personalDependencyRefreshScope(sess.UserID, folderKey, rt.RuntimeID, plugin.Language()))
+			})
 			guard := personalLease.StartGuard(ctx)
 			if guard != nil {
 				executionCtx = guard.Context
@@ -553,7 +558,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 			return
 		}
 		if persistOperation != nil {
-			defer persistOperation.Release()
+			cleanupGate.Add(persistOperation.Release)
 			executionCtx = persistOperation.Context()
 		}
 	}
@@ -579,7 +584,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 				return
 			}
 			if personalToolchainLease != nil {
-				defer personalToolchainLease.Release()
+				cleanupGate.Add(personalToolchainLease.Release)
 			}
 		}
 	}
@@ -611,7 +616,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 				return
 			}
 			if personalBuildLease != nil {
-				defer personalBuildLease.Release()
+				cleanupGate.Add(personalBuildLease.Release)
 			}
 		}
 	}

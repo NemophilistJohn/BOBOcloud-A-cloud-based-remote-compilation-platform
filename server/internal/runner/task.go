@@ -52,11 +52,7 @@ func (r *DockerRunner) RunTaskExecution(ctx context.Context, task *model.TaskExe
 			r.metrics.Observe("workspace.copy.from_container", time.Since(copyBackStarted))
 		}
 		cancelCopy()
-		if r.discardCached || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
-			r.pool.DiscardForUser(containerID, r.userID)
-		} else {
-			r.pool.ReleaseForUser(containerID, r.userID)
-		}
+		r.finalizeContainer(ctx, containerID, r.discardCached || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded))
 		output.WriteStatus("docker", fmt.Sprintf("Task artifacts collected and container recycled in %d ms", time.Since(cleanupStarted).Milliseconds()))
 	}()
 

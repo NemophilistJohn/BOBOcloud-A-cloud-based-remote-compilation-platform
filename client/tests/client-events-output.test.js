@@ -49,6 +49,7 @@ function createElement(tagName) {
     tagName: String(tagName).toUpperCase(),
     childNodes: [],
     attributes: {},
+    listeners: {},
     className: '',
     innerHTML: '',
     textContent: '',
@@ -76,7 +77,7 @@ function createElement(tagName) {
     remove() {
       if (this.parentNode) this.parentNode.removeChild(this);
     },
-    addEventListener() {},
+    addEventListener(type, listener) { this.listeners[type] = listener; },
     setAttribute(name, value) { this.attributes[name] = String(value); },
     getAttribute(name) { return this.attributes[name] || null; }
   };
@@ -348,6 +349,196 @@ test('the first output line is visible immediately and stays cleared', async () 
   runLog.childNodes.splice(0);
   await new Promise(resolve => setTimeout(resolve, 220));
   assert.equal(runLog.childNodes.length, 0);
+});
+
+test('stream fragments append and replace one rendered logical line', async () => {
+  const runLog = createElement('pre');
+  const panel = createElement('div');
+  const document = createDocument({ 'run-log': runLog, 'panel-output': panel });
+  const windowObject = {
+    document,
+    BOBO: { state: { runLogInitialized: true, showTimestampNextLine: false, autoScrollEnabled: true } }
+  };
+  loadScript('src/server-comm.js', windowObject, {
+    fetch: () => { throw new Error('not used'); }
+  });
+
+  const first = 'a'.repeat(4096);
+  const second = 'b'.repeat(4904);
+  windowObject.BOBO.updateRunOutput(first, {
+    streamFragment: true, streamKey: 'stdout:run', newline: false
+  });
+  windowObject.BOBO.updateRunOutput(second, {
+    streamFragment: true, streamKey: 'stdout:run', append: true, newline: false
+  });
+  windowObject.BOBO.updateRunOutput('', {
+    streamFragment: true, streamKey: 'stdout:run', append: true, newline: true
+  });
+  assert.equal(runLog.childNodes.length, 1);
+  assert.equal(runLog.firstChild.innerHTML, first + second);
+
+  windowObject.BOBO.updateRunOutput('download 1%', {
+    streamFragment: true, streamKey: 'stderr:setup', outputPrefix: '[stderr] '
+  });
+  windowObject.BOBO.updateRunOutput('download 100%', {
+    streamFragment: true, streamKey: 'stderr:setup', outputPrefix: '[stderr] ', replace: true, newline: true
+  });
+  await new Promise(resolve => setTimeout(resolve, 220));
+  assert.equal(runLog.childNodes.length, 2);
+  assert.match(runLog.childNodes[1].innerHTML, /\[stderr\].*download 100%/);
+  assert.doesNotMatch(runLog.childNodes[1].innerHTML, /download 1%/);
+});
+
+test('open stream fragments batch DOM redraws and bound a pathological single line', async () => {
+  const runLog = createElement('pre');
+  const panel = createElement('div');
+  const document = createDocument({ 'run-log': runLog, 'panel-output': panel });
+  const windowObject = {
+    document,
+    BOBO: { state: { runLogInitialized: true, showTimestampNextLine: false, autoScrollEnabled: true } }
+  };
+  loadScript('src/server-comm.js', windowObject, {
+    fetch: () => { throw new Error('not used'); }
+  });
+
+  windowObject.BOBO.updateRunOutput('head', {
+    streamFragment: true, streamKey: 'stdout:batched'
+  });
+  windowObject.BOBO.updateRunOutput('tail', {
+    streamFragment: true, streamKey: 'stdout:batched', append: true
+  });
+  assert.equal(runLog.firstChild.innerHTML, 'head', 'an open continuation should wait for the bounded render batch');
+  await new Promise(resolve => setTimeout(resolve, 220));
+  assert.equal(runLog.firstChild.innerHTML, 'headtail');
+
+  windowObject.BOBO.updateRunOutput('x'.repeat(300000), {
+    streamFragment: true, streamKey: 'stdout:bounded', newline: true
+  });
+  await new Promise(resolve => setTimeout(resolve, 220));
+  assert.equal(runLog.childNodes.length, 2);
+  assert.ok(runLog.childNodes[1].innerHTML.length < 263000, 'single-line rendering must stay bounded');
+  assert.match(runLog.childNodes[1].innerHTML, /Live output line truncated at 262144 characters/);
+});
+
+test('large logical lines share a bounded recent transcript budget', async () => {
+  const runLog = createElement('pre');
+  const panel = createElement('div');
+  const document = createDocument({ 'run-log': runLog, 'panel-output': panel });
+  const windowObject = {
+    document,
+    BOBO: { state: { runLogInitialized: true, showTimestampNextLine: false, autoScrollEnabled: true } }
+  };
+  loadScript('src/server-comm.js', windowObject, {
+    fetch: () => { throw new Error('not used'); }
+  });
+
+  const line = 'x'.repeat(240000);
+  for (let index = 0; index < 90; index += 1) {
+    windowObject.BOBO.updateRunOutput(line, {
+      streamFragment: true,
+      streamKey: 'stdout:budget-' + index,
+      newline: true
+    });
+  }
+  await new Promise(resolve => setTimeout(resolve, 250));
+
+  const retainedLines = runLog.childNodes.filter(node =>
+    node.getAttribute && node.getAttribute('data-output-kind') === 'program'
+  );
+  const retainedCharacters = retainedLines.reduce((total, node) => total + node.innerHTML.length, 0);
+  assert.ok(retainedLines.length < 90, 'the transcript should evict old large records before the line-count limit');
+  assert.ok(retainedCharacters <= 20 * 1024 * 1024, 'the retained program transcript must stay within its character budget');
+  const omission = runLog.childNodes.find(node => node.getAttribute && node.getAttribute('data-output-omission') === 'true');
+  assert.match(omission.textContent, /Earlier output omitted:/);
+});
+
+test('an already-rendered open stream cannot grow past the transcript budget', async () => {
+  const runLog = createElement('pre');
+  const panel = createElement('div');
+  const document = createDocument({ 'run-log': runLog, 'panel-output': panel });
+  const windowObject = {
+    document,
+    BOBO: { state: { runLogInitialized: true, showTimestampNextLine: false, autoScrollEnabled: true } }
+  };
+  loadScript('src/server-comm.js', windowObject, {
+    fetch: () => { throw new Error('not used'); }
+  });
+
+  const line = 'x'.repeat(240000);
+  for (let index = 0; index < 87; index += 1) {
+    windowObject.BOBO.updateRunOutput(line, {
+      streamFragment: true,
+      streamKey: 'stdout:closed-' + index,
+      newline: true
+    });
+  }
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(runLog.childNodes.filter(node =>
+    node.getAttribute && node.getAttribute('data-output-kind') === 'program'
+  ).length, 87, 'the closed-line fixture should begin below the transcript budget');
+
+  windowObject.BOBO.updateRunOutput('head', {
+    streamFragment: true,
+    streamKey: 'stdout:open-budget'
+  });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  windowObject.BOBO.updateRunOutput('y'.repeat(262144), {
+    streamFragment: true,
+    streamKey: 'stdout:open-budget',
+    append: true,
+    newline: true
+  });
+
+  const retainedLines = runLog.childNodes.filter(node =>
+    node.getAttribute && node.getAttribute('data-output-kind') === 'program'
+  );
+  const retainedCharacters = retainedLines.reduce((total, node) => total + node.innerHTML.length, 0);
+  assert.ok(retainedLines.length < 88, 'dirty-only final flush should evict the oldest complete record');
+  assert.ok(retainedCharacters <= 20 * 1024 * 1024, 'dirty-only final flush must enforce the transcript budget');
+  const omission = runLog.childNodes.find(node => node.getAttribute && node.getAttribute('data-output-omission') === 'true');
+  assert.match(omission.textContent, /Earlier output omitted:/);
+});
+
+test('a traceback link remains clickable after fragment continuation', async () => {
+  const runLog = createElement('pre');
+  const panel = createElement('div');
+  const document = createDocument({ 'run-log': runLog, 'panel-output': panel });
+  const windowObject = {
+    document,
+    BOBO: {
+      state: { runLogInitialized: true, showTimestampNextLine: false, autoScrollEnabled: true },
+      workspace: { openFile: async (filePath) => { windowObject.openedPath = filePath; } }
+    }
+  };
+  loadScript('src/server-comm.js', windowObject, {
+    fetch: () => { throw new Error('not used'); }
+  });
+
+  windowObject.BOBO.updateRunOutput('Traceback: File "src/ma', {
+    streamFragment: true, streamKey: 'stderr:run'
+  });
+  windowObject.BOBO.updateRunOutput('in.py", line 10', {
+    streamFragment: true, streamKey: 'stderr:run', append: true, newline: true
+  });
+  assert.equal(runLog.childNodes.length, 1);
+  assert.match(runLog.firstChild.innerHTML, /class="err-link"/);
+  assert.match(runLog.firstChild.innerHTML, /data-file="src\/main\.py"/);
+  let prevented = false;
+  runLog.listeners.click({
+    target: {
+      closest() {
+        return {
+          getAttribute(name) {
+            return name === 'data-file' ? 'src/main.py' : (name === 'data-line' ? '10' : null);
+          }
+        };
+      }
+    },
+    preventDefault() { prevented = true; }
+  });
+  await Promise.resolve();
+  assert.equal(prevented, true);
+  assert.equal(windowObject.openedPath, 'src/main.py');
 });
 
 test('terminal rendering stays behind the sender-bound main-process bridge', () => {

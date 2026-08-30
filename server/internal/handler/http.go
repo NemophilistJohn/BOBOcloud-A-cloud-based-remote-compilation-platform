@@ -675,13 +675,12 @@ func (h *HTTPHandler) handleRun(w http.ResponseWriter, r *http.Request, req *mod
 
 	token := auth.GenerateToken()
 	runSessionLifecycleMu.Lock()
-	cleanupExpiredRunsLocked(h.Sessions, h.Channels, h.Config.SessionTTLDuration())
 	if runCancellationRememberedLocked(userID, runID, time.Now()) {
 		runSessionLifecycleMu.Unlock()
 		writeRunCancelledBeforeStart(w)
 		return
 	}
-	_, exists, lookupErr := h.Sessions.Lookup(runID)
+	existingSession, exists, lookupErr := h.Sessions.Lookup(runID)
 	if lookupErr != nil {
 		runSessionLifecycleMu.Unlock()
 		slog.Error("Failed to check run session identity", "user_id", userID, "run_id", runID, "error", lookupErr)
@@ -691,6 +690,23 @@ func (h *HTTPHandler) handleRun(w http.ResponseWriter, r *http.Request, req *mod
 			ErrorCode: "run_session_storage_unavailable",
 		})
 		return
+	}
+	if exists && !existingSession.Started && time.Since(existingSession.CreatedAt) > h.Config.SessionTTLDuration() {
+		existingChannel := h.Channels.GetOrCreate(runID, false)
+		if existingChannel != nil {
+			existingChannel.Close()
+		}
+		if cleanupErr := h.Channels.CleanupRun(runID, existingChannel, h.Sessions); cleanupErr != nil {
+			runSessionLifecycleMu.Unlock()
+			slog.Error("Failed to replace expired run session", "user_id", userID, "run_id", runID, "error", cleanupErr)
+			writeJSON(w, http.StatusServiceUnavailable, model.Response{
+				Success:   false,
+				Error:     "Run session cleanup is temporarily unavailable",
+				ErrorCode: "run_session_cleanup_failed",
+			})
+			return
+		}
+		exists = false
 	}
 	if exists || h.Channels.GetOrCreate(runID, false) != nil {
 		runSessionLifecycleMu.Unlock()
@@ -1083,13 +1099,15 @@ func (h *HTTPHandler) handleTerminal(w http.ResponseWriter, r *http.Request, req
 			releaseTerminalResource()
 		}
 	}()
+	var terminalActivityReleases []func()
+	defer func() { runReleaseCallbacksReverse(terminalActivityReleases) }()
 	if h.Lifecycle != nil && userID != "" {
 		activity, leaseErr := h.Lifecycle.AcquireActivity(userID, "")
 		if leaseErr != nil {
 			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: leaseErr.Error()})
 			return
 		}
-		defer activity.Release()
+		terminalActivityReleases = append(terminalActivityReleases, activity.Release)
 	}
 	slog.Info("Terminal", "user_id", userID, "runtime", runtimeID, "command", req.Command)
 
@@ -1099,11 +1117,14 @@ func (h *HTTPHandler) handleTerminal(w http.ResponseWriter, r *http.Request, req
 	var persistOperation *personalcache.Operation
 	defer func() {
 		terminalResourceOwnedByRequest = false
+		activityReleases := terminalActivityReleases
+		terminalActivityReleases = nil
 		finalizeContainerCleanup(func() {
 			if persistOperation != nil {
 				persistOperation.Release()
 			}
 			releaseTerminalResource()
+			runReleaseCallbacksReverse(activityReleases)
 		})
 	}()
 	var err error

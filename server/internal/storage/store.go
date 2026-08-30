@@ -28,9 +28,13 @@ type SessionStore interface {
 	// DeleteAllProcessSessions removes handshakes that cannot survive a server
 	// restart because their channels and WebSocket ownership are in memory.
 	DeleteAllProcessSessions() ([]string, error)
-	CleanupExpired(ttl time.Duration) []string
-	GetByUser(userID string) []*model.RunSession
-	GetActiveCount(userID string) int
+	// CleanupExpired is all-or-nothing: an error returns no IDs and commits no
+	// deletion, so channel cleanup can never get ahead of persistent state.
+	CleanupExpired(ttl time.Duration) ([]string, error)
+	// User-scoped queries preserve storage failures so callers cannot mistake
+	// unreadable state for an empty result or available capacity.
+	GetByUser(userID string) ([]*model.RunSession, error)
+	GetActiveCount(userID string) (int, error)
 }
 
 var (
@@ -115,7 +119,7 @@ func (s *MemorySessionStore) DeleteAllProcessSessions() ([]string, error) {
 }
 
 // CleanupExpired 清理过期会话
-func (s *MemorySessionStore) CleanupExpired(ttl time.Duration) []string {
+func (s *MemorySessionStore) CleanupExpired(ttl time.Duration) ([]string, error) {
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -126,11 +130,11 @@ func (s *MemorySessionStore) CleanupExpired(ttl time.Duration) []string {
 			expired = append(expired, id)
 		}
 	}
-	return expired
+	return expired, nil
 }
 
 // GetByUser 返回指定用户的所有会话
-func (s *MemorySessionStore) GetByUser(userID string) []*model.RunSession {
+func (s *MemorySessionStore) GetByUser(userID string) ([]*model.RunSession, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var result []*model.RunSession
@@ -139,11 +143,11 @@ func (s *MemorySessionStore) GetByUser(userID string) []*model.RunSession {
 			result = append(result, sess)
 		}
 	}
-	return result
+	return result, nil
 }
 
 // GetActiveCount 返回指定用户的活跃会话数
-func (s *MemorySessionStore) GetActiveCount(userID string) int {
+func (s *MemorySessionStore) GetActiveCount(userID string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	count := 0
@@ -152,7 +156,7 @@ func (s *MemorySessionStore) GetActiveCount(userID string) int {
 			count++
 		}
 	}
-	return count
+	return count, nil
 }
 
 // ---------- RunHistoryStore ----------

@@ -7,6 +7,9 @@
   // ──── Output logging (bounded, batched DOM appends + colored prefixes) ────
   var MAX_OUTPUT_LINES = 5000;
   var MAX_DETAIL_LINES = 300;
+  var MAX_OUTPUT_RECORD_CHARS = 256 * 1024;
+  var MAX_OUTPUT_TRANSCRIPT_CHARS = 20 * 1024 * 1024;
+  var MAX_DETAIL_TRANSCRIPT_CHARS = 2 * 1024 * 1024;
   var pendingOutputLines = [];
   var outputFlushTimer = null;
   var outputFlushThreshold = 50;
@@ -14,6 +17,8 @@
   var renderedProgramCount = 0;
   var renderedDetailCount = 0;
   var omittedProgramCount = 0;
+  var openOutputRecords = Object.create(null);
+  var dirtyOutputRecords = new Set();
 
   function localizeServerError(message) {
     if (!message) return message;
@@ -128,6 +133,17 @@
     return options && options.kind === 'detail' ? 'detail' : 'program';
   }
 
+  function forgetOpenOutputRecord(record) {
+    if (!record || !record.streamKey) return;
+    if (openOutputRecords[record.streamKey] === record) delete openOutputRecords[record.streamKey];
+    dirtyOutputRecords.delete(record);
+  }
+
+  function resetOpenOutputRecords() {
+    openOutputRecords = Object.create(null);
+    dirtyOutputRecords.clear();
+  }
+
   function trimPendingKind(kind, limit) {
     var count = 0;
     var removed = 0;
@@ -136,7 +152,8 @@
     }
     for (var index = 0; count > limit && index < pendingOutputLines.length;) {
       if (pendingOutputLines[index].kind === kind) {
-        pendingOutputLines.splice(index, 1);
+        var removedRecord = pendingOutputLines.splice(index, 1)[0];
+        forgetOpenOutputRecord(removedRecord);
         count -= 1;
         removed += 1;
       } else {
@@ -150,11 +167,34 @@
     for (var i = 0; i < outputEl.childNodes.length; i++) {
       var child = outputEl.childNodes[i];
       if (child && child.getAttribute && child.getAttribute('data-output-kind') === kind) {
+        forgetOpenOutputRecord(child._outputRecord);
         outputEl.removeChild(child);
         return true;
       }
     }
     return false;
+  }
+
+  function trimRenderedKindByCharacters(outputEl, kind, limit) {
+    var records = [];
+    var retainedCharacters = 0;
+    for (var i = 0; i < outputEl.childNodes.length; i++) {
+      var child = outputEl.childNodes[i];
+      if (!child || !child.getAttribute || child.getAttribute('data-output-kind') !== kind) continue;
+      var record = child._outputRecord;
+      var characters = record ? String(record.text || '').length : String(child.textContent || '').length;
+      retainedCharacters += characters;
+      records.push({ child: child, record: record, characters: characters });
+    }
+    var removed = 0;
+    for (var index = 0; retainedCharacters > limit && index < records.length; index++) {
+      var candidate = records[index];
+      forgetOpenOutputRecord(candidate.record);
+      if (candidate.child.parentNode === outputEl) outputEl.removeChild(candidate.child);
+      retainedCharacters -= candidate.characters;
+      removed += 1;
+    }
+    return removed;
   }
 
   function outputText(source, replacements) {
@@ -186,10 +226,34 @@
       if (typeof outputEl.insertBefore === 'function') outputEl.insertBefore(marker, outputEl.firstChild);
       else outputEl.appendChild(marker);
     }
-    marker.textContent = outputText('Earlier output omitted: {count} lines (latest {limit} kept).', {
-      count: omittedProgramCount,
-      limit: MAX_OUTPUT_LINES
+    marker.textContent = outputText('Earlier output omitted: {count} lines (recent output kept within safety limits).', {
+      count: omittedProgramCount
     });
+  }
+
+  function renderOutputRecord(record, line) {
+    if (!record || !line) return;
+    dirtyOutputRecords.delete(record);
+    line.innerHTML = colorizeMessage(record.text);
+    if (!record.newlineNode) record.newlineNode = document.createTextNode('\n');
+    if (record.newlineNode.parentNode !== line) line.appendChild(record.newlineNode);
+  }
+
+  function enforceRenderedOutputLimits(outputEl) {
+    while (renderedProgramCount > MAX_OUTPUT_LINES && removeOldestRendered(outputEl, 'program')) {
+      renderedProgramCount -= 1;
+      omittedProgramCount += 1;
+    }
+    while (renderedDetailCount > MAX_DETAIL_LINES && removeOldestRendered(outputEl, 'detail')) {
+      renderedDetailCount -= 1;
+    }
+    var removedProgramForSize = trimRenderedKindByCharacters(outputEl, 'program', MAX_OUTPUT_TRANSCRIPT_CHARS);
+    renderedProgramCount = Math.max(0, renderedProgramCount - removedProgramForSize);
+    omittedProgramCount += removedProgramForSize;
+    renderedDetailCount = Math.max(0,
+      renderedDetailCount - trimRenderedKindByCharacters(outputEl, 'detail', MAX_DETAIL_TRANSCRIPT_CHARS));
+    updateOmissionMarker(outputEl);
+    renderedOutputCount = outputEl.childNodes.length;
   }
 
   function flushOutputLines() {
@@ -202,12 +266,25 @@
       renderedProgramCount = 0;
       renderedDetailCount = 0;
       omittedProgramCount = 0;
+      resetOpenOutputRecords();
       return;
     }
-    if (!outputEl || pendingOutputLines.length === 0) return;
+    if (!outputEl) {
+      dirtyOutputRecords.clear();
+      return;
+    }
 
     var wasAtBottom = !containerEl ||
       containerEl.scrollHeight - containerEl.scrollTop - containerEl.clientHeight < 50;
+    dirtyOutputRecords.forEach(function(record) {
+      if (record && record.element) renderOutputRecord(record, record.element);
+    });
+    dirtyOutputRecords.clear();
+    if (pendingOutputLines.length === 0) {
+      enforceRenderedOutputLimits(outputEl);
+      if (containerEl && (wasAtBottom || S.autoScrollEnabled)) containerEl.scrollTop = containerEl.scrollHeight;
+      return;
+    }
     var batch = pendingOutputLines;
     pendingOutputLines = [];
     var fragment = document.createDocumentFragment();
@@ -223,23 +300,16 @@
         line.setAttribute('tabindex', '0');
       }
       // colorizeMessage escapes remote output before adding known markup.
-      line.innerHTML = colorizeMessage(record.text);
-      line.appendChild(document.createTextNode('\n'));
+      record.element = line;
+      line._outputRecord = record;
+      renderOutputRecord(record, line);
       fragment.appendChild(line);
       if (record.kind === 'detail') renderedDetailCount += 1;
       else renderedProgramCount += 1;
     }
     outputEl.appendChild(fragment);
 
-    while (renderedProgramCount > MAX_OUTPUT_LINES && removeOldestRendered(outputEl, 'program')) {
-      renderedProgramCount -= 1;
-      omittedProgramCount += 1;
-    }
-    while (renderedDetailCount > MAX_DETAIL_LINES && removeOldestRendered(outputEl, 'detail')) {
-      renderedDetailCount -= 1;
-    }
-    updateOmissionMarker(outputEl);
-    renderedOutputCount = outputEl.childNodes.length;
+    enforceRenderedOutputLimits(outputEl);
 
     // Click delegation for compiler error links (bound once)
     if (!outputEl._errLinkBound) {
@@ -278,6 +348,24 @@
     outputFlushTimer = setTimeout(flushOutputLines, 200);
   }
 
+  function setStreamRecordText(record, prefix, fragmentText, replace) {
+    if (!record) return false;
+    var next = replace ? String(prefix || '') + String(fragmentText || '') : record.text + String(fragmentText || '');
+    if (next.length <= MAX_OUTPUT_RECORD_CHARS) {
+      var changed = record.text !== next || record.truncated;
+      record.text = next;
+      record.truncated = false;
+      return changed;
+    }
+    if (record.truncated && !replace) return false;
+    record.text = next.slice(0, MAX_OUTPUT_RECORD_CHARS) + ' ' + outputText(
+      '[bobocloud] Live output line truncated at {limit} characters.',
+      { limit: MAX_OUTPUT_RECORD_CHARS }
+    );
+    record.truncated = true;
+    return true;
+  }
+
   BOBO.updateRunOutput = function(message, options) {
     var outputEl = document.getElementById('run-log');
     if (outputEl && renderedOutputCount > 0 && outputEl.childNodes.length === 0) {
@@ -285,6 +373,7 @@
       renderedOutputCount = 0;
       renderedProgramCount = 0;
       renderedDetailCount = 0;
+      resetOpenOutputRecords();
     }
     if (!S.runSessionTimestamp) {
       S.runSessionTimestamp = new Date().toLocaleTimeString();
@@ -294,13 +383,66 @@
       var initialOutput = document.getElementById('run-log');
       if (initialOutput) initialOutput.textContent = '';
       renderedOutputCount = 0;
+      resetOpenOutputRecords();
       S.runLogInitialized = true;
     }
-    var prefix = S.showTimestampNextLine ? '[' + S.runSessionTimestamp + '] ' : '';
-    S.showTimestampNextLine = false;
     var kind = normalizeOutputKind(options);
     var stage = options && options.stage ? String(options.stage) : '';
     var raw = options && options.raw ? String(options.raw) : '';
+    if (options && options.streamFragment === true) {
+      var streamKey = String(options.streamKey || kind + ':' + stage);
+      var existing = openOutputRecords[streamKey];
+      var append = options.append === true;
+      var replace = options.replace === true;
+      var outputPrefix = String(options.outputPrefix || '');
+      var fragmentText = String(message);
+      var record = (append || replace) && existing ? existing : null;
+      if (record) {
+        var changed = setStreamRecordText(record, String(record.timestampPrefix || '') + outputPrefix, fragmentText, replace);
+        if (raw) record.raw = raw;
+        if (changed && record.element) dirtyOutputRecords.add(record);
+      } else {
+        var fragmentTimestamp = S.showTimestampNextLine ? '[' + S.runSessionTimestamp + '] ' : '';
+        S.showTimestampNextLine = false;
+        record = {
+          text: fragmentTimestamp + outputPrefix + fragmentText,
+          timestampPrefix: fragmentTimestamp,
+          kind: kind,
+          stage: stage,
+          raw: raw,
+          streamKey: streamKey,
+          element: null,
+          newlineNode: null,
+          truncated: false
+        };
+        setStreamRecordText(record, '', '', false);
+        pendingOutputLines.push(record);
+        openOutputRecords[streamKey] = record;
+        omittedProgramCount += trimPendingKind('program', MAX_OUTPUT_LINES);
+        trimPendingKind('detail', MAX_DETAIL_LINES);
+      }
+      if (options.newline === true && openOutputRecords[streamKey] === record) {
+        delete openOutputRecords[streamKey];
+      }
+      if (record.element) {
+        if (options.newline === true) {
+          if (outputFlushTimer) { clearTimeout(outputFlushTimer); outputFlushTimer = null; }
+          flushOutputLines();
+        } else {
+          scheduleOutputFlush();
+        }
+      } else {
+        if (renderedOutputCount === 0 || pendingOutputLines.length >= outputFlushThreshold) {
+          if (outputFlushTimer) { clearTimeout(outputFlushTimer); outputFlushTimer = null; }
+          flushOutputLines();
+        } else {
+          scheduleOutputFlush();
+        }
+      }
+      return;
+    }
+    var prefix = S.showTimestampNextLine ? '[' + S.runSessionTimestamp + '] ' : '';
+    S.showTimestampNextLine = false;
     var messageLines = String(message).replace(/\r\n?/g, '\n').split('\n');
     for (var i = 0; i < messageLines.length; i++) {
       pendingOutputLines.push({
@@ -332,6 +474,7 @@
     renderedProgramCount = 0;
     renderedDetailCount = 0;
     omittedProgramCount = 0;
+    resetOpenOutputRecords();
     S.runLogInitialized = true;
     S.runSessionTimestamp = new Date().toLocaleTimeString();
     S.showTimestampNextLine = true;
@@ -341,12 +484,17 @@
   };
 
   BOBO.clearRunOutputDetails = function() {
-    pendingOutputLines = pendingOutputLines.filter(function(record) { return record.kind !== 'detail'; });
+    pendingOutputLines = pendingOutputLines.filter(function(record) {
+      if (record.kind !== 'detail') return true;
+      forgetOpenOutputRecord(record);
+      return false;
+    });
     var outputEl = document.getElementById('run-log');
     if (outputEl) {
       for (var i = outputEl.childNodes.length - 1; i >= 0; i--) {
         var child = outputEl.childNodes[i];
         if (child && child.getAttribute && child.getAttribute('data-output-kind') === 'detail') {
+          forgetOpenOutputRecord(child._outputRecord);
           outputEl.removeChild(child);
         }
       }

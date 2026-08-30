@@ -2258,5 +2258,6 @@
   "The output stream closed before the run result was received.": "実行結果を受信する前に出力ストリームが閉じられました。",
   "Artifacts completed with {count} save error(s).": "成果物の処理は完了しましたが、{count} 件の保存エラーが発生しました。",
   "Run completed, but {count} artifact(s) could not be saved.": "実行は完了しましたが、{count} 件の成果物を保存できませんでした。",
-  "Earlier output omitted: {count} lines (latest {limit} kept).": "古い出力を {count} 行省略しました（最新 {limit} 行を保持）。"
+  "Earlier output omitted: {count} lines (recent output kept within safety limits).": "古い出力を {count} 行省略しました（直近の出力は安全上限内で保持されます）。",
+  "[bobocloud] Live output line truncated at {limit} characters.": "[bobocloud] ライブ出力の 1 行が {limit} 文字を超えたため、以降を省略しました。"
 }

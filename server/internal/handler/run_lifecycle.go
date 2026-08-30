@@ -77,27 +77,30 @@ func normalizeRunID(raw string) (string, error) {
 
 // CleanupExpiredRuns atomically removes expired pending sessions and their
 // channels with respect to cancellation and WebSocket attachment.
-func CleanupExpiredRuns(store storage.SessionStore, channels *session.ChannelManager, ttl time.Duration) []string {
+func CleanupExpiredRuns(store storage.SessionStore, channels *session.ChannelManager, ttl time.Duration) ([]string, error) {
 	if store == nil || channels == nil {
-		return nil
+		return nil, nil
 	}
 	runSessionLifecycleMu.Lock()
 	defer runSessionLifecycleMu.Unlock()
 	return cleanupExpiredRunsLocked(store, channels, ttl)
 }
 
-func cleanupExpiredRunsLocked(store storage.SessionStore, channels *session.ChannelManager, ttl time.Duration) []string {
+func cleanupExpiredRunsLocked(store storage.SessionStore, channels *session.ChannelManager, ttl time.Duration) ([]string, error) {
 	if err := channels.RetryPendingCleanups(store); err != nil {
 		slog.Error("Failed to retry pending run session cleanup", "error", err)
 	}
-	expired := store.CleanupExpired(ttl)
+	expired, err := store.CleanupExpired(ttl)
+	if err != nil {
+		return nil, fmt.Errorf("cleanup expired run sessions: %w", err)
+	}
 	for _, runID := range expired {
 		if channel := channels.GetOrCreate(runID, false); channel != nil {
 			channel.Close()
 			channels.RemoveIfCurrent(runID, channel)
 		}
 	}
-	return expired
+	return expired, nil
 }
 
 func (h *HTTPHandler) handleCancelRun(w http.ResponseWriter, r *http.Request, req *model.Request) {

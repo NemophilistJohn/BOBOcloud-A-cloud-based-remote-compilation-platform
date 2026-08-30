@@ -2,102 +2,44 @@ package handler
 
 import (
 	"context"
-	"sync"
+
+	"bobocloud-server/internal/containercleanup"
 )
 
-type containerCleanupHandoffKey struct{}
-
-// containerCleanupHandoff keeps request-owned storage resources alive when a
-// Docker container cannot be synchronously confirmed absent. The executor
-// starts the removal retry first; the HTTP layer then supplies the release
-// callback after it has marked a failed dependency transaction aborted.
-type containerCleanupHandoff struct {
-	mu              sync.Mutex
-	retained        bool
-	cleanupComplete bool
-	finalized       bool
-	release         func()
-	releaseOnce     sync.Once
-}
-
-// WithDeferredContainerCleanup installs a one-shot cleanup ownership handoff.
-// finalize must be called after the executor returns. It releases immediately
-// unless the executor retained ownership for a pending container removal.
+// WithDeferredContainerCleanup is the handler-facing compatibility wrapper for
+// the shared release gate used by runners and direct Docker executors.
 func WithDeferredContainerCleanup(ctx context.Context) (context.Context, func(func())) {
-	if ctx == nil {
-		ctx = context.Background()
+	ctx, gate := containercleanup.WithReleaseGate(ctx)
+	return ctx, func(release func()) {
+		gate.Add(release)
+		gate.Finalize()
 	}
-	handoff := &containerCleanupHandoff{}
-	return context.WithValue(ctx, containerCleanupHandoffKey{}, handoff), handoff.finalize
 }
 
-// RetainResourcesUntilContainerRemoved transfers storage-resource ownership
-// to cleanup. It returns false when the context has no handoff or the request
-// has already finalized; callers must then run cleanup synchronously.
+// RetainResourcesUntilContainerRemoved preserves the original synchronous
+// cleanup callback API for existing direct executors and test fakes.
 func RetainResourcesUntilContainerRemoved(ctx context.Context, cleanup func()) bool {
-	if ctx == nil || cleanup == nil {
+	if cleanup == nil {
 		return false
 	}
-	handoff, _ := ctx.Value(containerCleanupHandoffKey{}).(*containerCleanupHandoff)
-	if handoff == nil || !handoff.retain() {
-		return false
-	}
-	go func() {
-		cleanup()
-		handoff.completeCleanup()
-	}()
-	return true
-}
-
-func (handoff *containerCleanupHandoff) retain() bool {
-	handoff.mu.Lock()
-	defer handoff.mu.Unlock()
-	if handoff.retained || handoff.finalized {
-		return false
-	}
-	handoff.retained = true
-	return true
-}
-
-func (handoff *containerCleanupHandoff) finalize(release func()) {
-	if handoff == nil {
-		if release != nil {
-			release()
-		}
-		return
-	}
-	handoff.mu.Lock()
-	if handoff.finalized {
-		handoff.mu.Unlock()
-		return
-	}
-	handoff.finalized = true
-	handoff.release = release
-	ready := !handoff.retained || handoff.cleanupComplete
-	handoff.mu.Unlock()
-	if ready {
-		handoff.runRelease()
-	}
-}
-
-func (handoff *containerCleanupHandoff) completeCleanup() {
-	handoff.mu.Lock()
-	handoff.cleanupComplete = true
-	ready := handoff.finalized
-	handoff.mu.Unlock()
-	if ready {
-		handoff.runRelease()
-	}
-}
-
-func (handoff *containerCleanupHandoff) runRelease() {
-	handoff.releaseOnce.Do(func() {
-		handoff.mu.Lock()
-		release := handoff.release
-		handoff.release = nil
-		handoff.mu.Unlock()
-		if release != nil {
-			release()
-		}
+	return containercleanup.Retain(ctx, func(complete func()) {
+		go func() {
+			cleanup()
+			complete()
+		}()
 	})
+}
+
+// RegisterResourcesUntilContainerRemoved stores completion with the pool so a
+// bounded cleanup cycle never needs a goroutine that waits indefinitely.
+func RegisterResourcesUntilContainerRemoved(ctx context.Context, register func(complete func())) bool {
+	return containercleanup.Retain(ctx, register)
+}
+
+func runReleaseCallbacksReverse(releases []func()) {
+	for index := len(releases) - 1; index >= 0; index-- {
+		if releases[index] != nil {
+			releases[index]()
+		}
+	}
 }

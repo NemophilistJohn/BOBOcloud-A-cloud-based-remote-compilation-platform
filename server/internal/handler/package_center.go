@@ -951,13 +951,15 @@ func (h *HTTPHandler) applyProjectPackageChanges(w http.ResponseWriter, r *http.
 			releasePackageResource()
 		}
 	}()
+	var packageActivityReleases []func()
+	defer func() { runReleaseCallbacksReverse(packageActivityReleases) }()
 	if h.Lifecycle != nil {
 		activity, leaseErr := h.Lifecycle.AcquireActivity(userID, resolved.folderKey)
 		if leaseErr != nil {
 			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: leaseErr.Error(), ErrorCode: "package_workspace_busy"})
 			return
 		}
-		defer activity.Release()
+		packageActivityReleases = append(packageActivityReleases, activity.Release)
 	}
 	timeout := time.Duration(h.packageOperationTimeoutSeconds()) * time.Second
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
@@ -981,9 +983,12 @@ func (h *HTTPHandler) applyProjectPackageChanges(w http.ResponseWriter, r *http.
 			dependencyLease.Abort()
 		}
 		packageResourceOwnedByRequest = false
+		activityReleases := packageActivityReleases
+		packageActivityReleases = nil
 		finalizeContainerCleanup(func() {
 			releasePackageCaches()
 			releasePackageResource()
+			runReleaseCallbacksReverse(activityReleases)
 			if released != nil {
 				released()
 			}

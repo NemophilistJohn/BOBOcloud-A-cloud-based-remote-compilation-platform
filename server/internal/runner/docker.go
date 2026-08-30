@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"time"
 
+	"bobocloud-server/internal/containercleanup"
 	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/personalcache"
@@ -81,6 +82,30 @@ type DockerPoolClient interface {
 type runtimeAwareDockerPoolClient interface {
 	AcquireForUserRuntime(ctx context.Context, userID, runtimeID, image string, output session.OutputWriter) (string, error)
 	AcquireForUserRuntimeWithContext(ctx context.Context, userID, runtimeID, image, cacheKey string, volumes, env map[string]string, output session.OutputWriter) (string, error)
+}
+
+type retainedContainerFinalizer interface {
+	DiscardForUserRetained(containerID, userID string, onRemoved func())
+	ReleaseForUserRetained(containerID, userID string, onSafe func())
+}
+
+func (r *DockerRunner) finalizeContainer(ctx context.Context, containerID string, discard bool) {
+	if retained, ok := r.pool.(retainedContainerFinalizer); ok {
+		if containercleanup.Retain(ctx, func(done func()) {
+			if discard {
+				retained.DiscardForUserRetained(containerID, r.userID, done)
+				return
+			}
+			retained.ReleaseForUserRetained(containerID, r.userID, done)
+		}) {
+			return
+		}
+	}
+	if discard {
+		r.pool.DiscardForUser(containerID, r.userID)
+		return
+	}
+	r.pool.ReleaseForUser(containerID, r.userID)
 }
 
 // SetUserID 设置用户 ID（Phase 2: 用于配额追踪）
@@ -166,11 +191,7 @@ func (r *DockerRunner) RunPlan(ctx context.Context, plan *Plan, hostWorkDir stri
 		if r.metrics != nil {
 			r.metrics.Observe("workspace.copy.from_container", time.Since(copyBackStarted))
 		}
-		if r.discardCached || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded) {
-			r.pool.DiscardForUser(containerID, r.userID)
-		} else {
-			r.pool.ReleaseForUser(containerID, r.userID)
-		}
+		r.finalizeContainer(ctx, containerID, r.discardCached || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded))
 		output.WriteStatus("docker", fmt.Sprintf("Artifacts collected and container recycled in %d ms", time.Since(cleanupStarted).Milliseconds()))
 	}()
 

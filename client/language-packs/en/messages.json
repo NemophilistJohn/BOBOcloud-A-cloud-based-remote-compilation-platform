@@ -2258,5 +2258,6 @@
   "The output stream closed before the run result was received.": "The output stream closed before the run result was received.",
   "Artifacts completed with {count} save error(s).": "Artifacts completed with {count} save error(s).",
   "Run completed, but {count} artifact(s) could not be saved.": "Run completed, but {count} artifact(s) could not be saved.",
-  "Earlier output omitted: {count} lines (latest {limit} kept).": "Earlier output omitted: {count} lines (latest {limit} kept)."
+  "Earlier output omitted: {count} lines (recent output kept within safety limits).": "Earlier output omitted: {count} lines (recent output kept within safety limits).",
+  "[bobocloud] Live output line truncated at {limit} characters.": "[bobocloud] Live output line truncated at {limit} characters."
 }

@@ -1101,7 +1101,9 @@ func cleanupLoop(ctx context.Context, store storage.SessionStore, channels *sess
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			handler.CleanupExpiredRuns(store, channels, ttl)
+			if _, err := handler.CleanupExpiredRuns(store, channels, ttl); err != nil {
+				slog.Error("Session cleanup failed", "error", err)
+			}
 		}
 	}
 }
@@ -1323,7 +1325,7 @@ func makeTerminalExecutor(pool *docker.Pool) handler.TerminalExecutor {
 					exitCode = 1
 				}
 			} else {
-				pool.ReleaseForUser(containerID, userID)
+				releaseContainerResourcesWhenSafe(ctx, pool, containerID, userID)
 			}
 		}()
 
@@ -1402,7 +1404,7 @@ func makeEnvironmentSetupExecutor(pool *docker.Pool, policy security.Policy) han
 					exitCode = 1
 				}
 			} else {
-				pool.ReleaseForUser(containerID, userID)
+				releaseContainerResourcesWhenSafe(ctx, pool, containerID, userID)
 			}
 		}()
 		if _, _, _, err := pool.Exec(ctx, containerID, []string{"mkdir", "-p", "/workspace"}, "/"); err != nil {
@@ -1522,11 +1524,20 @@ func makePackageLockResolver(pool *docker.Pool, policy security.Policy, pnpmVers
 }
 
 func retainContainerResourcesUntilRemoved(ctx context.Context, pool *docker.Pool, containerID, userID string) {
-	cleanup := func() { pool.DiscardForUser(containerID, userID) }
-	if !handler.RetainResourcesUntilContainerRemoved(ctx, cleanup) {
-		// Callers without an HTTP ownership handoff must wait here. Returning
-		// would let an outer defer release quota/cache ownership while Docker
-		// may still hold a writable bind mount.
-		cleanup()
+	if !handler.RegisterResourcesUntilContainerRemoved(ctx, func(complete func()) {
+		pool.DiscardForUserRetained(containerID, userID, complete)
+	}) {
+		// Production cache mutation handlers install the handoff before acquiring
+		// their leases. Compatibility callers still leave container ownership in
+		// the pool and receive a bounded background removal attempt.
+		pool.DiscardForUser(containerID, userID)
+	}
+}
+
+func releaseContainerResourcesWhenSafe(ctx context.Context, pool *docker.Pool, containerID, userID string) {
+	if !handler.RegisterResourcesUntilContainerRemoved(ctx, func(complete func()) {
+		pool.ReleaseForUserRetained(containerID, userID, complete)
+	}) {
+		pool.ReleaseForUser(containerID, userID)
 	}
 }
