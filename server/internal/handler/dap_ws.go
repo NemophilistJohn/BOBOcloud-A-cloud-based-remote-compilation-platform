@@ -22,6 +22,7 @@ import (
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/personalcache"
+	"bobocloud-server/internal/resourcecontrol"
 
 	"github.com/gorilla/websocket"
 )
@@ -43,6 +44,7 @@ type DAPHandler struct {
 	ChildTickets    *dap.ChildTicketBroker
 	PersonalCache   *personalcache.Manager
 	RuntimeMetadata RuntimeMetadataProvider
+	Resources       *resourcecontrol.Controller
 	Accepting       func() bool
 	AcquireWork     func(string) (func(), error)
 }
@@ -391,6 +393,21 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		writeDAPControlError(conn, "workspace_denied", err.Error())
 		return
 	}
+	dapResourceLease, resourceErr := acquireHandlerRuntimeResource(
+		r.Context(), h.Resources, resourcecontrol.WorkloadDAP, user.ID,
+		projectResourceScope(workspaceKey, start.Workspace.TeamID, start.Workspace.ProjectID),
+		"dap:"+auth.GenerateToken(), runtime.RuntimeID, languageID, runtime.DockerImage, false,
+	)
+	if resourceErr != nil {
+		writeDAPControlError(conn, resourcePressureErrorCode, resourcePressureMessage)
+		return
+	}
+	dapResourceOwnedByHandler := dapResourceLease != nil
+	defer func() {
+		if dapResourceOwnedByHandler {
+			releaseHandlerResource(dapResourceLease)
+		}
+	}()
 	pendingRelease := combineDAPReleases()
 	if h.Lifecycle != nil {
 		activity, acquireErr := h.Lifecycle.AcquireActivity(user.ID, workspaceKey)
@@ -479,11 +496,12 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		writeDAPControlError(conn, "start_failed", "invalid debug runtime cache identity")
 		return
 	}
+	dapResourceOwnedByHandler = false
 	session, err := h.Manager.Start(dap.SessionContext{
 		UserID: user.ID, WorkspaceKind: start.Workspace.Kind, TeamID: teamID, ProjectID: projectID,
 		Branch: branch, FolderKey: folderKey, RuntimeID: runtime.RuntimeID, LanguageID: languageID,
 		RemoteRoot: tempRoot, PersistDir: filepath.Join(h.Config.DataDir, "dap-cache", "downloads", user.ID, dapRuntimePart),
-		DependencyRoot: dependencyRoot, DependencyMountRoot: filepath.Join(h.Config.DataDir, "dap-cache", "mounts"), DependencyEnv: dependencyEnv, ProcessContext: processContext, Release: sessionRelease,
+		DependencyRoot: dependencyRoot, DependencyMountRoot: filepath.Join(h.Config.DataDir, "dap-cache", "mounts"), DependencyEnv: dependencyEnv, ProcessContext: processContext, ResourceLease: dapResourceLease, Release: sessionRelease,
 	})
 	if err != nil {
 		releaseDAPSessionAfterStartError(sessionRelease, err)

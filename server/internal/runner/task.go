@@ -27,13 +27,7 @@ func (r *DockerRunner) RunTaskExecution(ctx context.Context, task *model.TaskExe
 	r.setupPassed = false
 	acquireStarted := time.Now()
 	output.WriteStatus("docker", "Acquiring execution container for project task")
-	var containerID string
-	var err error
-	if r.cacheKey != "" {
-		containerID, err = r.pool.AcquireForUserWithContext(ctx, r.userID, r.runtime.DockerImage, r.cacheKey, r.cacheMounts, r.cacheEnv, output)
-	} else {
-		containerID, err = r.pool.AcquireForUser(ctx, r.userID, r.runtime.DockerImage, output)
-	}
+	containerID, err := r.acquireContainer(ctx, output)
 	if err != nil {
 		output.WriteError(fmt.Sprintf("Failed to acquire container: %v", err))
 		return &model.RunResult{Success: false, ReturnCode: 1}

@@ -25,6 +25,7 @@ import (
 	"bobocloud-server/internal/docker"
 	"bobocloud-server/internal/files"
 	"bobocloud-server/internal/handler"
+	"bobocloud-server/internal/hostresource"
 	"bobocloud-server/internal/lifecycle"
 	customlog "bobocloud-server/internal/log"
 	"bobocloud-server/internal/lsp"
@@ -34,6 +35,7 @@ import (
 	"bobocloud-server/internal/packagecatalog"
 	"bobocloud-server/internal/packageops"
 	"bobocloud-server/internal/personalcache"
+	"bobocloud-server/internal/resourcecontrol"
 	"bobocloud-server/internal/runner"
 	"bobocloud-server/internal/safefile"
 	"bobocloud-server/internal/security"
@@ -387,7 +389,56 @@ func main() {
 
 	// ──── 8. Docker 容器池 ────
 	performanceMetrics := metrics.New(cfg.PerformanceMetricsEnabled, cfg.PerformanceMetricsWindow)
+	detectedResources := hostresource.Detect(cfg.DataDir)
+	resourceController, resourceBuildInfo, err := resourcecontrol.Build(cfg, detectedResources, performanceMetrics)
+	if err != nil {
+		slog.Error("Failed to initialize resource governance", "error", err)
+		shutdownStartupAndExit(err)
+		return
+	}
+	if resourceController != nil {
+		node := resourceBuildInfo.Node
+		slog.Info("Resource governance initialized",
+			"mode", resourceBuildInfo.Mode,
+			"slots", node.Capacity.Slots,
+			"docker_containers", node.Capacity.DockerContainers,
+			"cpu_millicores", node.Capacity.CPUMillicores,
+			"memory_bytes", node.Capacity.MemoryBytes,
+			"pids", node.Capacity.PIDs,
+			"ephemeral_bytes", node.Capacity.EphemeralBytes,
+			"inodes", node.Capacity.Inodes,
+			"cpu_origin", detectedResources.CPUOrigin,
+			"memory_origin", detectedResources.MemoryOrigin,
+			"storage_origin", detectedResources.StorageOrigin,
+			"fair_queue", resourceController.QueueEnabled(),
+		)
+		stopResourceDrain := context.AfterFunc(serverRuntime.Context(), func() {
+			resourceController.BeginDrain(context.Cause(serverRuntime.Context()))
+		})
+		if err := serverRuntime.RegisterStopHook(serverruntime.PhaseServices, "resource-admission", func(context.Context) error {
+			stopResourceDrain()
+			resourceController.Close()
+			return nil
+		}); err != nil {
+			stopResourceDrain()
+			resourceController.Close()
+			slog.Error("Failed to register resource admission shutdown", "error", err)
+			shutdownStartupAndExit(err)
+			return
+		}
+	} else {
+		slog.Info("Resource governance disabled", "mode", resourceBuildInfo.Mode)
+	}
 	runner.SetOutputRetentionLimit(cfg.RunOutputRetainedBytes)
+	dockerQueueSize := cfg.DockerQueueSize
+	dockerQueueOwner := "docker_pool"
+	if resourceController != nil && resourceController.QueueEnabled() {
+		// Docker capacity is represented by the docker_containers resource.
+		// Keeping the legacy FIFO enabled would queue a request twice while it
+		// already owns a global resource lease.
+		dockerQueueSize = 0
+		dockerQueueOwner = "resource_governance"
+	}
 	dockerPool := docker.NewPool(
 		cfg.DockerHotPoolSize,
 		cfg.DockerMaxContainers,
@@ -396,7 +447,7 @@ func main() {
 		cfg.DockerCPULimit,
 		cfg.PoolReplenishDuration(),
 		sec,
-		cfg.DockerQueueSize,
+		dockerQueueSize,
 		cfg.DockerQueueTimeoutSeconds,
 		cfg.DockerRegistryMirrors,
 		time.Duration(cfg.DockerPullTimeout)*time.Second,
@@ -448,7 +499,8 @@ func main() {
 		"hot_pool_size", cfg.DockerHotPoolSize,
 		"max_total", cfg.DockerMaxContainers,
 		"max_idle", cfg.DockerMaxIdle,
-		"queue_size", cfg.DockerQueueSize,
+		"queue_size", dockerQueueSize,
+		"queue_owner", dockerQueueOwner,
 		"queue_timeout_s", cfg.DockerQueueTimeoutSeconds,
 		"hardening", cfg.DockerHardening,
 		"readonly_rootfs", cfg.DockerReadOnlyRootfs,
@@ -535,6 +587,7 @@ func main() {
 			MaxMessageBytes: cfg.LSPMaxMessageBytes,
 			MemoryLimit:     cfg.LSPMemoryLimit, CPULimit: cfg.LSPCPULimit,
 			DependencyRegistry: dependencyViews,
+			ResourceController: resourceController,
 		})
 		if err := serverRuntime.RegisterStopHook(serverruntime.PhaseServices, "lsp-manager", func(ctx context.Context) error {
 			return lspManager.CloseContext(ctx)
@@ -558,7 +611,8 @@ func main() {
 				MaxSession:      time.Duration(cfg.DAPMaxSessionSeconds) * time.Second,
 				MaxMessageBytes: cfg.DAPMaxMessageBytes,
 				MemoryLimit:     cfg.DAPMemoryLimit, CPULimit: cfg.DAPCPULimit,
-				NetworkEnable: cfg.DAPNetworkEnabled,
+				NetworkEnable:      cfg.DAPNetworkEnabled,
+				ResourceController: resourceController,
 			})
 			if err := serverRuntime.RegisterStopHook(serverruntime.PhaseServices, "dap-manager", func(ctx context.Context) error {
 				return dapManager.CloseContext(ctx)
@@ -668,6 +722,7 @@ func main() {
 	httpHandler.Lifecycle = resourceLifecycle
 	httpHandler.PersonalCache = personalCache
 	httpHandler.RuntimeMetadata = runtimeMetadata
+	httpHandler.Resources = resourceController
 	packagePlans, planStoreErr := packageops.NewPersistentStoreWithLimits(
 		time.Duration(cfg.PackagePlanTTLSeconds)*time.Second,
 		time.Duration(cfg.PackagePlanCompletedTTLSeconds)*time.Second,
@@ -780,6 +835,7 @@ func main() {
 		PersonalCache:   personalCache,
 		RuntimeMetadata: runtimeMetadata,
 		Metrics:         performanceMetrics,
+		Resources:       resourceController,
 		Accepting:       serverRuntime.IsAccepting,
 		AcquireWork:     serverRuntime.Acquire,
 	}
@@ -787,7 +843,7 @@ func main() {
 		Config: cfg, Manager: dapManager, AuthEnabled: multiUser,
 		Authenticator: authenticator, UserStore: userStore, AuthSessions: authSessions,
 		Collaboration: collaborationManager, Lifecycle: resourceLifecycle, ChildTickets: dap.NewChildTicketBroker(),
-		PersonalCache: personalCache, RuntimeMetadata: runtimeMetadata,
+		PersonalCache: personalCache, RuntimeMetadata: runtimeMetadata, Resources: resourceController,
 		Accepting: serverRuntime.IsAccepting, AcquireWork: serverRuntime.Acquire,
 	}
 
@@ -807,14 +863,18 @@ func main() {
 	})
 	// Activity is compacted independently of run history so inactive accounts
 	// cannot retain daily counters beyond the heatmap window indefinitely.
-	if err := compileActivity.Cleanup(time.Now()); err != nil {
-		slog.Warn("Initial compile activity cleanup failed", "error", err)
-	}
+	runMaintenance(resourceController, "compile-activity-initial", func() {
+		if err := compileActivity.Cleanup(time.Now()); err != nil {
+			slog.Warn("Initial compile activity cleanup failed", "error", err)
+		}
+	})
 	startManaged("compile-activity-cleanup", func(ctx context.Context) {
 		periodicLoop(ctx, 24*time.Hour, func() {
-			if err := compileActivity.Cleanup(time.Now()); err != nil {
-				slog.Warn("Compile activity cleanup failed", "error", err)
-			}
+			runMaintenance(resourceController, "compile-activity-cleanup", func() {
+				if err := compileActivity.Cleanup(time.Now()); err != nil {
+					slog.Warn("Compile activity cleanup failed", "error", err)
+				}
+			})
 		})
 	})
 	// 运行历史清理（BoltDB 模式，每 5 分钟）
@@ -823,30 +883,36 @@ func main() {
 			slog.Info("Run history cleanup started", "interval", "5m",
 				"max_per_user", cfg.HistoryMaxPerUser, "max_age", "7d", "max_total", 10000)
 			periodicLoop(ctx, 5*time.Minute, func() {
-				runHistory.Cleanup(cfg.HistoryMaxPerUser, 7*24*time.Hour, 10000)
+				runMaintenance(resourceController, "run-history-cleanup", func() {
+					runHistory.Cleanup(cfg.HistoryMaxPerUser, 7*24*time.Hour, 10000)
+				})
 			})
 		})
 	}
 	startManaged("team-cache-cleanup", func(ctx context.Context) {
-		teamCacheCleanupLoop(ctx, teamCache, collaborationStore, time.Duration(cfg.TeamCacheCleanupIntervalMin)*time.Minute)
+		teamCacheCleanupLoop(ctx, teamCache, collaborationStore, time.Duration(cfg.TeamCacheCleanupIntervalMin)*time.Minute, resourceController)
 	})
 	startManaged("personal-cache-cleanup", func(ctx context.Context) {
 		periodicLoop(ctx, time.Duration(cfg.PersonalPersistCleanupIntervalMin)*time.Minute, func() {
-			users, err := userStore.List()
-			if err != nil {
-				slog.Warn("Personal cache cleanup could not list users", "error", err)
-				return
-			}
-			for _, user := range users {
-				personalCache.Enforce(user.ID, int64(user.DiskQuotaMB)*1_000_000)
-			}
+			runMaintenance(resourceController, "personal-cache-cleanup", func() {
+				users, err := userStore.List()
+				if err != nil {
+					slog.Warn("Personal cache cleanup could not list users", "error", err)
+					return
+				}
+				for _, user := range users {
+					personalCache.Enforce(user.ID, int64(user.DiskQuotaMB)*1_000_000)
+				}
+			})
 		})
 	})
 	// 审计日志清理（保留 90 天 / 最多 20000 条，每小时）
 	if auditStore != nil {
 		startManaged("audit-cleanup", func(ctx context.Context) {
 			periodicLoop(ctx, time.Hour, func() {
-				auditStore.Cleanup(20000, 90*24*time.Hour)
+				runMaintenance(resourceController, "audit-cleanup", func() {
+					auditStore.Cleanup(20000, 90*24*time.Hour)
+				})
 			})
 		})
 	}
@@ -1056,11 +1122,31 @@ func periodicLoop(ctx context.Context, interval time.Duration, run func()) {
 	}
 }
 
+// runMaintenance gives correctness-neutral background work the lowest
+// admission priority: it never waits and simply skips a cycle while
+// interactive workloads consume the node budget.
+func runMaintenance(controller *resourcecontrol.Controller, workloadID string, run func()) bool {
+	if run == nil {
+		return false
+	}
+	if controller == nil {
+		run()
+		return true
+	}
+	lease, err := controller.TryAcquire(resourcecontrol.WorkloadMaintenance, "system", workloadID)
+	if err != nil {
+		return false
+	}
+	defer lease.Release()
+	run()
+	return true
+}
+
 func teamCacheV2Root(dataDir string) string {
 	return filepath.Join(dataDir, "cache-v2", "teams")
 }
 
-func teamCacheCleanupLoop(ctx context.Context, cache *buildcache.Manager, store collab.Store, interval time.Duration) {
+func teamCacheCleanupLoop(ctx context.Context, cache *buildcache.Manager, store collab.Store, interval time.Duration, resources *resourcecontrol.Controller) {
 	if cache == nil || store == nil {
 		return
 	}
@@ -1068,20 +1154,22 @@ func teamCacheCleanupLoop(ctx context.Context, cache *buildcache.Manager, store 
 		interval = 10 * time.Minute
 	}
 	run := func() {
-		teams, err := store.ListTeams()
-		if err != nil {
-			slog.Warn("Failed to list teams for cache cleanup", "error", err)
-			return
-		}
-		for _, team := range teams {
-			before := cache.Inspect(team.ID, team.CacheQuotaMB)
-			cache.CleanScratch(team.ID)
-			cache.PruneExpired(team.ID, team.CacheRetentionDays, team.CacheQuotaMB)
-			after := cache.Enforce(team.ID, team.CacheQuotaMB)
-			if after.TotalBytes < before.TotalBytes {
-				slog.Info("Team build cache pruned", "team_id", team.ID, "before_bytes", before.TotalBytes, "after_bytes", after.TotalBytes, "quota_bytes", after.QuotaBytes)
+		runMaintenance(resources, "team-cache-cleanup", func() {
+			teams, err := store.ListTeams()
+			if err != nil {
+				slog.Warn("Failed to list teams for cache cleanup", "error", err)
+				return
 			}
-		}
+			for _, team := range teams {
+				before := cache.Inspect(team.ID, team.CacheQuotaMB)
+				cache.CleanScratch(team.ID)
+				cache.PruneExpired(team.ID, team.CacheRetentionDays, team.CacheQuotaMB)
+				after := cache.Enforce(team.ID, team.CacheQuotaMB)
+				if after.TotalBytes < before.TotalBytes {
+					slog.Info("Team build cache pruned", "team_id", team.ID, "before_bytes", before.TotalBytes, "after_bytes", after.TotalBytes, "quota_bytes", after.QuotaBytes)
+				}
+			}
+		})
 	}
 	run()
 	ticker := time.NewTicker(interval)
@@ -1219,9 +1307,9 @@ func makeTerminalExecutor(pool *docker.Pool) handler.TerminalExecutor {
 		}
 		var containerID string
 		if len(cacheKeys) > 0 {
-			containerID, err = pool.AcquireForUserWithContext(ctx, userID, rt.DockerImage, strings.Join(cacheKeys, "+"), cacheMounts, cacheEnvironment, nil)
+			containerID, err = pool.AcquireForUserRuntimeWithContext(ctx, userID, rt.RuntimeID, rt.DockerImage, strings.Join(cacheKeys, "+"), cacheMounts, cacheEnvironment, nil)
 		} else {
-			containerID, err = pool.AcquireForUser(ctx, userID, rt.DockerImage, nil)
+			containerID, err = pool.AcquireForUserRuntime(ctx, userID, rt.RuntimeID, rt.DockerImage, nil)
 		}
 		if err != nil {
 			return "", "", 0, fmt.Errorf("failed to acquire container: %w", err)
@@ -1298,9 +1386,9 @@ func makeEnvironmentSetupExecutor(pool *docker.Pool, policy security.Policy) han
 		}
 		var containerID string
 		if len(cacheKeys) > 0 {
-			containerID, err = pool.AcquireForUserWithContext(ctx, userID, rt.DockerImage, strings.Join(cacheKeys, "+"), cacheMounts, cacheEnvironment, nil)
+			containerID, err = pool.AcquireForUserRuntimeWithContext(ctx, userID, rt.RuntimeID, rt.DockerImage, strings.Join(cacheKeys, "+"), cacheMounts, cacheEnvironment, nil)
 		} else {
-			containerID, err = pool.AcquireForUser(ctx, userID, rt.DockerImage, nil)
+			containerID, err = pool.AcquireForUserRuntime(ctx, userID, rt.RuntimeID, rt.DockerImage, nil)
 		}
 		if err != nil {
 			return "", "", 0, fmt.Errorf("failed to acquire container: %w", err)
@@ -1381,7 +1469,7 @@ func makePackageLockResolver(pool *docker.Pool, policy security.Policy, pnpmVers
 			return result, fmt.Errorf("read existing Node lockfile: %w", readErr)
 		}
 
-		containerID, acquireErr := pool.AcquireForUser(ctx, request.UserID, runtime.DockerImage, nil)
+		containerID, acquireErr := pool.AcquireForUserRuntime(ctx, request.UserID, runtime.RuntimeID, runtime.DockerImage, nil)
 		if acquireErr != nil {
 			return result, fmt.Errorf("acquire lockfile container: %w", acquireErr)
 		}

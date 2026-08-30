@@ -11,11 +11,22 @@ import (
 // dependency-free so compiler telemetry remains available before an external
 // metrics backend is configured.
 type Registry struct {
-	enabled bool
-	window  int
-	mu      sync.Mutex
-	stages  map[string]*stage
+	enabled    bool
+	window     int
+	mu         sync.Mutex
+	stages     map[string]*stage
+	governance governanceState
 }
+
+const (
+	// Stage names predate the fixed-dimension governance metrics below. Keep the
+	// compatibility API, but cap its cardinality so a bad internal caller cannot
+	// grow the registry without bound.
+	maxStageSeries    = 128
+	overflowStageName = "_overflow"
+	defaultWindowSize = 512
+	maxWindowSize     = 4096
+)
 
 type stage struct {
 	count      int64
@@ -32,6 +43,7 @@ type Snapshot struct {
 	GeneratedAt time.Time                `json:"generated_at"`
 	WindowSize  int                      `json:"window_size"`
 	Stages      map[string]StageSnapshot `json:"stages"`
+	Governance  GovernanceSnapshot       `json:"governance"`
 }
 
 type StageSnapshot struct {
@@ -50,7 +62,10 @@ type StageSnapshot struct {
 
 func New(enabled bool, window int) *Registry {
 	if window <= 0 {
-		window = 512
+		window = defaultWindowSize
+	}
+	if window > maxWindowSize {
+		window = maxWindowSize
 	}
 	return &Registry{enabled: enabled, window: window, stages: make(map[string]*stage)}
 }
@@ -67,8 +82,8 @@ func (r *Registry) Observe(name string, elapsed time.Duration) {
 	}
 	r.mu.Lock()
 	s := r.stageLocked(name)
-	s.count++
-	s.totalNanos += nanos
+	s.count = saturatingAdd(s.count, 1)
+	s.totalNanos = saturatingAdd(s.totalNanos, nanos)
 	if nanos > s.maxNanos {
 		s.maxNanos = nanos
 	}
@@ -86,7 +101,8 @@ func (r *Registry) AddBytes(name string, bytes int64) {
 		return
 	}
 	r.mu.Lock()
-	r.stageLocked(name).bytes += bytes
+	s := r.stageLocked(name)
+	s.bytes = saturatingAdd(s.bytes, bytes)
 	r.mu.Unlock()
 }
 
@@ -97,15 +113,23 @@ func (r *Registry) Cache(name string, hit bool) {
 	r.mu.Lock()
 	s := r.stageLocked(name)
 	if hit {
-		s.hits++
+		s.hits = saturatingAdd(s.hits, 1)
 	} else {
-		s.misses++
+		s.misses = saturatingAdd(s.misses, 1)
 	}
 	r.mu.Unlock()
 }
 
 func (r *Registry) stageLocked(name string) *stage {
 	s := r.stages[name]
+	if s == nil {
+		// Reserve the final series for overflow aggregation. Existing callers keep
+		// their original names until the fixed bound is reached.
+		if len(r.stages) >= maxStageSeries-1 {
+			name = overflowStageName
+			s = r.stages[name]
+		}
+	}
 	if s == nil {
 		s = &stage{}
 		r.stages[name] = s
@@ -114,7 +138,11 @@ func (r *Registry) stageLocked(name string) *stage {
 }
 
 func (r *Registry) Snapshot() Snapshot {
-	result := Snapshot{GeneratedAt: time.Now().UTC(), Stages: make(map[string]StageSnapshot)}
+	result := Snapshot{
+		GeneratedAt: time.Now().UTC(),
+		Stages:      make(map[string]StageSnapshot),
+		Governance:  emptyGovernanceSnapshot(),
+	}
 	if r == nil {
 		return result
 	}
@@ -136,11 +164,12 @@ func (r *Registry) Snapshot() Snapshot {
 			snapshot.P95MS = millis(percentile(samples, 0.95))
 			snapshot.P99MS = millis(percentile(samples, 0.99))
 		}
-		if total := value.hits + value.misses; total > 0 {
-			snapshot.HitRate = float64(value.hits) / float64(total)
+		if value.hits > 0 || value.misses > 0 {
+			snapshot.HitRate = float64(value.hits) / (float64(value.hits) + float64(value.misses))
 		}
 		result.Stages[name] = snapshot
 	}
+	result.Governance = r.governance.snapshot()
 	return result
 }
 
@@ -159,3 +188,13 @@ func percentile(values []int64, quantile float64) int64 {
 }
 
 func millis(nanos int64) float64 { return float64(nanos) / float64(time.Millisecond) }
+
+func saturatingAdd(left, right int64) int64 {
+	if right > 0 && left > math.MaxInt64-right {
+		return math.MaxInt64
+	}
+	if right < 0 && left < math.MinInt64-right {
+		return math.MinInt64
+	}
+	return left + right
+}

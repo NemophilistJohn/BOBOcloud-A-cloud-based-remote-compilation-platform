@@ -15,6 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"bobocloud-server/internal/resourcecontrol"
 )
 
 const (
@@ -33,6 +35,7 @@ type ManagerOptions struct {
 	DependencyRegistry     *DependencyRegistry
 	DependencyPollInterval time.Duration
 	DependencyPollJitter   time.Duration
+	ResourceController     *resourcecontrol.Controller
 }
 
 type Session struct {
@@ -52,6 +55,7 @@ type Session struct {
 	sharedRelease         func()
 	dependencyRelease     func()
 	storeRelease          func()
+	resourceLease         *resourcecontrol.Lease
 	maxBytes              int
 	lastUsed              atomic.Int64
 	stopOnce              sync.Once
@@ -142,6 +146,9 @@ func (s *Session) releaseResources() {
 		}
 		if s.storeRelease != nil {
 			s.storeRelease()
+		}
+		if s.resourceLease != nil {
+			s.resourceLease.Release()
 		}
 		if s.resourcesDone != nil {
 			close(s.resourcesDone)
@@ -381,6 +388,14 @@ func (m *Manager) finishReservation(userID, key string) {
 }
 
 func (m *Manager) Start(ctx SessionContext) (*Session, error) {
+	resourceLease := ctx.ResourceLease
+	ctx.ResourceLease = nil
+	resourceOwned := resourceLease != nil
+	defer func() {
+		if resourceOwned {
+			resourceLease.Release()
+		}
+	}()
 	sharedRelease := func() {}
 	if ctx.SharedDependencies != nil && ctx.SharedDependencies.Release != nil {
 		sharedRelease = ctx.SharedDependencies.Release
@@ -423,7 +438,14 @@ func (m *Manager) Start(ctx SessionContext) (*Session, error) {
 		return nil, err
 	}
 	defer m.finishReservation(ctx.UserID, key)
-
+	id := randomSessionID()
+	if resourceLease == nil && m.opts.ResourceController != nil {
+		resourceLease, err = m.opts.ResourceController.TryAcquire(resourcecontrol.WorkloadLSP, ctx.UserID, id)
+		if err != nil {
+			return nil, fmt.Errorf("admit LSP session resources: %w", err)
+		}
+	}
+	resourceOwned = resourceLease != nil
 	lockHash, err := DependencyLockHash(ctx.RemoteRoot)
 	if err != nil {
 		return nil, fmt.Errorf("hash dependency locks: %w", err)
@@ -451,8 +473,16 @@ func (m *Manager) Start(ctx SessionContext) (*Session, error) {
 		return nil, err
 	}
 
-	processCtx, cancel := context.WithCancel(m.ctx)
-	id := randomSessionID()
+	processParent := ctx.ProcessContext
+	if processParent == nil {
+		processParent = m.ctx
+	}
+	processCtx, processCancel := context.WithCancel(processParent)
+	stopManagerCancellation := context.AfterFunc(m.ctx, processCancel)
+	cancel := func() {
+		stopManagerCancellation()
+		processCancel()
+	}
 	process, err := m.starter.Start(processCtx, LaunchSpec{SessionID: id, UserID: ctx.UserID, Workspace: ctx.RemoteRoot, CacheDir: lease.Dir, MountRoot: filepath.Join(m.cache.root, "mounts"), LanguageID: ctx.LanguageID, Mode: ctx.Mode, RuntimeID: ctx.RuntimeID, RuntimeImage: ctx.RuntimeImage, Server: spec, Docker: useDocker, MemoryLimit: m.opts.MemoryLimit, CPULimit: m.opts.CPULimit, DependencyView: ctx.DependencyView, SharedDependencies: ctx.SharedDependencies})
 	if err != nil {
 		cancel()
@@ -460,7 +490,8 @@ func (m *Manager) Start(ctx SessionContext) (*Session, error) {
 		dependencyRelease()
 		return nil, fmt.Errorf("start %s language server: %w", ctx.LanguageID, err)
 	}
-	session := &Session{ID: id, Key: key, Context: ctx, Cache: lease.Namespace, Docker: useDocker, messages: make(chan []byte, 16), done: make(chan struct{}), resourcesDone: make(chan struct{}), stopping: make(chan struct{}), process: process, writer: lockedWriter{w: process.Stdin()}, cancel: cancel, lease: lease, sharedRelease: sharedRelease, dependencyRelease: dependencyRelease, storeRelease: storeRelease, maxBytes: m.opts.MaxMessageBytes, uriMapper: mapper}
+	session := &Session{ID: id, Key: key, Context: ctx, Cache: lease.Namespace, Docker: useDocker, messages: make(chan []byte, 16), done: make(chan struct{}), resourcesDone: make(chan struct{}), stopping: make(chan struct{}), process: process, writer: lockedWriter{w: process.Stdin()}, cancel: cancel, lease: lease, sharedRelease: sharedRelease, dependencyRelease: dependencyRelease, storeRelease: storeRelease, resourceLease: resourceLease, maxBytes: m.opts.MaxMessageBytes, uriMapper: mapper}
+	resourceOwned = false
 	session.Touch()
 	session.onClose = m.remove
 	m.mu.Lock()

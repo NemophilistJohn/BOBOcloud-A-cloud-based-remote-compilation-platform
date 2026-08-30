@@ -75,6 +75,14 @@ type DockerPoolClient interface {
 	ExecStreamingEnv(ctx context.Context, containerID string, cmd []string, workDir string, output session.OutputWriter, stage string, env map[string]string, stdin io.Reader) *model.RunResult
 }
 
+// runtimeAwareDockerPoolClient is optional so existing pool implementations and
+// test doubles remain source-compatible. The built-in Docker pool implements it
+// to keep runtime policy identity separate from a possibly shared image.
+type runtimeAwareDockerPoolClient interface {
+	AcquireForUserRuntime(ctx context.Context, userID, runtimeID, image string, output session.OutputWriter) (string, error)
+	AcquireForUserRuntimeWithContext(ctx context.Context, userID, runtimeID, image, cacheKey string, volumes, env map[string]string, output session.OutputWriter) (string, error)
+}
+
 // SetUserID 设置用户 ID（Phase 2: 用于配额追踪）
 func (r *DockerRunner) SetUserID(userID string) {
 	r.userID = userID
@@ -119,24 +127,31 @@ func (r *DockerRunner) SetSetupCommands(cmds []string) {
 // program failure from a setup command that only left a partial package tree.
 func (r *DockerRunner) SetupPassed() bool { return r.setupPassed }
 
+func (r *DockerRunner) acquireContainer(ctx context.Context, output session.OutputWriter) (string, error) {
+	image := r.runtime.DockerImage
+	if pool, ok := r.pool.(runtimeAwareDockerPoolClient); ok {
+		if r.cacheKey != "" {
+			return pool.AcquireForUserRuntimeWithContext(ctx, r.userID, r.runtime.RuntimeID, image, r.cacheKey, r.cacheMounts, r.cacheEnv, output)
+		}
+		return pool.AcquireForUserRuntime(ctx, r.userID, r.runtime.RuntimeID, image, output)
+	}
+	if r.cacheKey != "" {
+		return r.pool.AcquireForUserWithContext(ctx, r.userID, image, r.cacheKey, r.cacheMounts, r.cacheEnv, output)
+	}
+	return r.pool.AcquireForUser(ctx, r.userID, image, output)
+}
+
 // containerWorkDir 容器内项目根（与 PlanRequest.ProjectRoot 对应）
 const containerWorkDir = "/workspace"
 
 // RunPlan 在 Docker 容器内执行 Plan：获取容器 → 拷入项目 → 前置命令 → 逐步执行
 func (r *DockerRunner) RunPlan(ctx context.Context, plan *Plan, hostWorkDir string, output session.OutputWriter, stdinReader io.Reader) *model.RunResult {
 	r.setupPassed = false
-	image := r.runtime.DockerImage
 	acquireStarted := time.Now()
 	output.WriteStatus("docker", "Acquiring execution container")
 
 	// Phase 2: 使用用户感知的 Acquire，支持配额和排队
-	var containerID string
-	var err error
-	if r.cacheKey != "" {
-		containerID, err = r.pool.AcquireForUserWithContext(ctx, r.userID, image, r.cacheKey, r.cacheMounts, r.cacheEnv, output)
-	} else {
-		containerID, err = r.pool.AcquireForUser(ctx, r.userID, image, output)
-	}
+	containerID, err := r.acquireContainer(ctx, output)
 	if err != nil {
 		output.WriteError(fmt.Sprintf("Failed to acquire container: %v", err))
 		return &model.RunResult{Success: false, ReturnCode: 1}

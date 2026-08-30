@@ -24,6 +24,7 @@ import (
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/personalcache"
+	"bobocloud-server/internal/resourcecontrol"
 
 	"github.com/gorilla/websocket"
 )
@@ -833,6 +834,19 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 	packageIntentsEnabled := terminalPackageIntentEligible(start.PackageIntents, workspace.teamID, runtime.Language, h.PersonalCache != nil, packagePolicy)
 	packageFrameNonce := ""
 	pendingResourceRelease := combineTerminalResourceReleases()
+	defer func() { pendingResourceRelease() }()
+	resourceLease, resourceErr := acquireHandlerRuntimeResource(
+		ctx, h.Resources, resourcecontrol.WorkloadTerminal, user.ID,
+		projectResourceScope(workspace.activityKey, workspace.teamID, workspace.projectID), "terminal:"+auth.GenerateToken(),
+		runtime.RuntimeID, runtime.Language, runtime.DockerImage, true,
+	)
+	if resourceErr != nil {
+		_ = writer.control(map[string]any{"type": "terminal.error", "code": resourcePressureErrorCode, "message": resourcePressureMessage})
+		return
+	}
+	pendingResourceRelease = combineTerminalResourceReleases(func() {
+		releaseHandlerResource(resourceLease)
+	}, pendingResourceRelease)
 	if h.Lifecycle != nil {
 		// Team workspaces intentionally use an empty generic key. The
 		// collaboration lease below is the exact team/project authority; this
@@ -842,9 +856,8 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 			_ = writer.control(map[string]any{"type": "terminal.error", "code": "workspace_in_use", "message": leaseErr.Error()})
 			return
 		}
-		pendingResourceRelease = combineTerminalResourceReleases(activity.Release)
+		pendingResourceRelease = combineTerminalResourceReleases(activity.Release, pendingResourceRelease)
 	}
-	defer func() { pendingResourceRelease() }()
 	if workspace.teamID != "" {
 		activity, leaseErr := h.Collaboration.AcquireProjectActivity(user.ID, workspace.teamID, workspace.projectID)
 		if leaseErr != nil {
@@ -891,11 +904,11 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 	}
 	var containerID string
 	if personalLease != nil {
-		containerID, err = h.DockerPool.AcquireForUserWithContext(ctx, user.ID, runtime.DockerImage, personalLease.ContainerKey+":terminal", personalLease.DockerMounts, terminalDependencyEnv, nil)
+		containerID, err = h.DockerPool.AcquireForUserRuntimeWithContext(ctx, user.ID, runtime.RuntimeID, runtime.DockerImage, personalLease.ContainerKey+":terminal", personalLease.DockerMounts, terminalDependencyEnv, nil)
 	} else if len(terminalDependencyEnv) > 0 {
-		containerID, err = h.DockerPool.AcquireForUserWithContext(ctx, user.ID, runtime.DockerImage, "terminal-ephemeral/"+auth.GenerateToken(), nil, terminalDependencyEnv, nil)
+		containerID, err = h.DockerPool.AcquireForUserRuntimeWithContext(ctx, user.ID, runtime.RuntimeID, runtime.DockerImage, "terminal-ephemeral/"+auth.GenerateToken(), nil, terminalDependencyEnv, nil)
 	} else {
-		containerID, err = h.DockerPool.AcquireForUser(ctx, user.ID, runtime.DockerImage, nil)
+		containerID, err = h.DockerPool.AcquireForUserRuntime(ctx, user.ID, runtime.RuntimeID, runtime.DockerImage, nil)
 	}
 	if err != nil {
 		_ = writer.control(map[string]any{"type": "terminal.error", "code": "container_unavailable", "message": "unable to acquire a terminal container"})

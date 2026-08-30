@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"bobocloud-server/internal/resourcecontrol"
 )
 
 type SessionContext struct {
@@ -29,6 +31,7 @@ type SessionContext struct {
 	DependencyMountRoot string
 	DependencyEnv       map[string]string
 	ProcessContext      context.Context
+	ResourceLease       *resourcecontrol.Lease
 	Release             func()
 }
 
@@ -57,6 +60,7 @@ type ManagerOptions struct {
 	CPULimit           string
 	NetworkEnable      bool
 	Inspector          ImageInspector
+	ResourceController *resourcecontrol.Controller
 	processWaitTimeout time.Duration
 	killWaitTimeout    time.Duration
 }
@@ -81,6 +85,7 @@ type Session struct {
 	releaseOnce        sync.Once
 	errMu              sync.RWMutex
 	terminalErr        error
+	resourceLease      *resourcecontrol.Lease
 	onClose            func(*Session)
 	processWaitTimeout time.Duration
 	killWaitTimeout    time.Duration
@@ -216,6 +221,9 @@ func (s *Session) releaseResources() {
 	s.releaseOnce.Do(func() {
 		if s.Context.Release != nil {
 			s.Context.Release()
+		}
+		if s.resourceLease != nil {
+			s.resourceLease.Release()
 		}
 		close(s.resourcesDone)
 	})
@@ -410,6 +418,14 @@ func (m *Manager) finishReservation(userID, key string) {
 }
 
 func (m *Manager) Start(sessionContext SessionContext) (*Session, error) {
+	resourceLease := sessionContext.ResourceLease
+	sessionContext.ResourceLease = nil
+	resourceOwned := resourceLease != nil
+	defer func() {
+		if resourceOwned {
+			resourceLease.Release()
+		}
+	}()
 	if m == nil || m.catalog == nil {
 		return nil, fmt.Errorf("remote debugging is disabled")
 	}
@@ -424,13 +440,6 @@ func (m *Manager) Start(sessionContext SessionContext) (*Session, error) {
 	if !ok {
 		return nil, fmt.Errorf("no managed debug adapter is configured for %s on %s", sessionContext.LanguageID, sessionContext.RuntimeID)
 	}
-	available, reason := m.inspector.Available(m.ctx, spec.Image)
-	if !available {
-		if reason == "" {
-			reason = "managed debug adapter image is not installed"
-		}
-		return nil, fmt.Errorf("debug adapter unavailable: %s", reason)
-	}
 	absoluteRoot, err := filepath.Abs(sessionContext.RemoteRoot)
 	if err != nil {
 		return nil, fmt.Errorf("resolve debug workspace: %w", err)
@@ -441,6 +450,21 @@ func (m *Manager) Start(sessionContext SessionContext) (*Session, error) {
 		return nil, err
 	}
 	defer m.finishReservation(sessionContext.UserID, key)
+	id := randomID()
+	if resourceLease == nil && m.opts.ResourceController != nil {
+		resourceLease, err = m.opts.ResourceController.TryAcquire(resourcecontrol.WorkloadDAP, sessionContext.UserID, id)
+		if err != nil {
+			return nil, fmt.Errorf("admit DAP session resources: %w", err)
+		}
+	}
+	resourceOwned = resourceLease != nil
+	available, reason := m.inspector.Available(m.ctx, spec.Image)
+	if !available {
+		if reason == "" {
+			reason = "managed debug adapter image is not installed"
+		}
+		return nil, fmt.Errorf("debug adapter unavailable: %s", reason)
+	}
 
 	processParent := sessionContext.ProcessContext
 	if processParent == nil {
@@ -452,7 +476,6 @@ func (m *Manager) Start(sessionContext SessionContext) (*Session, error) {
 		stopManagerCancellation()
 		timeoutCancel()
 	}
-	id := randomID()
 	dependencyEnv := make(map[string]string, len(sessionContext.DependencyEnv))
 	for key, value := range sessionContext.DependencyEnv {
 		dependencyEnv[key] = value
@@ -466,9 +489,14 @@ func (m *Manager) Start(sessionContext SessionContext) (*Session, error) {
 	})
 	if err != nil {
 		cancel()
+		if resourceLease != nil {
+			releaseResourceLeaseAfterStartError(resourceLease, err)
+			resourceOwned = false
+		}
 		return nil, fmt.Errorf("start managed debug adapter: %w", err)
 	}
-	session := &Session{ID: id, Key: key, Context: sessionContext, Adapter: spec, messages: make(chan []byte, 32), done: make(chan struct{}), resourcesDone: make(chan struct{}), stopping: make(chan struct{}), process: process, writer: NewLockedFrameWriter(process.Stdin()), cancel: cancel, maxBytes: m.opts.MaxMessageBytes, created: time.Now(), processWaitTimeout: m.opts.processWaitTimeout, killWaitTimeout: m.opts.killWaitTimeout}
+	session := &Session{ID: id, Key: key, Context: sessionContext, Adapter: spec, messages: make(chan []byte, 32), done: make(chan struct{}), resourcesDone: make(chan struct{}), stopping: make(chan struct{}), process: process, writer: NewLockedFrameWriter(process.Stdin()), cancel: cancel, maxBytes: m.opts.MaxMessageBytes, created: time.Now(), resourceLease: resourceLease, processWaitTimeout: m.opts.processWaitTimeout, killWaitTimeout: m.opts.killWaitTimeout}
+	resourceOwned = false
 	session.Touch()
 	session.onClose = m.remove
 	m.mu.Lock()
@@ -490,6 +518,21 @@ func (m *Manager) Start(sessionContext SessionContext) (*Session, error) {
 		}
 	}()
 	return session, nil
+}
+
+func releaseResourceLeaseAfterStartError(lease *resourcecontrol.Lease, err error) {
+	if lease == nil {
+		return
+	}
+	cleanupDone := StartCleanupDone(err)
+	if cleanupDone == nil {
+		lease.Release()
+		return
+	}
+	go func() {
+		<-cleanupDone
+		lease.Release()
+	}()
 }
 
 func (m *Manager) remove(session *Session) {

@@ -13,6 +13,7 @@ import (
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/personalcache"
+	"bobocloud-server/internal/resourcecontrol"
 	"bobocloud-server/internal/runner"
 	"bobocloud-server/internal/session"
 )
@@ -20,7 +21,7 @@ import (
 func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *model.RunSession, channel *session.RunChannel, stdinReader io.Reader) (runResult *model.RunResult) {
 	output := session.NewWebSocketWriter(channel, h.Config.ChunkSize)
 	started := time.Now()
-	output.WriteStatus("setup", "Task accepted; resolving cloud workspace")
+	output.WriteStatus("setup", "Validating task request")
 	defer func() {
 		channel.Close()
 		if err := h.Channels.CleanupRun(runID, channel, h.Sessions); err != nil {
@@ -44,6 +45,22 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 		fail("Task execution data is missing")
 		return
 	}
+	runtimeDef := model.GetRuntimeDef(sess.Runtime)
+	if runtimeDef == nil || sess.Runtime == "" {
+		fail("Project tasks require a known Docker runtime")
+		return
+	}
+	resourceLease, resourceErr := acquireHandlerRuntimeResource(
+		ctx, h.Resources, resourcecontrol.WorkloadTask, sess.UserID, runSessionResourceScope(sess), runID,
+		runtimeDef.RuntimeID, runtimeDef.Language, runtimeDef.DockerImage, true,
+	)
+	if resourceErr != nil {
+		fail(resourcePressureMessage)
+		return
+	}
+	defer releaseHandlerResource(resourceLease)
+	output.WriteStatus("setup", "Task accepted; resolving cloud workspace")
+	output.WriteStatus("setup", fmt.Sprintf("Using Docker runtime: %s (%s)", runtimeDef.DisplayName, runtimeDef.DockerImage))
 	if h.Lifecycle != nil && sess.UserID != "" {
 		workspaceKey := ""
 		if sess.TeamID == "" {
@@ -73,12 +90,6 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 		fail("Invalid workspace path: " + err.Error())
 		return
 	}
-	runtimeDef := model.GetRuntimeDef(sess.Runtime)
-	if runtimeDef == nil || sess.Runtime == "" {
-		fail("Project tasks require a known Docker runtime")
-		return
-	}
-	output.WriteStatus("setup", fmt.Sprintf("Using Docker runtime: %s (%s)", runtimeDef.DisplayName, runtimeDef.DockerImage))
 	personalLease, err := h.prepareRunPersonalCache(ctx, sess, *runtimeDef, runtimeDef.Language, projectPath)
 	if err != nil {
 		fail("Failed to prepare project dependency cache: " + err.Error())

@@ -95,9 +95,10 @@ type Config struct {
 	DockerQueueTimeoutSeconds    int      `json:"docker_queue_timeout_seconds"`
 
 	// 编译观测与有界结果保留。实时 WebSocket 输出不受结果保留上限影响。
-	PerformanceMetricsEnabled bool `json:"performance_metrics_enabled"`
-	PerformanceMetricsWindow  int  `json:"performance_metrics_window"`
-	RunOutputRetainedBytes    int  `json:"run_output_retained_bytes"`
+	PerformanceMetricsEnabled bool                     `json:"performance_metrics_enabled"`
+	PerformanceMetricsWindow  int                      `json:"performance_metrics_window"`
+	RunOutputRetainedBytes    int                      `json:"run_output_retained_bytes"`
+	ResourceGovernance        ResourceGovernanceConfig `json:"resource_governance"`
 
 	// Personal cache-v2 stores immutable dependency generations separately from
 	// mutable incremental build state and reusable compile results.
@@ -254,6 +255,7 @@ func Default() *Config {
 		PerformanceMetricsEnabled:         true,
 		PerformanceMetricsWindow:          512,
 		RunOutputRetainedBytes:            256 << 10,
+		ResourceGovernance:                DefaultResourceGovernance(),
 		PersonalCacheMaxGenerations:       defaultPersonalCacheMaxGenerations,
 		PersonalBuildCacheEnabled:         true,
 		PersonalBuildResultReuse:          PersonalBuildResultReuseCompileOnly,
@@ -432,6 +434,9 @@ func Load(path string) (*Config, error) {
 	if cfg.DockerQueueTimeoutSeconds <= 0 {
 		cfg.DockerQueueTimeoutSeconds = 60
 	}
+	if cfg.DockerPoolReplenishInterval <= 0 {
+		return nil, fmt.Errorf("docker_pool_replenish_interval_seconds must be greater than zero")
+	}
 	if cfg.HTTPReadHeaderTimeoutSeconds <= 0 {
 		cfg.HTTPReadHeaderTimeoutSeconds = 10
 	}
@@ -456,6 +461,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.PerformanceMetricsWindow <= 0 {
 		cfg.PerformanceMetricsWindow = 512
+	}
+	if err := normalizeResourceGovernance(&cfg.ResourceGovernance); err != nil {
+		return nil, err
 	}
 	if cfg.RunOutputRetainedBytes <= 0 {
 		cfg.RunOutputRetainedBytes = 256 << 10

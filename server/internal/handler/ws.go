@@ -24,6 +24,7 @@ import (
 	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/personalcache"
+	"bobocloud-server/internal/resourcecontrol"
 	"bobocloud-server/internal/ringbuffer"
 	"bobocloud-server/internal/runner"
 	"bobocloud-server/internal/security"
@@ -65,6 +66,7 @@ type WSHandler struct {
 	PersonalCache   *personalcache.Manager
 	RuntimeMetadata RuntimeMetadataProvider
 	Metrics         *metrics.Registry
+	Resources       *resourcecontrol.Controller
 	Accepting       func() bool
 	AcquireWork     func(string) (func(), error)
 }
@@ -350,7 +352,7 @@ func readRunMessages(conn *websocket.Conn, runID string, stdinQueue *stdinWriteQ
 func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.RunSession, channel *session.RunChannel, stdinReader io.Reader) (runResult *model.RunResult) {
 	output := session.NewWebSocketWriter(channel, h.Config.ChunkSize)
 	taskStarted := time.Now()
-	output.WriteStatus("setup", "Run accepted; resolving workspace")
+	output.WriteStatus("setup", "Validating run request")
 
 	defer func() {
 		channel.Close()
@@ -369,6 +371,88 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		output.WriteError(msg)
 		output.WriteResult(false, 1)
 		runResult = &model.RunResult{Success: false, ReturnCode: 1}
+	}
+	// 入口文件统一为 slash 相对路径（Windows 客户端会发反斜杠路径）
+	entryRel := strings.ReplaceAll(sess.FilePath, "\\", "/")
+	ext := strings.ToLower(filepath.Ext(entryRel))
+
+	// ── 语言插件查找：入口扩展名 → 插件 ──
+	plugin := h.Plugins.ForExtension(ext)
+	if plugin == nil {
+		fail(fmt.Sprintf("Unsupported file extension: %s (supported: .py .java .c .cpp .cc .cxx .go .rs .js .mjs .cjs)", ext))
+		return
+	}
+
+	// ── 运行时选择 + 语言一致性校验 ──
+	useDocker := sess.Runtime != ""
+	var rt *model.RuntimeDef
+	if useDocker {
+		rt = model.GetRuntimeDef(sess.Runtime)
+		if rt == nil {
+			fail(fmt.Sprintf("Unknown runtime: %s", sess.Runtime))
+			return
+		}
+		if rt.Language != plugin.Language() {
+			fail(fmt.Sprintf("Runtime \"%s\" (%s) cannot run %s files. Please select a %s runtime (or Local).",
+				sess.Runtime, rt.Language, ext, plugin.Language()))
+			return
+		}
+	}
+
+	// A client selects a catalog ID, never an arbitrary compiler or image.
+	// Resolve it only after the language/runtime checks above.
+	var buildTarget model.BuildTarget
+	if plugin.Language() == "c" || plugin.Language() == "cpp" || plugin.Language() == "rust" || plugin.Language() == "go" {
+		var targetOK bool
+		buildTarget, targetOK = model.ResolveBuildTarget(plugin.Language(), sess.BuildTarget)
+		if !targetOK {
+			fail(fmt.Sprintf("Unsupported build target %q for %s", sess.BuildTarget, plugin.Language()))
+			return
+		}
+		if model.IsCrossBuildTarget(buildTarget) {
+			if !useDocker || rt == nil {
+				fail("Cross-compilation requires a Docker runtime")
+				return
+			}
+			image := model.CrossBuildImage(*rt, buildTarget)
+			if image == "" {
+				fail(fmt.Sprintf("No cross toolchain is available for %s", plugin.Language()))
+				return
+			}
+			runtimeCopy := *rt
+			runtimeCopy.DockerImage = image
+			rt = &runtimeCopy
+		}
+	} else if sess.BuildTarget != "" {
+		fail(fmt.Sprintf("Build targets are not supported for %s files", plugin.Language()))
+		return
+	}
+
+	// Admit only after all request-only validation has succeeded, but before
+	// workspace, cache, lifecycle, or Docker work begins. Invalid requests must
+	// not consume capacity or count as accepted resource admissions.
+	admissionRuntimeID, admissionRuntimeImage := "", ""
+	if rt != nil {
+		admissionRuntimeID, admissionRuntimeImage = rt.RuntimeID, rt.DockerImage
+	}
+	resourceLease, resourceErr := acquireHandlerRuntimeResource(
+		ctx, h.Resources, resourcecontrol.WorkloadRun, sess.UserID, runSessionResourceScope(sess), runID,
+		admissionRuntimeID, plugin.Language(), admissionRuntimeImage, useDocker,
+	)
+	if resourceErr != nil {
+		fail(resourcePressureMessage)
+		return
+	}
+	defer releaseHandlerResource(resourceLease)
+	output.WriteStatus("setup", "Run accepted; resolving workspace")
+	if useDocker {
+		output.WriteStatus("setup", fmt.Sprintf("Using Docker runtime: %s (%s) [user=%s]",
+			rt.DisplayName, rt.DockerImage, sess.UserID))
+	} else {
+		output.WriteStatus("setup", fmt.Sprintf("Using local executor for %s (runs on server host, no sandbox)", plugin.Language()))
+	}
+	if model.IsCrossBuildTarget(buildTarget) {
+		output.WriteStatus("target", fmt.Sprintf("Cross-compiling for %s/%s; artifact: %s", buildTarget.OS, buildTarget.Architecture, buildTarget.OutputPath))
 	}
 
 	if h.Lifecycle != nil && sess.UserID != "" {
@@ -399,67 +483,6 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 	projectPath, err := h.resolveWorkspace(ctx, sess)
 	if err != nil {
 		fail("Invalid workspace path: " + err.Error())
-		return
-	}
-
-	// 入口文件统一为 slash 相对路径（Windows 客户端会发反斜杠路径）
-	entryRel := strings.ReplaceAll(sess.FilePath, "\\", "/")
-	ext := strings.ToLower(filepath.Ext(entryRel))
-
-	// ── 语言插件查找：入口扩展名 → 插件 ──
-	plugin := h.Plugins.ForExtension(ext)
-	if plugin == nil {
-		fail(fmt.Sprintf("Unsupported file extension: %s (supported: .py .java .c .cpp .cc .cxx .go .rs .js .mjs .cjs)", ext))
-		return
-	}
-
-	// ── 运行时选择 + 语言一致性校验 ──
-	useDocker := sess.Runtime != ""
-	var rt *model.RuntimeDef
-	if useDocker {
-		rt = model.GetRuntimeDef(sess.Runtime)
-		if rt == nil {
-			fail(fmt.Sprintf("Unknown runtime: %s", sess.Runtime))
-			return
-		}
-		if rt.Language != plugin.Language() {
-			fail(fmt.Sprintf("Runtime \"%s\" (%s) cannot run %s files. Please select a %s runtime (or Local).",
-				sess.Runtime, rt.Language, ext, plugin.Language()))
-			return
-		}
-		output.WriteStatus("setup", fmt.Sprintf("Using Docker runtime: %s (%s) [user=%s]",
-			rt.DisplayName, rt.DockerImage, sess.UserID))
-	} else {
-		output.WriteStatus("setup", fmt.Sprintf("Using local executor for %s (runs on server host, no sandbox)", plugin.Language()))
-	}
-
-	// A client selects a catalog ID, never an arbitrary compiler or image.
-	// Resolve it only after the language/runtime checks above.
-	var buildTarget model.BuildTarget
-	if plugin.Language() == "c" || plugin.Language() == "cpp" || plugin.Language() == "rust" || plugin.Language() == "go" {
-		var targetOK bool
-		buildTarget, targetOK = model.ResolveBuildTarget(plugin.Language(), sess.BuildTarget)
-		if !targetOK {
-			fail(fmt.Sprintf("Unsupported build target %q for %s", sess.BuildTarget, plugin.Language()))
-			return
-		}
-		if model.IsCrossBuildTarget(buildTarget) {
-			if !useDocker || rt == nil {
-				fail("Cross-compilation requires a Docker runtime")
-				return
-			}
-			image := model.CrossBuildImage(*rt, buildTarget)
-			if image == "" {
-				fail(fmt.Sprintf("No cross toolchain is available for %s", plugin.Language()))
-				return
-			}
-			runtimeCopy := *rt
-			runtimeCopy.DockerImage = image
-			rt = &runtimeCopy
-			output.WriteStatus("target", fmt.Sprintf("Cross-compiling for %s/%s; artifact: %s", buildTarget.OS, buildTarget.Architecture, buildTarget.OutputPath))
-		}
-	} else if sess.BuildTarget != "" {
-		fail(fmt.Sprintf("Build targets are not supported for %s files", plugin.Language()))
 		return
 	}
 

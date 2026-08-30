@@ -26,13 +26,19 @@ func TestPerformanceMetricsRequireAdminAndExposeStageSnapshot(t *testing.T) {
 	handler.Metrics = metrics.New(true, 16)
 	handler.Metrics.Observe("queue.wait", 12*time.Millisecond)
 	handler.Metrics.Cache("dependency.cache", true)
+	handler.Metrics.ObserveAdmission(metrics.WorkloadRun, metrics.AdmissionRejected, metrics.AdmissionReasonQueueFull, 3*time.Millisecond)
+	handler.Metrics.ObserveQueueDepth(metrics.WorkloadRun, 2)
+	handler.Metrics.ObserveResourceUsage(metrics.ResourceSlots, 4, 20)
 
 	denied := serveAuthenticatedAction(t, handler, member.APIKey, `{"action":"getPerformanceMetrics"}`)
 	if denied.Code != http.StatusForbidden {
 		t.Fatalf("member metrics status=%d body=%s", denied.Code, denied.Body.String())
 	}
 	allowed := serveAuthenticatedAction(t, handler, admin.APIKey, `{"action":"getPerformanceMetrics"}`)
-	if allowed.Code != http.StatusOK || !containsAll(allowed.Body.String(), `"queue.wait"`, `"dependency.cache"`, `"hit_rate":1`) {
+	if allowed.Code != http.StatusOK || !containsAll(allowed.Body.String(),
+		`"queue.wait"`, `"dependency.cache"`, `"hit_rate":1`, `"governance"`,
+		`"queue_full"`, `"slots"`, `"in_use":4`, `"current":2`,
+	) {
 		t.Fatalf("admin metrics status=%d body=%s", allowed.Code, allowed.Body.String())
 	}
 }

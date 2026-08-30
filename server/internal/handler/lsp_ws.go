@@ -19,6 +19,7 @@ import (
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/personalcache"
+	"bobocloud-server/internal/resourcecontrol"
 
 	"github.com/gorilla/websocket"
 )
@@ -744,11 +745,42 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 		writeLSPError(conn, "unavailable", "remote LSP is disabled")
 		return
 	}
+	runtimeID := strings.TrimSpace(start.RuntimeID)
+	runtimeImage := ""
+	if runtimeID == "" || runtimeID == "local" {
+		runtimeID = "local"
+	} else {
+		runtime := model.GetRuntimeDef(runtimeID)
+		if runtime == nil {
+			writeLSPError(conn, "invalid_runtime", "unknown runtime: "+runtimeID)
+			return
+		}
+		if !compatibleRuntimeLanguage(start.LanguageID, runtime.Language) {
+			writeLSPError(conn, "runtime_mismatch", "runtime language does not match the editor language")
+			return
+		}
+		runtimeImage = runtime.DockerImage
+	}
 	workspaceActivityKey, err := requestedLSPWorkspaceActivityKey(start.Workspace)
 	if err != nil {
 		writeLSPError(conn, "workspace_denied", err.Error())
 		return
 	}
+	lspResourceLease, resourceErr := acquireHandlerRuntimeResource(
+		r.Context(), h.Resources, resourcecontrol.WorkloadLSP, user.ID,
+		projectResourceScope(workspaceActivityKey, start.Workspace.TeamID, start.Workspace.ProjectID),
+		"lsp:"+auth.GenerateToken(), runtimeID, start.LanguageID, runtimeImage, false,
+	)
+	if resourceErr != nil {
+		writeLSPError(conn, resourcePressureErrorCode, resourcePressureMessage)
+		return
+	}
+	lspResourceOwnedByHandler := lspResourceLease != nil
+	defer func() {
+		if lspResourceOwnedByHandler {
+			releaseHandlerResource(lspResourceLease)
+		}
+	}()
 	activityRelease, err := h.acquireLSPActivity(user.ID, workspaceActivityKey)
 	if err != nil {
 		writeLSPError(conn, "resources_in_use", err.Error())
@@ -774,22 +806,6 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeLSPError(conn, "workspace_denied", err.Error())
 		return
-	}
-	runtimeID := strings.TrimSpace(start.RuntimeID)
-	runtimeImage := ""
-	if runtimeID == "" || runtimeID == "local" {
-		runtimeID = "local"
-	} else {
-		runtime := model.GetRuntimeDef(runtimeID)
-		if runtime == nil {
-			writeLSPError(conn, "invalid_runtime", "unknown runtime: "+runtimeID)
-			return
-		}
-		if !compatibleRuntimeLanguage(start.LanguageID, runtime.Language) {
-			writeLSPError(conn, "runtime_mismatch", "runtime language does not match the editor language")
-			return
-		}
-		runtimeImage = runtime.DockerImage
 	}
 	var teamDependencies *buildcache.SharedDependencies
 	sharedHost, snapshotRoot, dependencyGeneration := "", "", ""
@@ -842,7 +858,8 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 	shared := retainResolvedTeamDependencies(teamDependencies, dependencyView, dependencyRequest.Paths.SnapshotRoot)
 	sessionResourceRelease := pendingResourceRelease
 	pendingResourceRelease = nil
-	session, err := h.LSP.Start(lsp.SessionContext{UserID: user.ID, WorkspaceKind: start.Workspace.Kind, TeamID: teamID, ProjectID: projectID, Branch: branch, FolderKey: folderKey, RuntimeID: runtimeID, RuntimeImage: runtimeImage, LanguageID: start.LanguageID, Mode: mode, RemoteRoot: remoteRoot, DependencyRequest: dependencyRequest, DependencyView: dependencyView, DependencyResolved: dependencyResolved, SharedDependencies: shared, DependencyStoreRelease: sessionResourceRelease})
+	lspResourceOwnedByHandler = false
+	session, err := h.LSP.Start(lsp.SessionContext{UserID: user.ID, WorkspaceKind: start.Workspace.Kind, TeamID: teamID, ProjectID: projectID, Branch: branch, FolderKey: folderKey, RuntimeID: runtimeID, RuntimeImage: runtimeImage, LanguageID: start.LanguageID, Mode: mode, RemoteRoot: remoteRoot, DependencyRequest: dependencyRequest, DependencyView: dependencyView, DependencyResolved: dependencyResolved, SharedDependencies: shared, DependencyStoreRelease: sessionResourceRelease, ProcessContext: r.Context(), ResourceLease: lspResourceLease})
 	if err != nil {
 		writeLSPError(conn, "start_failed", err.Error())
 		return

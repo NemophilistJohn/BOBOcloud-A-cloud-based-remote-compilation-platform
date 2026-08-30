@@ -3,7 +3,6 @@ package docker
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 )
@@ -75,15 +74,8 @@ func (rq *RequestQueue) Enqueue(req *QueueRequest) error {
 	if len(rq.queue) >= rq.maxLen {
 		return fmt.Errorf("request queue is full (%d/%d), try again later", len(rq.queue), rq.maxLen)
 	}
-	position := len(rq.queue)
 	rq.queue = append(rq.queue, req)
 	rq.totalQueued++
-	slog.Info("Request queued for container",
-		"user_id", req.UserID,
-		"image", req.Image,
-		"position", position,
-		"queue_len", len(rq.queue),
-	)
 	return nil
 }
 

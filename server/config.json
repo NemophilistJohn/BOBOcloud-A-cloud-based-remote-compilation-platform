@@ -69,6 +69,50 @@
   "run_output_retained_bytes": 262144,
   "_run_output_retained_bytes": "每个 stdout/stderr 在服务端结果中保留的尾部字节数；实时 WebSocket 输出始终完整发送，不受此项影响。",
 
+  "_section_resource_governance": "────────── 统一资源治理 ──────────",
+  "resource_governance": {
+    "mode": "auto",
+    "slot_capacity": 0,
+    "cpu_capacity_millicores": 0,
+    "memory_capacity_mb": 0,
+    "pid_capacity": 0,
+    "ephemeral_capacity_mb": 0,
+    "inode_capacity": 0,
+    "cpu_reserve_percent": 10,
+    "memory_reserve_percent": 15,
+    "pid_reserve_percent": 10,
+    "ephemeral_reserve_percent": 10,
+    "inode_reserve_percent": 10,
+    "devices": {},
+    "device_reserve": {},
+    "queue": {
+      "enabled": true,
+      "max_waiting": 128,
+      "max_waiting_per_owner": 8,
+      "max_waiting_per_project": 4,
+      "aging_threshold_seconds": 15,
+      "workloads": {
+        "run": { "weight": 4, "max_waiting": 48, "timeout_seconds": 60 },
+        "task": { "weight": 3, "max_waiting": 24, "timeout_seconds": 60 },
+        "terminal": { "weight": 8, "max_waiting": 24, "timeout_seconds": 20 },
+        "package": { "weight": 2, "max_waiting": 16, "timeout_seconds": 120 },
+        "lsp": { "weight": 8, "max_waiting": 16, "timeout_seconds": 20 },
+        "dap": { "weight": 6, "max_waiting": 8, "timeout_seconds": 20 },
+        "maintenance": { "weight": 1, "max_waiting": 0, "timeout_seconds": 0 }
+      }
+    },
+    "workloads": {
+      "run": { "cpu_millicores": 0, "memory_mb": 0, "pids": 256, "ephemeral_mb": 64, "inodes": 4096 },
+      "task": { "cpu_millicores": 0, "memory_mb": 0, "pids": 256, "ephemeral_mb": 64, "inodes": 4096 },
+      "terminal": { "cpu_millicores": 0, "memory_mb": 0, "pids": 256, "ephemeral_mb": 64, "inodes": 4096 },
+      "package": { "cpu_millicores": 0, "memory_mb": 0, "pids": 256, "ephemeral_mb": 256, "inodes": 16384 },
+      "lsp": { "cpu_millicores": 0, "memory_mb": 0, "pids": 256, "ephemeral_mb": 32, "inodes": 2048 },
+      "dap": { "cpu_millicores": 0, "memory_mb": 0, "pids": 256, "ephemeral_mb": 64, "inodes": 4096 },
+      "maintenance": { "cpu_millicores": 250, "memory_mb": 128, "pids": 64, "ephemeral_mb": 32, "inodes": 1024 }
+    }
+  },
+  "_resource_governance": "auto 按 Go 运行时、cgroup v1/v2 与目标文件系统计算容量；大于 0 的容量字段逐项覆盖探测值。fixed 要求显式给出全部标量容量，off 可回退到旧准入逻辑。queue 使用工作负载加权、用户轮转、项目轮转和项目内 FIFO；四层等待上限、超时与 aging 预留均可配置。工作负载中的 CPU/内存为 0 时沿用对应 Docker、LSP 或 DAP 限制。账号活跃度不改变硬配额。",
+
   "_section_personal_persist": "────────── 个人 cache-v2 与持久化配额 ──────────",
   "personal_cache_max_generations": 2,
   "_personal_cache_max_generations": "同一项目、运行时和语言最多保留的依赖摘要代数，范围 1-32；当前代与仍被使用的代不会被错误淘汰。",

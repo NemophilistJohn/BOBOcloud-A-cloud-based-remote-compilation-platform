@@ -8,7 +8,54 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"bobocloud-server/internal/metrics"
 )
+
+func TestPoolPublishesBoundedDockerQueueDepthInsteadOfPerRequestLogs(t *testing.T) {
+	registry := metrics.New(true, 4)
+	pool := &Pool{queue: NewRequestQueue(2, time.Second)}
+	pool.SetMetrics(registry)
+	req := queuedRequest("alice", "python")
+	if err := pool.queue.Enqueue(req); err != nil {
+		t.Fatal(err)
+	}
+	pool.observeQueueDepth()
+
+	assertDepth := func(want int64) {
+		t.Helper()
+		for _, queue := range registry.Snapshot().Governance.Queues {
+			if queue.Workload == "docker" {
+				if queue.Current != want {
+					t.Fatalf("Docker queue depth = %d, want %d", queue.Current, want)
+				}
+				return
+			}
+		}
+		t.Fatal("Docker queue metric was not published")
+	}
+	assertDepth(1)
+	pool.wakeNextQueued()
+	assertDepth(0)
+}
+
+type queueStatusOutput struct {
+	mu       sync.Mutex
+	statuses []string
+}
+
+func (output *queueStatusOutput) WriteStatus(_ string, message string) {
+	output.mu.Lock()
+	output.statuses = append(output.statuses, message)
+	output.mu.Unlock()
+}
+func (*queueStatusOutput) WriteStdout(string, string)           {}
+func (*queueStatusOutput) WriteStderr(string, string)           {}
+func (*queueStatusOutput) WriteArtifactBegin()                  {}
+func (*queueStatusOutput) WriteArtifact(string, []byte, string) {}
+func (*queueStatusOutput) WriteArtifactEnd()                    {}
+func (*queueStatusOutput) WriteResult(bool, int)                {}
+func (*queueStatusOutput) WriteError(string)                    {}
 
 func queuedRequest(user, image string) *QueueRequest {
 	return &QueueRequest{
@@ -83,6 +130,54 @@ func TestRequestQueueTimeoutStats(t *testing.T) {
 	_, timedOut, _ := rq.Stats()
 	if timedOut != 1 {
 		t.Fatalf("timeout count = %d, want 1", timedOut)
+	}
+}
+
+func TestAcquireViaQueueSnapshotsCapacityUnderLock(t *testing.T) {
+	pool := &Pool{queue: NewRequestQueue(1, time.Second), maxTotal: 8}
+	output := &queueStatusOutput{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	started := make(chan struct{})
+	stop := make(chan struct{})
+	var writer sync.WaitGroup
+	writer.Add(1)
+	go func() {
+		defer writer.Done()
+		close(started)
+		for active := 0; ; active = (active + 1) % 9 {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			pool.mu.Lock()
+			pool.activeCount = active
+			pool.mu.Unlock()
+		}
+	}()
+	<-started
+
+	for i := 0; i < 500; i++ {
+		if _, err := pool.acquireViaQueue(ctx, "alice", "python:3.10", "python:3.10-slim", "", nil, nil, output); err == nil {
+			close(stop)
+			writer.Wait()
+			t.Fatal("cancelled queue request unexpectedly succeeded")
+		}
+	}
+	close(stop)
+	writer.Wait()
+
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	if len(output.statuses) != 500 {
+		t.Fatalf("queue status count = %d, want 500", len(output.statuses))
+	}
+	for _, status := range output.statuses {
+		if !strings.Contains(status, "/8)") {
+			t.Fatalf("queue status did not use the configured capacity snapshot: %q", status)
+		}
 	}
 }
 
@@ -991,7 +1086,7 @@ func TestIdleAcquireRevalidatesSupersededPersonalGeneration(t *testing.T) {
 
 func TestAcquireRejectedAfterPoolShutdownBegins(t *testing.T) {
 	pool := &Pool{closed: true}
-	if _, err := pool.acquireForUser(context.Background(), "alice", "gcc", "", nil, nil, nil); err == nil {
+	if _, err := pool.acquireForUser(context.Background(), "alice", "gcc", "gcc", "", nil, nil, nil); err == nil {
 		t.Fatal("closed pool accepted a new acquisition")
 	}
 }

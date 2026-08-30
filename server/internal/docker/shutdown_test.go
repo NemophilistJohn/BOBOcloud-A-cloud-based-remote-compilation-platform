@@ -63,7 +63,7 @@ func TestShutdownContextBoundsConcurrencyAndStopsAdmission(t *testing.T) {
 	case <-time.After(25 * time.Millisecond):
 	}
 
-	if _, err := pool.acquireForUser(context.Background(), "alice", "python", "", nil, nil, nil); err == nil {
+	if _, err := pool.acquireForUser(context.Background(), "alice", "python", "python", "", nil, nil, nil); err == nil {
 		t.Fatal("pool accepted a new acquisition after shutdown began")
 	}
 	close(release)

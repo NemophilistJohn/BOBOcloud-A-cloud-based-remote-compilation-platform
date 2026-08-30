@@ -14,6 +14,8 @@ import (
 	"bobocloud-server/internal/auth"
 	"bobocloud-server/internal/config"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/resourcecontrol"
+	"bobocloud-server/internal/resourcegovernor"
 	"bobocloud-server/internal/serverruntime"
 	"bobocloud-server/internal/session"
 	"bobocloud-server/internal/storage"
@@ -374,5 +376,44 @@ func TestPeriodicLoopStopsWithServerContext(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("periodic loop did not stop after cancellation")
+	}
+}
+
+func TestRunMaintenanceSkipsBusyNodeAndReleasesAcceptedLease(t *testing.T) {
+	governor, err := resourcegovernor.New(resourcegovernor.NodeResources{
+		Capacity: resourcegovernor.Resources{Slots: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := resourcegovernor.Resources{Slots: 1}
+	controller, err := resourcecontrol.New(governor, resourcecontrol.Profiles{
+		resourcecontrol.WorkloadRun: profile, resourcecontrol.WorkloadTask: profile,
+		resourcecontrol.WorkloadTerminal: profile, resourcecontrol.WorkloadPackage: profile,
+		resourcecontrol.WorkloadLSP: profile, resourcecontrol.WorkloadDAP: profile,
+		resourcecontrol.WorkloadMaintenance: profile,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interactive, err := controller.TryAcquire(resourcecontrol.WorkloadRun, "alice", "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := 0
+	if runMaintenance(controller, "cleanup", func() { runs++ }) || runs != 0 {
+		t.Fatalf("maintenance ran while node was busy: runs=%d", runs)
+	}
+	interactive.Release()
+	if !runMaintenance(controller, "cleanup", func() {
+		runs++
+		if snapshot := controller.Snapshot(); snapshot.Used.Slots != 1 {
+			t.Fatalf("maintenance lease was not held during callback: %+v", snapshot.Used)
+		}
+	}) {
+		t.Fatal("maintenance was not admitted after capacity became available")
+	}
+	if runs != 1 || controller.Snapshot().Used.Slots != 0 {
+		t.Fatalf("maintenance lease leaked: runs=%d used=%+v", runs, controller.Snapshot().Used)
 	}
 }

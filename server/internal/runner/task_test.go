@@ -120,6 +120,7 @@ type taskPoolFake struct {
 	mu             sync.Mutex
 	events         []string
 	pruneCtxActive bool
+	runtimeID      string
 }
 
 func (p *taskPoolFake) add(event string) {
@@ -136,6 +137,18 @@ func (p *taskPoolFake) AcquireForUser(context.Context, string, string, session.O
 	return "container-1", nil
 }
 func (p *taskPoolFake) AcquireForUserWithContext(context.Context, string, string, string, map[string]string, map[string]string, session.OutputWriter) (string, error) {
+	return p.AcquireForUser(context.Background(), "", "", nil)
+}
+func (p *taskPoolFake) AcquireForUserRuntime(_ context.Context, _ string, runtimeID, _ string, _ session.OutputWriter) (string, error) {
+	p.mu.Lock()
+	p.runtimeID = runtimeID
+	p.mu.Unlock()
+	return p.AcquireForUser(context.Background(), "", "", nil)
+}
+func (p *taskPoolFake) AcquireForUserRuntimeWithContext(_ context.Context, _ string, runtimeID, _ string, _ string, _ map[string]string, _ map[string]string, _ session.OutputWriter) (string, error) {
+	p.mu.Lock()
+	p.runtimeID = runtimeID
+	p.mu.Unlock()
 	return p.AcquireForUser(context.Background(), "", "", nil)
 }
 func (p *taskPoolFake) Release(string)                { p.add("release") }
@@ -164,6 +177,20 @@ func (c taskCopierFake) CopyTo(context.Context, string, string, string) error {
 func (c taskCopierFake) CopyFrom(context.Context, string, string, string) error {
 	c.pool.add("copy-from")
 	return nil
+}
+
+func TestDockerRunnerPassesRuntimeIDToRuntimeAwarePool(t *testing.T) {
+	pool := &taskPoolFake{}
+	runner := NewDockerRunner(model.RuntimeDef{RuntimeID: "python:3.10", DockerImage: "registry.example/python:stable"}, pool, nil)
+	if _, err := runner.acquireContainer(context.Background(), taskTestOutput{}); err != nil {
+		t.Fatal(err)
+	}
+	pool.mu.Lock()
+	runtimeID := pool.runtimeID
+	pool.mu.Unlock()
+	if runtimeID != "python:3.10" {
+		t.Fatalf("runtime policy ID = %q, want python:3.10", runtimeID)
+	}
 }
 
 func TestRunTaskCleanupUsesFreshContextPrunesBeforeCopyAndAlwaysReleases(t *testing.T) {

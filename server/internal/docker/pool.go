@@ -16,7 +16,9 @@ import (
 
 	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/resourceunit"
 	"bobocloud-server/internal/ringbuffer"
+	"bobocloud-server/internal/runtimepolicy"
 	"bobocloud-server/internal/security"
 	"bobocloud-server/internal/session"
 )
@@ -171,6 +173,12 @@ func NewPool(
 }
 
 func (dp *Pool) SetMetrics(registry *metrics.Registry) { dp.metrics = registry }
+
+func (dp *Pool) observeQueueDepth() {
+	if dp.metrics != nil && dp.queue != nil {
+		dp.metrics.ObserveQueueDepth(metrics.WorkloadDocker, int64(dp.queue.QueueLen()))
+	}
+}
 
 func (dp *Pool) SetOutputRetentionLimit(limit int) {
 	if limit > 0 {
@@ -555,6 +563,7 @@ func (dp *Pool) DestroyUserContainersContext(ctx context.Context, userID string)
 	dp.mu.Unlock()
 	if dp.queue != nil {
 		dp.queue.RemoveByUser(userID, fmt.Errorf("user %s was deleted", userID))
+		dp.observeQueueDepth()
 	}
 
 	ids, pending, background := dp.snapshotUserContainersForDeletion(userID)
@@ -1014,25 +1023,39 @@ func (dp *Pool) GetUserActive(userID string) int {
 // Acquire 获取容器（Phase 1 兼容，不检查用户配额）。
 // 新代码应使用 AcquireForUser。
 func (dp *Pool) Acquire(ctx context.Context, image string, output session.OutputWriter) (string, error) {
-	return dp.acquireInternal(ctx, "", image, output, "", nil, nil)
+	return dp.acquireInternal(ctx, "", image, image, output, "", nil, nil)
 }
 
 // AcquireForUser 获取容器，同时检查用户配额。
 // userID 为空时跳过配额检查。
 func (dp *Pool) AcquireForUser(ctx context.Context, userID, image string, output session.OutputWriter) (string, error) {
-	return dp.acquireForUser(ctx, userID, image, "", nil, nil, output)
+	return dp.AcquireForUserRuntime(ctx, userID, image, image, output)
+}
+
+// AcquireForUserRuntime keeps the catalog runtime identity separate from its
+// Docker image. AcquireForUser retains the historical image policy key for
+// callers that do not yet supply a runtime ID.
+func (dp *Pool) AcquireForUserRuntime(ctx context.Context, userID, runtimeID, image string, output session.OutputWriter) (string, error) {
+	return dp.acquireForUser(ctx, userID, runtimeID, image, "", nil, nil, output)
 }
 
 // AcquireForUserWithContext acquires a container with build-specific mounts.
 // Reuse requires an exact image, user and cache mount generation match.
 func (dp *Pool) AcquireForUserWithContext(ctx context.Context, userID, image, cacheKey string, volumes, env map[string]string, output session.OutputWriter) (string, error) {
-	if cacheKey == "" {
-		return dp.AcquireForUser(ctx, userID, image, output)
-	}
-	return dp.acquireForUser(ctx, userID, image, cacheKey, volumes, env, output)
+	return dp.AcquireForUserRuntimeWithContext(ctx, userID, image, image, cacheKey, volumes, env, output)
 }
 
-func (dp *Pool) acquireForUser(ctx context.Context, userID, image, cacheKey string, volumes, env map[string]string, output session.OutputWriter) (string, error) {
+// AcquireForUserRuntimeWithContext is the runtime-aware form of
+// AcquireForUserWithContext. The legacy method remains available so existing
+// integrations continue to compile and retain their prior policy behavior.
+func (dp *Pool) AcquireForUserRuntimeWithContext(ctx context.Context, userID, runtimeID, image, cacheKey string, volumes, env map[string]string, output session.OutputWriter) (string, error) {
+	if cacheKey == "" {
+		return dp.AcquireForUserRuntime(ctx, userID, runtimeID, image, output)
+	}
+	return dp.acquireForUser(ctx, userID, runtimeID, image, cacheKey, volumes, env, output)
+}
+
+func (dp *Pool) acquireForUser(ctx context.Context, userID, runtimeID, image, cacheKey string, volumes, env map[string]string, output session.OutputWriter) (string, error) {
 	dp.mu.Lock()
 	closed := dp.closed
 	dp.mu.Unlock()
@@ -1068,7 +1091,7 @@ func (dp *Pool) acquireForUser(ctx context.Context, userID, image, cacheKey stri
 	// 注意：activeCount 包含热池中预创建的空闲容器，故 activeCount >= maxTotal
 	// 并不代表"全部忙"。acquireInternal 在 L3/L4 容量满时会尝试淘汰其它用户的
 	// 空闲热池容器来腾出槽位；只有真正无可复用容器且无法新建时才进入排队。
-	id, err := dp.acquireInternal(ctx, userID, image, output, cacheKey, volumes, env)
+	id, err := dp.acquireInternal(ctx, userID, runtimeID, image, output, cacheKey, volumes, env)
 	if err == nil {
 		return dp.finishUserAcquisition(id, userID)
 	}
@@ -1079,7 +1102,7 @@ func (dp *Pool) acquireForUser(ctx context.Context, userID, image, cacheKey stri
 	dp.mu.Unlock()
 
 	if full && dp.queue != nil && userID != "" {
-		id, err = dp.acquireViaQueue(ctx, userID, image, cacheKey, volumes, env, output)
+		id, err = dp.acquireViaQueue(ctx, userID, runtimeID, image, cacheKey, volumes, env, output)
 		if err == nil {
 			return dp.finishUserAcquisition(id, userID)
 		}
@@ -1107,7 +1130,7 @@ func (dp *Pool) finishUserAcquisition(containerID, userID string) (string, error
 }
 
 // acquireViaQueue 通过请求队列等待容器
-func (dp *Pool) acquireViaQueue(ctx context.Context, userID, image, cacheKey string, volumes, env map[string]string, output session.OutputWriter) (string, error) {
+func (dp *Pool) acquireViaQueue(ctx context.Context, userID, runtimeID, image, cacheKey string, volumes, env map[string]string, output session.OutputWriter) (string, error) {
 	queuedAt := time.Now()
 	defer func() {
 		if dp.metrics != nil {
@@ -1115,8 +1138,11 @@ func (dp *Pool) acquireViaQueue(ctx context.Context, userID, image, cacheKey str
 		}
 	}()
 	if output != nil {
+		dp.mu.Lock()
+		activeCount, maxTotal := dp.activeCount, dp.maxTotal
+		dp.mu.Unlock()
 		output.WriteStatus("docker", fmt.Sprintf("All containers busy (%d/%d), entering queue...",
-			dp.activeCount, dp.maxTotal))
+			activeCount, maxTotal))
 	}
 
 	timeout := dp.queue.Timeout()
@@ -1133,8 +1159,10 @@ func (dp *Pool) acquireViaQueue(ctx context.Context, userID, image, cacheKey str
 			Ctx: ctx, CreatedAt: time.Now(),
 		}
 		if err := dp.queue.Enqueue(req); err != nil {
+			dp.observeQueueDepth()
 			return "", err
 		}
+		dp.observeQueueDepth()
 		// Enqueue first, then recheck deletion. In either ordering, account
 		// deletion can now observe and remove this exact queued request.
 		dp.mu.Lock()
@@ -1142,6 +1170,7 @@ func (dp *Pool) acquireViaQueue(ctx context.Context, userID, image, cacheKey str
 		dp.mu.Unlock()
 		if deleted {
 			dp.queue.Remove(req)
+			dp.observeQueueDepth()
 			return "", fmt.Errorf("user %s is no longer available", userID)
 		}
 
@@ -1153,7 +1182,7 @@ func (dp *Pool) acquireViaQueue(ctx context.Context, userID, image, cacheKey str
 			// Release only signals that capacity may now be available. The
 			// requester acquires its own image/user container so /persist mounts
 			// can never be transferred across users.
-			id, err := dp.acquireInternal(ctx, userID, image, output, cacheKey, volumes, env)
+			id, err := dp.acquireInternal(ctx, userID, runtimeID, image, output, cacheKey, volumes, env)
 			if err == nil {
 				return id, nil
 			}
@@ -1165,10 +1194,12 @@ func (dp *Pool) acquireViaQueue(ctx context.Context, userID, image, cacheKey str
 			// this request's original timeout expires.
 		case <-ctx.Done():
 			dp.queue.Remove(req)
+			dp.observeQueueDepth()
 			return "", fmt.Errorf("queue wait cancelled: %w", ctx.Err())
 		case <-timer.C:
 			dp.queue.Remove(req)
 			dp.queue.RecordTimeout()
+			dp.observeQueueDepth()
 			return "", fmt.Errorf("request timed out after %v waiting for container", timeout)
 		}
 	}
@@ -1176,7 +1207,7 @@ func (dp *Pool) acquireViaQueue(ctx context.Context, userID, image, cacheKey str
 
 // acquireInternal 实际获取容器的内部实现。
 // Phase 3: L1=热池 → L2=空闲复用池 → L3=本地镜像创建 → L4=拉取镜像创建
-func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, output session.OutputWriter, cacheKey string, contextVolumes, contextEnv map[string]string) (string, error) {
+func (dp *Pool) acquireInternal(ctx context.Context, userID, runtimeID, image string, output session.OutputWriter, cacheKey string, contextVolumes, contextEnv map[string]string) (string, error) {
 	// Build an owned, non-nil option set before reserving global capacity. Cache
 	// v2 deliberately has no legacy user defaults, while dependency/toolchain
 	// leases still supply overlays. Merging those overlays into the nil defaults
@@ -1332,7 +1363,7 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, image string, outpu
 		return "", fmt.Errorf("docker pool is shutting down")
 	}
 	defer finishCreate()
-	containerID, err := dp.createContainer(createCtx, image, extraVolumes, extraEnv)
+	containerID, err := dp.createContainer(createCtx, runtimeID, image, extraVolumes, extraEnv)
 	if dp.metrics != nil {
 		dp.metrics.Observe("container.create", time.Since(createStarted))
 	}
@@ -1649,10 +1680,13 @@ func (dp *Pool) wakeNextQueued() {
 		return
 	}
 	if req := dp.queue.DequeueNext(); req != nil {
+		dp.observeQueueDepth()
 		select {
 		case req.ResultCh <- QueueResult{}:
 		default:
 		}
+	} else {
+		dp.observeQueueDepth()
 	}
 }
 
@@ -1950,22 +1984,25 @@ func (dp *Pool) buildUserVolumes(userID, image string) map[string]string {
 	return nil
 }
 
-// memoryLimitForImage returns the Docker memory limit for a given image,
-// overriding the default when the language is known to need more RAM.
-// Rust (cargo build) and Java (Maven) easily exceed 512MB on real projects.
-func memoryLimitForImage(image, defaultLimit string) string {
-	switch {
-	case strings.HasPrefix(image, "rust:"):
-		return "1g"
-	case strings.HasPrefix(image, "openjdk:"):
-		// Only bump if the configured default is 512m or less
-		if defaultLimit == "" || defaultLimit == "512m" || defaultLimit == "256m" {
-			return "1g"
-		}
-		return defaultLimit
-	default:
+// memoryLimitForRuntime applies compiler-specific floors without ever lowering
+// an operator's configured limit. Runtime identity is authoritative because a
+// cross-build or custom runtime may use an image name that does not reveal its
+// language; image prefixes remain a compatibility fallback for legacy callers.
+func memoryLimitForRuntime(runtimeID, image, defaultLimit string) string {
+	minimum := runtimepolicy.MinimumMemoryBytes(runtimeID, "", image)
+	if minimum == 0 {
 		return defaultLimit
 	}
+	configured, err := resourceunit.ParseBytes(defaultLimit)
+	if err == nil && configured >= minimum {
+		return defaultLimit
+	}
+	if strings.TrimSpace(defaultLimit) == "" || err == nil {
+		return "1g"
+	}
+	// Preserve an invalid value so the normal Docker/config validation path
+	// reports it instead of silently replacing an operator typo.
+	return defaultLimit
 }
 
 // buildPersistEnv keeps the no-user call path for callers that do not mount a
@@ -2211,7 +2248,7 @@ func (dp *Pool) replenishHotPool(image, userID string) {
 				}
 				defer finishCreate()
 
-				containerID, err := dp.createContainer(createCtx, image, extraVolumes, extraEnv)
+				containerID, err := dp.createContainer(createCtx, image, image, extraVolumes, extraEnv)
 				if err != nil {
 					if containerID == "" {
 						dp.decActive()
@@ -2450,12 +2487,16 @@ func (dp *Pool) doPull(ctx context.Context, pullName, originalName string, outpu
 
 // ---------- 容器生命周期 ----------
 
-func (dp *Pool) createContainer(ctx context.Context, image string, extraVolumes map[string]string, extraEnv map[string]string) (string, error) {
+func (dp *Pool) createContainer(ctx context.Context, runtimeID, image string, extraVolumes map[string]string, extraEnv map[string]string) (string, error) {
 	if dp.createContainerHook != nil {
 		return dp.createContainerHook(ctx, image, extraVolumes, extraEnv)
 	}
+	policyRuntimeID := strings.TrimSpace(runtimeID)
+	if policyRuntimeID == "" {
+		policyRuntimeID = image
+	}
 	networkFlag := "--network=bridge"
-	if !dp.sec.AllowNetwork(image) {
+	if !dp.sec.AllowNetwork(policyRuntimeID) {
 		networkFlag = "--network=none"
 	}
 
@@ -2463,9 +2504,9 @@ func (dp *Pool) createContainer(ctx context.Context, image string, extraVolumes 
 	if memLimit == "" {
 		memLimit = "512m"
 	}
-	// 编译型语言（Rust/Java）内存消耗大，按镜像覆写为更高限制
+	// 编译型语言（Rust/Java）内存消耗大，按运行时策略覆写为更高限制
 	// 防止 cargo build / mvn compile 被 OOM kill（退出码 137）
-	memLimit = memoryLimitForImage(image, memLimit)
+	memLimit = memoryLimitForRuntime(runtimeID, image, memLimit)
 	cpuLimit := dp.cpuLimit
 	if cpuLimit == "" {
 		cpuLimit = "1.0"

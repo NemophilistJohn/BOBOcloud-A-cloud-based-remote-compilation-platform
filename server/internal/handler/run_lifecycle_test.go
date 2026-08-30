@@ -110,6 +110,23 @@ func callRunCode(t *testing.T, handler http.Handler, runID string) (*httptest.Re
 	return recorder, response
 }
 
+func TestRunCodeRejectsHostExecutorInMultiUserMode(t *testing.T) {
+	handler, _, _ := newRunLifecycleHTTPHandler(t)
+	handler.authEnabled = true
+	recorder := httptest.NewRecorder()
+	handler.handleRunCode(recorder, httptest.NewRequest(http.MethodPost, "/api", nil), &model.Request{
+		FolderName: "project",
+		FilePath:   "main.go",
+	})
+	var response model.Response
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusBadRequest || response.Success || response.ErrorCode != "local_runtime_unavailable" {
+		t.Fatalf("multi-user local run response: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func issueRunCode(handler http.Handler, runID string) (*httptest.ResponseRecorder, model.Response, error) {
 	body, err := json.Marshal(map[string]string{
 		"action":     "runCode",

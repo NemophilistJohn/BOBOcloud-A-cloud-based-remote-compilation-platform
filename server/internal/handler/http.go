@@ -29,6 +29,7 @@ import (
 	"bobocloud-server/internal/packagecatalog"
 	"bobocloud-server/internal/packageops"
 	"bobocloud-server/internal/personalcache"
+	"bobocloud-server/internal/resourcecontrol"
 	"bobocloud-server/internal/session"
 	"bobocloud-server/internal/storage"
 )
@@ -111,6 +112,7 @@ type HTTPHandler struct {
 	PackagePlans        *packageops.Store
 	RuntimeMetadata     RuntimeMetadataProvider
 	Metrics             *metrics.Registry
+	Resources           *resourcecontrol.Controller
 	Readiness           ReadinessProbe // 无认证 /readyz 的依赖检查；由 main 在组件装配后注入
 	Accepting           func() bool    // nil keeps legacy embedders accepting work
 	AcquireWork         func(string) (func(), error)
@@ -565,6 +567,14 @@ func (h *HTTPHandler) handleRunTask(w http.ResponseWriter, r *http.Request, req 
 func (h *HTTPHandler) handleRun(w http.ResponseWriter, r *http.Request, req *model.Request, taskMode bool) {
 	if req.FolderName == "" || (!taskMode && req.FilePath == "") {
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "filePath and folderName are required"})
+		return
+	}
+	if !taskMode && h.authEnabled && strings.TrimSpace(req.Runtime) == "" {
+		writeJSON(w, http.StatusBadRequest, model.Response{
+			Success:   false,
+			Error:     "The local host executor is unavailable in multi-user mode; select a Docker runtime",
+			ErrorCode: "local_runtime_unavailable",
+		})
 		return
 	}
 	if taskMode {
@@ -1056,6 +1066,23 @@ func (h *HTTPHandler) handleTerminal(w http.ResponseWriter, r *http.Request, req
 	}
 
 	userID := auth.UserIDFromContext(r.Context())
+	terminalResourceLease, resourceErr := acquireHandlerRuntimeResource(
+		r.Context(), h.Resources, resourcecontrol.WorkloadTerminal, userID, resourceScope("terminal-http", userID), "terminal-http:"+auth.GenerateToken(),
+		rt.RuntimeID, rt.Language, rt.DockerImage, true,
+	)
+	if resourceErr != nil {
+		writeResourcePressure(w)
+		return
+	}
+	terminalResourceOwnedByRequest := terminalResourceLease != nil
+	releaseTerminalResource := func() {
+		releaseHandlerResource(terminalResourceLease)
+	}
+	defer func() {
+		if terminalResourceOwnedByRequest {
+			releaseTerminalResource()
+		}
+	}()
 	if h.Lifecycle != nil && userID != "" {
 		activity, leaseErr := h.Lifecycle.AcquireActivity(userID, "")
 		if leaseErr != nil {
@@ -1066,16 +1093,18 @@ func (h *HTTPHandler) handleTerminal(w http.ResponseWriter, r *http.Request, req
 	}
 	slog.Info("Terminal", "user_id", userID, "runtime", runtimeID, "command", req.Command)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(h.Config.DockerTerminalTimeout)*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(h.Config.DockerTerminalTimeout)*time.Second)
 	defer cancel()
 	ctx, finalizeContainerCleanup := WithDeferredContainerCleanup(ctx)
 	var persistOperation *personalcache.Operation
 	defer func() {
-		var release func()
-		if persistOperation != nil {
-			release = persistOperation.Release
-		}
-		finalizeContainerCleanup(release)
+		terminalResourceOwnedByRequest = false
+		finalizeContainerCleanup(func() {
+			if persistOperation != nil {
+				persistOperation.Release()
+			}
+			releaseTerminalResource()
+		})
 	}()
 	var err error
 	if h.PersonalCache != nil {

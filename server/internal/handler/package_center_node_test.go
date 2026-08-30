@@ -34,6 +34,7 @@ func writeHandlerNodePackage(t *testing.T, nodeModules, relative, name, version 
 func TestNodePackageCenterPlansAndPublishesNPMDependencyGeneration(t *testing.T) {
 	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
 	configurePackageCenterTestHandler(handler, dataRoot)
+	handler.Resources = newTestResourceController(t, 1)
 	handler.EnvironmentSetup = func(context.Context, string, string, string, []string) (string, string, int, error) {
 		return "", "", 0, nil
 	}
@@ -46,6 +47,9 @@ func TestNodePackageCenterPlansAndPublishesNPMDependencyGeneration(t *testing.T)
 	lockResolutionCalls := 0
 	handler.PackageLockResolver = func(_ context.Context, request PackageLockResolutionRequest) (PackageLockResolutionResult, error) {
 		lockResolutionCalls++
+		if snapshot := handler.Resources.Snapshot(); snapshot.Used.Slots != 1 || len(snapshot.Leases) != 1 {
+			t.Fatalf("Node lock resolver resource lease = %+v", snapshot)
+		}
 		if request.Manager != "npm" || request.ManifestPath != "package.json" || request.LockfilePath != "package-lock.json" || request.RegistryURL != "https://registry.npmjs.org/" {
 			t.Fatalf("lock resolution request = %+v", request)
 		}
@@ -66,6 +70,9 @@ func TestNodePackageCenterPlansAndPublishesNPMDependencyGeneration(t *testing.T)
 	planRecorder, planEnvelope := callProjectEnvironment(t, handler, `{"action":"planProjectPackageChanges","folderName":"Project","folderKey":"project-key","runtime":"node:20","language":"node","sourceId":"npm-official","changes":[{"operation":"add","name":"lodash","version":"4.17.21","scope":"runtime"}]}`)
 	if planRecorder.Code != http.StatusOK || !planEnvelope.Success {
 		t.Fatalf("Node plan response: %s", planRecorder.Body.String())
+	}
+	if snapshot := handler.Resources.Snapshot(); snapshot.Used.Slots != 0 || len(snapshot.Leases) != 0 {
+		t.Fatalf("Node lock resolver leaked resources after plan: %+v", snapshot)
 	}
 	var plan model.ProjectPackageChangePlan
 	if err := json.Unmarshal(planEnvelope.Data, &plan); err != nil {
@@ -140,6 +147,9 @@ func TestNodePackageCenterPlansAndPublishesNPMDependencyGeneration(t *testing.T)
 	removeRecorder, removeEnvelope := callProjectEnvironment(t, handler, `{"action":"planProjectPackageChanges","folderName":"Project","folderKey":"project-key","runtime":"node:20","language":"node","sourceId":"npm-official","changes":[{"operation":"remove","name":"lodash","scope":"runtime"}]}`)
 	if removeRecorder.Code != http.StatusOK || !removeEnvelope.Success {
 		t.Fatalf("Node remove plan response: %s", removeRecorder.Body.String())
+	}
+	if snapshot := handler.Resources.Snapshot(); snapshot.Used.Slots != 0 || len(snapshot.Leases) != 0 {
+		t.Fatalf("Node lock resolver leaked resources after removal plan: %+v", snapshot)
 	}
 	var removePlan model.ProjectPackageChangePlan
 	if err := json.Unmarshal(removeEnvelope.Data, &removePlan); err != nil {

@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -12,6 +13,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"bobocloud-server/internal/resourcecontrol"
 )
 
 type SessionContext struct {
@@ -31,6 +34,8 @@ type SessionContext struct {
 	DependencyResolved     bool
 	SharedDependencies     *SharedDependencies
 	DependencyStoreRelease func()
+	ProcessContext         context.Context
+	ResourceLease          *resourcecontrol.Lease
 }
 
 // SharedDependencies is a server-issued, non-exclusive lease over a team's

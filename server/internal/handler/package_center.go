@@ -22,6 +22,7 @@ import (
 	"bobocloud-server/internal/packagecatalog"
 	"bobocloud-server/internal/packageops"
 	"bobocloud-server/internal/personalcache"
+	"bobocloud-server/internal/resourcecontrol"
 	"bobocloud-server/internal/safefile"
 )
 
@@ -481,13 +482,25 @@ func (h *HTTPHandler) planProjectPackageChanges(w http.ResponseWriter, r *http.R
 		if managerID == "pnpm" {
 			lockfilePath = "pnpm-lock.yaml"
 		}
-		lockContext, cancelLock := context.WithTimeout(r.Context(), time.Duration(h.packageOperationTimeoutSeconds())*time.Second)
-		lockResult, lockErr := h.PackageLockResolver(lockContext, PackageLockResolutionRequest{
-			UserID: auth.UserIDFromContext(r.Context()), RuntimeID: environment.Runtime.ID, WorkspaceRoot: resolved.root,
-			Manager: managerID, ManifestPath: manifestPath, ManifestContent: []byte(nodePlan.ManifestContent),
-			LockfilePath: lockfilePath, RegistryURL: source.InstallURL,
-		})
-		cancelLock()
+		userID := auth.UserIDFromContext(r.Context())
+		lockResourceLease, resourceErr := acquireHandlerRuntimeResource(
+			r.Context(), h.Resources, resourcecontrol.WorkloadPackage, userID, environmentResourceScope(environment), "package-lock:"+environment.Workspace.ID,
+			environment.Runtime.ID, environment.Language.ID, environment.Runtime.Image, true,
+		)
+		if resourceErr != nil {
+			writeResourcePressure(w)
+			return
+		}
+		lockResult, lockErr := func() (PackageLockResolutionResult, error) {
+			defer releaseHandlerResource(lockResourceLease)
+			lockContext, cancelLock := context.WithTimeout(r.Context(), time.Duration(h.packageOperationTimeoutSeconds())*time.Second)
+			defer cancelLock()
+			return h.PackageLockResolver(lockContext, PackageLockResolutionRequest{
+				UserID: userID, RuntimeID: environment.Runtime.ID, WorkspaceRoot: resolved.root,
+				Manager: managerID, ManifestPath: manifestPath, ManifestContent: []byte(nodePlan.ManifestContent),
+				LockfilePath: lockfilePath, RegistryURL: source.InstallURL,
+			})
+		}()
 		if lockErr != nil || len(lockResult.Content) == 0 {
 			message := "The Node lockfile could not be resolved"
 			if lockErr != nil {
@@ -921,6 +934,23 @@ func (h *HTTPHandler) applyProjectPackageChanges(w http.ResponseWriter, r *http.
 			return
 		}
 	}
+	packageResourceLease, resourceErr := acquireHandlerRuntimeResource(
+		r.Context(), h.Resources, resourcecontrol.WorkloadPackage, userID, environmentResourceScope(environment), planID,
+		environment.Runtime.ID, environment.Language.ID, environment.Runtime.Image, true,
+	)
+	if resourceErr != nil {
+		writeResourcePressure(w)
+		return
+	}
+	packageResourceOwnedByRequest := packageResourceLease != nil
+	releasePackageResource := func() {
+		releaseHandlerResource(packageResourceLease)
+	}
+	defer func() {
+		if packageResourceOwnedByRequest {
+			releasePackageResource()
+		}
+	}()
 	if h.Lifecycle != nil {
 		activity, leaseErr := h.Lifecycle.AcquireActivity(userID, resolved.folderKey)
 		if leaseErr != nil {
@@ -950,8 +980,10 @@ func (h *HTTPHandler) applyProjectPackageChanges(w http.ResponseWriter, r *http.
 		if abort && dependencyLease != nil {
 			dependencyLease.Abort()
 		}
+		packageResourceOwnedByRequest = false
 		finalizeContainerCleanup(func() {
 			releasePackageCaches()
+			releasePackageResource()
 			if released != nil {
 				released()
 			}

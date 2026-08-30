@@ -904,6 +904,7 @@ func TestFailedProjectEnvironmentSetupDoesNotPublishStagedDependencies(t *testin
 func TestProjectEnvironmentRetainsCacheAndQuotaUntilContainerRemoval(t *testing.T) {
 	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
 	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8, ReservationFiles: 1})
+	handler.Resources = newTestResourceController(t, 1)
 	workspace := filepath.Join(serverRoot, "project-key")
 	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
 	cleanup := make(chan struct{})
@@ -940,18 +941,21 @@ func TestProjectEnvironmentRetainsCacheAndQuotaUntilContainerRemoval(t *testing.
 	if info := handler.PersonalCache.Inspect("default", 0); info.ReservedBytes == 0 || info.ReservedFiles == 0 {
 		t.Fatalf("active cleanup released quota ownership: %+v", info)
 	}
+	if snapshot := handler.Resources.Snapshot(); snapshot.Used.Slots != 1 || len(snapshot.Leases) != 1 {
+		t.Fatalf("active cleanup released package resources: %+v", snapshot)
+	}
 
 	close(cleanup)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		info := handler.PersonalCache.Inspect("default", 0)
 		_, statErr := os.Stat(dependencyRoot)
-		if info.ReservedBytes == 0 && info.ReservedFiles == 0 && os.IsNotExist(statErr) {
+		if info.ReservedBytes == 0 && info.ReservedFiles == 0 && os.IsNotExist(statErr) && handler.Resources.Snapshot().Used.Slots == 0 {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("cache/quota ownership was not released after cleanup: info=%+v stat=%v", handler.PersonalCache.Inspect("default", 0), func() error { _, err := os.Stat(dependencyRoot); return err }())
+	t.Fatalf("cache/quota/resource ownership was not released after cleanup: info=%+v resources=%+v stat=%v", handler.PersonalCache.Inspect("default", 0), handler.Resources.Snapshot(), func() error { _, err := os.Stat(dependencyRoot); return err }())
 }
 
 func TestProjectEnvironmentApplyRejectsStaleRevisionBeforeExecution(t *testing.T) {

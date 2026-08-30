@@ -25,6 +25,7 @@ import (
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/packagecatalog"
 	"bobocloud-server/internal/personalcache"
+	"bobocloud-server/internal/resourcecontrol"
 )
 
 const (
@@ -1929,8 +1930,11 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: plan.Reason, Data: plan})
 		return
 	}
-	if h.EnvironmentSetup == nil {
-		writeJSON(w, http.StatusServiceUnavailable, model.Response{Success: false, Error: "Controlled environment executor is not configured", Data: plan})
+	if h.EnvironmentSetup == nil || h.PersonalCache == nil {
+		writeJSON(w, http.StatusServiceUnavailable, model.Response{
+			Success: false, Error: "Controlled environment installation requires both the executor and managed project dependency cache",
+			ErrorCode: "environment_service_unavailable", Data: plan,
+		})
 		return
 	}
 	userID := auth.UserIDFromContext(r.Context())
@@ -1950,6 +1954,23 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 			return
 		}
 	}
+	environmentResourceLease, resourceErr := acquireHandlerRuntimeResource(
+		r.Context(), h.Resources, resourcecontrol.WorkloadPackage, userID, environmentResourceScope(environment), "environment:"+workspaceKey+":"+action,
+		environment.Runtime.ID, environment.Language.ID, environment.Runtime.Image, true,
+	)
+	if resourceErr != nil {
+		writeResourcePressure(w)
+		return
+	}
+	environmentResourceOwnedByRequest := environmentResourceLease != nil
+	releaseEnvironmentResource := func() {
+		releaseHandlerResource(environmentResourceLease)
+	}
+	defer func() {
+		if environmentResourceOwnedByRequest {
+			releaseEnvironmentResource()
+		}
+	}()
 	if h.Lifecycle != nil {
 		if action == "rebuild" {
 			mutation, leaseErr := h.Lifecycle.BeginUserMutation(userID)
@@ -1991,6 +2012,25 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 	defer cancel()
 	ctx, finalizeContainerCleanup := WithDeferredContainerCleanup(ctx)
 	var dependencyLease *personalcache.Lease
+	environmentResourcesFinalized := false
+	finalizeEnvironmentResources := func(abort bool, released func()) {
+		if environmentResourcesFinalized {
+			return
+		}
+		environmentResourcesFinalized = true
+		if abort && dependencyLease != nil {
+			dependencyLease.Abort()
+		}
+		environmentResourceOwnedByRequest = false
+		finalizeContainerCleanup(func() {
+			h.releasePersonalCacheLease(dependencyLease, personalDependencyRefreshScope(userID, resolved.folderKey, environment.Runtime.ID, environment.Language.ID))
+			releaseEnvironmentResource()
+			if released != nil {
+				released()
+			}
+		})
+	}
+	defer finalizeEnvironmentResources(true, nil)
 	if h.PersonalCache != nil {
 		dependencyLease, err = h.PersonalCache.Prepare(ctx, h.environmentCacheRequest(r, req, resolved, environment.Runtime, environment.Language.ID))
 		if err != nil {
@@ -2014,15 +2054,8 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 		if guard := dependencyLease.StartGuard(ctx); guard != nil && guard.Err() != nil {
 			execErr = guard.Err()
 		}
-		if execErr != nil || exitCode != 0 {
-			dependencyLease.Abort()
-		}
-		finalizeContainerCleanup(func() {
-			h.releasePersonalCacheLease(dependencyLease, personalDependencyRefreshScope(userID, resolved.folderKey, environment.Runtime.ID, environment.Language.ID))
-		})
-	} else {
-		finalizeContainerCleanup(nil)
 	}
+	finalizeEnvironmentResources(execErr != nil || exitCode != 0, nil)
 	if execErr != nil || exitCode != 0 {
 		message := "Environment setup failed"
 		if execErr != nil {

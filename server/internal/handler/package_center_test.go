@@ -240,6 +240,7 @@ func TestPackageCenterRevisionRejectsChangedLanguageRequestContext(t *testing.T)
 func TestPackageCenterApplyPanicReleasesPackageCacheLeases(t *testing.T) {
 	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
 	configurePackageCenterTestHandler(handler, dataRoot)
+	handler.Resources = newTestResourceController(t, 1)
 	handler.EnvironmentSetup = func(context.Context, string, string, string, []string) (string, string, int, error) {
 		return "", "", 0, nil
 	}
@@ -294,15 +295,25 @@ func TestPackageCenterApplyPanicReleasesPackageCacheLeases(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("container cleanup ownership was not retained before panic unwind")
 	}
+	if snapshot := handler.Resources.Snapshot(); snapshot.Used.Slots != 1 || len(snapshot.Leases) != 1 {
+		t.Fatalf("package panic released resources before container cleanup: %+v", snapshot)
+	}
 	close(allowCleanup)
 	select {
 	case <-cleanupReturned:
 	case <-time.After(time.Second):
 		t.Fatal("container cleanup did not return")
 	}
+	deadline := time.Now().Add(time.Second)
+	for handler.Resources.Snapshot().Used.Slots != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("package panic cleanup leaked resource lease: %+v", handler.Resources.Snapshot())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	var inventory cachev2.Inventory
-	deadline := time.Now().Add(time.Second)
+	deadline = time.Now().Add(time.Second)
 	for {
 		inventory, err = handler.PersonalCache.Catalog("default", 0)
 		if err != nil {

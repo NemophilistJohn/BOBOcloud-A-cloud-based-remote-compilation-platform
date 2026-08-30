@@ -64,13 +64,41 @@ func TestAcquireCacheV2ContextPanicReleasesReservations(t *testing.T) {
 	}, nil)
 }
 
+func TestAcquireRuntimeContextUsesRuntimeIDForNetworkPolicy(t *testing.T) {
+	const (
+		runtimeID = "python:3.10"
+		image     = "registry.example/python-build:stable"
+	)
+	nonDirectory := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(nonDirectory, []byte("occupied"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var policyKey string
+	pool := newCacheV2AcquireTestPool(image, testPoolPolicy{networkPolicyKey: &policyKey})
+
+	_, err := pool.AcquireForUserRuntimeWithContext(context.Background(), "alice", runtimeID, image, "personal/project@generation", map[string]string{
+		nonDirectory: "/project-deps",
+	}, nil, nil)
+	if err == nil {
+		t.Fatal("invalid bind source unexpectedly created a container")
+	}
+	if policyKey != runtimeID {
+		t.Fatalf("network policy key = %q, want runtime ID %q", policyKey, runtimeID)
+	}
+	assertCacheV2AcquireReservationsReleased(t, pool)
+}
+
 type testPoolPolicy struct {
-	panicOnNetwork bool
+	panicOnNetwork   bool
+	networkPolicyKey *string
 }
 
 func (policy testPoolPolicy) AllowCommand(string) bool { return true }
 
-func (policy testPoolPolicy) AllowNetwork(string) bool {
+func (policy testPoolPolicy) AllowNetwork(runtimeID string) bool {
+	if policy.networkPolicyKey != nil {
+		*policy.networkPolicyKey = runtimeID
+	}
 	if policy.panicOnNetwork {
 		panic("injected network policy panic")
 	}
