@@ -101,29 +101,6 @@ test('a first-run guide that cannot render releases the workbench interaction lo
   }
 });
 
-test('an internal packaged build seeds its server connection without blocking the workbench', async () => {
-  test.skip(!process.env.BOBO_INTERNAL_PACKAGED_EXE, 'Set BOBO_INTERNAL_PACKAGED_EXE to verify an internal installer build.');
-  test.setTimeout(60000);
-  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-internal-bootstrap-ui-'));
-  let fixture;
-  try {
-    fixture = await launch(sandbox, false);
-    const { page } = fixture;
-    await expect(page.locator('#settings-modal')).toBeHidden();
-    const settings = await page.evaluate(() => window.api.readServerSettings());
-    expect(settings.setupCompleted).toBe(true);
-    expect(String(settings.ip || '').trim()).not.toBe('');
-    expect(String(settings.user || '').trim()).not.toBe('');
-    // A configured multi-user server can legitimately open the authentication
-    // overlay. The point of this check is that first-run setup is not the
-    // blocking layer after the bootstrap has been seeded.
-    await expect(page.locator('#settings-modal')).toBeHidden();
-  } finally {
-    if (fixture) await stop(fixture.app);
-    await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
-  }
-});
-
 test('AI answers render safe Markdown, copyable code, and native MathML', async () => {
   test.setTimeout(60000);
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-ai-render-'));

@@ -3,17 +3,19 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createPluginController } = require('../main/plugins');
+const { resolvePluginArtifact, shouldSkipMissingArtifact } = require('./support/plugin-artifact');
 
 const PLUGIN_ID = 'bobocloud.document-preview';
-const PLUGIN_REPOSITORY = path.resolve(process.cwd(), '..', '..', 'my-electron-app', 'bobocloud-document-preview');
-function resolveArtifact() {
-  const packageFile = path.join(PLUGIN_REPOSITORY, 'package.json');
-  if (!fs.existsSync(packageFile)) return '';
-  const version = JSON.parse(fs.readFileSync(packageFile, 'utf8')).version;
-  return path.join(PLUGIN_REPOSITORY, 'artifacts', `${PLUGIN_ID}-${version}.boboplugin`);
-}
-
-const ARTIFACT = resolveArtifact();
+const PLUGIN_REPOSITORY = process.env.BOBO_DOCUMENT_PREVIEW_PLUGIN_DIR
+  ? path.resolve(process.env.BOBO_DOCUMENT_PREVIEW_PLUGIN_DIR)
+  : path.resolve(__dirname, '..', '..', '..', 'bobocloud-document-preview');
+const ARTIFACT_INFO = resolvePluginArtifact({
+  artifactEnv: 'BOBO_DOCUMENT_PREVIEW_PLUGIN_ARTIFACT',
+  pluginId: PLUGIN_ID,
+  repositoryRoot: PLUGIN_REPOSITORY,
+  versionEnv: 'BOBO_DOCUMENT_PREVIEW_PLUGIN_VERSION'
+});
+const ARTIFACT = ARTIFACT_INFO.artifactPath;
 
 function electronPath() {
   const dist = path.join(process.cwd(), 'node_modules', 'electron', 'dist');
@@ -75,7 +77,7 @@ async function activeDocumentFrame(page) {
 }
 
 test('official document preview renders four formats while retaining an opaque isolated boundary', async () => {
-  test.skip(!fs.existsSync(ARTIFACT), 'Document preview artifact is not present in the project-root plugin repository.');
+  test.skip(shouldSkipMissingArtifact(ARTIFACT_INFO, 'Document preview plugin artifact'), 'Document preview artifact is not present beside the app repository.');
   test.setTimeout(120000);
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-document-preview-ui-'));
   const workspace = path.join(sandbox, 'workspace');

@@ -92,6 +92,46 @@
 .settings-foot { display: none; }
 .settings-foot.active { display: flex; }
 
+.theme-choice-list { display: grid; gap: 6px; }
+.theme-choice {
+  position: relative; display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto 18px;
+  align-items: center; gap: var(--space-3);
+  min-height: 48px; box-sizing: border-box; padding: 7px 10px;
+  border: 1px solid var(--border-default); border-radius: var(--radius-md);
+  background: var(--bg-surface); cursor: pointer;
+  transition: border-color var(--dur-fast), background-color var(--dur-fast), box-shadow var(--dur-fast);
+}
+.theme-choice:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+.theme-choice:has(.theme-choice-radio:checked) {
+  border-color: var(--brand); background: var(--brand-muted);
+  box-shadow: inset 2px 0 0 var(--brand);
+}
+.theme-choice:has(.theme-choice-radio:focus-visible) {
+  outline: 2px solid var(--blue); outline-offset: 2px;
+}
+.theme-choice-name {
+  min-width: 0; overflow: hidden; color: var(--text-primary);
+  font-size: var(--text-base); font-weight: var(--weight-medium);
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.theme-choice-swatches { display: grid; grid-template-columns: repeat(5, 22px); gap: 3px; }
+.theme-choice-swatch {
+  width: 22px; height: 18px; box-sizing: border-box;
+  border: 1px solid rgba(127, 127, 127, 0.24); border-radius: 3px;
+}
+.theme-choice-radio {
+  appearance: none; width: 18px; height: 18px; margin: 0;
+  border: 1.5px solid var(--text-tertiary); border-radius: 50%;
+  background: var(--bg-elevated); cursor: pointer;
+  transition: border-color var(--dur-fast), background-color var(--dur-fast), box-shadow var(--dur-fast);
+}
+.theme-choice-radio:checked {
+  border-color: var(--brand); background: var(--brand);
+  box-shadow: inset 0 0 0 4px var(--bg-elevated);
+}
+.theme-choice-radio:focus { outline: none; }
+
 .server-first-run-intro {
   display: flex; align-items: flex-start; gap: var(--space-3);
   padding: var(--space-4); border: 1px solid var(--brand-border);
@@ -213,6 +253,9 @@
 .lsp-client-cache-detail[hidden] { display: none; }
 
 @media (max-width: 620px) {
+  .theme-choice { grid-template-columns: minmax(82px, 1fr) auto 18px; gap: var(--space-2); }
+  .theme-choice-swatches { grid-template-columns: repeat(5, 16px); }
+  .theme-choice-swatch { width: 16px; }
   .lsp-mode-selector { grid-template-columns: 1fr; }
   .lsp-mode-option > span { min-height: 0; }
   .lsp-section-heading { flex-direction: column; }

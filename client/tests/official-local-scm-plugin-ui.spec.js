@@ -4,17 +4,19 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createPluginController } = require('../main/plugins');
+const { resolvePluginArtifact, shouldSkipMissingArtifact } = require('./support/plugin-artifact');
 
 const PLUGIN_ID = 'bobocloud.local-scm';
-const ARTIFACT = process.env.BOBO_LOCAL_SCM_PLUGIN_ARTIFACT || path.resolve(
-  __dirname,
-  '..',
-  '..',
-  '..',
-  'official-local-scm-plugin',
-  'artifacts',
-  'bobocloud.local-scm-1.2.1.boboplugin'
-);
+const PLUGIN_ROOT = process.env.BOBO_LOCAL_SCM_PLUGIN_DIR
+  ? path.resolve(process.env.BOBO_LOCAL_SCM_PLUGIN_DIR)
+  : path.resolve(__dirname, '..', '..', '..', 'official-local-scm-plugin');
+const ARTIFACT_INFO = resolvePluginArtifact({
+  artifactEnv: 'BOBO_LOCAL_SCM_PLUGIN_ARTIFACT',
+  pluginId: PLUGIN_ID,
+  repositoryRoot: PLUGIN_ROOT,
+  versionEnv: 'BOBO_LOCAL_SCM_PLUGIN_VERSION'
+});
+const ARTIFACT = ARTIFACT_INFO.artifactPath;
 
 function electronPath() {
   const dist = path.join(process.cwd(), 'node_modules', 'electron', 'dist');
@@ -70,7 +72,7 @@ async function installEnabledPluginBeforeLaunch(userData, workspace) {
 }
 
 test('official local SCM plugin accepts cross-realm broker data and controls file-tree status', async () => {
-  test.skip(!fs.existsSync(ARTIFACT), 'Official plugin checkout/artifact is not present beside the app repository.');
+  test.skip(shouldSkipMissingArtifact(ARTIFACT_INFO, 'Official local SCM plugin artifact'), 'Official plugin checkout/artifact is not present beside the app repository.');
   test.setTimeout(120000);
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-official-scm-ui-'));
   const workspace = path.join(sandbox, 'workspace');
@@ -224,7 +226,7 @@ test('official local SCM plugin accepts cross-realm broker data and controls fil
 });
 
 test('official local SCM treats an unborn repository as a first-publish workflow', async () => {
-  test.skip(!fs.existsSync(ARTIFACT), 'Official plugin checkout/artifact is not present beside the app repository.');
+  test.skip(shouldSkipMissingArtifact(ARTIFACT_INFO, 'Official local SCM plugin artifact'), 'Official plugin checkout/artifact is not present beside the app repository.');
   test.setTimeout(120000);
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-official-scm-unborn-ui-'));
   const workspace = path.join(sandbox, 'workspace');
@@ -296,7 +298,7 @@ test('official local SCM treats an unborn repository as a first-publish workflow
 });
 
 test('a preinstalled source-control plugin cannot block built-in sidebars after opening a workspace', async () => {
-  test.skip(!fs.existsSync(ARTIFACT), 'Official plugin checkout/artifact is not present beside the app repository.');
+  test.skip(shouldSkipMissingArtifact(ARTIFACT_INFO, 'Official local SCM plugin artifact'), 'Official plugin checkout/artifact is not present beside the app repository.');
   test.setTimeout(120000);
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-official-scm-preinstalled-ui-'));
   const workspace = path.join(sandbox, 'workspace');

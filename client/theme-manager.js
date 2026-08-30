@@ -253,7 +253,12 @@
   function getCurrentTheme() { return currentThemeId; }
   function listThemes() {
     return Object.keys(palettes).map(function(id) {
-      return { id: id, label: palettes[id].label };
+      var palette = palettes[id];
+      return {
+        id: id,
+        label: palette.label,
+        colors: [palette.bgDeep, palette.bgSurface, palette.textPrimary, palette.brand, palette.blue]
+      };
     });
   }
   function toggleTheme() {

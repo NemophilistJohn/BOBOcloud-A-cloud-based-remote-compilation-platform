@@ -143,6 +143,109 @@ test('settings keeps a stable frame and scrolls only the active pane region', as
   }
 });
 
+test('theme choices show real palette colors and apply only after confirmation', async () => {
+  test.setTimeout(60000);
+  let fixture;
+  try {
+    fixture = await launchIsolatedApp('bobo-theme-choices-');
+    const { page } = fixture;
+    await page.setViewportSize({ width: 1200, height: 800 });
+    expect(page.url()).toMatch(/^file:.*\/index\.html$/i);
+    await expect(page).toHaveTitle('BOBOCLOUD Editor');
+    await expect(page.locator('vite-error-overlay, #webpack-dev-server-client-overlay, nextjs-portal')).toHaveCount(0);
+    await page.evaluate(() => window.BOBO.settings.open('local'));
+
+    const list = page.locator('#settings-theme-list');
+    const rows = page.locator('.theme-choice');
+    await expect(list).toBeVisible();
+    await expect(page.locator('#settings-theme-select')).toHaveCount(0);
+    await expect(rows).toHaveCount(5);
+    await expect(page.locator('.theme-choice-radio:checked')).toHaveCount(1);
+    await expect(page.locator('.theme-choice[data-theme-id="cloud-forge"] .theme-choice-radio')).toBeChecked();
+    const layout = await list.evaluate(element => ({
+      fits: element.scrollWidth <= element.clientWidth + 1,
+      rows: Array.from(element.querySelectorAll('.theme-choice')).map(row => {
+        const name = row.querySelector('.theme-choice-name').getBoundingClientRect();
+        const swatches = row.querySelector('.theme-choice-swatches').getBoundingClientRect();
+        const radio = row.querySelector('.theme-choice-radio').getBoundingClientRect();
+        return {
+          height: row.getBoundingClientRect().height,
+          ordered: name.right <= swatches.left + 1 && swatches.right <= radio.left + 1,
+          swatchCount: row.querySelectorAll('.theme-choice-swatch').length,
+          colorsVisible: Array.from(row.querySelectorAll('.theme-choice-swatch')).every(swatch => getComputedStyle(swatch).backgroundColor !== 'rgba(0, 0, 0, 0)'),
+          radioRadius: getComputedStyle(row.querySelector('.theme-choice-radio')).borderRadius
+        };
+      })
+    }));
+    expect(layout.fits).toBe(true);
+    for (const row of layout.rows) {
+      expect(row.height).toBeGreaterThanOrEqual(47);
+      expect(row.height).toBeLessThanOrEqual(49);
+      expect(row.ordered).toBe(true);
+      expect(row.swatchCount).toBe(5);
+      expect(row.colorsVisible).toBe(true);
+      expect(row.radioRadius).toBe('50%');
+    }
+
+    await page.locator('.theme-choice[data-theme-id="monokai"]').click();
+    await expect(page.locator('.theme-choice[data-theme-id="monokai"] .theme-choice-radio')).toBeChecked();
+    expect(await page.evaluate(() => ({
+      current: window.themeManager.getCurrentTheme(),
+      stored: localStorage.getItem('bobocloud.theme')
+    }))).toEqual({ current: 'cloud-forge', stored: 'cloud-forge' });
+
+    await page.locator('#settings-save-local').click();
+    await expect(page.locator('#settings-modal')).toBeHidden();
+    expect(await page.evaluate(() => ({
+      current: window.themeManager.getCurrentTheme(),
+      stored: localStorage.getItem('bobocloud.theme'),
+      background: document.documentElement.style.getPropertyValue('--bg-deep'),
+      brand: document.documentElement.style.getPropertyValue('--brand')
+    }))).toEqual({ current: 'monokai', stored: 'monokai', background: '#272822', brand: '#A6E22E' });
+
+    await page.evaluate(() => window.BOBO.settings.open('local'));
+    await expect(page.locator('.theme-choice[data-theme-id="monokai"] .theme-choice-radio')).toBeChecked();
+    await page.screenshot({ path: evidencePath('theme-choice-list-monokai.png'), fullPage: false });
+
+    await page.locator('.theme-choice[data-theme-id="monokai"] .theme-choice-radio').focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('.theme-choice[data-theme-id="dracula"] .theme-choice-radio')).toBeChecked();
+    await page.locator('.theme-choice[data-theme-id="monokai"]').click();
+    const toast = page.locator('#toast-container .toast');
+    if (await toast.count()) await toast.click();
+    await expect(toast).toHaveCount(0);
+    await page.evaluate(() => window.BOBO.i18n.setLocale('zh-CN'));
+    await expect(page.locator('.theme-choice[data-theme-id="light"] .theme-choice-name')).toHaveText('浅色');
+    await page.evaluate(() => window.BOBO.i18n.setLocale('ja'));
+    await expect(page.locator('.theme-choice[data-theme-id="light"] .theme-choice-name')).toHaveText('ライト');
+    await page.evaluate(() => window.BOBO.i18n.setLocale('zh-CN'));
+    await page.setViewportSize({ width: 650, height: 640 });
+    const compact = await list.evaluate(element => ({
+      fits: element.scrollWidth <= element.clientWidth + 1,
+      viewportFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
+      rowsOrdered: Array.from(element.querySelectorAll('.theme-choice')).every(row => {
+        const name = row.querySelector('.theme-choice-name').getBoundingClientRect();
+        const swatches = row.querySelector('.theme-choice-swatches').getBoundingClientRect();
+        const radio = row.querySelector('.theme-choice-radio').getBoundingClientRect();
+        return name.right <= swatches.left + 1 && swatches.right <= radio.left + 1;
+      })
+    }));
+    expect(compact).toEqual({ fits: true, viewportFits: true, rowsOrdered: true });
+    await page.screenshot({ path: evidencePath('theme-choice-list-compact-zh.png'), fullPage: false });
+
+    await page.locator('.theme-choice[data-theme-id="light"]').click();
+    await page.locator('#settings-close').click();
+    await expect(page.locator('#settings-modal')).toBeHidden();
+    expect(await page.evaluate(() => ({
+      current: window.themeManager.getCurrentTheme(),
+      stored: localStorage.getItem('bobocloud.theme')
+    }))).toEqual({ current: 'monokai', stored: 'monokai' });
+    expect(fixture.issues).toEqual([]);
+  } finally {
+    await closeIsolatedApp(fixture);
+  }
+});
+
 test('Monaco suggest rows and find action tooltips stay fully visible', async () => {
   test.setTimeout(60000);
   let fixture;

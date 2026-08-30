@@ -279,20 +279,52 @@
     overlay.appendChild(card); overlay.addEventListener('click', function(event) { if (event.target === overlay) overlay.remove(); }); document.body.appendChild(overlay); name.input.focus();
   }
 
-  function loadLocalSettings() {
-    // Theme selector
-    var themeSelect = document.getElementById('settings-theme-select');
-    if (themeSelect && window.themeManager) {
-      var themes = window.themeManager.listThemes();
-      themeSelect.innerHTML = '';
-      for (var i = 0; i < themes.length; i++) {
-        var opt = document.createElement('option');
-        opt.value = themes[i].id;
-        opt.textContent = themes[i].label;
-        themeSelect.appendChild(opt);
+  function renderThemeChoices() {
+    var list = document.getElementById('settings-theme-list');
+    if (!list || !window.themeManager) return;
+    var themes = window.themeManager.listThemes();
+    var currentTheme = window.themeManager.getCurrentTheme();
+    list.innerHTML = '';
+
+    for (var i = 0; i < themes.length; i += 1) {
+      var theme = themes[i];
+      var row = document.createElement('label');
+      row.className = 'theme-choice';
+      row.setAttribute('data-theme-id', theme.id);
+
+      var name = document.createElement('span');
+      name.className = 'theme-choice-name';
+      if (BOBO.i18n && BOBO.i18n.bindText) BOBO.i18n.bindText(name, theme.label);
+      else name.textContent = t(theme.label);
+
+      var swatches = document.createElement('span');
+      swatches.className = 'theme-choice-swatches';
+      swatches.setAttribute('aria-hidden', 'true');
+      for (var colorIndex = 0; colorIndex < theme.colors.length; colorIndex += 1) {
+        var swatch = document.createElement('span');
+        swatch.className = 'theme-choice-swatch';
+        swatch.style.backgroundColor = theme.colors[colorIndex];
+        swatches.appendChild(swatch);
       }
-      themeSelect.value = window.themeManager.getCurrentTheme();
+
+      var radio = document.createElement('input');
+      radio.className = 'theme-choice-radio';
+      radio.type = 'radio';
+      radio.name = 'settings-theme';
+      radio.value = theme.id;
+      radio.checked = theme.id === currentTheme;
+      if (BOBO.i18n && BOBO.i18n.bindAttribute) BOBO.i18n.bindAttribute(radio, 'aria-label', theme.label);
+      else radio.setAttribute('aria-label', t(theme.label));
+
+      row.appendChild(name);
+      row.appendChild(swatches);
+      row.appendChild(radio);
+      list.appendChild(row);
     }
+  }
+
+  function loadLocalSettings() {
+    renderThemeChoices();
 
     // Diagnostics
     var diagEnabled = document.getElementById('settings-diag-enabled');
@@ -304,10 +336,12 @@
 
   function saveLocalSettings() {
     // Theme
-    var themeSelect = document.getElementById('settings-theme-select');
-    if (themeSelect && window.themeManager) {
-      window.themeManager.applyTheme(themeSelect.value);
-      if (BOBO.toast) BOBO.toast.success('Theme: ' + themeSelect.options[themeSelect.selectedIndex].textContent);
+    var selectedTheme = document.querySelector('input[name="settings-theme"]:checked');
+    if (selectedTheme && window.themeManager) {
+      var themes = window.themeManager.listThemes();
+      var theme = themes.find(function(item) { return item.id === selectedTheme.value; });
+      window.themeManager.applyTheme(selectedTheme.value);
+      if (BOBO.toast && theme) BOBO.toast.success(t('Theme: {name}', { name: t(theme.label) }));
     }
 
     // Diagnostics

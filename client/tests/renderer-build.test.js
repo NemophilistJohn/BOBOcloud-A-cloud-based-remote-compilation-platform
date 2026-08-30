@@ -27,6 +27,7 @@ const EXPECTED_MODULES = [
   '../editor-rules/plugins/go.js',
   '../editor-rules/plugins/rust.js',
   '../src/state.js',
+  '../src/tab-order.js',
   '../src/i18n.js',
   '../src/workspace-launch.js',
   '../src/icons.js',

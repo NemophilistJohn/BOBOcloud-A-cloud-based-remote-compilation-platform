@@ -4,6 +4,7 @@ const { test, expect, _electron: electron } = require('playwright/test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { getCachePaths } = require('../scripts/prepare-rclone');
 
 function electronPath() {
   const dist = path.join(process.cwd(), 'node_modules', 'electron', 'dist');
@@ -45,8 +46,10 @@ test('rclone selector scans on demand and requires native confirmation for syste
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-rclone-ui-'));
   const externalDirectory = path.join(sandbox, 'external-bin');
   const externalBinary = path.join(externalDirectory, process.platform === 'win32' ? 'rclone.exe' : 'rclone');
+  const managedBinary = getCachePaths(process.platform, process.arch).binaryPath;
+  if (!fs.existsSync(managedBinary)) throw new Error('Run npm run prepare:rclone before the rclone UI test');
   fs.mkdirSync(externalDirectory, { recursive: true });
-  fs.copyFileSync(path.join(process.cwd(), 'rclone', process.platform === 'win32' ? 'rclone.exe' : 'rclone'), externalBinary);
+  fs.copyFileSync(managedBinary, externalBinary);
   if (process.platform !== 'win32') fs.chmodSync(externalBinary, 0o755);
 
   let fixture;

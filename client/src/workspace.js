@@ -1545,8 +1545,36 @@
 
   // ──── Tab Bar Incremental Operations ────
   // ──── Tab Drag-and-Drop ────
-  function setupTabDrag(el, draggable) {
-    el.setAttribute('draggable', draggable ? 'true' : 'false');
+  var TAB_DRAG_MIME = 'application/x-bobocloud-file-tab';
+  var draggedTabPath = null;
+
+  function clearTabDragState() {
+    draggedTabPath = null;
+    var bar = document.getElementById('tabbar');
+    if (!bar) return;
+    var tabs = bar.querySelectorAll('.tab');
+    for (var i = 0; i < tabs.length; i += 1) {
+      tabs[i].classList.remove('dragging', 'drop-before', 'drop-after');
+    }
+  }
+
+  function showTabDropTarget(el, position) {
+    var bar = document.getElementById('tabbar');
+    if (!bar) return;
+    var tabs = bar.querySelectorAll('.tab');
+    for (var i = 0; i < tabs.length; i += 1) {
+      tabs[i].classList.remove('drop-before', 'drop-after');
+    }
+    el.classList.add(position === 'after' ? 'drop-after' : 'drop-before');
+  }
+
+  function dropPosition(el, clientX) {
+    var bounds = el.getBoundingClientRect();
+    return clientX >= bounds.left + bounds.width / 2 ? 'after' : 'before';
+  }
+
+  function setupTabDrag(el, dragHandle, draggable) {
+    dragHandle.setAttribute('draggable', draggable ? 'true' : 'false');
 
     el.addEventListener('keydown', function(e) {
       if (e.key === 'Enter' || e.key === ' ') {
@@ -1568,50 +1596,42 @@
     // not alter the file-tab order. They have no Monaco model to reorder.
     if (!draggable) return;
 
-    el.addEventListener('dragstart', function(e) {
-      var idx = el.getAttribute('data-tab-index');
-      e.dataTransfer.setData('text/plain', idx);
+    dragHandle.addEventListener('dragstart', function(e) {
+      if (!e.dataTransfer) return;
+      draggedTabPath = el.getAttribute('data-tab-path');
+      e.dataTransfer.clearData();
+      e.dataTransfer.setData(TAB_DRAG_MIME, 'file-tab');
       e.dataTransfer.effectAllowed = 'move';
-      el.style.opacity = '0.5';
+      el.classList.add('dragging');
     });
 
-    el.addEventListener('dragend', function(e) {
-      el.style.opacity = '';
-      var bar = document.getElementById('tabbar');
-      var allTabs = bar.querySelectorAll('.tab');
-      for (var i = 0; i < allTabs.length; i++) {
-        allTabs[i].classList.remove('drag-over');
-      }
-    });
+    dragHandle.addEventListener('dragend', clearTabDragState);
 
     el.addEventListener('dragover', function(e) {
+      var targetPath = el.getAttribute('data-tab-path');
+      if (!draggedTabPath || targetPath === draggedTabPath) return;
       e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      el.classList.add('drag-over');
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      showTabDropTarget(el, dropPosition(el, e.clientX));
     });
 
     el.addEventListener('dragleave', function(e) {
-      el.classList.remove('drag-over');
+      if (e.relatedTarget && el.contains(e.relatedTarget)) return;
+      el.classList.remove('drop-before', 'drop-after');
     });
 
     el.addEventListener('drop', function(e) {
+      if (!draggedTabPath) return;
       e.preventDefault();
       e.stopPropagation();
-      el.classList.remove('drag-over');
-      el.style.opacity = '';
-
-      var fromIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
-      var toIdx = parseInt(el.getAttribute('data-tab-index'), 10);
-      if (isNaN(fromIdx) || isNaN(toIdx) || fromIdx === toIdx ||
-          fromIdx < 0 || toIdx < 0 || fromIdx >= S.tabs.length || toIdx >= S.tabs.length) return;
-
-      // Reorder tabs array
-      var moved = S.tabs.splice(fromIdx, 1)[0];
-      S.tabs.splice(toIdx, 0, moved);
-
-      // Full rebuild to sync DOM with new order
-      updateTabbar();
-      updateTitlebar();
+      var sourcePath = draggedTabPath;
+      var targetPath = el.getAttribute('data-tab-path');
+      var position = dropPosition(el, e.clientX);
+      var changed = BOBO.tabOrder && BOBO.tabOrder.reorder
+        ? BOBO.tabOrder.reorder(S.tabs, sourcePath, targetPath, position)
+        : false;
+      clearTabDragState();
+      if (changed) updateTabbar();
     });
   }
 
@@ -1637,6 +1657,7 @@
       var close = document.createElement('button');
       close.className = 'close';
       close.type = 'button';
+      close.draggable = false;
       close.title = 'Close ' + tab.name;
       close.setAttribute('aria-label', 'Close ' + tab.name);
       // The workbench tab provider can refresh tabs during early startup,
@@ -1648,11 +1669,15 @@
           closeTab(tabKey);
         };
       })(key);
+      close.addEventListener('dragstart', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+      });
       barTab.appendChild(close);
     }
 
     barTab.onclick = (function(tabKey) { return function() { activateTab(tabKey); }; })(key);
-    setupTabDrag(barTab, providerId ? tab.draggable === true : true);
+    setupTabDrag(barTab, title, providerId ? tab.draggable === true : true);
     return barTab;
   }
 

@@ -56,6 +56,36 @@ async function removeSandbox(sandbox) {
   await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
 }
 
+function uiEvidencePath(name) {
+  const directory = process.env.BOBO_UI_EVIDENCE_DIR || os.tmpdir();
+  fs.mkdirSync(directory, { recursive: true });
+  return path.join(directory, name);
+}
+
+async function dragFileTab(page, sourceName, targetName, position, indicatorScreenshot) {
+  const titles = page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title');
+  const source = titles.filter({ hasText: sourceName }).first();
+  const target = titles.filter({ hasText: targetName }).first().locator('..');
+  const sourceBounds = await source.boundingBox();
+  const targetBounds = await target.boundingBox();
+  if (!sourceBounds || !targetBounds) throw new Error('Tab drag fixture is not visible');
+
+  const sourceX = sourceBounds.x + sourceBounds.width / 2;
+  const sourceY = sourceBounds.y + sourceBounds.height / 2;
+  const approachX = targetBounds.x + (position === 'after' ? targetBounds.width - 4 : 4);
+  const approachY = targetBounds.y + targetBounds.height + 12;
+  await page.mouse.move(sourceX, sourceY);
+  await page.mouse.down();
+  await page.mouse.move(sourceX + 8, sourceY, { steps: 2 });
+  await page.mouse.move(sourceX + 8, approachY, { steps: 4 });
+  await page.mouse.move(approachX, approachY, { steps: 10 });
+  await page.mouse.move(approachX, targetBounds.y + targetBounds.height / 2, { steps: 4 });
+  await page.waitForTimeout(50);
+  await expect(target).toHaveClass(position === 'after' ? /drop-after/ : /drop-before/);
+  if (indicatorScreenshot) await page.screenshot({ path: indicatorScreenshot, fullPage: false });
+  await page.mouse.up();
+}
+
 async function openAndEdit(page, workspaceDir, filePath, value) {
   await page.evaluate(async ({ workspaceDir, filePath, fileName, value }) => {
     const opened = await window.api.pickWorkspace(workspaceDir);
@@ -362,5 +392,87 @@ test('window close saves a dirty file before exiting', async () => {
     await closeFixture(app);
     await removeSandbox(sandbox);
     console.log('window close final stage:', stage);
+  }
+});
+
+test('file tabs reorder by drag position without changing active or dirty editor state', async () => {
+  test.setTimeout(60000);
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-tab-order-'));
+  const workspaceDir = path.join(sandbox, 'workspace');
+  const files = ['alpha.js', 'beta.js', 'gamma.js'].map(name => ({ name, filePath: path.join(workspaceDir, name) }));
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  files.forEach((file, index) => fs.writeFileSync(file.filePath, 'fixture ' + index + '\n', 'utf8'));
+  const errors = [];
+  let app;
+  try {
+    app = await launchFixture(sandbox);
+    const page = await app.firstWindow();
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+    await page.waitForFunction(() => document.documentElement.dataset.boboReady === 'true', null, { timeout: 20000 });
+    await page.setViewportSize({ width: 1200, height: 800 });
+    expect(page.url()).toMatch(/^file:.*\/index\.html$/i);
+    await expect(page).toHaveTitle('BOBOCLOUD Editor');
+    await expect(page.locator('vite-error-overlay, #webpack-dev-server-client-overlay, nextjs-portal')).toHaveCount(0);
+
+    await page.evaluate(async ({ workspaceDir: root, files: fixtureFiles }) => {
+      const opened = await window.api.pickWorkspace(root);
+      await window.BOBO.workspace.applyWorkspace(opened.rootPath, opened.tree, opened.workspaceIdentity, opened.leaveToken);
+      for (const file of fixtureFiles) await window.BOBO.workspace.openFile(file.filePath, file.name);
+      const beta = window.BOBO.state.tabs.find(tab => tab.name === 'beta.js');
+      beta.model.setValue('unsaved beta\n');
+      window.BOBO.workspace.activateTab(fixtureFiles[2].filePath);
+      window.__tabOrderIdentity = new Map(window.BOBO.state.tabs.map(tab => [tab.path, tab]));
+    }, { workspaceDir, files });
+    await expect.poll(() => page.evaluate(() => window.BOBO.state.tabs.find(tab => tab.name === 'beta.js').dirty)).toBe(true);
+    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title')).toHaveText(['alpha.js', 'beta.js *', 'gamma.js']);
+    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title').first()).toHaveAttribute('draggable', 'true');
+    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .close').first()).toHaveAttribute('draggable', 'false');
+
+    await dragFileTab(page, 'alpha.js', 'gamma.js', 'after', uiEvidencePath('tab-drag-drop-indicator.png'));
+    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title')).toHaveText(['beta.js *', 'gamma.js', 'alpha.js']);
+    const firstMove = await page.evaluate(() => ({
+      stateOrder: window.BOBO.state.tabs.map(tab => tab.name),
+      activeName: window.BOBO.state.tabs.find(tab => tab.path === window.BOBO.state.activeTabPath).name,
+      dirtyName: window.BOBO.state.tabs.find(tab => tab.dirty).name,
+      dirtyValue: window.BOBO.state.tabs.find(tab => tab.dirty).model.getValue(),
+      identitiesPreserved: window.BOBO.state.tabs.every(tab => window.__tabOrderIdentity.get(tab.path) === tab),
+      residualDragState: document.querySelectorAll('#tabbar .dragging, #tabbar .drop-before, #tabbar .drop-after').length
+    }));
+    expect(firstMove).toEqual({
+      stateOrder: ['beta.js', 'gamma.js', 'alpha.js'],
+      activeName: 'gamma.js',
+      dirtyName: 'beta.js',
+      dirtyValue: 'unsaved beta\n',
+      identitiesPreserved: true,
+      residualDragState: 0
+    });
+    await page.screenshot({ path: uiEvidencePath('tab-order-after.png'), fullPage: false });
+
+    await dragFileTab(page, 'alpha.js', 'beta.js', 'before');
+    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title')).toHaveText(['alpha.js', 'beta.js *', 'gamma.js']);
+
+    const orderBeforeCloseDrag = await page.evaluate(() => window.BOBO.state.tabs.map(tab => tab.name));
+    const closeButton = page.locator('#tabbar .tab:not([data-tab-provider])', { hasText: 'beta.js' }).locator('.close');
+    const closeBounds = await closeButton.boundingBox();
+    const gammaBounds = await page.locator('#tabbar .tab:not([data-tab-provider])', { hasText: 'gamma.js' }).boundingBox();
+    if (!closeBounds || !gammaBounds) throw new Error('Close drag fixture is not visible');
+    await page.mouse.move(closeBounds.x + closeBounds.width / 2, closeBounds.y + closeBounds.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(gammaBounds.x + gammaBounds.width * 0.85, gammaBounds.y + gammaBounds.height / 2, { steps: 12 });
+    await page.mouse.up();
+    expect(await page.evaluate(() => window.BOBO.state.tabs.map(tab => tab.name))).toEqual(orderBeforeCloseDrag);
+    await expect(page.locator('#tabbar .tab:not([data-tab-provider])')).toHaveCount(3);
+
+    await page.locator('#tabbar .tab:not([data-tab-provider])', { hasText: 'gamma.js' }).locator('.close').click();
+    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title')).toHaveText(['alpha.js', 'beta.js *']);
+    expect(await page.evaluate(() => ({
+      active: window.BOBO.state.tabs.find(tab => tab.path === window.BOBO.state.activeTabPath).name,
+      dirty: window.BOBO.state.tabs.find(tab => tab.name === 'beta.js').dirty
+    }))).toEqual({ active: 'beta.js', dirty: true });
+    expect(errors).toEqual([]);
+  } finally {
+    await closeFixture(app);
+    await removeSandbox(sandbox);
   }
 });

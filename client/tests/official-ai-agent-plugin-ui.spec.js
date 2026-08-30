@@ -6,19 +6,20 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { createPluginController } = require('../main/plugins');
+const { resolvePluginArtifact, shouldSkipMissingArtifact } = require('./support/plugin-artifact');
 
 const PLUGIN_ID = 'bobocloud.ai-agent';
 const PROVIDER_ID = 'bobocloud.ai-agent.workbench';
 const PLUGIN_ROOT = process.env.BOBO_AI_AGENT_PLUGIN_DIR
   ? path.resolve(process.env.BOBO_AI_AGENT_PLUGIN_DIR)
   : path.resolve(__dirname, '..', '..', '..', 'BOBOCloud-AI-Agent-plugin-offical');
-const ARTIFACT = process.env.BOBO_AI_AGENT_PLUGIN_ARTIFACT
-  ? path.resolve(process.env.BOBO_AI_AGENT_PLUGIN_ARTIFACT)
-  : path.join(
-      PLUGIN_ROOT,
-      'artifacts',
-      'bobocloud.ai-agent-1.1.0.boboplugin'
-    );
+const ARTIFACT_INFO = resolvePluginArtifact({
+  artifactEnv: 'BOBO_AI_AGENT_PLUGIN_ARTIFACT',
+  pluginId: PLUGIN_ID,
+  repositoryRoot: PLUGIN_ROOT,
+  versionEnv: 'BOBO_AI_AGENT_PLUGIN_VERSION'
+});
+const ARTIFACT = ARTIFACT_INFO.artifactPath;
 
 function electronPath() {
   const dist = path.join(process.cwd(), 'node_modules', 'electron', 'dist');
@@ -72,7 +73,7 @@ function createWorkspace(root) {
 }
 
 test('official AI Agent plugin owns a full workbench tab and cleans it up when disabled', async () => {
-  test.skip(!fs.existsSync(ARTIFACT), 'Official AI Agent plugin artifact is not present beside the app repository.');
+  test.skip(shouldSkipMissingArtifact(ARTIFACT_INFO, 'Official AI Agent plugin artifact'), 'Official AI Agent plugin artifact is not present beside the app repository.');
   test.setTimeout(120000);
 
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-official-agent-ui-'));
@@ -228,7 +229,7 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
 
     const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
     const installed = await installPackage(userData, workspace);
-    expect(installed).toMatchObject({ id: PLUGIN_ID, version: '1.1.0', enabled: false });
+    expect(installed).toMatchObject({ id: PLUGIN_ID, version: ARTIFACT_INFO.version, enabled: false });
     expect([...installed.grantedPermissions].sort()).toEqual([...installed.requestedPermissions].sort());
     await page.evaluate(async (id) => {
       await window.api.plugins.refresh();
@@ -356,9 +357,9 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
     await expect(workbench.locator('.agent-timeline-row[data-kind="skill"]')).toContainText('UI Review Checklist');
     await expect(workbench.locator('.agent-goal')).toBeVisible();
     await expect(workbench.locator('.agent-goal-progress')).toHaveText('4 / 4');
-    await expect(sidebar.locator('.agent-session-row')).toContainText('Review this workspace');
+    await expect(sidebar.locator('.agent-session-row')).toContainText('Workspace inspection complete');
 
-    expect(requests).toHaveLength(1);
+    expect(requests).toHaveLength(2);
     expect(requests[0].url).toBe('/v1/chat/completions');
     expect(requests[0].authorization).toBe('Bearer agent-ui-key');
     expect(requests[0].body).toMatchObject({
@@ -376,6 +377,14 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
     expect(requests[0].body.messages[0].content).toContain('AGENT_UI_SKILL_MARKER');
     expect(requests[0].body.messages.some((message) => message.role === 'user' && message.content === prompt)).toBe(true);
     expect(requests[0].body.messages.some((message) => message.role === 'user' && message.content.startsWith('/goal'))).toBe(false);
+    expect(requests[1].body).toMatchObject({
+      model: 'agent-ui-model',
+      stream: false,
+      reasoning_effort: 'low'
+    });
+    expect(requests[1].body.tools).toBeUndefined();
+    expect(JSON.stringify(requests[1].body.messages)).toContain(prompt);
+    const requestCountAfterGoal = requests.length;
 
     await expect(page.locator('#bottom-panel')).toBeVisible();
     await expect(page.locator('#panel-output')).toHaveClass(/active/);
@@ -406,8 +415,9 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
     });
     await approval.getByRole('button', { name: 'Approve', exact: true }).click();
     await expect(workbench.locator('.agent-message-assistant').last()).toContainText('Approved process completed.');
-    expect(requests).toHaveLength(3);
-    const returnedToolMessage = requests[2].body.messages[requests[2].body.messages.length - 1];
+    expect(requests).toHaveLength(requestCountAfterGoal + 2);
+    const processResultRequest = requests[requests.length - 1];
+    const returnedToolMessage = processResultRequest.body.messages[processResultRequest.body.messages.length - 1];
     expect(returnedToolMessage).toMatchObject({ role: 'tool', name: 'process_run' });
     expect(returnedToolMessage.content).toContain('AGENT_PROCESS_APPROVED');
 

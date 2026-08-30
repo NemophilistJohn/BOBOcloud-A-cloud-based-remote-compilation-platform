@@ -7,9 +7,15 @@ const path = require('node:path');
 const test = require('node:test');
 
 const rclone = require('../rclone');
+const { getCachePaths } = require('../scripts/prepare-rclone');
+
+function managedRclonePath() {
+  return getCachePaths(process.platform, process.arch).binaryPath;
+}
 
 test('checks exactly the managed rclone executable supplied by main', async () => {
-  const executable = path.resolve(__dirname, '..', 'rclone', rclone.EXE_NAME);
+  const executable = managedRclonePath();
+  assert.equal(fs.existsSync(executable), true, 'Run npm run prepare:rclone before the client test suite');
   const result = await rclone.checkVersion(executable, 'bundled');
   assert.equal(result.available, true);
   assert.equal(result.path, executable);

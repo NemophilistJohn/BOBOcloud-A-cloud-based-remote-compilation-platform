@@ -1,0 +1,619 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  client-contracts:
+    name: Client contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      BOBOCLOUD_TEST_ROUTES: "client-node"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Install client dependencies
+        run: npm ci --prefix client
+      - name: Prepare managed rclone
+        run: npm --prefix client run prepare:rclone
+      - name: Verify automatic test routing
+        run: node scripts/ci/verify-test-routing.mjs --route client-node
+      - name: Run client Node tests
+        run: |
+          mkdir -p ci-artifacts
+          set -o pipefail
+          npm test 2>&1 | tee ci-artifacts/client-node.log
+      - name: Build production renderer
+        run: npm run build:renderer
+      - name: Upload client failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: client-contracts-failure
+          path: |
+            ci-artifacts/client-node.log
+            client/test-results
+          if-no-files-found: warn
+          retention-days: 7
+
+  server-go:
+    name: Server Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BOBOCLOUD_TEST_ROUTES: "server-go"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Verify modules
+        run: go -C server mod verify
+      - name: Verify tidy state
+        run: go -C server mod tidy -diff
+      - name: Vet server
+        run: go -C server vet ./...
+      - name: Run full server suite
+        run: |
+          mkdir -p ci-artifacts
+          set -o pipefail
+          go -C server test -json -count=1 -covermode=atomic -coverprofile=../ci-artifacts/server-coverage.out ./... 2>&1 | tee ci-artifacts/server-go.json
+          go -C server tool cover -func=../ci-artifacts/server-coverage.out | tee ci-artifacts/server-coverage.txt
+      - name: Upload server coverage baseline
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: server-go-coverage
+          path: |
+            ci-artifacts/server-coverage.out
+            ci-artifacts/server-coverage.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload server failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: server-go-failure
+          path: |
+            ci-artifacts/server-go.json
+            ci-artifacts/server-coverage.out
+            ci-artifacts/server-coverage.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  server-race:
+    name: Server race detector
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      BOBOCLOUD_TEST_ROUTES: "server-go-race"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Run full race suite
+        run: |
+          mkdir -p ci-artifacts
+          set -o pipefail
+          go -C server test -json -race -count=1 ./... 2>&1 | tee ci-artifacts/server-race.json
+      - name: Upload race failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: server-race-failure
+          path: ci-artifacts/server-race.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  server-privileged-mount:
+    name: Server privileged mount contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BOBOCLOUD_TEST_ROUTES: "server-privileged-mount"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Resolve privileged test packages
+        run: node scripts/ci/verify-test-routing.mjs --route server-privileged-mount --write-privileged-packages "$RUNNER_TEMP/bobocloud-privileged-packages.txt"
+      - name: Run privileged mount tests
+        env:
+          BOBO_LSP_TEST_IMAGE: docker.io/library/alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+        run: |
+          mkdir -p ci-artifacts
+          set -euo pipefail
+          {
+            docker pull "$BOBO_LSP_TEST_IMAGE"
+            mapfile -t packages < "$RUNNER_TEMP/bobocloud-privileged-packages.txt"
+            if [[ "${#packages[@]}" -eq 0 ]]; then
+              echo "No privileged Go packages were routed." >&2
+              exit 1
+            fi
+            index=0
+            for package in "${packages[@]}"; do
+              if [[ ! "$package" =~ ^(\.|\./[A-Za-z0-9_./-]+)$ ]]; then
+                echo "Unsafe privileged Go package path: $package" >&2
+                exit 1
+              fi
+              binary="$RUNNER_TEMP/bobocloud-privileged-$index.test"
+              go -C server test -c -tags=privileged_integration -o "$binary" "$package"
+              sudo env BOBO_LSP_TEST_IMAGE="$BOBO_LSP_TEST_IMAGE" "$binary" -test.v -test.count=1
+              index=$((index + 1))
+            done
+          } 2>&1 | tee ci-artifacts/server-privileged-mount.log
+      - name: Upload privileged-test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: server-privileged-mount-failure
+          path: ci-artifacts/server-privileged-mount.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  client-ui-core:
+    name: Client UI core (${{ matrix.shard }}/3)
+    runs-on: windows-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      BOBOCLOUD_TEST_ROUTES: "client-ui-core"
+      CI: "true"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Install client dependencies
+        shell: pwsh
+        run: npm ci --prefix client
+      - name: Prepare managed rclone
+        shell: pwsh
+        run: npm --prefix client run prepare:rclone
+      - name: Build renderer
+        shell: pwsh
+        run: npm --prefix client run build:renderer:dev
+      - name: Run core UI shard
+        shell: pwsh
+        env:
+          BOBO_UI_EVIDENCE_DIR: ${{ runner.temp }}\bobo-ui-evidence
+        run: npm --prefix client run test:ui:ci:core -- --shard=${{ matrix.shard }}/3
+      - name: Upload UI failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: client-ui-core-${{ matrix.shard }}-failure
+          path: |
+            client/test-results
+            client/playwright-report
+            ${{ runner.temp }}/bobo-ui-evidence
+          if-no-files-found: warn
+          retention-days: 7
+
+  client-ui-packages:
+    name: Client UI packages
+    runs-on: windows-latest
+    timeout-minutes: 35
+    env:
+      BOBOCLOUD_TEST_ROUTES: "client-ui-packages"
+      CI: "true"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Install client dependencies
+        shell: pwsh
+        run: npm ci --prefix client
+      - name: Prepare managed rclone
+        shell: pwsh
+        run: npm --prefix client run prepare:rclone
+      - name: Build renderer
+        shell: pwsh
+        run: npm --prefix client run build:renderer:dev
+      - name: Run Package Center UI
+        shell: pwsh
+        env:
+          BOBO_UI_EVIDENCE_DIR: ${{ runner.temp }}\bobo-ui-evidence
+        run: npm --prefix client run test:ui:ci:packages
+      - name: Upload UI failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: client-ui-packages-failure
+          path: |
+            client/test-results
+            client/playwright-report
+            ${{ runner.temp }}/bobo-ui-evidence
+          if-no-files-found: warn
+          retention-days: 7
+
+  client-ui-plugin-compat:
+    name: Client UI official plugin compatibility
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      BOBOCLOUD_TEST_ROUTES: "client-ui-plugin-compat"
+      CI: "true"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check out AI Agent plugin
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical
+          ref: 21b20707cdc09d9cdc8ceeb6f58481aaff151f29
+          path: .ci-plugins/ai-agent
+          persist-credentials: false
+      - name: Check out document preview plugin
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: NemophilistJohn/bobocloud-document-preview
+          ref: fa527df003c9cc136b6c93653e7c008232d3fed2
+          path: .ci-plugins/document-preview
+          persist-credentials: false
+      - name: Check out local SCM plugin
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: NemophilistJohn/BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-
+          ref: d94565a2dbd81c7891c2ef9b54edfae20bae02ff
+          path: .ci-plugins/local-scm
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            client/package-lock.json
+            .ci-plugins/document-preview/package-lock.json
+      - name: Install client and plugin dependencies
+        shell: pwsh
+        run: |
+          npm ci --prefix client
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix .ci-plugins/document-preview
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The fixed SCM release predates its lockfile; package.json pins esbuild exactly.
+          npm install --prefix .ci-plugins/local-scm --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package fixed official plugins
+        shell: pwsh
+        run: |
+          npm --prefix .ci-plugins/ai-agent run package
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm --prefix .ci-plugins/document-preview run package
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm --prefix .ci-plugins/local-scm run package
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Bind plugin artifacts
+        shell: pwsh
+        run: |
+          $plugins = @(
+            @{ Root = '.ci-plugins/ai-agent'; Id = 'bobocloud.ai-agent'; ArtifactEnv = 'BOBO_AI_AGENT_PLUGIN_ARTIFACT'; RootEnv = 'BOBO_AI_AGENT_PLUGIN_DIR' },
+            @{ Root = '.ci-plugins/document-preview'; Id = 'bobocloud.document-preview'; ArtifactEnv = 'BOBO_DOCUMENT_PREVIEW_PLUGIN_ARTIFACT'; RootEnv = 'BOBO_DOCUMENT_PREVIEW_PLUGIN_DIR' },
+            @{ Root = '.ci-plugins/local-scm'; Id = 'bobocloud.local-scm'; ArtifactEnv = 'BOBO_LOCAL_SCM_PLUGIN_ARTIFACT'; RootEnv = 'BOBO_LOCAL_SCM_PLUGIN_DIR' }
+          )
+          foreach ($plugin in $plugins) {
+            $root = (Resolve-Path -LiteralPath $plugin.Root).Path
+            $manifest = Get-Content -LiteralPath (Join-Path $root 'package.json') -Raw | ConvertFrom-Json
+            $artifact = Join-Path $root ("artifacts/{0}-{1}.boboplugin" -f $plugin.Id, $manifest.version)
+            if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+              throw "Official plugin package did not produce $artifact"
+            }
+            "{0}={1}" -f $plugin.ArtifactEnv, (Resolve-Path -LiteralPath $artifact).Path | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            if ($plugin.RootEnv) {
+              "{0}={1}" -f $plugin.RootEnv, $root | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+      - name: Prepare managed rclone
+        shell: pwsh
+        run: npm --prefix client run prepare:rclone
+      - name: Build renderer
+        shell: pwsh
+        run: npm --prefix client run build:renderer:dev
+      - name: Run official plugin compatibility UI
+        shell: pwsh
+        env:
+          BOBO_UI_EVIDENCE_DIR: ${{ runner.temp }}\bobo-ui-evidence
+        run: npm --prefix client run test:ui:ci:plugin-compat
+      - name: Upload plugin UI failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: client-ui-plugin-compat-failure
+          path: |
+            client/test-results
+            client/playwright-report
+            ${{ runner.temp }}/bobo-ui-evidence
+          if-no-files-found: warn
+          retention-days: 7
+
+  client-ui-packaged:
+    name: Client packaged-app UI
+    runs-on: windows-latest
+    timeout-minutes: 55
+    env:
+      BOBOCLOUD_TEST_ROUTES: "client-ui-packaged"
+      CI: "true"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Install client dependencies
+        shell: pwsh
+        run: npm ci --prefix client
+      - name: Build synthetic internal package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ci-artifacts | Out-Null
+          $settingsPath = Join-Path $env:RUNNER_TEMP 'bobocloud-ci-server-settings.json'
+          $env:BOBO_INTERNAL_OUTPUT_DIR = Join-Path $env:RUNNER_TEMP 'bobocloud-packaged'
+          @{
+            ip = '127.0.0.1'
+            user = 'ci-bootstrap'
+            pass = 'synthetic-ci-only'
+            secureTransport = $false
+            httpPort = 3100
+            wsPort = 3101
+          } | ConvertTo-Json | Set-Content -LiteralPath $settingsPath -Encoding utf8
+          Push-Location client
+          try {
+            npm run build:win:internal -- $settingsPath 2>&1 | Tee-Object -FilePath ..\ci-artifacts\packaged-build.log
+            if ($LASTEXITCODE -ne 0) { throw "Internal package build failed with exit code $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
+          $executable = Join-Path $env:BOBO_INTERNAL_OUTPUT_DIR 'win-unpacked\BOBOCloudEditer.exe'
+          if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+            throw "Packaged application executable is missing: $executable"
+          }
+          "BOBO_INTERNAL_PACKAGED_EXE=$((Resolve-Path -LiteralPath $executable).Path)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Run packaged-app UI
+        shell: pwsh
+        env:
+          BOBO_UI_EVIDENCE_DIR: ${{ runner.temp }}\bobo-ui-evidence
+        run: npm --prefix client run test:ui:ci:packaged
+      - name: Upload packaged-app failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: client-ui-packaged-failure
+          path: |
+            ci-artifacts/packaged-build.log
+            client/test-results
+            client/playwright-report
+            ${{ runner.temp }}/bobo-ui-evidence
+          if-no-files-found: warn
+          retention-days: 7
+
+  server-toolkit-contracts:
+    name: Server toolkit contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BOBOCLOUD_TEST_ROUTES: "lsp-toolkit-node,dap-toolkit-python,dap-bridge-go,node-smoke-syntax"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/deploy/lsp-toolkit/package-lock.json
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Install LSP toolkit dependencies
+        run: npm ci --prefix server/deploy/lsp-toolkit
+      - name: Verify LSP toolkit
+        run: |
+          mkdir -p ci-artifacts
+          set -o pipefail
+          npm --prefix server/deploy/lsp-toolkit test 2>&1 | tee ci-artifacts/lsp-toolkit.log
+      - name: Verify DAP Python smoke contracts
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s server/deploy/dap-toolkit -p 'test_*.py' -v 2>&1 | tee ci-artifacts/dap-python.log
+      - name: Verify DAP bridge module
+        run: |
+          go -C server/deploy/dap-toolkit/bridge mod verify
+          go -C server/deploy/dap-toolkit/bridge mod tidy -diff
+          go -C server/deploy/dap-toolkit/bridge vet ./...
+          set -o pipefail
+          go -C server/deploy/dap-toolkit/bridge test -json -count=1 ./... 2>&1 | tee ci-artifacts/dap-bridge.json
+      - name: Check Node smoke-script syntax
+        run: node scripts/ci/verify-test-routing.mjs --check-smoke-syntax --route lsp-toolkit-node --route dap-toolkit-python --route dap-bridge-go --route node-smoke-syntax
+      - name: Upload toolkit failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: server-toolkit-contracts-failure
+          path: ci-artifacts
+          if-no-files-found: warn
+          retention-days: 7
+
+  server-release-preflight:
+    name: Server Windows and release preflight
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      BOBOCLOUD_TEST_ROUTES: "server-deploy-preflight,server-go-windows"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Verify Windows test routing
+        shell: pwsh
+        run: node scripts/ci/verify-test-routing.mjs --route server-go-windows --route server-deploy-preflight
+      - name: Run Windows server suite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force ci-artifacts | Out-Null
+          go -C server test -count=1 ./... 2>&1 | Tee-Object -FilePath ci-artifacts/server-go-windows.log
+          if ($LASTEXITCODE -ne 0) { throw "Windows server tests failed with exit code $LASTEXITCODE" }
+      - name: Run offline deployment tests and build preflight
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force ci-artifacts | Out-Null
+          $logPath = Join-Path (Resolve-Path ci-artifacts).Path 'server-release-preflight.log'
+          try {
+            $tests = Get-ChildItem -LiteralPath server/deploy -File | Where-Object {
+              $_.Name -like 'test-*.ps1' -or $_.Name -like '*.test.ps1'
+            } | Sort-Object Name
+            if ($tests.Count -eq 0) { throw 'No offline deployment tests were found.' }
+            foreach ($test in $tests) {
+              pwsh -NoProfile -File $test.FullName 2>&1 | Tee-Object -FilePath $logPath -Append
+              if ($LASTEXITCODE -ne 0) { throw "$($test.Name) failed with exit code $LASTEXITCODE" }
+            }
+            pwsh -NoProfile -File server/deploy/Deploy-BoboCloudServer.ps1 -Target production-81.70.51.43 -Build 2>&1 | Tee-Object -FilePath $logPath -Append
+            if ($LASTEXITCODE -ne 0) { throw "Server build preflight failed with exit code $LASTEXITCODE" }
+          } catch {
+            $_ | Out-String | Tee-Object -FilePath $logPath -Append | Write-Error
+          }
+      - name: Upload release-preflight diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: server-release-preflight-failure
+          path: |
+            ci-artifacts/server-go-windows.log
+            ci-artifacts/server-release-preflight.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  ci-gate:
+    name: CI Gate
+    if: always()
+    needs:
+      - client-contracts
+      - server-go
+      - server-race
+      - server-privileged-mount
+      - client-ui-core
+      - client-ui-packages
+      - client-ui-plugin-compat
+      - client-ui-packaged
+      - server-toolkit-contracts
+      - server-release-preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every CI lane
+        env:
+          CLIENT_CONTRACTS: ${{ needs.client-contracts.result }}
+          SERVER_GO: ${{ needs.server-go.result }}
+          SERVER_RACE: ${{ needs.server-race.result }}
+          SERVER_PRIVILEGED_MOUNT: ${{ needs.server-privileged-mount.result }}
+          CLIENT_UI_CORE: ${{ needs.client-ui-core.result }}
+          CLIENT_UI_PACKAGES: ${{ needs.client-ui-packages.result }}
+          CLIENT_UI_PLUGIN_COMPAT: ${{ needs.client-ui-plugin-compat.result }}
+          CLIENT_UI_PACKAGED: ${{ needs.client-ui-packaged.result }}
+          SERVER_TOOLKITS: ${{ needs.server-toolkit-contracts.result }}
+          SERVER_RELEASE_PREFLIGHT: ${{ needs.server-release-preflight.result }}
+        run: |
+          failures=0
+          for result in \
+            "$CLIENT_CONTRACTS" \
+            "$SERVER_GO" \
+            "$SERVER_RACE" \
+            "$SERVER_PRIVILEGED_MOUNT" \
+            "$CLIENT_UI_CORE" \
+            "$CLIENT_UI_PACKAGES" \
+            "$CLIENT_UI_PLUGIN_COMPAT" \
+            "$CLIENT_UI_PACKAGED" \
+            "$SERVER_TOOLKITS" \
+            "$SERVER_RELEASE_PREFLIGHT"; do
+            if [[ "$result" != "success" ]]; then failures=$((failures + 1)); fi
+          done
+          if [[ "$failures" -ne 0 ]]; then
+            echo "$failures required CI lane(s) did not succeed." >&2
+            exit 1
+          fi
+          echo "All required CI lanes succeeded."
