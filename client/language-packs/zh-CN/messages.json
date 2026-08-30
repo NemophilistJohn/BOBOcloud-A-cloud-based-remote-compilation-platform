@@ -1891,6 +1891,7 @@
   "The project context could not be verified while dependencies were loading. Refresh and try again.": "加载依赖信息时无法验证项目上下文，请刷新后重试。",
   "The project changed while dependency files were synchronizing.": "同步依赖文件时项目上下文发生了变化。",
   "The project changed while library changes were starting.": "启动第三方库变更时项目上下文发生了变化。",
+  "The project folder must be a real directory, not a symbolic link.": "项目文件夹必须是真实目录，不能是符号链接。",
   "The selected version will be verified in the chosen runtime before publication.": "所选版本会先在当前运行时中验证，再发布项目缓存。",
   "The server returned an invalid library plan.": "服务器返回了无效的第三方库计划。",
   "The updated dependency files could not be synchronized.": "无法同步更新后的依赖文件。",

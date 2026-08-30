@@ -258,8 +258,9 @@
     var root = String(S.workspaceRoot || '').replace(/\\/g, '/').replace(/\/+$/, '');
     var file = String(filePath || '').replace(/\\/g, '/');
     if (!root || !file) return '';
-    var rootCompare = BOBO.isWindows ? root.toLowerCase() : root;
-    var fileCompare = BOBO.isWindows ? file.toLowerCase() : file;
+    var caseInsensitive = BOBO.isWindowsLocalPath && BOBO.isWindowsLocalPath(S.workspaceRoot);
+    var rootCompare = caseInsensitive ? root.toLowerCase() : root;
+    var fileCompare = caseInsensitive ? file.toLowerCase() : file;
     if (fileCompare !== rootCompare && fileCompare.indexOf(rootCompare + '/') !== 0) return '';
     var relative = file.slice(root.length).replace(/^\/+/, '');
     var parts = relative.split('/');
@@ -278,7 +279,8 @@
     else if (!/^[a-z]+:/i.test(value) && value[0] !== '/') relative = value;
     var parts = relative.split('/');
     if (!relative || parts.some(function(part) { return !part || part === '.' || part === '..' || part.indexOf(':') >= 0 || /[/\\]/.test(part); })) return '';
-    return String(S.workspaceRoot || '') + (BOBO.isWindows ? '\\' : '/') + parts.join(BOBO.isWindows ? '\\' : '/');
+    var separator = BOBO.localPathSeparator ? BOBO.localPathSeparator(S.workspaceRoot) : '/';
+    return String(S.workspaceRoot || '') + separator + parts.join(separator);
   }
 
   function sourceForRelative(relative) {
@@ -478,7 +480,8 @@
     try {
       var raw = JSON.parse(localStorage.getItem(breakpointStorageKey()) || '{}');
       Object.keys(raw || {}).forEach(function(relative) {
-        if (relativeWorkspacePath(String(S.workspaceRoot) + (BOBO.isWindows ? '\\' : '/') + relative) !== relative) return;
+        var separator = BOBO.localPathSeparator ? BOBO.localPathSeparator(S.workspaceRoot) : '/';
+        if (relativeWorkspacePath(String(S.workspaceRoot) + separator + relative) !== relative) return;
         var items = Array.isArray(raw[relative]) ? raw[relative] : [];
         var normalized = items.map(normalizeBreakpoint).filter(Boolean);
         if (normalized.length) S.dap.breakpoints.set(relative, normalized);

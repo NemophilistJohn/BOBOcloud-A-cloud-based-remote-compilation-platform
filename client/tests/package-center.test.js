@@ -79,6 +79,7 @@ test('package IPC errors use stable localized messages instead of raw main-proce
     'The library plan contains an invalid dependency file change.': '本地化：计划无效',
     'The selected library change conflicts with the project dependency file.': '本地化：依赖文件冲突',
     'The project pnpm version does not match this server policy. Update packageManager and try again.': '本地化：pnpm 策略不一致',
+    'The project folder must be a real directory, not a symbolic link.': '本地化：工作区链接无效',
     'Package transaction id is required': '本地化：缺少事务 ID',
     'The project library cache quota is full.': '本地化：缓存配额已满',
     'The library request failed.': '本地化：请求失败',
@@ -93,6 +94,7 @@ test('package IPC errors use stable localized messages instead of raw main-proce
   };
   try {
     assert.equal(localizedPackageError({ code: 'PACKAGE_CHANGE_INVALID', message: 'wording may change' }, 'Library update failed.'), '本地化：计划无效');
+    assert.equal(localizedPackageError({ code: 'PACKAGE_WORKSPACE_SYMLINK', message: 'raw path detail' }, 'Library update failed.'), '本地化：工作区链接无效');
     assert.equal(
       localizedPackageError({ success: false, errorCode: 'package_storage_quota_exceeded', error: 'raw server wording' }, 'Library update failed.'),
       '本地化：缓存配额已满'

@@ -9,6 +9,7 @@ const test = require('node:test');
 const {
   createPackageCenterController,
   normalizeRelativeManifestPath,
+  resolveWorkspaceRoot,
   sha256
 } = require('../main/package-center');
 const { createWorkspaceController } = require('../main/workspace');
@@ -263,6 +264,38 @@ test('package plans reject stale files, traversal, and cross-language manifests 
 
   assert.throws(() => normalizeRelativeManifestPath('../requirements.txt', 'python'), error => error.code === 'PACKAGE_CHANGE_PATH_INVALID');
   assert.throws(() => normalizeRelativeManifestPath('package.json', 'python'), error => error.code === 'PACKAGE_CHANGE_FILE_NOT_ALLOWED');
+});
+
+test('workspace root aliases resolve by file identity while symbolic roots remain forbidden', async (t) => {
+  const ordinaryDirectory = {
+    dev: 7,
+    ino: 11,
+    isDirectory: () => true,
+    isSymbolicLink: () => false
+  };
+  const canonical = await resolveWorkspaceRoot('lexical-workspace-alias', {
+    lstat: async () => ordinaryDirectory,
+    realpath: async () => path.resolve('canonical-workspace-root'),
+    stat: async () => ordinaryDirectory
+  });
+  assert.equal(canonical, path.resolve('canonical-workspace-root'));
+
+  const realRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bobocloud-package-real-root-'));
+  const realChild = path.join(realRoot, 'workspace');
+  fs.mkdirSync(realChild);
+  const linkedRoot = realRoot + '-link';
+  t.after(() => {
+    try { fs.rmSync(linkedRoot, { recursive: true, force: true }); } catch (_) {}
+    fs.rmSync(realRoot, { recursive: true, force: true });
+  });
+  try {
+    fs.symlinkSync(realRoot, linkedRoot, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (error) {
+    t.skip('directory links are unavailable on this test host: ' + error.message);
+    return;
+  }
+  await assert.rejects(resolveWorkspaceRoot(linkedRoot), error => error.code === 'PACKAGE_WORKSPACE_SYMLINK');
+  await assert.rejects(resolveWorkspaceRoot(path.join(linkedRoot, 'workspace')), error => error.code === 'PACKAGE_WORKSPACE_SYMLINK');
 });
 
 test('package plans accept a bounded multi-file transaction or an exact reinstall binding', async (t) => {

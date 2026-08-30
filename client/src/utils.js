@@ -55,6 +55,15 @@
     return 'p' + Math.abs(hash).toString(36);
   };
 
+  BOBO.isWindowsLocalPath = function(value) {
+    var localPath = String(value || '');
+    return /^[A-Za-z]:[\\/]/.test(localPath) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(localPath) || /^\/\/[^/]+\/[^/]+/.test(localPath);
+  };
+
+  BOBO.localPathSeparator = function(value) {
+    return BOBO.isWindowsLocalPath(value) ? '\\' : '/';
+  };
+
   // ──── Language display names ────
   BOBO.langDisplayName = function(langId) {
     var names = {

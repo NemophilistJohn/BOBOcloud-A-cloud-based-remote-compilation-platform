@@ -110,6 +110,41 @@ function sameRoot(left, right) {
   return process.platform === 'win32' ? first.toLowerCase() === second.toLowerCase() : first === second;
 }
 
+function sameFileIdentity(left, right) {
+  if (!left || !right) return false;
+  return String(left.dev) === String(right.dev) && String(left.ino) === String(right.ino);
+}
+
+async function resolveWorkspaceRoot(rootPath, fileSystem) {
+  const io = fileSystem || fs.promises;
+  const lexicalRoot = path.resolve(rootPath);
+  let lexicalStat;
+  let canonicalRoot;
+  let canonicalStat;
+  try {
+    let current = lexicalRoot;
+    for (;;) {
+      const componentStat = await io.lstat(current);
+      if (componentStat.isSymbolicLink()) throw new Error('redirected workspace root');
+      if (current === lexicalRoot) {
+        lexicalStat = componentStat;
+        if (!lexicalStat.isDirectory()) throw new Error('invalid workspace root');
+      }
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+    canonicalRoot = await io.realpath(lexicalRoot);
+    canonicalStat = await io.stat(canonicalRoot);
+  } catch (_) {
+    throw packageCenterError('PACKAGE_WORKSPACE_SYMLINK', 'Package changes require a real workspace root');
+  }
+  if (!canonicalStat.isDirectory() || !sameFileIdentity(lexicalStat, canonicalStat)) {
+    throw packageCenterError('PACKAGE_WORKSPACE_SYMLINK', 'Package changes require a real workspace root');
+  }
+  return path.resolve(canonicalRoot);
+}
+
 function transactionKey(identity) {
   const root = path.resolve(identity.rootPath);
   return (process.platform === 'win32' ? root.toLowerCase() : root) + ':' + identity.workspaceIdentity;
@@ -1035,10 +1070,10 @@ function createPackageCenterController(options) {
       }
       throw packageCenterError('PACKAGE_TRANSACTION_ACTIVE', 'Another package change is awaiting synchronization for this workspace');
     }
-    const rootRealPath = await fs.promises.realpath(identity.rootPath);
-    if (!sameRoot(rootRealPath, identity.rootPath)) {
-      throw packageCenterError('PACKAGE_WORKSPACE_SYMLINK', 'Package changes require a real workspace root');
-    }
+    // A Windows 8.3 alias may differ textually from its canonical path while
+    // still naming the same ordinary directory. Reject links by file type and
+    // identity, then use the canonical root for every containment check.
+    const rootRealPath = await resolveWorkspaceRoot(identity.rootPath);
     const reinstall = plan.reinstall === true;
     const changes = reinstall ? [] : await inspectChanges(identity.rootPath, rootRealPath, language, plan.localChanges);
     const transaction = {
@@ -1517,5 +1552,6 @@ module.exports = {
   canonicalLanguage,
   createPackageCenterController,
   normalizeRelativeManifestPath,
+  resolveWorkspaceRoot,
   sha256
 };

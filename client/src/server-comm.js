@@ -251,7 +251,7 @@
         var file = link.getAttribute('data-file');
         var line = parseInt(link.getAttribute('data-line'), 10);
         if (!file) return;
-        var sep = BOBO.isWindows ? '\\' : '/';
+        var sep = BOBO.localPathSeparator ? BOBO.localPathSeparator(S.workspaceRoot) : '/';
         var fullPath = file;
         if (S.workspaceRoot && file.indexOf(':') !== 1) {
           fullPath = S.workspaceRoot + sep + file.replace(/\//g, sep);

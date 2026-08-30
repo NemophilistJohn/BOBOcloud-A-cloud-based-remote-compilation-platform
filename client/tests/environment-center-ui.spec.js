@@ -240,68 +240,68 @@ test('environment view switches, persists, localizes, and fits at 180px', async 
 
     await page.evaluate(async () => {
       await window.BOBO.i18n.setLocale('en');
-      window.__deletedCaches = [];
-      window.__cacheConfirms = [];
-      window.BOBO.confirm = async (options) => {
-        window.__cacheConfirms.push(options);
-        return true;
-      };
+      window.__cacheRevision = 'revision-1';
+      window.__cacheEntries = [
+        {
+          id: 'dep-current', category: 'dependencies', state: 'current', workspace_id: 'root\u0000fixture-project',
+          workspace_name: 'Fixture project', runtime_id: 'python:3.10', dependency_digest: '0123456789abcdef',
+          generation: 'generation-a', size_bytes: 4096, files: 12, active_readers: 0, writing: false
+        },
+        {
+          id: 'dep-history', category: 'dependencies', state: 'superseded', workspace_id: 'root\u0000fixture-project',
+          workspace_name: 'Fixture project', runtime_id: 'node:22', dependency_digest: 'aabbccddeeff0011',
+          generation: 'generation-old', size_bytes: 2048, files: 9, active_readers: 0, writing: false
+        },
+        {
+          id: 'dep-writing', category: 'dependencies', state: 'current', workspace_id: 'root\u0000active-project',
+          workspace_name: 'Active project', runtime_id: 'python:3.13', dependency_digest: '1122334455667788',
+          size_bytes: 512, files: 2, active_readers: 1, writing: true
+        },
+        { id: 'shared-toolchain', category: 'toolchains', state: 'ready', runtime_id: 'go:1.24', size_bytes: 1024, files: 2 }
+      ];
+      window.__cacheActions = [];
       window.BOBO.sendToServer = async (action, data) => {
+        window.__cacheActions.push({ action, data });
         if (action === 'listProjects') {
-		  return { success: true, storageInfo: { total_used_bytes: 8704, quota_bytes: 1048576, persist_bytes: 8704, projects_total_bytes: 0, projects: [] } };
+		  return { success: true, storageInfo: { total_used_bytes: 7680, quota_bytes: 1048576, persist_bytes: 7680, projects_total_bytes: 0, projects: [] } };
         }
-        if (action === 'listCacheModules') {
-          const pythonModules = [
-            { name: 'Fixture project', path: 'project-dependencies/workspace/runtime/python/digest-a', size_bytes: 4096, files: 12, kind: 'project-dependency', project_name: 'Fixture project', runtime_id: 'python:3.10', digest: '0123456789abcdef', digest_source: 'lock', last_used: Date.now() },
-            { name: 'Active project', path: 'project-dependencies/workspace/runtime/python/digest-active', size_bytes: 1024, files: 4, kind: 'project-dependency', project_name: 'Active project', runtime_id: 'python:3.11', digest: 'fedcba9876543210', digest_source: 'manifest', last_used: Date.now(), active: true },
-            { name: 'Active project', path: 'project-dependencies/workspace/runtime/python/digest-writing', size_bytes: 512, files: 2, kind: 'project-dependency', project_name: 'Active project', runtime_id: 'python:3.13', digest: '1122334455667788', digest_source: 'manifest', last_used: Date.now(), active: true, writing: true },
-            { name: 'pip-cache', path: 'pip-cache', size_bytes: 1024, files: 2, kind: 'legacy-cache' }
-          ].filter((item) => !window.__deletedCaches.includes(item.path));
-          const nodeModules = [
-            { name: 'Fixture project', path: 'project-dependencies/workspace/runtime/node/digest-node', size_bytes: 2048, files: 9, kind: 'project-dependency', project_name: 'Fixture project', runtime_id: 'node:22', digest: 'aabbccddeeff0011', digest_source: 'manifest', last_used: Date.now() - 1000 }
-          ].filter((item) => !window.__deletedCaches.includes(item.path));
-          return { success: true, cacheGroups: [
-            { language: 'python', label: 'Python', size_bytes: pythonModules.reduce((sum, item) => sum + item.size_bytes, 0), modules: pythonModules },
-            { language: 'node', label: 'Node.js', size_bytes: nodeModules.reduce((sum, item) => sum + item.size_bytes, 0), modules: nodeModules }
-          ] };
-        }
-        if (action === 'deleteCacheModule') {
-          window.__deletedCaches.push(data.cachePath);
-          return { success: true };
+        if (action === 'getCacheInventory') {
+          const managedBytes = window.__cacheEntries.reduce((sum, entry) => sum + entry.size_bytes, 0);
+          return { success: true, data: { cacheInventory: {
+            schema: 2, revision: window.__cacheRevision, owner_kind: 'user', owner_id: 'root',
+            quota_bytes: 1048576, used_bytes: managedBytes, managed_bytes: managedBytes,
+            managed_files: window.__cacheEntries.reduce((sum, entry) => sum + entry.files, 0),
+            reclaimable_bytes: 2048, reserved_bytes: 0, generated_at: '2026-08-30T12:00:00Z',
+            entries: window.__cacheEntries
+          } } };
         }
         throw new Error('unexpected storage action: ' + action);
       };
-      window.BOBO.projects.open();
+      window.BOBO.cacheStore.reset();
+      window.BOBO.projects.open({ tab: 'cache' });
     });
     await expect(page.locator('#projects-modal')).toHaveClass(/open/);
-    await page.locator('.projects-tab[data-ptab="cache"]').click();
-    const fixtureGroup = page.locator('.cache-project-group').filter({ hasText: 'Fixture project' });
-    await expect(page.locator('#cache-tree')).toContainText('Project caches');
-    await expect(page.locator('#cache-tree')).toContainText('Dependency snapshots');
-    await expect(page.locator('#cache-tree')).toContainText('Shared and system caches');
+    await expect(page.locator('#projects-tab-cache')).toHaveAttribute('aria-selected', 'true');
+    await expect.poll(() => page.evaluate(() => window.__cacheActions.some((entry) => entry.action === 'getCacheInventory'))).toBe(true);
+    const fixtureGroup = page.locator('.cache-v2-project').filter({ hasText: 'Fixture project' });
+    await expect(page.locator('.cache-v2-shell')).toContainText('Project caches');
     await expect(fixtureGroup).toHaveCount(1);
-    await expect(fixtureGroup).toContainText('2 snapshots');
-    await fixtureGroup.locator('.cache-project-header').click();
-    const removableCache = page.locator('.cache-del[data-path="project-dependencies/workspace/runtime/python/digest-a"]');
-    const activeCache = page.locator('.cache-del[data-path="project-dependencies/workspace/runtime/python/digest-active"]');
-    const writingCache = page.locator('.cache-del[data-path="project-dependencies/workspace/runtime/python/digest-writing"]');
     await expect(fixtureGroup).toContainText('python:3.10');
-    await expect(fixtureGroup).toContainText('node:22');
     await expect(fixtureGroup).toContainText('0123456789ab');
-    await expect(page.locator('#cache-tree')).toContainText('Legacy shared download cache');
+    const removableCache = page.locator('.cache-v2-entry[data-cache-entry="dep-history"]');
+    await expect(removableCache).toContainText('node:22');
+    await expect(page.locator('.cache-v2-shared')).toContainText('Toolchains');
+    const activeGroup = page.locator('.cache-v2-project').filter({ hasText: 'Active project' });
+    await expect(activeGroup).toHaveCount(1);
+    await expect(activeGroup.locator('[data-cache-action="delete"]')).toBeDisabled();
+    await expect(activeGroup.locator('[data-cache-action="clear-project"]')).toBeDisabled();
     for (const locale of ['zh-CN', 'ja', 'en']) {
       const expectedProjectCaches = await page.evaluate(async (nextLocale) => {
         await window.BOBO.i18n.setLocale(nextLocale);
         return window.BOBO.i18n.t('Project caches');
       }, locale);
-      await expect(page.locator('.cache-section-title > span').first()).toHaveText(expectedProjectCaches);
+      await expect(page.locator('.cache-v2-section').first()).toContainText(expectedProjectCaches);
     }
-    await expect(page.locator('#cache-tree')).toContainText('Updating');
-    await expect(page.locator('#cache-tree')).toContainText('Service in use');
-    await expect(activeCache).toBeEnabled();
-    await expect(activeCache).toHaveAttribute('title', 'Delete cache and stop service');
-    await expect(writingCache).toBeDisabled();
-    await expect(writingCache).toHaveAttribute('title', 'Cache is being updated');
     await page.evaluate(() => {
       const toastContainer = document.getElementById('toast-container');
       if (toastContainer) toastContainer.replaceChildren();
@@ -309,8 +309,8 @@ test('environment view switches, persists, localizes, and fits at 180px', async 
     await page.screenshot({ path: path.join(os.tmpdir(), 'bobo-project-cache-by-project.png'), fullPage: false });
     await page.setViewportSize({ width: 640, height: 720 });
     await expect.poll(async () => page.evaluate(() => {
-      const cache = document.getElementById('cache-tree');
-      const rows = [...cache.querySelectorAll('.cache-snapshot-row')];
+      const cache = document.querySelector('.cache-v2-shell');
+      const rows = [...cache.querySelectorAll('.cache-v2-entry')];
       return cache.scrollWidth <= cache.clientWidth + 1 && rows.every((row) => row.scrollWidth <= row.clientWidth + 1);
     })).toBe(true);
     await page.evaluate(() => {
@@ -319,15 +319,6 @@ test('environment view switches, persists, localizes, and fits at 180px', async 
     });
     await page.screenshot({ path: path.join(os.tmpdir(), 'bobo-project-cache-narrow.png'), fullPage: false });
     await page.setViewportSize({ width: 1024, height: 720 });
-    await activeCache.click();
-    await expect.poll(() => page.evaluate(() => window.__deletedCaches)).toContain('project-dependencies/workspace/runtime/python/digest-active');
-    await expect(activeCache).toHaveCount(0);
-    await expect.poll(() => page.evaluate(() => window.__cacheConfirms.at(-1).message)).toContain('Deleting this cache will stop the service that is using it.');
-    await expect(writingCache).toBeDisabled();
-    await removableCache.click();
-    await expect.poll(() => page.evaluate(() => window.__deletedCaches)).toContain('project-dependencies/workspace/runtime/python/digest-a');
-    await expect(removableCache).toHaveCount(0);
-    await expect(fixtureGroup).toContainText('node:22');
     await page.screenshot({ path: path.join(os.tmpdir(), 'bobo-project-dependency-cache.png'), fullPage: false });
     await page.locator('#projects-close').click();
 

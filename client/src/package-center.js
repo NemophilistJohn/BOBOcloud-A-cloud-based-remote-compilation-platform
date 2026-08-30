@@ -76,6 +76,7 @@
     PACKAGE_BINDING_DIGEST_MISMATCH: 'The project changed before dependency files were updated.',
     PACKAGE_WORKSPACE_MISSING: 'Open a workspace before managing libraries.',
     PACKAGE_WORKSPACE_STALE: 'The project changed while library changes were starting.',
+    PACKAGE_WORKSPACE_SYMLINK: 'The project folder must be a real directory, not a symbolic link.',
     PACKAGE_WORKSPACE_TRANSITION: 'Wait for the library operation to finish before changing projects.',
     PACKAGE_CONTEXT_MISMATCH: 'The project context could not be verified while dependencies were loading. Refresh and try again.',
     PACKAGE_TRANSACTION_INVALID: 'The dependency file transaction is invalid.',

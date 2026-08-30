@@ -98,6 +98,10 @@ test('workspace tree cloud rail tracks local, queued, syncing, success, error an
     const root = page.locator('.tree-row[data-name="workspace"]');
     const alpha = page.locator('.tree-row[data-name="alpha.js"]');
     const source = page.locator('.tree-row[data-name="src"]');
+    await expect(root).toBeVisible();
+    if (await root.getAttribute('aria-expanded') !== 'true') await root.click();
+    await expect(root).toHaveAttribute('aria-expanded', 'true');
+    await expect(alpha).toBeVisible();
     await expect(root.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'local-only');
     await expect(alpha.locator('.tree-sync-rail')).toHaveAttribute('data-decoration-kind', 'cloud-sync');
     await expect(alpha.locator('.tree-sync-rail')).toHaveAttribute('title', 'Cloud sync: Local only - not uploaded yet');
@@ -127,6 +131,7 @@ test('workspace tree cloud rail tracks local, queued, syncing, success, error an
     await expect(alpha.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'queued');
     await expect(root.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'syncing');
 
+    await expect(source).toBeVisible();
     await source.click();
     const beta = page.locator('.tree-row[data-name="beta.js"]');
     await beta.click();

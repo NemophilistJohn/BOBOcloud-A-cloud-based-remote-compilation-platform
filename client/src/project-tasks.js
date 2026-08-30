@@ -295,13 +295,11 @@
     if (button) button.setAttribute('aria-expanded', 'true');
     var first = document.querySelector('#run-target-menu .run-target-item:not(:disabled)');
     if (first) first.focus();
-    setTimeout(function() {
-      document.addEventListener('pointerdown', onOutsidePointer, true);
-      document.addEventListener('contextmenu', onOutsidePointer, true);
-      document.addEventListener('scroll', closeMenu, true);
-      global.addEventListener('resize', closeMenu);
-      global.addEventListener('blur', closeMenu);
-    }, 0);
+    document.addEventListener('pointerdown', onOutsidePointer, true);
+    document.addEventListener('contextmenu', onOutsidePointer, true);
+    document.addEventListener('scroll', closeMenu, true);
+    global.addEventListener('resize', closeMenu);
+    global.addEventListener('blur', closeMenu);
   }
 
   function finishTaskInput(cancelled) {
