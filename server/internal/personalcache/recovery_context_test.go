@@ -32,7 +32,7 @@ func (ctx *cancelAfterChecksContext) Err() error {
 }
 
 func TestRecoverOrphanedTransactionsContextHonorsCancellation(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	marker := filepath.Join(manager.root, "u1", "keep")
 	if err := os.MkdirAll(filepath.Dir(marker), 0700); err != nil {
 		t.Fatal(err)

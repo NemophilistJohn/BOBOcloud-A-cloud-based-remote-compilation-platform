@@ -1060,7 +1060,7 @@ func TestServeHTTPResourceMutationsDoNotSelfConflictWithRequestLease(t *testing.
 
 	t.Run("clear cache scope", func(t *testing.T) {
 		handler, _, user := newAuthenticatedLifecycleHandler(t)
-		handler.PersonalCache = personalcache.NewManager(handler.Config.DataDir, personalcache.Options{})
+		handler.PersonalCache = newPersonalCacheManagerForTest(handler.Config.DataDir, personalcache.Options{})
 		inventory := personalCacheV2Inventory(t, handler, user.APIKey)
 		payload, _ := json.Marshal(map[string]any{"action": "clearCacheScope", "scope": "owner", "expectedRevision": inventory.Revision})
 		recorder := serveAuthenticatedAction(t, handler, user.APIKey, string(payload))

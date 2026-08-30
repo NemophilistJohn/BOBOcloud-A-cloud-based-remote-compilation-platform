@@ -194,6 +194,39 @@ func TestURIMapperRejectsHostSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestURIMapperPreservesHostSymlinkAliasInsideWorkspace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows symlink creation requires host policy support")
+	}
+	root := t.TempDir()
+	realDirectory := filepath.Join(root, "real")
+	aliasDirectory := filepath.Join(root, "alias")
+	if err := os.Mkdir(realDirectory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDirectory, "main.go"), []byte("package main\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDirectory, aliasDirectory); err != nil {
+		t.Fatal(err)
+	}
+	mapper, err := NewURIMapper(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{"uri": fileURI(filepath.Join(aliasDirectory, "main.go"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := mapper.RewriteOutbound(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "bobocloud-lsp:///alias/main.go") || strings.Contains(string(out), "bobocloud-lsp:///real/main.go") {
+		t.Fatalf("workspace symlink alias identity was not preserved: %s", out)
+	}
+}
+
 func TestURIMapperRedactsExternalServerPaths(t *testing.T) {
 	mapper, _ := NewURIMapper(t.TempDir())
 	out, err := mapper.RewriteOutbound([]byte(`{"jsonrpc":"2.0","id":1,"result":{"uri":"file:///private/dependency.rs"}}`))

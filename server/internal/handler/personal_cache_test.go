@@ -104,7 +104,7 @@ func TestPersonalCacheLeaseErrorAcceptsReadOnlyGeneration(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "requirements.txt"), []byte("demo==1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cache := personalcache.NewManager(dataRoot, personalcache.Options{ScopeMode: "project-lock", ReservationBytes: 8})
+	cache := newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ScopeMode: "project-lock", ReservationBytes: 8})
 	request := personalcache.Request{
 		UserID: "default", WorkspaceID: lsp.StableWorkspaceIdentity("default", "", "", "", "project"), WorkspaceName: "Project",
 		RuntimeID: "python:3.11", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.11", "python:3.11-slim"),
@@ -134,7 +134,7 @@ func TestRunSkipsProjectDependencyGenerationForLanguagesWithoutManagedDependenci
 	if err := os.MkdirAll(workspace, 0700); err != nil {
 		t.Fatal(err)
 	}
-	handler := &WSHandler{PersonalCache: personalcache.NewManager(dataRoot, personalcache.Options{ScopeMode: "project-lock", ReservationBytes: 8})}
+	handler := &WSHandler{PersonalCache: newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ScopeMode: "project-lock", ReservationBytes: 8})}
 	session := &model.RunSession{UserID: "default", FolderName: "Project", FolderKey: "project"}
 	runtime := model.RuntimeDef{RuntimeID: "cpp:13", DockerImage: "gcc:13", Language: "cpp"}
 	lease, err := handler.prepareRunPersonalCache(context.Background(), session, runtime, runtime.Language, workspace)
@@ -162,7 +162,7 @@ func TestProjectLockDependencyLanguageCoversManagedRuntimesOnly(t *testing.T) {
 
 func TestProjectDependencyCacheCRUDAndProjectCleanup(t *testing.T) {
 	handler, _, user := newAuthenticatedLifecycleHandler(t)
-	handler.PersonalCache = personalcache.NewManager(handler.Config.DataDir, personalcache.Options{ReservationBytes: 8})
+	handler.PersonalCache = newPersonalCacheManagerForTest(handler.Config.DataDir, personalcache.Options{ReservationBytes: 8})
 	cleared := 0
 	handler.OnPersonalCacheCleared = func() { cleared++ }
 	workspace := filepath.Join(handler.Config.DataDir, "users", user.ID, "workspaces", "project")
@@ -236,7 +236,7 @@ func TestProjectDependencyCacheCRUDAndProjectCleanup(t *testing.T) {
 
 func TestProjectDependencyCacheListsExactPythonDistributionAndRejectsDigestMutation(t *testing.T) {
 	handler, _, user := newAuthenticatedLifecycleHandler(t)
-	handler.PersonalCache = personalcache.NewManager(handler.Config.DataDir, personalcache.Options{ReservationBytes: 8})
+	handler.PersonalCache = newPersonalCacheManagerForTest(handler.Config.DataDir, personalcache.Options{ReservationBytes: 8})
 	cleared := 0
 	handler.OnPersonalCacheCleared = func() { cleared++ }
 	workspace := filepath.Join(handler.Config.DataDir, "users", user.ID, "workspaces", "project")
@@ -289,7 +289,7 @@ func TestProjectDependencyCacheListsExactPythonDistributionAndRejectsDigestMutat
 
 func TestProjectDependencyCachePublishesExactNodeInventoryAndKeepsUnsupportedLanguagesOpaque(t *testing.T) {
 	handler, _, user := newAuthenticatedLifecycleHandler(t)
-	handler.PersonalCache = personalcache.NewManager(handler.Config.DataDir, personalcache.Options{ReservationBytes: 8, ReservationFiles: 1})
+	handler.PersonalCache = newPersonalCacheManagerForTest(handler.Config.DataDir, personalcache.Options{ReservationBytes: 8, ReservationFiles: 1})
 
 	tests := []struct {
 		language  string
@@ -369,7 +369,7 @@ func TestPersonalCacheWorkspaceFolderKey(t *testing.T) {
 
 func TestSingleUserProjectDeletionRemovesDependencyNamespaces(t *testing.T) {
 	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
-	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+	handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ReservationBytes: 8})
 	workspace := filepath.Join(serverRoot, "project")
 	if err := os.MkdirAll(workspace, 0700); err != nil {
 		t.Fatal(err)
@@ -432,7 +432,7 @@ func TestProjectDeletionRemovesOnlyBoundPackageTransactions(t *testing.T) {
 
 func TestLegacyCacheNamespacesAreNotImportedOrDeletedByCacheV2(t *testing.T) {
 	handler, _, user := newAuthenticatedLifecycleHandler(t)
-	handler.PersonalCache = personalcache.NewManager(handler.Config.DataDir, personalcache.Options{})
+	handler.PersonalCache = newPersonalCacheManagerForTest(handler.Config.DataDir, personalcache.Options{})
 	persist := filepath.Join(handler.Config.DataDir, "users", user.ID, "persist")
 	pythonRoot := filepath.Join(persist, "pip-packages")
 	for path, content := range map[string]string{

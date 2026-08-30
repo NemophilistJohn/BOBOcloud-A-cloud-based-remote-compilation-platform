@@ -10,7 +10,7 @@ import (
 )
 
 func TestBuildLeaseConfiguresCargoTargetAtPlanWorkDir(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{})
+	manager := newTestManager(t.TempDir(), Options{})
 	lease, err := manager.PrepareBuild(context.Background(), BuildRequest{
 		UserID: "u1", WorkspaceID: "project", RuntimeID: "rust:1.86",
 		RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "rust", Target: "native",
@@ -35,7 +35,7 @@ func TestBuildLeaseConfiguresCargoTargetAtPlanWorkDir(t *testing.T) {
 }
 
 func TestCatalogDeleteRestoresBuildBindingWhenStagingFails(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{})
+	manager := newTestManager(t.TempDir(), Options{})
 	request := BuildRequest{
 		UserID: "u1", WorkspaceID: "project", RuntimeID: "go:1.24",
 		RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "go", Target: "native",

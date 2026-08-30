@@ -81,7 +81,7 @@ func TestScanNodePackageTreeTreatsMissingDirectoryAsExactEmpty(t *testing.T) {
 }
 
 func TestNodeInventoryRepairPersistsTheNodeEcosystem(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "package.json"), []byte("{\"name\":\"demo\",\"dependencies\":{\"lodash\":\"4.17.21\"}}\n"), 0600); err != nil {
 		t.Fatal(err)

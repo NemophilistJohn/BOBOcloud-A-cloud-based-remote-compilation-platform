@@ -23,7 +23,7 @@ func catalogLifecycleEntry(t *testing.T, inventory cachev2.Inventory, category c
 }
 
 func TestCurrentDependencyManualDeleteIsProtectedButQuotaLRURemovesBinding(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8, ReservationFiles: 1, MaxFiles: 10_000})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8, ReservationFiles: 1, MaxFiles: 10_000})
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "requirements.txt"), []byte("numpy==2.2.6\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestCurrentDependencyManualDeleteIsProtectedButQuotaLRURemovesBinding(t *te
 }
 
 func TestBuildCatalogParentChildCASAndDeletionSemantics(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{MaxFiles: 10_000})
+	manager := newTestManager(t.TempDir(), Options{MaxFiles: 10_000})
 	request := BuildRequest{
 		UserID: "u1", WorkspaceID: "project", WorkspaceName: "Project", RuntimeID: "go:1.24",
 		RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "go", DependencyDigest: "deps-a", Target: "native",
@@ -184,7 +184,7 @@ func TestBuildCatalogParentChildCASAndDeletionSemantics(t *testing.T) {
 }
 
 func TestBuildFamilyDeleteRollbackRestoresRootsAndBinding(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{MaxFiles: 10_000})
+	manager := newTestManager(t.TempDir(), Options{MaxFiles: 10_000})
 	request := BuildRequest{
 		UserID: "u1", WorkspaceID: "project", RuntimeID: "rust:1.86",
 		RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "rust", DependencyDigest: "deps-a", Target: "native",

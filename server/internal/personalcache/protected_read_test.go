@@ -9,7 +9,7 @@ import (
 )
 
 func TestAcquireEntryInspectionReadRetainsGenerationWithoutTouchingLRU(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8, ReservationFiles: 1})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8, ReservationFiles: 1})
 	request := Request{
 		UserID: "u1", WorkspaceID: "project", WorkspaceName: "Project",
 		RuntimeID: "node:22", RuntimeFingerprint: trustedTestRuntimeFingerprint,

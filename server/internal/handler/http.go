@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +29,7 @@ import (
 	"bobocloud-server/internal/packageops"
 	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/resourcecontrol"
+	"bobocloud-server/internal/safefile"
 	"bobocloud-server/internal/session"
 	"bobocloud-server/internal/storage"
 )
@@ -2030,33 +2030,13 @@ func secureCacheTarget(root, relative string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resolvedRoot, err := filepath.EvalSymlinks(filepath.Clean(root))
+	lexical, err := safefile.RealDirectory(target)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cache target contains a link or reparse point: %w", err)
 	}
-	resolvedTarget, err := filepath.EvalSymlinks(target)
-	if err != nil {
-		return "", err
-	}
-	resolvedRoot, err = filepath.Abs(resolvedRoot)
-	if err != nil {
-		return "", err
-	}
-	resolvedTarget, err = filepath.Abs(resolvedTarget)
-	if err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(resolvedRoot, resolvedTarget)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	within, err := safefile.PathWithin(root, lexical)
+	if err != nil || !within || safefile.SameFile(root, lexical) {
 		return "", fmt.Errorf("cache target escapes its root")
-	}
-	lexical, err := filepath.Abs(target)
-	samePath := filepath.Clean(lexical) == filepath.Clean(resolvedTarget)
-	if runtime.GOOS == "windows" {
-		samePath = strings.EqualFold(filepath.Clean(lexical), filepath.Clean(resolvedTarget))
-	}
-	if err != nil || !samePath {
-		return "", fmt.Errorf("cache target contains a link or reparse point")
 	}
 	return lexical, nil
 }

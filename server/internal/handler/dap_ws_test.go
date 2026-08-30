@@ -275,7 +275,7 @@ func TestDAPAcquiresPythonDependencyCacheWithOrdinaryReadLease(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "requirements.txt"), []byte("numpy==2.1.0\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cache := personalcache.NewManager(dataDir, personalcache.Options{ReservationBytes: 8})
+	cache := newPersonalCacheManagerForTest(dataDir, personalcache.Options{ReservationBytes: 8})
 	request := personalcache.Request{
 		UserID: "user-a", WorkspaceID: lsp.StableWorkspaceIdentity("user-a", "", "", "", "project"),
 		WorkspaceName: "Project", RuntimeID: "python:3.11", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.11", "python:3.11-slim"), Language: "python", WorkspaceRoot: workspace,
@@ -335,7 +335,7 @@ func TestDAPManagedLanguagesUseCopyOnWriteReadLeases(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(workspace, test.manifest), []byte("locked dependency\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			cache := personalcache.NewManager(dataDir, personalcache.Options{ReservationBytes: 8})
+			cache := newPersonalCacheManagerForTest(dataDir, personalcache.Options{ReservationBytes: 8})
 			request := personalcache.Request{
 				UserID: "user-a", WorkspaceID: lsp.StableWorkspaceIdentity("user-a", "", "", "", "project"),
 				WorkspaceName: "Project", RuntimeID: test.runtimeID,
@@ -390,7 +390,7 @@ func TestDAPMountsExactPythonDigestWhenInventoryIsIncomplete(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "requirements.txt"), []byte("numpy==2.1.0\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cache := personalcache.NewManager(dataDir, personalcache.Options{ReservationBytes: 8})
+	cache := newPersonalCacheManagerForTest(dataDir, personalcache.Options{ReservationBytes: 8})
 	request := personalcache.Request{
 		UserID: "user-a", WorkspaceID: lsp.StableWorkspaceIdentity("user-a", "", "", "", "project"),
 		WorkspaceName: "Project", RuntimeID: "python:3.11", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.11", "python:3.11-slim"), Language: "python", WorkspaceRoot: workspace,
@@ -439,7 +439,7 @@ func TestDAPDependencyCacheReportsMissingAndBusyBeforeStart(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "requirements.txt"), []byte("numpy==2.1.0\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cache := personalcache.NewManager(dataDir, personalcache.Options{ReservationBytes: 8})
+	cache := newPersonalCacheManagerForTest(dataDir, personalcache.Options{ReservationBytes: 8})
 	handler := &DAPHandler{PersonalCache: cache}
 	_, _, missing, missingRelease := handler.acquireDAPDependencyCache("user-a", "Project", "project", "python:3.11", "python:3.11-slim", "python", workspace, nil)
 	if missing.State != "missing" || !missing.Required || missingRelease != nil {
@@ -489,7 +489,7 @@ func TestDAPWebSocketRejectsRequiredCacheBeforeWorkspaceCopyOrAdapterStart(t *te
 	cfg.DAPEnabled = true
 	cfg.ServerRoot = serverRoot
 	cfg.DataDir = t.TempDir()
-	handler := &DAPHandler{Config: cfg, Manager: manager, PersonalCache: personalcache.NewManager(cfg.DataDir, personalcache.Options{})}
+	handler := &DAPHandler{Config: cfg, Manager: manager, PersonalCache: newPersonalCacheManagerForTest(cfg.DataDir, personalcache.Options{})}
 	testServer := httptest.NewServer(http.HandlerFunc(handler.HandleWebSocket))
 	t.Cleanup(testServer.Close)
 	dial := func() *websocket.Conn {

@@ -31,6 +31,8 @@ __pycache__/
 
 # electron构建产物
 dist/
+!client/examples/plugins/hello-plugin/dist/
+!client/examples/plugins/hello-plugin/dist/extension.js
 release/
 dist‑rclone‑test/
 *.exe

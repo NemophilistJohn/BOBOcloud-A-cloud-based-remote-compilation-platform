@@ -30,7 +30,7 @@ func TestHTTPTerminalRetainsOperationUntilContainerRemoval(t *testing.T) {
 		return "", "", 1, errors.New("destroy terminal container")
 	}
 	handler := NewHTTPHandler(cfg, storage.NewMemorySessionStore(), session.NewChannelManager(), false, nil, nil, executor, nil, nil)
-	handler.PersonalCache = personalcache.NewManager(cfg.DataDir, personalcache.Options{ReservationBytes: 8, ReservationFiles: 1})
+	handler.PersonalCache = newPersonalCacheManagerForTest(cfg.DataDir, personalcache.Options{ReservationBytes: 8, ReservationFiles: 1})
 	handler.Resources = newTestResourceController(t, 1)
 
 	recorder := httptest.NewRecorder()

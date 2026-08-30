@@ -100,7 +100,7 @@ func TestProjectDisplayNameFallsBackToPersonalCacheMetadata(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "requirements.txt"), []byte("numpy==2.2.6\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{
+	handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{
 		ScopeMode:        "project-lock",
 		ReservationBytes: 8,
 	})

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"bobocloud-server/internal/cachev2"
+	"bobocloud-server/internal/safefile"
 )
 
 // CleanupUserDownloadCache removes one user's DAP adapter download cache.
@@ -76,12 +77,8 @@ func validateExistingDAPCacheDirectory(path string) (bool, error) {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return false, fmt.Errorf("DAP cache directory %q must be a real directory", path)
 	}
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return false, fmt.Errorf("resolve DAP cache directory %q: %w", path, err)
-	}
-	if filepath.Clean(resolved) != filepath.Clean(path) {
-		return false, fmt.Errorf("DAP cache directory %q must not be redirected", path)
+	if _, err := safefile.RealDirectory(path); err != nil {
+		return false, fmt.Errorf("DAP cache directory %q must not be redirected: %w", path, err)
 	}
 	return true, nil
 }

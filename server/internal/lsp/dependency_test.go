@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"bobocloud-server/internal/safefile"
 )
 
 func makeDependencyDir(t *testing.T, path string) string {
@@ -81,7 +83,7 @@ func TestPythonDependencyViewUsesExactProjectGeneration(t *testing.T) {
 	if len(view.Mounts) != 1 {
 		t.Fatalf("mounts = %+v, want exact project generation", view.Mounts)
 	}
-	if got := view.Mounts[0].HostPath; got != specific {
+	if got := view.Mounts[0].HostPath; !safefile.SameFile(got, specific) {
 		t.Fatalf("mounted %q, want %q", got, specific)
 	}
 	if view.Mounts[0].Legacy {
@@ -386,7 +388,7 @@ func TestTeamGoDependencyViewPrefersSharedModuleSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(view.Mounts) != 1 || view.Mounts[0].HostPath != sharedProxy || view.Mounts[0].ContainerPath != goModuleProxyContainer {
+	if len(view.Mounts) != 1 || !safefile.SameFile(view.Mounts[0].HostPath, sharedProxy) || view.Mounts[0].ContainerPath != goModuleProxyContainer {
 		t.Fatalf("unexpected Go view: %+v", view)
 	}
 	if view.DockerEnvironment["GOPROXY"] != "file://"+goModuleProxyContainer || view.DockerEnvironment["GOSUMDB"] != "off" {
@@ -476,7 +478,7 @@ func TestDependencyAdaptersKeepWritableCachesSeparate(t *testing.T) {
 	if javaView.DockerEnvironment["GRADLE_RO_DEP_CACHE"] != javaGradleReadOnlyRoot || javaView.LocalEnvironment["GRADLE_RO_DEP_CACHE"] != filepath.ToSlash(gradleRoot) {
 		t.Fatalf("Gradle read-only cache missing: %+v", javaView.DockerEnvironment)
 	}
-	if len(javaView.Mounts) != 2 || javaView.Mounts[1].HostPath != gradleModules || javaView.Mounts[1].ContainerPath != javaGradleModulesContainer {
+	if len(javaView.Mounts) != 2 || !safefile.SameFile(javaView.Mounts[1].HostPath, gradleModules) || javaView.Mounts[1].ContainerPath != javaGradleModulesContainer {
 		t.Fatalf("Gradle dependency content was not mounted at the read-only cache contract: %+v", javaView.Mounts)
 	}
 	if !javaView.Mounts[1].Managed {
@@ -561,7 +563,7 @@ func TestJavaDependencyViewIgnoresUnseededGradleHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(view.Mounts) != 1 || view.Mounts[0].HostPath != maven || view.Mounts[0].Role != DependencyRoleJavaMaven {
+	if len(view.Mounts) != 1 || !safefile.SameFile(view.Mounts[0].HostPath, maven) || view.Mounts[0].Role != DependencyRoleJavaMaven {
 		t.Fatalf("empty Gradle home became an analysis dependency: %+v", view.Mounts)
 	}
 	if _, exists := view.DockerEnvironment["GRADLE_RO_DEP_CACHE"]; exists {
@@ -595,7 +597,7 @@ func TestJavaDependencyViewRequiresCompletedPrivateGradleSnapshot(t *testing.T) 
 		t.Fatal(err)
 	}
 	for _, mount := range view.Mounts {
-		if mount.HostPath == activeModules || mount.Role == DependencyRoleJavaGradle {
+		if safefile.SameFile(mount.HostPath, activeModules) || mount.Role == DependencyRoleJavaGradle {
 			t.Fatalf("active or incomplete Gradle cache was advertised read-only: %+v", view.Mounts)
 		}
 	}
@@ -632,7 +634,7 @@ func TestNodeDependencyViewMountsModulesAtWorkspaceResolutionPath(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(view.Mounts) != 1 || view.Mounts[0].HostPath != modules || view.Mounts[0].ContainerPath != DockerWorkspaceRoot+"/node_modules" {
+	if len(view.Mounts) != 1 || !safefile.SameFile(view.Mounts[0].HostPath, modules) || view.Mounts[0].ContainerPath != DockerWorkspaceRoot+"/node_modules" {
 		t.Fatalf("Node module resolution mount = %+v", view.Mounts)
 	}
 	options := view.InitializationOptionsForAnalyzer(true)
@@ -674,7 +676,7 @@ func TestNodeDependencyViewPrefersPublishedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(view.Mounts) != 1 || view.Mounts[0].HostPath != published.Path || view.Mounts[0].HostPath == workspaceModules || !view.Mounts[0].Managed {
+	if len(view.Mounts) != 1 || !safefile.SameFile(view.Mounts[0].HostPath, published.Path) || safefile.SameFile(view.Mounts[0].HostPath, workspaceModules) || !view.Mounts[0].Managed {
 		t.Fatalf("published Node snapshot was not preferred: %+v", view.Mounts)
 	}
 }

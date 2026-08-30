@@ -59,9 +59,13 @@ type Options struct {
 	// request, including run, terminal, Environment Center, DAP, and LSP reads.
 	// An empty value selects the current default installer policy.
 	NodeMaterializationPolicy string
-	Metrics                   *metrics.Registry
-	OnEvicted                 func()
-	OnGenerationChanged       func(cacheKey, currentGeneration string, publication uint64)
+	// ReadPinner is an internal dependency seam for unprivileged tests. A nil
+	// value always selects the platform implementation; it is not configurable
+	// from server settings.
+	ReadPinner          ReadPinner
+	Metrics             *metrics.Registry
+	OnEvicted           func()
+	OnGenerationChanged func(cacheKey, currentGeneration string, publication uint64)
 }
 
 type Request struct {
@@ -165,6 +169,7 @@ type Manager struct {
 	dataDir                  string
 	root                     string
 	options                  Options
+	readPinner               ReadPinner
 	mu                       sync.Mutex
 	active                   map[string]int
 	writers                  map[string]int
@@ -298,8 +303,12 @@ func NewManager(dataDir string, options Options) *Manager {
 	}
 	cleanDataDir := filepath.Clean(dataDir)
 	managerRoot := filepath.Join(cleanDataDir, cachev2.UsersDirectoryName)
+	readPinner := options.ReadPinner
+	if readPinner == nil {
+		readPinner = platformReadPinner{}
+	}
 	return &Manager{
-		dataDir: cleanDataDir, root: managerRoot, options: options,
+		dataDir: cleanDataDir, root: managerRoot, options: options, readPinner: readPinner,
 		active: make(map[string]int), writers: make(map[string]int), mutations: make(map[string]uint64), activePaths: make(map[string]int),
 		activeUsers: make(map[string]int), reserved: make(map[string]int64), reservedFiles: make(map[string]int64), writerDone: make(map[string]chan struct{}),
 		protectedReaders: make(map[string]int), readers: make(map[dependencyGeneration]int), writerHasBase: make(map[string]bool), retired: make(map[dependencyGeneration][]string),
@@ -323,7 +332,7 @@ func (m *Manager) RecoverOrphanedTransactionsContext(ctx context.Context) error 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := cleanupPublishedDependencyPinsContext(ctx, m.root); err != nil {
+	if err := m.readPinner.cleanup(ctx, m.root); err != nil {
 		return err
 	}
 	return recoverDependencyTransactionsContext(ctx, m.root)
@@ -1231,7 +1240,7 @@ func (m *Manager) retainReadModeLocked(request Request, entry Entry, protected, 
 	if generation == "" {
 		generation = entry.Digest
 	}
-	pinnedRoot, releasePin, err := pinPublishedDependency(m.root, entry.absPath)
+	pinnedRoot, releasePin, err := m.readPinner.pin(m.root, entry.absPath)
 	if err != nil {
 		return nil, err
 	}

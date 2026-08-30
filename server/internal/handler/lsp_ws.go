@@ -20,6 +20,7 @@ import (
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/resourcecontrol"
+	"bobocloud-server/internal/safefile"
 
 	"github.com/gorilla/websocket"
 )
@@ -204,7 +205,7 @@ func appendExistingDependencyRoot(roots []string, value string) []string {
 		return roots
 	}
 	for _, root := range roots {
-		if filepath.Clean(root) == filepath.Clean(abs) {
+		if safefile.SameFile(root, abs) {
 			return roots
 		}
 	}
@@ -373,14 +374,7 @@ func sameDependencyRoot(left, right string) bool {
 	if strings.TrimSpace(left) == "" || strings.TrimSpace(right) == "" {
 		return false
 	}
-	leftResolved, leftErr := filepath.EvalSymlinks(left)
-	rightResolved, rightErr := filepath.EvalSymlinks(right)
-	if leftErr != nil || rightErr != nil {
-		return false
-	}
-	leftResolved, leftErr = filepath.Abs(leftResolved)
-	rightResolved, rightErr = filepath.Abs(rightResolved)
-	return leftErr == nil && rightErr == nil && filepath.Clean(leftResolved) == filepath.Clean(rightResolved)
+	return safefile.SameFile(left, right)
 }
 
 func retainResolvedTeamDependencies(lease *buildcache.SharedDependencies, view lsp.AnalysisDependencyView, snapshotRoot string) *lsp.SharedDependencies {

@@ -71,7 +71,7 @@ func newProjectEnvironmentTestHandler(t *testing.T) (*HTTPHandler, string, strin
 	cfg.ServerRoot = serverRoot
 	cfg.DataDir = dataRoot
 	handler := NewHTTPHandler(cfg, storage.NewMemorySessionStore(), session.NewChannelManager(), false, nil, nil, nil, nil, nil)
-	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8, ReservationFiles: 1})
+	handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ReservationBytes: 8, ReservationFiles: 1})
 	return handler, serverRoot, dataRoot
 }
 
@@ -220,7 +220,7 @@ func TestProjectEnvironmentUsesOnlyCurrentProjectLockDigest(t *testing.T) {
 	workspace := filepath.Join(serverRoot, "project-key")
 	manifest := filepath.Join(workspace, "requirements.txt")
 	writeEnvironmentFile(t, manifest, "numpy==2.1.0\n")
-	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+	handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ReservationBytes: 8})
 	handler.DependencyViews = lsp.NewDefaultDependencyRegistry()
 	request := personalcache.Request{
 		UserID: "default", WorkspaceID: lsp.StableWorkspaceIdentity("default", "", "", "", "project-key"), WorkspaceName: "Project",
@@ -262,7 +262,7 @@ func TestProjectEnvironmentKeepsOneDependencyGenerationDuringPublication(t *test
 	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
 	workspace := filepath.Join(serverRoot, "project-key")
 	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
-	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+	handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ReservationBytes: 8})
 	adapter := &recordingEnvironmentDependencyAdapter{}
 	registry, err := lsp.NewDependencyRegistry(adapter)
 	if err != nil {
@@ -377,7 +377,7 @@ func TestEnvironmentDependencyStatusUsesPinnedProjectViewForEveryManagedLanguage
 			handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
 			workspace := filepath.Join(serverRoot, "project-key")
 			writeEnvironmentFile(t, filepath.Join(workspace, test.manifest), test.content)
-			handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+			handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ReservationBytes: 8})
 			adapter := &recordingEnvironmentDependencyAdapter{}
 			registry, err := lsp.NewDependencyRegistry(adapter)
 			if err != nil {
@@ -406,8 +406,17 @@ func TestEnvironmentDependencyStatusUsesPinnedProjectViewForEveryManagedLanguage
 			writeEnvironmentFile(t, filepath.Join(dataRoot, "users", "default", "persist", "legacy", test.language, "marker"), "legacy")
 
 			var deleteErr error
-			adapter.onResolve = func(lsp.DependencyAdapterContext) {
+			pinnedPathsValid := true
+			adapter.onResolve = func(ctx lsp.DependencyAdapterContext) {
 				deleteErr = handler.PersonalCache.Delete("default", entry.Path)
+				for _, paths := range ctx.Paths.Extra {
+					for _, path := range paths {
+						info, statErr := os.Lstat(path)
+						if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+							pinnedPathsValid = false
+						}
+					}
+				}
 			}
 			_, _ = handler.resolveEnvironmentDependencyStatus(httpRequest, request, resolved, runtime, test.language)
 			ctx, ok := adapter.context(test.language)
@@ -423,12 +432,11 @@ func TestEnvironmentDependencyStatusUsesPinnedProjectViewForEveryManagedLanguage
 			if !errors.Is(deleteErr, personalcache.ErrCacheInUse) {
 				t.Fatalf("environment status did not retain an AcquireRead lease during resolution: %v", deleteErr)
 			}
+			if !pinnedPathsValid {
+				t.Fatal("dependency adapter did not receive live pinned real directories")
+			}
 			for _, paths := range ctx.Paths.Extra {
 				for _, path := range paths {
-					info, statErr := os.Lstat(path)
-					if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-						t.Fatalf("dependency path %q is not a pinned real directory: info=%v err=%v", path, info, statErr)
-					}
 					if relative, relErr := filepath.Rel(filepath.Join(dataRoot, "users", "default", "persist", "legacy"), path); relErr == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 						t.Fatalf("dependency path %q leaked the legacy user persist tree", path)
 					}
@@ -442,7 +450,7 @@ func TestProjectEnvironmentDerivesManifestlessPythonImportsFromExactInventory(t 
 	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
 	workspace := filepath.Join(serverRoot, "project-key")
 	writeEnvironmentFile(t, filepath.Join(workspace, "main.py"), "import numpy\n")
-	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+	handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ReservationBytes: 8})
 	request := personalcache.Request{
 		UserID: "default", WorkspaceID: lsp.StableWorkspaceIdentity("default", "", "", "", "project-key"), WorkspaceName: "Project",
 		RuntimeID: "python:3.10", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.10", "python:3.10-slim"), Language: "python", WorkspaceRoot: workspace,
@@ -480,7 +488,7 @@ func TestProjectEnvironmentReportsMissingManifestlessPythonImport(t *testing.T) 
 	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
 	workspace := filepath.Join(serverRoot, "project-key")
 	writeEnvironmentFile(t, filepath.Join(workspace, "main.py"), "import numpy as np\nfrom matplotlib.animation import FuncAnimation\n")
-	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+	handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ReservationBytes: 8})
 	request := personalcache.Request{
 		UserID: "default", WorkspaceID: lsp.StableWorkspaceIdentity("default", "", "", "", "project-key"), WorkspaceName: "Project",
 		RuntimeID: "python:3.10", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.10", "python:3.10-slim"), Language: "python", WorkspaceRoot: workspace,
@@ -560,7 +568,7 @@ func TestProjectEnvironmentDowngradesCorruptAndStalePackageInventories(t *testin
 			handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
 			workspace := filepath.Join(serverRoot, "project-key")
 			writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
-			handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+			handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ReservationBytes: 8})
 			request := personalcache.Request{
 				UserID: "default", WorkspaceID: lsp.StableWorkspaceIdentity("default", "", "", "", "project-key"), WorkspaceName: "Project",
 				RuntimeID: "python:3.10", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.10", "python:3.10-slim"), Language: "python", WorkspaceRoot: workspace,
@@ -605,7 +613,7 @@ func TestProjectEnvironmentDoesNotInspectActiveNodeCacheAsExact(t *testing.T) {
 	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
 	workspace := filepath.Join(serverRoot, "project-key")
 	writeEnvironmentFile(t, filepath.Join(workspace, "package.json"), `{"dependencies":{"react":"^19"}}`)
-	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+	handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ReservationBytes: 8})
 	request := personalcache.Request{
 		UserID: "default", WorkspaceID: lsp.StableWorkspaceIdentity("default", "", "", "", "project-key"), WorkspaceName: "Project",
 		RuntimeID: "node:20", RuntimeFingerprint: personalCacheRuntimeFingerprint("node:20", "node:20-slim"), Language: "node", WorkspaceRoot: workspace,
@@ -856,7 +864,7 @@ func TestProjectEnvironmentPlanAndApplyIgnoreClientCommand(t *testing.T) {
 
 func TestFailedProjectEnvironmentSetupDoesNotPublishStagedDependencies(t *testing.T) {
 	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
-	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+	handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ReservationBytes: 8})
 	workspace := filepath.Join(serverRoot, "project-key")
 	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
 	cacheRequest := personalcache.Request{
@@ -903,7 +911,7 @@ func TestFailedProjectEnvironmentSetupDoesNotPublishStagedDependencies(t *testin
 
 func TestProjectEnvironmentRetainsCacheAndQuotaUntilContainerRemoval(t *testing.T) {
 	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
-	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8, ReservationFiles: 1})
+	handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ReservationBytes: 8, ReservationFiles: 1})
 	handler.Resources = newTestResourceController(t, 1)
 	workspace := filepath.Join(serverRoot, "project-key")
 	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
@@ -1004,7 +1012,7 @@ func TestEnvironmentRevisionIgnoresObservationTimestamps(t *testing.T) {
 
 func TestEnvironmentRevisionStableAcrossPinnedDependencyReaderAnchors(t *testing.T) {
 	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
-	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{})
+	handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{})
 	handler.DependencyViews = lsp.NewDefaultDependencyRegistry()
 	workspace := filepath.Join(serverRoot, "project-key")
 	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")

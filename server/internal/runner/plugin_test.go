@@ -566,8 +566,15 @@ func TestDockerPythonRuntimeBootstrapPreservesReadOnlyProjectDependencies(t *tes
 	if err != nil {
 		t.Fatalf("execute Python bootstrap: %v: %s", err, output)
 	}
+	pwdCommand := exec.Command(shell, "-c", "printf '%s' \"$PWD\"")
+	pwdCommand.Dir = projectRoot
+	pwdCommand.Env = []string{"PATH=" + binRoot}
+	shellProjectRoot, err := pwdCommand.Output()
+	if err != nil {
+		t.Fatalf("resolve project root using the bootstrap shell: %v", err)
+	}
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	wantPythonPath := "/project-deps/python:" + projectRoot
+	wantPythonPath := "/project-deps/python:" + strings.TrimSpace(string(shellProjectRoot))
 	if len(lines) != 3 || lines[0] != wantPythonPath || lines[1] != "src/main.py" || lines[2] != argument {
 		t.Fatalf("bootstrap output = %#v, want PYTHONPATH %q and literal argv", lines, wantPythonPath)
 	}

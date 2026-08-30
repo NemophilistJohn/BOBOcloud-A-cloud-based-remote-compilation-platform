@@ -35,7 +35,7 @@ func decodeCacheV2TestEnvelope(t *testing.T, body []byte) cacheV2TestEnvelope {
 
 func TestCacheV2APICatalogDetailsAndRevisionBoundDeletion(t *testing.T) {
 	handler, _, user := newAuthenticatedLifecycleHandler(t)
-	handler.PersonalCache = personalcache.NewManager(handler.Config.DataDir, personalcache.Options{
+	handler.PersonalCache = newPersonalCacheManagerForTest(handler.Config.DataDir, personalcache.Options{
 		ReservationBytes: 8, ReservationFiles: 1, MaxFiles: 10_000, MaxGenerations: 3,
 	})
 	workspace := filepath.Join(handler.Config.DataDir, "users", user.ID, "workspaces", "project")

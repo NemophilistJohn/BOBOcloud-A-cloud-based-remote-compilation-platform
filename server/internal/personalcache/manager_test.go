@@ -42,7 +42,7 @@ func TestManagerScopesCachesByProjectRuntimeAndDigest(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "requirements.txt"), []byte("demo==1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(dataDir, Options{ReservationBytes: 10, ScanInterval: time.Millisecond})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 10, ScanInterval: time.Millisecond})
 	request := Request{UserID: "u1", WorkspaceID: "project-a", WorkspaceName: "Project A", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: workspace, QuotaBytes: 1 << 20}
 	first, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -79,7 +79,7 @@ func TestGenerationCallbackIncludesInitialAndReplacementPublications(t *testing.
 		sequence   uint64
 	}
 	var published []publication
-	manager := NewManager(t.TempDir(), Options{
+	manager := newTestManager(t.TempDir(), Options{
 		ReservationBytes: 8,
 		OnGenerationChanged: func(cacheKey, generation string, sequence uint64) {
 			published = append(published, publication{cacheKey: cacheKey, generation: generation, sequence: sequence})
@@ -115,7 +115,7 @@ func TestManagerWriterWaitIsCancelableWithoutReservationLeak(t *testing.T) {
 	if err := os.MkdirAll(workspace, 0700); err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(dataDir, Options{ReservationBytes: 10})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 10})
 	request := Request{UserID: "u1", WorkspaceID: "project-a", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: workspace, QuotaBytes: 1 << 20}
 	first, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -136,7 +136,7 @@ func TestManagerWriterWaitIsCancelableWithoutReservationLeak(t *testing.T) {
 }
 
 func TestReadOnlyExecutionUsesPublishedGenerationWhileWriterStages(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	workspace := t.TempDir()
 	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: workspace, QuotaBytes: 1 << 20}
 	first, err := manager.Prepare(context.Background(), request)
@@ -188,7 +188,7 @@ func TestReadOnlyExecutionUsesPublishedGenerationWhileWriterStages(t *testing.T)
 }
 
 func TestRetiredGenerationCleanupTracksExactReaderGeneration(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
 	first, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -252,7 +252,7 @@ func TestRetiredGenerationCleanupTracksExactReaderGeneration(t *testing.T) {
 }
 
 func TestRejectedInitialGenerationCleanupCannotDeleteNextWriter(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
 	first, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -329,7 +329,7 @@ func TestRejectedInitialGenerationCleanupCannotDeleteNextWriter(t *testing.T) {
 }
 
 func TestInitialMetadataCommitFailureDetachesCanonicalBeforeNextWriter(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
 	first, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -361,7 +361,7 @@ func TestInitialMetadataCommitFailureDetachesCanonicalBeforeNextWriter(t *testin
 }
 
 func TestReadOnlyMissDoesNotPublishDependencyNamespace(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
 	lease, err := manager.PrepareReadOnly(context.Background(), request)
 	if err != nil {
@@ -381,7 +381,7 @@ func TestReadOnlyMissDoesNotPublishDependencyNamespace(t *testing.T) {
 
 func TestReadOnlyLeaseReleaseUnlocksCRUDAndRefreshesLRU(t *testing.T) {
 	dataDir := t.TempDir()
-	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 8})
 	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
 	writable, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -419,7 +419,7 @@ func TestReadOnlyLeaseReleaseUnlocksCRUDAndRefreshesLRU(t *testing.T) {
 
 func TestLongLivedReadDoesNotBlockDistinctDependencyLRU(t *testing.T) {
 	dataDir := t.TempDir()
-	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 8})
 	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
 	writable, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -458,7 +458,7 @@ func TestLongLivedReadDoesNotBlockDistinctDependencyLRU(t *testing.T) {
 
 func TestStagingCloneDoesNotConsumeLogicalWriteQuota(t *testing.T) {
 	dataDir := t.TempDir()
-	manager := NewManager(dataDir, Options{ReservationBytes: 8, ScanInterval: 5 * time.Millisecond})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 8, ScanInterval: 5 * time.Millisecond})
 	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
 	first, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -490,7 +490,7 @@ func TestStagingCloneDoesNotConsumeLogicalWriteQuota(t *testing.T) {
 }
 
 func TestAbortedStagingGenerationPreservesPublishedCache(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	workspace := t.TempDir()
 	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: workspace, QuotaBytes: 1 << 20}
 	first, err := manager.Prepare(context.Background(), request)
@@ -527,7 +527,7 @@ func TestAbortedStagingGenerationPreservesPublishedCache(t *testing.T) {
 }
 
 func TestUnverifiableStagingGenerationPreservesPublishedCache(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
 	first, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -567,7 +567,7 @@ func TestManagerReservationRejectsInsufficientQuota(t *testing.T) {
 	dataDir := t.TempDir()
 	workspace := filepath.Join(dataDir, "workspace")
 	_ = os.MkdirAll(workspace, 0700)
-	manager := NewManager(dataDir, Options{ReservationBytes: 1024})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 1024})
 	_, err := manager.Prepare(context.Background(), Request{UserID: "u1", WorkspaceID: "p", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: workspace, QuotaBytes: 100})
 	if !errors.Is(err, ErrQuotaExceeded) {
 		t.Fatalf("error = %v, want quota exceeded", err)
@@ -576,7 +576,7 @@ func TestManagerReservationRejectsInsufficientQuota(t *testing.T) {
 
 func TestManagerListsAndDeletesOrphanedNamespace(t *testing.T) {
 	dataDir := t.TempDir()
-	manager := NewManager(dataDir, Options{})
+	manager := newTestManager(dataDir, Options{})
 	orphan := filepath.Join(dataDir, "users", "u1", cacheRootDir, dependenciesDir, "workspace", "runtime", "python", "digest")
 	if err := os.MkdirAll(orphan, 0700); err != nil {
 		t.Fatal(err)
@@ -598,7 +598,7 @@ func TestManagerListsAndDeletesOrphanedNamespace(t *testing.T) {
 
 func TestPrepareClearsInvalidCanonicalInsteadOfAdoptingItsFiles(t *testing.T) {
 	dataDir := t.TempDir()
-	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 8})
 	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
 	resolved, err := manager.resolveRequest(request)
 	if err != nil {
@@ -629,7 +629,7 @@ func TestPrepareClearsInvalidCanonicalInsteadOfAdoptingItsFiles(t *testing.T) {
 }
 
 func TestPrepareDoesNotClearInvalidCanonicalHeldByReader(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
 	writable, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -671,8 +671,11 @@ func TestPortableClonePreservesFileAndDirectoryMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_ = os.Chmod(source, 0700)
-		_ = os.Chmod(child, 0700)
+		for _, path := range []string{
+			filepath.Join(destination, "bin"), destination, child, source,
+		} {
+			_ = os.Chmod(path, 0700)
+		}
 	})
 	if err := os.Chmod(file, 0751); err != nil {
 		t.Fatal(err)
@@ -723,7 +726,7 @@ func TestPortableClonePreservesFileAndDirectoryMetadata(t *testing.T) {
 
 func TestManagerRecoversCompletedTransactionAndRemovesHiddenStaging(t *testing.T) {
 	dataDir := t.TempDir()
-	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 8})
 	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: t.TempDir(), QuotaBytes: 1 << 20}
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -749,7 +752,7 @@ func TestManagerRecoversCompletedTransactionAndRemovesHiddenStaging(t *testing.T
 		t.Fatal(err)
 	}
 
-	recovered := NewManager(dataDir, Options{ReservationBytes: 8})
+	recovered := newTestManager(dataDir, Options{ReservationBytes: 8})
 	recovered.RecoverOrphanedTransactions()
 	if inspection := recovered.InspectPackageInventory(request); inspection.State != "ready" || len(inspection.Packages) != 1 || inspection.Packages[0].Name != "numpy" {
 		t.Fatalf("completed transaction was not recovered: %+v", inspection)
@@ -761,7 +764,7 @@ func TestManagerRecoversCompletedTransactionAndRemovesHiddenStaging(t *testing.T
 
 func TestManagerRecoversOnlyVerifiedCompletedNodeTransaction(t *testing.T) {
 	dataDir := t.TempDir()
-	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 8})
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "package.json"), []byte("{\"name\":\"demo\",\"dependencies\":{\"lodash\":\"4.17.21\"}}\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -787,7 +790,7 @@ func TestManagerRecoversOnlyVerifiedCompletedNodeTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	recovered := NewManager(dataDir, Options{ReservationBytes: 8})
+	recovered := newTestManager(dataDir, Options{ReservationBytes: 8})
 	recovered.RecoverOrphanedTransactions()
 	inspection := recovered.InspectPackageInventory(request)
 	if inspection.State != "ready" || !inspection.Exact || len(inspection.Packages) != 1 || inspection.Packages[0].Name != "lodash" {
@@ -801,7 +804,7 @@ func TestManagerTracksActiveNamespaceAfterMetadataIsCorrupted(t *testing.T) {
 	if err := os.MkdirAll(workspace, 0700); err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 8})
 	request := Request{
 		UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint,
 		Language: "python", WorkspaceRoot: workspace, QuotaBytes: 1 << 20,
@@ -832,7 +835,7 @@ func TestManagerRejectsSymlinkedPackageDirectory(t *testing.T) {
 	if err := os.MkdirAll(workspace, 0700); err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 8})
 	request := Request{
 		UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint,
 		Language: "python", WorkspaceRoot: workspace, QuotaBytes: 1 << 20,
@@ -856,8 +859,13 @@ func TestManagerRejectsSymlinkedPackageDirectory(t *testing.T) {
 
 func TestManagerCancelsOperationWhenUserDirectoryExceedsQuota(t *testing.T) {
 	dataDir := t.TempDir()
-	manager := NewManager(dataDir, Options{ReservationBytes: 8, ScanInterval: 5 * time.Millisecond})
-	operation, err := manager.BeginOperation(context.Background(), "u1", 128)
+	manager := newTestManager(dataDir, Options{ReservationBytes: 8, ScanInterval: 5 * time.Millisecond})
+	if _, err := manager.ensureUserLayout("u1"); err != nil {
+		t.Fatal(err)
+	}
+	baseline := manager.Inspect("u1", 0).UsedBytes
+	quota := baseline + manager.options.ReservationBytes + 64
+	operation, err := manager.BeginOperation(context.Background(), "u1", quota)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -866,7 +874,7 @@ func TestManagerCancelsOperationWhenUserDirectoryExceedsQuota(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, make([]byte, 256), 0600); err != nil {
+	if err := os.WriteFile(path, make([]byte, quota-baseline+1), 0600); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -886,7 +894,7 @@ func TestManagerLockChangeCreatesDistinctCRUDNamespaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	lockPath := filepath.Join(workspace, "poetry.lock")
-	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 8})
 	request := Request{UserID: "u1", WorkspaceID: "project-a", WorkspaceName: "Project A", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: workspace, QuotaBytes: 1 << 20}
 	for _, content := range []string{"version=1", "version=2"} {
 		if err := os.WriteFile(lockPath, []byte(content), 0600); err != nil {
@@ -926,7 +934,7 @@ func TestManagerLRUEvictionInvalidatesIdleContainerMounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	evictions := 0
-	manager := NewManager(dataDir, Options{ReservationBytes: 8, OnEvicted: func() { evictions++ }})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 8, OnEvicted: func() { evictions++ }})
 	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: workspace, QuotaBytes: 1 << 20}
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -943,7 +951,7 @@ func TestManagerLRUEvictionInvalidatesIdleContainerMounts(t *testing.T) {
 }
 
 func TestManagerExposesAndReleasesFileReservation(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{
+	manager := newTestManager(t.TempDir(), Options{
 		ReservationBytes: 8,
 		MaxFiles:         100,
 		ReservationFiles: 7,
@@ -964,7 +972,7 @@ func TestManagerExposesAndReleasesFileReservation(t *testing.T) {
 }
 
 func TestManagerRejectsConcurrentFileReservationsOverQuota(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{
+	manager := newTestManager(t.TempDir(), Options{
 		ReservationBytes: 8,
 		MaxFiles:         1000,
 		ReservationFiles: 6,
@@ -999,7 +1007,7 @@ func TestManagerReservationRejectsInsufficientFileQuota(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	manager := NewManager(dataDir, Options{ReservationBytes: 8, MaxFiles: 1000, ReservationFiles: 2})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 8, MaxFiles: 1000, ReservationFiles: 2})
 	if _, err := manager.ensureUserLayout("u1"); err != nil {
 		t.Fatal(err)
 	}
@@ -1015,7 +1023,7 @@ func TestManagerReservationRejectsInsufficientFileQuota(t *testing.T) {
 
 func TestManagerCancelsOperationWhenUserDirectoryExceedsFileQuota(t *testing.T) {
 	dataDir := t.TempDir()
-	manager := NewManager(dataDir, Options{
+	manager := newTestManager(dataDir, Options{
 		ReservationBytes: 8,
 		MaxFiles:         1000,
 		ReservationFiles: 1,
@@ -1057,7 +1065,7 @@ func TestManagerLRUEvictsZeroByteCacheByFileCount(t *testing.T) {
 		t.Fatal(err)
 	}
 	evictions := 0
-	manager := NewManager(dataDir, Options{
+	manager := newTestManager(dataDir, Options{
 		ReservationBytes: 8,
 		MaxFiles:         40,
 		ReservationFiles: 1,
@@ -1097,7 +1105,7 @@ func TestBoundedDirectoryStatsStopsAfterFileLimit(t *testing.T) {
 
 func TestManagerDeletesNamespaceWithOversizedMetadata(t *testing.T) {
 	dataDir := t.TempDir()
-	manager := NewManager(dataDir, Options{})
+	manager := newTestManager(dataDir, Options{})
 	cacheRoot := filepath.Join(dataDir, "users", "u1", cacheRootDir)
 	relative := filepath.ToSlash(filepath.Join(dependenciesDir, "workspace", "runtime", "python", "digest"))
 	target := filepath.Join(cacheRoot, filepath.FromSlash(relative))
@@ -1124,7 +1132,7 @@ func TestManagerFreshGenerationSkipsCloningPublishedDependencyTree(t *testing.T)
 	if err := os.WriteFile(filepath.Join(workspace, "requirements.txt"), []byte("demo==1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 8})
 	request := Request{UserID: "u1", WorkspaceID: "project", RuntimeID: "python:3.11", RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "python", WorkspaceRoot: workspace, QuotaBytes: 1 << 20}
 	first, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -1184,7 +1192,7 @@ func TestManagerAppliesNodeMaterializationPolicyToWorkspaceAndSnapshotRequests(t
 		UserID: "u1", WorkspaceID: "node-project", RuntimeID: "node:20", RuntimeFingerprint: trustedTestRuntimeFingerprint,
 		Language: "node", WorkspaceRoot: workspace, QuotaBytes: 1 << 20,
 	}
-	enabled := NewManager(dataDir, Options{NodeMaterializationPolicy: NodeDependencyMaterializationPolicy(true, "10.32.1")})
+	enabled := newTestManager(dataDir, Options{NodeMaterializationPolicy: NodeDependencyMaterializationPolicy(true, "10.32.1")})
 	enabledWorkspace, err := enabled.resolveRequest(request)
 	if err != nil {
 		t.Fatal(err)
@@ -1200,7 +1208,7 @@ func TestManagerAppliesNodeMaterializationPolicyToWorkspaceAndSnapshotRequests(t
 	if enabledWorkspace.fingerprint.Digest != enabledSnapshot.fingerprint.Digest {
 		t.Fatalf("Manager workspace and snapshot identities diverged: workspace=%+v snapshot=%+v", enabledWorkspace.fingerprint, enabledSnapshot.fingerprint)
 	}
-	disabled := NewManager(dataDir, Options{NodeMaterializationPolicy: NodeDependencyMaterializationPolicy(false, "10.32.1")})
+	disabled := newTestManager(dataDir, Options{NodeMaterializationPolicy: NodeDependencyMaterializationPolicy(false, "10.32.1")})
 	disabledSnapshot, err := disabled.resolveRequest(request)
 	if err != nil {
 		t.Fatal(err)

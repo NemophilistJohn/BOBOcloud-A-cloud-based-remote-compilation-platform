@@ -69,7 +69,7 @@ test('standalone AI control center configures and toggles independent chat and c
     await expect(page.locator('#ai-settings-modal')).not.toContainText(/ai\.control\./);
 
     await page.locator('[data-ai-tab="connections"]').click();
-    await page.getByRole('button', { name: 'Add chat agent' }).click();
+    await page.getByRole('button', { name: 'Add chat connection' }).click();
     const fields = page.locator('.ai-profile-editor');
     await fields.locator('[data-profile-field="name"]').fill('Local test');
     await fields.locator('[data-profile-field="apiKey"]').fill('mock-only');
@@ -91,7 +91,7 @@ test('standalone AI control center configures and toggles independent chat and c
     expect(stored.chatProfileId).toBe('');
     expect(stored.chatProfiles[0].modelId).toBe('chat-model');
 
-    await page.getByRole('button', { name: 'Add completion agent' }).click();
+    await page.getByRole('button', { name: 'Add completion connection' }).click();
     await fields.locator('[data-profile-field="name"]').fill('Inline local');
     await fields.locator('[data-profile-field="apiKey"]').fill('mock-only');
     await fields.locator('[data-profile-field="endpoint"]').fill('http://127.0.0.1:18081/beta/completions');

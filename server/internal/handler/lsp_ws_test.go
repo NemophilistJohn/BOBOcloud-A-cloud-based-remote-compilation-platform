@@ -26,6 +26,7 @@ import (
 	"bobocloud-server/internal/lifecycle"
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/personalcache"
+	"bobocloud-server/internal/safefile"
 
 	"github.com/gorilla/websocket"
 )
@@ -45,7 +46,7 @@ func TestPersonalProjectPythonDependenciesMountExactDigestDespiteIncompleteInven
 	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
 	cfg := config.Default()
 	cfg.DataDir = dataRoot
-	manager := personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+	manager := newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ReservationBytes: 8})
 	workspaceID := lsp.StableWorkspaceIdentity("user-a", "", "", "", "project-key")
 	cacheRequest := personalcache.Request{
 		UserID: "user-a", WorkspaceID: workspaceID, WorkspaceName: "Project",
@@ -77,13 +78,13 @@ func TestPersonalProjectPythonDependenciesMountExactDigestDespiteIncompleteInven
 	if !resolved || request.Generation != generation {
 		t.Fatalf("dependency view not resolved: request=%+v view=%+v", request, view)
 	}
-	if request.Paths.ExtraRevision == nil || filepath.Clean(request.Paths.ExtraRevision.HostRoot) != filepath.Clean(projectRoot) || filepath.Clean(request.Paths.ExtraRevision.IdentityRoot) != filepath.Clean(project.RevisionRoot) {
+	if request.Paths.ExtraRevision == nil || !safefile.SameFile(request.Paths.ExtraRevision.HostRoot, projectRoot) || !safefile.SameFile(request.Paths.ExtraRevision.IdentityRoot, project.RevisionRoot) {
 		t.Fatalf("project reader did not retain its canonical revision identity: project=%+v request=%+v", project, request.Paths.ExtraRevision)
 	}
 	found := false
 	expectedPythonRoot := filepath.Join(projectRoot, "python")
 	for _, mount := range view.Mounts {
-		if mount.Role == lsp.DependencyRolePythonPackages && filepath.Clean(mount.HostPath) == filepath.Clean(expectedPythonRoot) && mount.ReadOnly {
+		if mount.Role == lsp.DependencyRolePythonPackages && safefile.SameFile(mount.HostPath, expectedPythonRoot) && mount.ReadOnly {
 			found = true
 		}
 	}
@@ -102,7 +103,7 @@ func TestPersonalProjectPythonDependenciesMountExactDigestDespiteIncompleteInven
 	_, sameView, sameResolved := handler.resolveAnalysisDependencies(
 		"user-a", "", "python:3.10", "python", workspace, workspaceID, "", "", sameProject.Generation, sameProject,
 	)
-	if !sameResolved || sameProject.Generation != generation || filepath.Clean(sameProject.RevisionRoot) != filepath.Clean(project.RevisionRoot) || sameView.Revision != view.Revision {
+	if !sameResolved || sameProject.Generation != generation || !safefile.SameFile(sameProject.RevisionRoot, project.RevisionRoot) || sameView.Revision != view.Revision {
 		t.Fatalf("reacquired project generation changed dependency identity: firstProject=%+v secondProject=%+v firstRevision=%q secondRevision=%q", project, sameProject, view.Revision, sameView.Revision)
 	}
 	if runtime.GOOS == "linux" && filepath.Clean(sameProject.Root) == filepath.Clean(project.Root) {
@@ -163,12 +164,12 @@ func TestPersonalProjectPythonDependenciesMountExactDigestDespiteIncompleteInven
 	corruptProject := handler.resolvePersonalProjectDependencies(
 		"user-a", workspaceID, "Project", "python:3.10", "python:3.10-slim", "python", workspace, nil,
 	)
-	corruptRoot, corruptRelease := corruptProject.Root, corruptProject.Release
+	corruptRoot, corruptGeneration, corruptRelease := corruptProject.Root, corruptProject.Generation, corruptProject.Release
 	if corruptRelease != nil {
 		corruptRelease()
 	}
-	if filepath.Clean(corruptRoot) != filepath.Clean(projectRoot) {
-		t.Fatalf("corrupt inventory incorrectly blocked the exact LSP dependency digest: got %q want %q", corruptRoot, projectRoot)
+	if corruptRoot == "" || !strings.Contains(corruptGeneration, lease.Fingerprint.Digest) {
+		t.Fatalf("corrupt inventory incorrectly blocked the exact LSP dependency digest: root=%q generation=%q digest=%q", corruptRoot, corruptGeneration, lease.Fingerprint.Digest)
 	}
 	entry, exists, err := manager.Lookup(cacheRequest)
 	if err != nil || !exists {
@@ -187,7 +188,7 @@ func TestPersonalProjectPythonDependenciesMountExactDigestDespiteIncompleteInven
 
 func TestProjectLockManagedLanguagesSkipLegacyLSPDependencyStore(t *testing.T) {
 	dataRoot := t.TempDir()
-	manager := personalcache.NewManager(dataRoot, personalcache.Options{})
+	manager := newPersonalCacheManagerForTest(dataRoot, personalcache.Options{})
 	handler := &WSHandler{PersonalCache: manager}
 	for _, language := range []string{"python", "node", "go", "rust", "java", "typescript"} {
 		if !handler.usesProjectLockDependencyStore(language) {
@@ -236,7 +237,7 @@ func TestPersonalProjectDependenciesUseCurrentDigestForEveryManagedLanguage(t *t
 			dataRoot := t.TempDir()
 			workspace := t.TempDir()
 			writeEnvironmentFile(t, filepath.Join(workspace, test.manifest), test.content)
-			manager := personalcache.NewManager(dataRoot, personalcache.Options{ReservationBytes: 8})
+			manager := newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ReservationBytes: 8})
 			workspaceID := lsp.StableWorkspaceIdentity("user-a", "", "", "", "project")
 			request := personalcache.Request{
 				UserID: "user-a", WorkspaceID: workspaceID, WorkspaceName: "Project", RuntimeID: test.runtime,
@@ -265,18 +266,27 @@ func TestPersonalProjectDependenciesUseCurrentDigestForEveryManagedLanguage(t *t
 			if !resolved || dependencyRequest.Paths.UserPersistRoot != "" || dependencyRequest.Paths.SnapshotRoot != "" || len(view.Mounts) == 0 {
 				t.Fatalf("project-lock dependency truth was not isolated: request=%+v mounts=%+v", dependencyRequest, view.Mounts)
 			}
-			if dependencyRequest.Paths.ExtraRevision == nil || filepath.Clean(dependencyRequest.Paths.ExtraRevision.HostRoot) != filepath.Clean(project.Root) || filepath.Clean(dependencyRequest.Paths.ExtraRevision.IdentityRoot) != filepath.Clean(project.RevisionRoot) {
+			if dependencyRequest.Paths.ExtraRevision == nil || !safefile.SameFile(dependencyRequest.Paths.ExtraRevision.HostRoot, project.Root) || !safefile.SameFile(dependencyRequest.Paths.ExtraRevision.IdentityRoot, project.RevisionRoot) {
 				t.Fatalf("project-lock revision identity missing for %s: project=%+v request=%+v", test.language, project, dependencyRequest.Paths.ExtraRevision)
 			}
+			canonicalProjectRoot, err := safefile.CanonicalPath(project.Root)
+			if err != nil {
+				t.Fatal(err)
+			}
 			for _, mount := range view.Mounts {
-				if !strings.HasPrefix(filepath.Clean(mount.HostPath), filepath.Clean(project.Root)+string(filepath.Separator)) || !mount.ReadOnly {
+				within, pathErr := safefile.PathWithin(project.Root, mount.HostPath)
+				if pathErr != nil || !within || safefile.SameFile(project.Root, mount.HostPath) || !mount.ReadOnly {
 					t.Fatalf("non-project dependency mount leaked into %s view: %+v", test.language, mount)
 				}
-				relative, err := filepath.Rel(project.Root, mount.HostPath)
+				canonicalMount, canonicalErr := safefile.CanonicalPath(mount.HostPath)
+				if canonicalErr != nil {
+					t.Fatal(canonicalErr)
+				}
+				relative, err := filepath.Rel(canonicalProjectRoot, canonicalMount)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if want := filepath.Join(project.RevisionRoot, relative); filepath.Clean(mount.RevisionIdentity) != filepath.Clean(want) {
+				if want := filepath.Join(project.RevisionRoot, relative); !safefile.SameFile(mount.RevisionIdentity, want) {
 					t.Fatalf("%s dependency mount revision identity = %q, want %q for host path %q", test.language, mount.RevisionIdentity, want, mount.HostPath)
 				}
 			}
@@ -290,7 +300,7 @@ func TestMissingProjectDigestDoesNotFallBackToLegacyUserDependencies(t *testing.
 	writeEnvironmentFile(t, filepath.Join(workspace, "package.json"), `{"dependencies":{"left-pad":"1.3.0"}}`)
 	writeEnvironmentFile(t, filepath.Join(dataRoot, "users", "user-a", "persist", "npm-global", "lib", "node_modules", "left-pad", "package.json"), `{"name":"left-pad","version":"0.0.1"}`)
 	handler := &WSHandler{
-		Config: &config.Config{DataDir: dataRoot}, PersonalCache: personalcache.NewManager(dataRoot, personalcache.Options{}),
+		Config: &config.Config{DataDir: dataRoot}, PersonalCache: newPersonalCacheManagerForTest(dataRoot, personalcache.Options{}),
 		DependencyViews: lsp.NewDefaultDependencyRegistry(),
 	}
 	request, view, resolved := handler.resolveAnalysisDependencies(
@@ -736,7 +746,7 @@ func TestLSPWebSocketDependencyAPIIndexControl(t *testing.T) {
 	cfg.LSPMaxMessageBytes = 1 << 20
 	cfg.LSPBandwidthPerMinuteBytes = 8 << 20
 	writeEnvironmentFile(t, filepath.Join(workspace, "requirements.txt"), "numpy==2.1.0\n")
-	personalCache := personalcache.NewManager(cfg.DataDir, personalcache.Options{ReservationBytes: 8})
+	personalCache := newPersonalCacheManagerForTest(cfg.DataDir, personalcache.Options{ReservationBytes: 8})
 	cacheRequest := personalcache.Request{
 		UserID: "default", WorkspaceID: lsp.StableWorkspaceIdentity("default", "", "", "", "project-key"), WorkspaceName: "Project",
 		RuntimeID: "python:3.10", RuntimeFingerprint: personalCacheRuntimeFingerprint("python:3.10", "python:3.10-slim"), Language: "python", WorkspaceRoot: workspace,

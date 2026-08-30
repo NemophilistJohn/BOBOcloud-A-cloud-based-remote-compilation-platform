@@ -83,7 +83,9 @@ test('workspace tree cloud rail tracks local, queued, syncing, success, error an
         unrelated: cancellation('Canceled: Canceled\n at /src/project-tasks.js')
       };
     })).toEqual({ monaco: true, unrelated: false });
-    await page.setViewportSize({ width: 680, height: 480 });
+    // The production layout intentionally hides the sidebar at 680px. This
+    // test exercises tree decorations, so keep it just above that breakpoint.
+    await page.setViewportSize({ width: 720, height: 480 });
     await page.evaluate(async workspacePath => {
       window.BOBO.state.serverSettings.ip = '';
       window.BOBO.state.serverSettings.user = '';

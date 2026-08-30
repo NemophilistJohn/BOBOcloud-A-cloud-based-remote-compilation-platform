@@ -50,7 +50,7 @@ func (c *packageCenterCatalogStub) Item(ctx context.Context, request packagecata
 }
 
 func configurePackageCenterTestHandler(handler *HTTPHandler, dataRoot string) {
-	handler.PersonalCache = personalcache.NewManager(dataRoot, personalcache.Options{ScopeMode: "project-lock", ReservationBytes: 8, ReservationFiles: 1})
+	handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{ScopeMode: "project-lock", ReservationBytes: 8, ReservationFiles: 1})
 	base := packagecatalog.NewWithClient(handler.Config.PackageSources, nil, handler.Config.PackageCatalogMaxResponseBytes)
 	handler.PackageCatalog = &packageCenterCatalogStub{
 		base: base,

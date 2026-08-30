@@ -16,7 +16,7 @@ import (
 // atomically replace the canonical pathname. Docker still mounts this anchor
 // read-only; the bind mount exists only to retain the selected generation.
 func pinPublishedDependency(root, source string) (string, func(), error) {
-	mountRoot := filepath.Join(filepath.Dir(root), "personalcache-mounts")
+	mountRoot := publishedDependencyPinRoot(root)
 	if err := os.MkdirAll(mountRoot, 0700); err != nil {
 		return "", nil, err
 	}
@@ -49,7 +49,7 @@ func cleanupPublishedDependencyPinsContext(ctx context.Context, root string) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	mountRoot := filepath.Join(filepath.Dir(root), "personalcache-mounts")
+	mountRoot := publishedDependencyPinRoot(root)
 	entries, err := os.ReadDir(mountRoot)
 	if err != nil {
 		return nil

@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
 	"path"
 	"path/filepath"
 	"strings"
+
+	"bobocloud-server/internal/safefile"
 )
 
 const VirtualRootURI = "bobocloud-lsp:///"
@@ -28,11 +29,11 @@ func NewURIMapper(root string) (*URIMapper, error) {
 		return nil, err
 	}
 	abs = filepath.Clean(abs)
-	realRoot, err := filepath.EvalSymlinks(abs)
+	realRoot, err := safefile.CanonicalPath(abs)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace root: %w", err)
 	}
-	return &URIMapper{root: abs, rootURI: fileURI(abs), rootFold: foldPath(abs), rootReal: foldPath(realRoot)}, nil
+	return &URIMapper{root: abs, rootURI: fileURI(abs), rootReal: realRoot}, nil
 }
 
 // NewContainerURIMapper creates a mapper for paths as seen inside a Linux
@@ -47,14 +48,6 @@ func NewContainerURIMapper(root string) (*URIMapper, error) {
 }
 
 func (m *URIMapper) RootURI() string { return m.rootURI }
-
-func foldPath(value string) string {
-	value = filepath.Clean(value)
-	if filepath.Separator == '\\' {
-		return strings.ToLower(value)
-	}
-	return value
-}
 
 func fileURI(value string) string {
 	return fileURIForPath(value, false)
@@ -94,33 +87,42 @@ func filePathFromURI(value string, posix bool) (string, error) {
 }
 
 func (m *URIMapper) within(candidate string) bool {
+	_, ok := m.relative(candidate)
+	return ok
+}
+
+func (m *URIMapper) relative(candidate string) (string, bool) {
 	if m.posix {
 		clean := path.Clean(candidate)
-		return clean == m.rootFold || strings.HasPrefix(clean, m.rootFold+"/")
-	}
-	folded := foldPath(candidate)
-	if folded != m.rootFold && !strings.HasPrefix(folded, m.rootFold+string(filepath.Separator)) {
-		return false
-	}
-	current := filepath.Clean(candidate)
-	for {
-		if _, err := os.Lstat(current); err == nil {
-			break
-		} else if !os.IsNotExist(err) {
-			return false
+		if clean == m.rootFold {
+			return ".", true
 		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return false
+		if !strings.HasPrefix(clean, m.rootFold+"/") {
+			return "", false
 		}
-		current = parent
+		return strings.TrimPrefix(clean, m.rootFold+"/"), true
 	}
-	resolved, err := filepath.EvalSymlinks(current)
+	resolved, err := safefile.CanonicalPathAllowMissing(candidate)
 	if err != nil {
-		return false
+		return "", false
 	}
-	resolvedFold := foldPath(resolved)
-	return resolvedFold == m.rootReal || strings.HasPrefix(resolvedFold, m.rootReal+string(filepath.Separator))
+	canonicalRelative, err := filepath.Rel(m.rootReal, resolved)
+	if err != nil || !relativePathWithinRoot(canonicalRelative) {
+		return "", false
+	}
+	// Canonical paths prove containment, but protocol identity remains lexical:
+	// an editor opened through workspace/alias/file.go must not receive
+	// diagnostics for workspace/real/file.go. When Windows short/long aliases
+	// make the lexical roots incomparable, fall back to the canonical relative.
+	lexicalRelative, lexicalErr := filepath.Rel(m.root, filepath.Clean(candidate))
+	if lexicalErr == nil && relativePathWithinRoot(lexicalRelative) {
+		return lexicalRelative, true
+	}
+	return canonicalRelative, true
+}
+
+func relativePathWithinRoot(relative string) bool {
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
 }
 
 func (m *URIMapper) virtualToFile(value string) (string, error) {
@@ -159,7 +161,8 @@ func (m *URIMapper) virtualToFile(value string) (string, error) {
 
 func (m *URIMapper) fileToVirtual(value string) string {
 	p, err := filePathFromURI(value, m.posix)
-	if err != nil || !m.within(p) {
+	rel, within := m.relative(p)
+	if err != nil || !within {
 		sum := sha256.Sum256([]byte(value))
 		name := filepath.Base(p)
 		if m.posix {
@@ -170,17 +173,7 @@ func (m *URIMapper) fileToVirtual(value string) string {
 		}
 		return (&url.URL{Scheme: "bobocloud-lsp-external", Path: "/" + name, RawQuery: "id=" + hex.EncodeToString(sum[:8])}).String()
 	}
-	var rel string
-	if m.posix {
-		if p == m.root {
-			rel = "."
-		} else {
-			rel = strings.TrimPrefix(p, m.root+"/")
-		}
-	} else {
-		rel, err = filepath.Rel(m.root, p)
-	}
-	if err != nil || rel == "." {
+	if rel == "." {
 		return VirtualRootURI
 	}
 	if !m.posix {

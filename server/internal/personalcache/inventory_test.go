@@ -80,7 +80,7 @@ func inventoryTestRequest(t *testing.T, manager *Manager) (Request, string) {
 }
 
 func TestLeaseReleasePublishesExactPythonInventory(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -99,7 +99,7 @@ func TestLeaseReleasePublishesExactPythonInventory(t *testing.T) {
 }
 
 func TestPythonInventoryAcceptsPipTargetRelocatedSchemeFiles(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -140,7 +140,7 @@ func TestPythonInventoryAcceptsPipTargetRelocatedSchemeFiles(t *testing.T) {
 }
 
 func TestPythonInventoryAcceptsFontToolsWithoutRelocatedConsoleScripts(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -156,7 +156,7 @@ func TestPythonInventoryAcceptsFontToolsWithoutRelocatedConsoleScripts(t *testin
 }
 
 func TestPythonInventoryMissingRelocatedScriptsDoesNotOwnOrphanBin(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -180,7 +180,7 @@ func TestPythonInventoryMissingRelocatedScriptsDoesNotOwnOrphanBin(t *testing.T)
 }
 
 func TestPythonInventoryRejectsRelocatedSchemeSymlink(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -210,7 +210,7 @@ func TestPythonInventoryRejectsRelocatedSchemeSymlink(t *testing.T) {
 }
 
 func TestPythonInventoryRepairsLegacyIncompleteSnapshot(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -243,7 +243,7 @@ func TestPythonInventoryRepairsLegacyIncompleteSnapshot(t *testing.T) {
 }
 
 func TestPythonInventoryUpgradesLegacySchemaWithExactImportOwnership(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -273,7 +273,7 @@ func TestPythonInventoryUpgradesLegacySchemaWithExactImportOwnership(t *testing.
 }
 
 func TestPythonInventoryNeverTrustsIncompleteMetadata(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -295,7 +295,7 @@ func TestPythonInventoryNeverTrustsIncompleteMetadata(t *testing.T) {
 }
 
 func TestPythonInventoryDetectsMutationAfterSnapshot(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -315,7 +315,7 @@ func TestPythonInventoryDetectsMutationAfterSnapshot(t *testing.T) {
 }
 
 func TestPackageInventoryPreviewIsTheReleasePublicationBoundary(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -341,7 +341,7 @@ func TestPackageInventoryPreviewIsTheReleasePublicationBoundary(t *testing.T) {
 }
 
 func TestPythonInventoryDetectsMissingPackageFilesBehindIntactDistInfo(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -361,7 +361,7 @@ func TestPythonInventoryDetectsMissingPackageFilesBehindIntactDistInfo(t *testin
 }
 
 func TestPythonInventoryDoesNotSnapshotActiveTree(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -377,7 +377,7 @@ func TestPythonInventoryDoesNotSnapshotActiveTree(t *testing.T) {
 }
 
 func TestPythonInventoryDoesNotTrustIdlePreInventoryCache(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -400,7 +400,7 @@ func TestPythonInventoryDoesNotTrustIdlePreInventoryCache(t *testing.T) {
 
 func TestPythonInventorySerializesWritersAndPublishesBeforeHandoff(t *testing.T) {
 	dataDir := t.TempDir()
-	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	first, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -449,7 +449,7 @@ func TestPythonInventorySerializesWritersAndPublishesBeforeHandoff(t *testing.T)
 }
 
 func TestPythonInventoryRejectsPackageWithoutDistributionRecord(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -470,7 +470,7 @@ func TestPythonInventoryRejectsPackageWithoutDistributionRecord(t *testing.T) {
 }
 
 func TestPackageInventoryReadLeaseProtectsCacheWithoutLookingLikeWriter(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	writer, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -522,7 +522,7 @@ func TestPackageInventoryReadLeaseProtectsCacheWithoutLookingLikeWriter(t *testi
 }
 
 func TestPackageInventorySnapshotRetainsPublishedGenerationWhenInventoryIsCorrupt(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	writer, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -564,7 +564,7 @@ func TestPackageInventorySnapshotRetainsPublishedGenerationWhenInventoryIsCorrup
 }
 
 func TestPreviewPackageInventoryDoesNotPublishRejectedGeneration(t *testing.T) {
-	manager := NewManager(t.TempDir(), Options{ScopeMode: "project-lock", ReservationBytes: 8})
+	manager := newTestManager(t.TempDir(), Options{ScopeMode: "project-lock", ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -591,7 +591,7 @@ func TestPreviewPackageInventoryDoesNotPublishRejectedGeneration(t *testing.T) {
 
 func TestPythonInventoryRemainsIncompleteAfterUncleanRestart(t *testing.T) {
 	dataDir := t.TempDir()
-	manager := NewManager(dataDir, Options{ReservationBytes: 8})
+	manager := newTestManager(dataDir, Options{ReservationBytes: 8})
 	request, _ := inventoryTestRequest(t, manager)
 	lease, err := manager.Prepare(context.Background(), request)
 	if err != nil {
@@ -600,7 +600,7 @@ func TestPythonInventoryRemainsIncompleteAfterUncleanRestart(t *testing.T) {
 	defer lease.Release()
 	writeInventoryDistInfo(t, filepath.Join(lease.HostRoot, "python"), "numpy", "2.1.0")
 
-	restarted := NewManager(dataDir, Options{ReservationBytes: 8})
+	restarted := newTestManager(dataDir, Options{ReservationBytes: 8})
 	inspection := restarted.InspectPackageInventory(request)
 	if inspection.State != "incomplete" || inspection.Exact {
 		t.Fatalf("unclean writer was trusted after restart: %+v", inspection)

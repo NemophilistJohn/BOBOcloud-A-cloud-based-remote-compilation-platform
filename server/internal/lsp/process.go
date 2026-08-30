@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"bobocloud-server/internal/safefile"
 )
 
 const (
@@ -378,24 +380,12 @@ func startDockerProcess(ctx context.Context, spec LaunchSpec) (Process, error) {
 }
 
 func validateDockerMountSource(value string) (string, error) {
-	hostPath, err := filepath.Abs(strings.TrimSpace(value))
-	if err != nil || strings.TrimSpace(value) == "" {
+	if strings.TrimSpace(value) == "" {
 		return "", fmt.Errorf("resolve Docker mount source")
 	}
-	info, err := os.Lstat(hostPath)
+	hostPath, err := safefile.RealDirectory(value)
 	if err != nil {
-		return "", err
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("Docker mount source must be a real directory")
-	}
-	resolved, err := filepath.EvalSymlinks(hostPath)
-	if err != nil {
-		return "", err
-	}
-	resolved, err = filepath.Abs(resolved)
-	if err != nil || filepath.Clean(resolved) != filepath.Clean(hostPath) {
-		return "", fmt.Errorf("Docker mount source was replaced or redirected")
+		return "", fmt.Errorf("Docker mount source must be a real, unredirected directory: %w", err)
 	}
 	return hostPath, nil
 }
