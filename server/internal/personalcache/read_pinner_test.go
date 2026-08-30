@@ -55,7 +55,10 @@ func TestPortableReadPinnerCleansAbandonedPins(t *testing.T) {
 	dataDir := t.TempDir()
 	root := filepath.Join(dataDir, "users")
 	source := filepath.Join(dataDir, "published")
-	if err := os.MkdirAll(filepath.Join(source, "readonly"), 0500); err != nil {
+	if err := os.MkdirAll(source, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(source, "readonly"), 0500); err != nil {
 		t.Fatal(err)
 	}
 	pinner := NewPortableReadPinnerForTests()

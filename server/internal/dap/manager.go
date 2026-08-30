@@ -577,6 +577,15 @@ func stopAndWaitContext(ctx context.Context, sessions []*Session, timeout time.D
 			return fmt.Errorf("timed out waiting for debug session resources to stop")
 		}
 	}
+	// ResourcesDone is intentionally closed before the read-loop defer invokes
+	// onClose. Retire sessions synchronously once every resource is gone so a
+	// successful lifecycle stop cannot return with stale manager registrations.
+	// The manager callback is idempotent and may also run from the read loop.
+	for _, session := range sessions {
+		if session.onClose != nil {
+			session.onClose(session)
+		}
+	}
 	return nil
 }
 

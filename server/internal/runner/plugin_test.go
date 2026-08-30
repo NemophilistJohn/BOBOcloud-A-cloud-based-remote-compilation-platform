@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -566,17 +567,28 @@ func TestDockerPythonRuntimeBootstrapPreservesReadOnlyProjectDependencies(t *tes
 	if err != nil {
 		t.Fatalf("execute Python bootstrap: %v: %s", err, output)
 	}
-	pwdCommand := exec.Command(shell, "-c", "printf '%s' \"$PWD\"")
-	pwdCommand.Dir = projectRoot
-	pwdCommand.Env = []string{"PATH=" + binRoot}
-	shellProjectRoot, err := pwdCommand.Output()
-	if err != nil {
-		t.Fatalf("resolve project root using the bootstrap shell: %v", err)
-	}
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	wantPythonPath := "/project-deps/python:" + strings.TrimSpace(string(shellProjectRoot))
-	if len(lines) != 3 || lines[0] != wantPythonPath || lines[1] != "src/main.py" || lines[2] != argument {
-		t.Fatalf("bootstrap output = %#v, want PYTHONPATH %q and literal argv", lines, wantPythonPath)
+	const dependencyPrefix = "/project-deps/python:"
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], dependencyPrefix) || lines[1] != "src/main.py" || lines[2] != argument {
+		t.Fatalf("bootstrap output = %#v, want inherited dependency prefix and literal argv", lines)
+	}
+	shellProjectRoot := strings.TrimPrefix(lines[0], dependencyPrefix)
+	if runtime.GOOS == "windows" {
+		convert := exec.Command(shell, "-c", "cygpath -w \"$1\"", "path-check", shellProjectRoot)
+		convert.Env = os.Environ()
+		converted, convertErr := convert.Output()
+		if convertErr != nil {
+			t.Fatalf("convert shell project path %q: %v", shellProjectRoot, convertErr)
+		}
+		shellProjectRoot = strings.TrimSpace(string(converted))
+	}
+	expectedInfo, err := os.Stat(projectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actualInfo, err := os.Stat(shellProjectRoot)
+	if err != nil || !os.SameFile(expectedInfo, actualInfo) {
+		t.Fatalf("bootstrap project path %q does not identify %q: %v", shellProjectRoot, projectRoot, err)
 	}
 }
 
