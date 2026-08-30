@@ -1739,6 +1739,7 @@
     if (!el || !editor) return;
     if (S.tabs.length === 0 && !findWorkbenchTab(S.activeTabPath)) {
       el.classList.remove('hidden');
+      el.classList.toggle('has-workspace', Boolean(S.workspaceRoot));
       editor.classList.add('empty');
       var title = el.querySelector('.empty-state-title');
       var subtitle = el.querySelector('.empty-state-subtitle');

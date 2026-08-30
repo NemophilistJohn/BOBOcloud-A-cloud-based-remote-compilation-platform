@@ -300,7 +300,7 @@ test('dynamic UI translation entry points reference defined English keys', () =>
     'ai-agent-button.js', 'ai-chat-panel.js', 'ai-markdown.js', 'ai-settings-center.js',
     'ai-prompts.js', 'collaboration.js', 'account-profile.js',
     'project-tasks.js', 'workspace-sync-status.js', 'task-problem-matcher.js', 'runner.js', 'run-config.js', 'runtime.js', 'dap-client.js', 'terminal.js', 'auth.js', 'plugin-manager-ui.js', 'plugin-details.js',
-    'source-control-view.js', 'agent-workbench.js', 'command-palette.js', 'file-search.js', 'workspace.js', 'projects.js', 'cache-center.js', 'environment-center.js', 'package-center.js', 'rclone-settings.js'
+    'source-control-view.js', 'agent-workbench.js', 'command-palette.js', 'file-search.js', 'workspace-launch.js', 'workspace.js', 'projects.js', 'cache-center.js', 'environment-center.js', 'package-center.js', 'rclone-settings.js'
   ];
 
   function assertLiteralCalls(source, fileName, pattern, keyGroup) {
@@ -314,7 +314,7 @@ test('dynamic UI translation entry points reference defined English keys', () =>
   for (const fileName of sourceFiles) {
     const source = fs.readFileSync(path.join(ROOT, 'src', fileName), 'utf8');
     assertLiteralCalls(source, fileName, /\bt\(\s*((?:'(?:\\.|[^'\\])*')|(?:"(?:\\.|[^"\\])*"))/g, 1);
-    assertLiteralCalls(source, fileName, /\b(?:tr|historyText)\(\s*((?:'(?:\\.|[^'\\])*')|(?:"(?:\\.|[^"\\])*"))/g, 1);
+    assertLiteralCalls(source, fileName, /\b(?:tr|historyText|translate)\(\s*((?:'(?:\\.|[^'\\])*')|(?:"(?:\\.|[^"\\])*"))/g, 1);
     assertLiteralCalls(source, fileName, /\bbindText\(\s*[^,]+,\s*((?:'(?:\\.|[^'\\])*')|(?:"(?:\\.|[^"\\])*"))/g, 1);
     assertLiteralCalls(source, fileName, /\bbindAttribute\(\s*[^,]+,\s*[^,]+,\s*((?:'(?:\\.|[^'\\])*')|(?:"(?:\\.|[^"\\])*"))/g, 1);
     if (fileName !== 'collaboration.js') continue;

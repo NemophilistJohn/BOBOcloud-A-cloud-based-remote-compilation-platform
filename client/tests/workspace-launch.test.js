@@ -85,3 +85,58 @@ test('workspace launch captures the first-frame click and applies it once servic
   await sandbox.BOBO.workspaceLaunch.whenIdle();
   assert.deepEqual(applied, [firstWorkspace, menuWorkspace]);
 });
+
+test('workspace launch keeps five successful recent projects in most-recent order', async () => {
+  const values = new Map();
+  const opened = [];
+  const sandbox = {
+    api: {
+      pickWorkspace: async directoryPath => ({ rootPath: directoryPath, tree: { children: [] }, workspaceIdentity: opened.length + 1 })
+    },
+    BOBO: {},
+    console,
+    document: {
+      getElementById: () => null,
+      querySelectorAll: () => []
+    },
+    localStorage: {
+      getItem: key => values.has(key) ? values.get(key) : null,
+      setItem: (key, value) => values.set(key, value)
+    },
+    Promise,
+    setTimeout,
+    clearTimeout
+  };
+  sandbox.window = sandbox;
+  vm.runInNewContext(fs.readFileSync(path.join(ROOT, 'src', 'workspace-launch.js'), 'utf8'), sandbox, {
+    filename: 'src/workspace-launch.js'
+  });
+  await sandbox.BOBO.workspaceLaunch.setConsumer(async workspace => {
+    opened.push(workspace.rootPath);
+    return workspace.rootPath !== 'C:\\rejected';
+  });
+  const storedProjects = () => JSON.parse(values.get('bobocloud.recentProjects.v1') || '[]');
+
+  for (let index = 1; index <= 6; index += 1) {
+    await sandbox.BOBO.workspaceLaunch.requestOpen(`C:\\projects\\project-${index}\\`);
+  }
+  assert.deepEqual(storedProjects(), [
+    'C:\\projects\\project-6',
+    'C:\\projects\\project-5',
+    'C:\\projects\\project-4',
+    'C:\\projects\\project-3',
+    'C:\\projects\\project-2'
+  ]);
+
+  await sandbox.BOBO.workspaceLaunch.requestOpen('c:\\PROJECTS\\project-4');
+  assert.deepEqual(storedProjects(), [
+    'c:\\PROJECTS\\project-4',
+    'C:\\projects\\project-6',
+    'C:\\projects\\project-5',
+    'C:\\projects\\project-3',
+    'C:\\projects\\project-2'
+  ], 'Windows paths are deduplicated case-insensitively and moved to the front');
+
+  await sandbox.BOBO.workspaceLaunch.requestOpen('C:\\rejected');
+  assert.equal(storedProjects().includes('C:\\rejected'), false);
+});

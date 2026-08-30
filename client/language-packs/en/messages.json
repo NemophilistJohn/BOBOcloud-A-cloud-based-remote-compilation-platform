@@ -58,6 +58,8 @@
   "Open a folder to start": "Open a folder to start",
   "Browse your project files and start coding": "Browse your project files and start coding",
   "Open Folder": "Open Folder",
+  "Recent projects": "Recent projects",
+  "Remove {name} from recent projects": "Remove {name} from recent projects",
   "Comparing:": "Comparing:",
   "Close diff (Escape)": "Close diff (Escape)",
   "Preview": "Preview",

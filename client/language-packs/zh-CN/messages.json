@@ -58,6 +58,8 @@
   "Open a folder to start": "打开文件夹以开始",
   "Browse your project files and start coding": "浏览项目文件并开始编码",
   "Open Folder": "打开文件夹",
+  "Recent projects": "最近项目",
+  "Remove {name} from recent projects": "从最近项目中移除 {name}",
   "Comparing:": "正在比较：",
   "Close diff (Escape)": "关闭差异视图 (Escape)",
   "Preview": "预览",

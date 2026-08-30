@@ -58,6 +58,8 @@
   "Open a folder to start": "フォルダーを開いて開始",
   "Browse your project files and start coding": "プロジェクトファイルを参照してコーディングを開始",
   "Open Folder": "フォルダーを開く",
+  "Recent projects": "最近のプロジェクト",
+  "Remove {name} from recent projects": "最近のプロジェクトから {name} を削除",
   "Comparing:": "比較中：",
   "Close diff (Escape)": "差分を閉じる (Escape)",
   "Preview": "プレビュー",

@@ -813,9 +813,15 @@ html, body {
   display: flex; flex-direction: column;
   align-items: center; justify-content: center;
   gap: var(--space-2);
+  padding: var(--space-8);
+  overflow: hidden;
   z-index: 10; pointer-events: none;
 }
 .empty-state.hidden { display: none; }
+.empty-state > .empty-state-icon,
+.empty-state > .empty-state-title,
+.empty-state > .empty-state-subtitle,
+.empty-state > .empty-state-btn { flex-shrink: 0; }
 .empty-state-icon { color: var(--text-tertiary); margin-bottom: var(--space-3); opacity: 0.4; }
 .empty-state-title {
   font-size: var(--text-xl); font-weight: var(--weight-semibold);
@@ -835,6 +841,143 @@ html, body {
 }
 .empty-state-btn:hover { background: var(--brand-hover); }
 .empty-state-btn:active { transform: scale(0.97); }
+.empty-state-btn:disabled { cursor: wait; opacity: 0.65; }
+
+.empty-state-recents {
+  display: flex;
+  flex: 0 1 200px;
+  flex-direction: column;
+  min-height: 72px;
+  max-height: 200px;
+  width: min(520px, calc(100% - var(--space-8)));
+  margin-top: var(--space-2);
+  overflow: hidden;
+  pointer-events: auto;
+}
+.empty-state-recents[hidden] { display: none; }
+.empty-state.has-workspace .empty-state-recents { display: none; }
+.empty-state-recents-title {
+  flex: 0 0 auto;
+  padding: 0 var(--space-2) var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+}
+.recent-project-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  padding-right: var(--space-1);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.recent-project-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  align-items: center;
+  min-height: 36px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+.recent-project-row:hover,
+.recent-project-row:focus-within {
+  background: var(--bg-hover);
+  box-shadow: inset 2px 0 0 var(--brand);
+  color: var(--text-primary);
+}
+.recent-project-open,
+.recent-project-remove {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.recent-project-open {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.72fr) minmax(0, 1.28fr);
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 var(--space-2);
+  text-align: left;
+  cursor: pointer;
+}
+.recent-project-name,
+.recent-project-path {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.recent-project-name {
+  color: var(--blue);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+.recent-project-path {
+  color: var(--text-tertiary);
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.recent-project-row:hover .recent-project-path,
+.recent-project-row:focus-within .recent-project-path { color: var(--text-secondary); }
+.recent-project-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.82);
+  transition:
+    opacity var(--dur-fast) var(--ease-standard),
+    background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-spring);
+}
+.recent-project-remove svg { width: 15px; height: 15px; }
+.recent-project-row:hover .recent-project-remove,
+.recent-project-row:focus-within .recent-project-remove {
+  color: var(--text-secondary);
+  opacity: 1;
+  transform: scale(1);
+}
+.recent-project-remove:hover { background: var(--red-muted); color: var(--red-hover); }
+.recent-project-open:disabled { cursor: wait; opacity: 0.45; }
+.recent-project-remove:disabled { cursor: wait; }
+
+@media (max-width: 520px) {
+  .empty-state { padding: var(--space-5); }
+  .empty-state-recents { width: 100%; }
+  .recent-project-open {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1px;
+    min-height: 42px;
+    padding-block: var(--space-1);
+  }
+}
+
+@media (max-height: 700px) {
+  .empty-state { padding-block: var(--space-4); }
+}
+
+@media (hover: none) {
+  .recent-project-remove { opacity: 1; transform: scale(1); }
+}
 
 /* ═══ Command Palette ═══ */
 .cmd-palette-overlay {
