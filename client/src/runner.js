@@ -41,6 +41,46 @@
     try { return callback(); } catch (_) { return undefined; }
   }
 
+  function runOutputOptions(options, runContext) {
+    var scoped = Object.assign({}, options || {});
+    if (runContext && runContext.outputSessionId !== undefined) scoped.sessionId = runContext.outputSessionId;
+    return scoped;
+  }
+
+  function beginRunOutput(target, runContext) {
+    if (BOBO.runOutput && typeof BOBO.runOutput.begin === 'function') {
+      var sessionId = BOBO.runOutput.begin({ target: target });
+      if (runContext) runContext.outputSessionId = sessionId;
+      return sessionId;
+    }
+    BOBO.updateRunOutput('Preparing run: ' + target);
+    return undefined;
+  }
+
+  function runOutputDetail(message, options, runContext) {
+    if (BOBO.runOutput && typeof BOBO.runOutput.detail === 'function') {
+      var handled = BOBO.runOutput.detail(message, runOutputOptions(options, runContext));
+      if (handled !== false || runContext) return handled;
+    }
+    BOBO.updateRunOutput(message);
+    return true;
+  }
+
+  function runOutputPhase(phase, message, options, runContext) {
+    if (BOBO.runOutput && typeof BOBO.runOutput.phase === 'function') {
+      return BOBO.runOutput.phase(phase, message, runOutputOptions(options, runContext));
+    }
+    if (message) BOBO.updateRunOutput(message);
+    return true;
+  }
+
+  function finishRunOutput(options, runContext) {
+    if (BOBO.runOutput && typeof BOBO.runOutput.finish === 'function') {
+      return BOBO.runOutput.finish(runOutputOptions(options, runContext));
+    }
+    return false;
+  }
+
   function cancelTaskInputPrompt() {
     if (BOBO.projectTasks && typeof BOBO.projectTasks.cancelInput === 'function') {
       bestEffort(function() { BOBO.projectTasks.cancelInput(); });
@@ -264,6 +304,7 @@
     var runContext = S.activeRunContext;
     if (!socket && !runId && !runContext) return false;
 
+    finishRunOutput({ success: false, cancelled: true, message: options.message || '' }, runContext);
     S.activeRunContext = null;
     S.activeRunCancelled = true;
     S.artifactInflight = new Map();
@@ -304,6 +345,7 @@
     var cancelReason = String(reason || 'cancelled');
     var context = record.runContext;
     if (context && activeRunPreparation === context) {
+      finishRunOutput({ success: false, cancelled: true }, context);
       runPreparationSequence += 1;
       activeRunPreparation = null;
       setRunControlsIdle();
@@ -324,7 +366,9 @@
   async function prepareWorkspaceLeave(options) {
     cancelTaskInputPrompt();
     lastProjectTask = null;
-    var preparingTask = activeRunPreparation && activeRunPreparation.taskExecutionHandle;
+    var preparingContext = activeRunPreparation;
+    var preparingTask = preparingContext && preparingContext.taskExecutionHandle;
+    finishRunOutput({ success: false, cancelled: true }, preparingContext);
     runPreparationSequence += 1;
     activeRunPreparation = null;
     settleTaskExecution(preparingTask, { success: false, cancelled: true, code: 'workspace-change', message: tr('Project task was cancelled.') });
@@ -336,7 +380,9 @@
   async function invalidateRunIdentity(options) {
     cancelTaskInputPrompt();
     lastProjectTask = null;
-    var preparingTask = activeRunPreparation && activeRunPreparation.taskExecutionHandle;
+    var preparingContext = activeRunPreparation;
+    var preparingTask = preparingContext && preparingContext.taskExecutionHandle;
+    finishRunOutput({ success: false, cancelled: true }, preparingContext);
     S.runIdentityEpoch = (S.runIdentityEpoch || 0) + 1;
     runPreparationSequence += 1;
     activeRunPreparation = null;
@@ -423,22 +469,22 @@
   // Runs only need a server upload when the watched workspace changed. A
   // manual Sync remains forceful, but repeatedly running unchanged code must
   // not pay for another directory scan, SSH handshake and rclone traversal.
-  async function ensureWorkspaceSyncedForRun() {
+  async function ensureWorkspaceSyncedForRun(runContext) {
     if (syncPromise) await syncPromise;
     if (!canSyncCurrentWorkspace()) return false;
     if (syncedIdentityEpoch === (S.runIdentityEpoch || 0) && S.lastSyncedVersion === S.workspaceChangeVersion) {
-      BOBO.updateRunOutput('Workspace unchanged - using the existing server copy');
+      runOutputDetail('Workspace unchanged - using the existing server copy', { stage: 'sync' }, runContext);
       return true;
     }
-    return startSync(true);
+    return startSync(true, runContext);
   }
 
-  function startSync(verbose) {
+  function startSync(verbose, runContext) {
     var operation = currentSyncIdentity();
     var syncStatusContext = BOBO.workspaceSyncStatus && BOBO.workspaceSyncStatus.beginSync({ force: verbose === true });
     syncInFlight = true;
     syncOperation = operation;
-    var operationPromise = doSyncWithServerInternal(verbose, operation).then(function(result) {
+    var operationPromise = doSyncWithServerInternal(verbose, operation, runContext).then(function(result) {
       if (BOBO.workspaceSyncStatus && syncStatusContext) {
         BOBO.workspaceSyncStatus.finishSync(syncStatusContext, {
           success: result === true,
@@ -470,7 +516,7 @@
     return manualSyncWithServer();
   }
 
-  async function doSyncWithServerInternal(verbose, operation) {
+  async function doSyncWithServerInternal(verbose, operation, runContext) {
     try {
       var syncRoot = S.workspaceRoot;
       var syncGeneration = S.workspaceGeneration || 0;
@@ -525,7 +571,7 @@
       var result = await BOBO.rclone.sync({
         src: syncRoot,
         remotePath: remotePath,
-        onProgress: verbose ? function(line) { BOBO.updateRunOutput('Sync: ' + line); } : undefined
+        onProgress: verbose ? function(line) { runOutputDetail('Sync: ' + line, { stage: 'sync' }, runContext); } : undefined
       });
       if (S.workspaceRoot !== syncRoot || (S.workspaceGeneration || 0) !== syncGeneration ||
           (S.runIdentityEpoch || 0) !== syncIdentityEpoch) return false;
@@ -533,7 +579,7 @@
       if (!result.success) {
         if (verbose) BOBO.updateRunOutput('Sync failed: ' + result.error.message);
         if (result.error.type === 'BINARY_NOT_FOUND') {
-          if (verbose) BOBO.updateRunOutput('Please specify rclone path in server settings.');
+          if (verbose) BOBO.updateRunOutput(tr('The bundled rclone is unavailable. Restart BOBOCLOUD or choose another installation in Server settings.'));
         } else if (result.error.type === 'AUTH_FAILED') {
           if (verbose) BOBO.updateRunOutput('Check server username/password in settings.');
         } else if (result.error.type === 'CONNECTION_FAILED') {
@@ -542,7 +588,7 @@
         return false;
       }
 
-      if (verbose) BOBO.updateRunOutput('Sync completed - all files synced');
+      if (verbose) runOutputDetail('Sync completed - all files synced', { stage: 'sync' }, runContext);
       // Preserve changes that happened while rclone was running: only the
       // version captured at start is considered synchronized.
       S.lastSyncedVersion = syncVersion;
@@ -652,19 +698,22 @@
 
   // 中止当前运行：通过 WebSocket 发送 cancel 消息，服务端取消运行上下文
   async function stopActiveRun() {
-    var hadPreparation = !!activeRunPreparation;
-    var preparingTask = activeRunPreparation && activeRunPreparation.taskExecutionHandle;
+    var preparingContext = activeRunPreparation;
+    var hadPreparation = !!preparingContext;
+    var preparingTask = preparingContext && preparingContext.taskExecutionHandle;
     if (hadPreparation) {
+      runOutputDetail('[Stop] Cancelling run...', { stage: 'client' }, preparingContext);
       cancelTaskInputPrompt();
       runPreparationSequence += 1;
       activeRunPreparation = null;
       settleTaskExecution(preparingTask, { success: false, cancelled: true, code: 'user-cancelled', message: tr('Project task was cancelled.') });
+      finishRunOutput({ success: false, cancelled: true }, preparingContext);
     }
     if (!hadPreparation && !S.activeRunSocket && !S.activeRunId && !S.activeRunContext) {
       BOBO.updateRunOutput('[Stop] No active run to stop');
       return;
     }
-    BOBO.updateRunOutput('[Stop] Cancelling run...');
+    if (!hadPreparation) runOutputDetail('[Stop] Cancelling run...', { stage: 'client' }, S.activeRunContext);
     var cancelledActive = await cancelActiveRun();
     if (!cancelledActive) setRunControlsIdle();
   }
@@ -806,11 +855,14 @@
 
     if (!isProjectTask) {
       BOBO.clearRunOutput();
-      BOBO.updateRunOutput('Preparing run: ' + relativeFilePath);
-    } else if (taskExecution) {
+      beginRunOutput(relativeFilePath, runContext);
+    } else {
+      beginRunOutput((taskExecution && taskExecution.label) || (taskRequest && taskRequest.label), runContext);
+    }
+    if (taskExecution) {
       applyTaskPresentation(taskExecution);
       presentationApplied = true;
-      BOBO.updateRunOutput(tr('Preparing project task: {task}', { task: taskExecution.label }));
+      runOutputDetail(tr('Preparing project task: {task}', { task: taskExecution.label }), { stage: 'client' }, runContext);
     }
 
     // Save before running
@@ -822,11 +874,13 @@
           ? await BOBO.workspace.saveAllTabs()
           : await BOBO.workspace.saveActiveTab();
         if (!isRunPreparationCurrent(runContext)) {
+          finishRunOutput({ success: false, cancelled: true }, runContext);
           settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.') });
           return false;
         }
         if (!saved) {
           finishRunPreparation(runContext);
+          finishRunOutput({ success: false, message: tr('Project files could not be saved.') }, runContext);
           BOBO.updateRunOutput(isProjectTask
             ? tr('Error: Project files could not be saved, so the task was cancelled.')
             : 'Error: The active file could not be saved, so the run was cancelled.');
@@ -843,6 +897,7 @@
       try {
         var resolvedTask = await global.api.tasksResolve(taskRequest.label, taskRequest.context || {}, undefined);
         if (!isRunPreparationCurrent(runContext)) {
+          finishRunOutput({ success: false, cancelled: true }, runContext);
           settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.') });
           return false;
         }
@@ -851,17 +906,20 @@
             ? await BOBO.projectTasks.resolveInputRequests(resolvedTask.inputRequests)
             : null;
           if (!isRunPreparationCurrent(runContext)) {
+            finishRunOutput({ success: false, cancelled: true }, runContext);
             settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.') });
             return false;
           }
           if (inputValues === null) {
             finishRunPreparation(runContext);
+            finishRunOutput({ success: false, cancelled: true }, runContext);
             BOBO.updateRunOutput(tr('Project task was cancelled.'));
             settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'input-cancelled', message: tr('Project task was cancelled.') });
             return false;
           }
           resolvedTask = await global.api.tasksResolve(taskRequest.label, taskRequest.context || {}, inputValues);
           if (!isRunPreparationCurrent(runContext)) {
+            finishRunOutput({ success: false, cancelled: true }, runContext);
             settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.') });
             return false;
           }
@@ -869,6 +927,7 @@
         if (!resolvedTask || !resolvedTask.success || !resolvedTask.execution) {
           var taskError = resolvedTask && resolvedTask.error || { code: 'TASK_RESOLVE_FAILED', message: 'Unknown task resolution error' };
           finishRunPreparation(runContext);
+          finishRunOutput({ success: false, message: taskError.message }, runContext);
           BOBO.updateRunOutput(tr('Task could not be resolved [{code}]: {message}', {
             code: taskError.code,
             message: taskError.message
@@ -879,10 +938,14 @@
         taskExecution = resolvedTask.execution;
         applyTaskPresentation(taskExecution);
         presentationApplied = true;
-        BOBO.updateRunOutput(tr('Preparing project task: {task}', { task: taskExecution.label }));
+        runOutputDetail(tr('Preparing project task: {task}', { task: taskExecution.label }), { stage: 'client' }, runContext);
       } catch (error) {
+        var taskResolutionCurrent = isRunPreparationCurrent(runContext);
         finishRunPreparation(runContext);
-        BOBO.updateRunOutput(tr('Error: Task configuration could not be loaded: {message}', { message: error.message }));
+        finishRunOutput({ success: false, message: error.message }, runContext);
+        if (taskResolutionCurrent) {
+          BOBO.updateRunOutput(tr('Error: Task configuration could not be loaded: {message}', { message: error.message }));
+        }
         settleTaskExecution(executionHandle, { success: false, code: 'task-resolve-failed', message: error.message });
         return false;
       }
@@ -906,13 +969,16 @@
     }
 
     try {
-      var syncSuccess = await ensureWorkspaceSyncedForRun();
+      runOutputPhase('syncing', '', null, runContext);
+      var syncSuccess = await ensureWorkspaceSyncedForRun(runContext);
       if (!isRunPreparationCurrent(runContext)) {
+        finishRunOutput({ success: false, cancelled: true }, runContext);
         settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.') });
         return false;
       }
       if (!syncSuccess) {
         finishRunPreparation(runContext);
+        finishRunOutput({ success: false, message: tr('Workspace synchronization failed.') }, runContext);
         BOBO.updateRunOutput('Error: Failed to sync with server before running');
         settleTaskExecution(executionHandle, { success: false, code: 'sync-failed', message: tr('Workspace synchronization failed.') });
         return false;
@@ -927,6 +993,7 @@
 
       await cancelActiveRun();
       if (!isRunPreparationCurrent(runContext)) {
+        finishRunOutput({ success: false, cancelled: true }, runContext);
         settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.') });
         return false;
       }
@@ -949,6 +1016,7 @@
             runNonce: runContext.nonce
           });
         } catch (error) {
+          finishRunOutput({ success: false, message: error.message }, runContext);
           settleTaskExecution(executionHandle, { success: false, code: 'artifact-context-failed', message: error.message, runId: runId });
           await clearRunContext(runContext, runId);
           BOBO.updateRunOutput('Run error: ' + error.message);
@@ -956,20 +1024,21 @@
         }
       }
       if (!isRunContextCurrent(runContext)) {
+        finishRunOutput({ success: false, cancelled: true }, runContext);
         settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.'), runId: runId });
         return false;
       }
       setRunControlsActive();
 
-      BOBO.updateRunOutput(taskExecution
+      runOutputPhase('runtime', taskExecution
         ? tr('Running project task: {task}', { task: taskExecution.label })
-        : 'Running code: ' + relativeFilePath);
+        : 'Running code: ' + relativeFilePath, { stage: 'client' }, runContext);
       if (taskExecution) echoTaskCommands(taskExecution);
-      if (!taskExecution && rc.compileArgs.length > 0) BOBO.updateRunOutput('Compile args: ' + rc.compileArgs.join(' '));
-      if (!taskExecution && rc.runArgs.length > 0) BOBO.updateRunOutput('Program args: ' + rc.runArgs.join(' '));
+      if (!taskExecution && rc.compileArgs.length > 0) runOutputDetail('Compile args: ' + rc.compileArgs.join(' '), { stage: 'client' }, runContext);
+      if (!taskExecution && rc.runArgs.length > 0) runOutputDetail('Program args: ' + rc.runArgs.join(' '), { stage: 'client' }, runContext);
       if (!taskExecution && rc.buildTarget) {
         var targetLabel = BOBO.runConfig && BOBO.runConfig.describeTarget ? BOBO.runConfig.describeTarget(rc.buildTarget) : rc.buildTarget;
-        BOBO.updateRunOutput(tr('Build target: {target}', { target: targetLabel }));
+        runOutputDetail(tr('Build target: {target}', { target: targetLabel }), { stage: 'client' }, runContext);
       }
 
       var requestPayload = {
@@ -1000,6 +1069,7 @@
 
       if (!runResult) {
         BOBO.updateRunOutput('Error: Failed to get run result from server');
+        finishRunOutput({ success: false, message: tr('Failed to get a run response from the server.') }, runContext);
         settleTaskExecution(executionHandle, { success: false, code: 'empty-run-response', message: tr('Failed to get a run response from the server.'), runId: runId });
         await cancelActiveRun();
         return false;
@@ -1008,6 +1078,7 @@
       if (!runResult.success) {
         BOBO.updateRunOutput('\n=== RUN FAILED ===');
         if (runResult.error) BOBO.updateRunOutput('Error: ' + runResult.error);
+        finishRunOutput({ success: false, message: String(runResult.error || '') }, runContext);
         settleTaskExecution(executionHandle, { success: false, code: String(runResult.code || 'run-rejected'), message: String(runResult.error || ''), runId: runId });
         await cancelActiveRun();
         return false;
@@ -1027,12 +1098,20 @@
         S.activeRunSocket = socket;
         var artifactWrites = [];
         var artifactFailures = 0;
+        var artifactPaths = new Set();
+        var artifactFinalization = Promise.resolve();
+        var resultReceived = false;
+        var streamErrorReported = false;
+        var lastRunError = '';
+        var terminalFinalization = null;
 
         var timeoutId = setTimeout(function() {
           if (settled) return;
           settled = true;
-          try { socket.close(); } catch (e) {}
+          streamErrorReported = true;
           BOBO.updateRunOutput('WebSocket connect timeout');
+          finishRunOutput({ success: false, message: tr('The output stream connection timed out.') }, runContext);
+          try { socket.close(); } catch (e) {}
           resolve(false);
         }, 8000);
 
@@ -1042,7 +1121,7 @@
           try { socket.send(JSON.stringify({ type: 'attach', runId: runId, token: token })); } catch (e) {}
           settled = true;
           S.activeRunCancelled = false; // 重置取消标志
-          BOBO.updateRunOutput('WebSocket stream connected');
+          runOutputDetail('WebSocket stream connected', { stage: 'transport' }, runContext);
           var sb = document.getElementById('stop-code'); if (sb) { sb.disabled = false; sb.style.opacity = '1'; }
           resolve(true);
         };
@@ -1066,14 +1145,16 @@
           try {
             var payload = JSON.parse(event.data);
             if (payload.type === 'status' && payload.message) {
-              BOBO.updateRunOutput(payload.message);
+              if (BOBO.runOutput && typeof BOBO.runOutput.handleStatus === 'function') BOBO.runOutput.handleStatus(payload, runContext.outputSessionId);
+              else BOBO.updateRunOutput(payload.message);
               // run 步骤开始：启动兜底计时器（300ms 后若无 stdout 则显示输入框）
               if (payload.stage && ((!taskExecution && payload.stage.indexOf('run:') === 0) || payload.stage === interactiveTaskStage) && !stdinShown) {
                 stdinFallbackTimer = setTimeout(showStdinOnce, 300);
               }
             }
             if (payload.type === 'stdout' && payload.line !== undefined && !S.activeRunCancelled) {
-              BOBO.updateRunOutput(payload.line);
+              if (String(payload.stage || '') === 'setup') runOutputDetail(payload.line, { stage: 'setup' }, runContext);
+              else BOBO.updateRunOutput(payload.line);
               if (taskProblemSession) taskProblemSession.consume(payload.line, payload.stage);
               // 程序有输出（如 input() 的提示文字）：立即显示输入框
               if (!taskExecution || payload.stage === interactiveTaskStage) showStdinOnce();
@@ -1083,6 +1164,7 @@
               if (taskProblemSession) taskProblemSession.consume(payload.line, payload.stage);
             }
             if (payload.type === 'artifact') {
+              if (payload.path) artifactPaths.add(String(payload.path));
               var write = handleArtifactChunk(payload, runContext);
               if (write) {
                 artifactWrites.push(Promise.resolve(write).catch(function(err) {
@@ -1092,45 +1174,79 @@
               }
             }
             if (payload.type === 'artifactsComplete') {
-              await Promise.all(artifactWrites);
-              if (!isRunContextCurrent(runContext)) return;
-              BOBO.updateRunOutput(artifactFailures === 0
-                ? 'Artifacts received'
-                : 'Artifacts completed with ' + artifactFailures + ' save error(s)');
-              await refreshWorkspaceTree(runContext);
+              artifactFinalization = Promise.all(artifactWrites).then(async function() {
+                if (!isRunContextCurrent(runContext)) return;
+                if (artifactFailures > 0) {
+                  BOBO.updateRunOutput(tr('Artifacts completed with {count} save error(s).', { count: artifactFailures }));
+                } else if (artifactPaths.size > 0) {
+                  runOutputPhase('artifacts', tr('Artifacts processed: {count}', { count: artifactPaths.size }), { stage: 'artifact' }, runContext);
+                }
+                try {
+                  await refreshWorkspaceTree(runContext);
+                } catch (error) {
+                  BOBO.updateRunOutput('Workspace refresh failed: ' + error.message);
+                }
+              });
+              await artifactFinalization;
             }
             if (payload.type === 'result') {
-              settleTaskExecution(executionHandle, {
-                success: payload.success === true,
-                returnCode: Number(payload.returncode),
-                code: payload.success === true ? 'completed' : 'task-failed',
-                message: String(payload.message || ''),
-                runId: runId
-              });
-              bestEffort(function() { BOBO.updateRunOutput('Return code: ' + payload.returncode); });
-              bestEffort(function() { BOBO.updateRunOutput(payload.success ? 'Run finished successfully' : 'Run finished with errors'); });
-              bestEffort(function() {
-                if (!BOBO.environmentActivity || typeof BOBO.environmentActivity.record !== 'function') return;
-                BOBO.environmentActivity.record('compile', { outcome: payload.success ? 'completed' : 'failed' });
-                if (payload.success && S.setupCommands.length > 0) BOBO.environmentActivity.record('install', { outcome: 'completed' });
-              });
-              bestEffort(function() {
-                if (S.setupCommands.length > 0 && BOBO.lsp && typeof BOBO.lsp.dependenciesChanged === 'function') BOBO.lsp.dependenciesChanged();
-              });
-              if (stdinFallbackTimer) { clearTimeout(stdinFallbackTimer); stdinFallbackTimer = null; }
-              bestEffort(hideStdinInput);
-              bestEffort(function() { if (taskProblemSession) taskProblemSession.finish(); });
-              if (executionHandle) {
-                try { await clearRunContext(runContext, runId); } finally { try { socket.close(); } catch (_) {} }
+              if (terminalFinalization) {
+                await terminalFinalization;
+                return;
               }
+              resultReceived = true;
+              terminalFinalization = (async function() {
+                await artifactFinalization;
+                await Promise.all(artifactWrites);
+                if (!isRunContextCurrent(runContext)) return;
+                var artifactMessage = artifactFailures > 0
+                  ? tr('Run completed, but {count} artifact(s) could not be saved.', { count: artifactFailures })
+                  : '';
+                var finalSuccess = payload.success === true && artifactFailures === 0;
+                var finalMessage = artifactMessage || String(payload.message || lastRunError || '');
+                settleTaskExecution(executionHandle, {
+                  success: finalSuccess,
+                  returnCode: Number(payload.returncode),
+                  code: finalSuccess ? 'completed' : (artifactFailures > 0 ? 'artifact-save-failed' : 'task-failed'),
+                  message: finalMessage,
+                  runId: runId
+                });
+                bestEffort(function() {
+                  finishRunOutput({ success: finalSuccess, returnCode: Number(payload.returncode), message: finalMessage }, runContext);
+                });
+                bestEffort(function() {
+                  if (!BOBO.environmentActivity || typeof BOBO.environmentActivity.record !== 'function') return;
+                  BOBO.environmentActivity.record('compile', { outcome: finalSuccess ? 'completed' : 'failed' });
+                  if (payload.success && S.setupCommands.length > 0) BOBO.environmentActivity.record('install', { outcome: 'completed' });
+                });
+                bestEffort(function() {
+                  if (S.setupCommands.length > 0 && BOBO.lsp && typeof BOBO.lsp.dependenciesChanged === 'function') BOBO.lsp.dependenciesChanged();
+                });
+                if (stdinFallbackTimer) { clearTimeout(stdinFallbackTimer); stdinFallbackTimer = null; }
+                bestEffort(hideStdinInput);
+                bestEffort(function() { if (taskProblemSession) taskProblemSession.finish(); });
+                try { await clearRunContext(runContext, runId); } finally { try { socket.close(); } catch (_) {} }
+              })();
+              await terminalFinalization;
             }
             if (payload.type === 'error' && payload.message) {
-              settleTaskExecution(executionHandle, { success: false, code: String(payload.code || 'stream-error'), message: payload.message, runId: runId });
-              bestEffort(function() { BOBO.updateRunOutput('Error: ' + payload.message); });
-              bestEffort(function() { if (taskProblemSession) taskProblemSession.finish(); });
-              if (executionHandle) {
-                try { await clearRunContext(runContext, runId); } finally { try { socket.close(); } catch (_) {} }
+              if (terminalFinalization) {
+                await terminalFinalization;
+                return;
               }
+              resultReceived = true;
+              streamErrorReported = true;
+              lastRunError = String(payload.message);
+              terminalFinalization = (async function() {
+                await artifactFinalization;
+                if (!isRunContextCurrent(runContext)) return;
+                settleTaskExecution(executionHandle, { success: false, code: String(payload.code || 'stream-error'), message: payload.message, runId: runId });
+                bestEffort(function() { finishRunOutput({ success: false, message: lastRunError }, runContext); });
+                bestEffort(function() { BOBO.updateRunOutput('Error: ' + payload.message); });
+                bestEffort(function() { if (taskProblemSession) taskProblemSession.finish(); });
+                try { await clearRunContext(runContext, runId); } finally { try { socket.close(); } catch (_) {} }
+              })();
+              await terminalFinalization;
             }
           } catch (error) {
             bestEffort(function() { BOBO.updateRunOutput('Stream parse error: ' + error.message); });
@@ -1140,16 +1256,30 @@
         socket.onerror = function() {
           clearTimeout(timeoutId);
           if (!settled) { settled = true; resolve(false); }
-          if (isRunContextCurrent(runContext)) BOBO.updateRunOutput('WebSocket stream error');
+          if (isRunContextCurrent(runContext) && !resultReceived && !streamErrorReported) {
+            streamErrorReported = true;
+            BOBO.updateRunOutput('WebSocket stream error');
+            finishRunOutput({ success: false, message: tr('The output stream was interrupted.') }, runContext);
+          }
         };
 
         socket.onclose = function() {
           clearTimeout(timeoutId);
           if (!settled) { settled = true; resolve(false); }
           if (stdinFallbackTimer) { clearTimeout(stdinFallbackTimer); stdinFallbackTimer = null; }
+          if (terminalFinalization) {
+            Promise.resolve(terminalFinalization).catch(function(error) {
+              bestEffort(function() { BOBO.updateRunOutput('Run finalization failed: ' + error.message); });
+            });
+            return;
+          }
           if (isRunContextCurrent(runContext)) {
             var cleanup = clearRunContext(runContext, runId);
-            bestEffort(function() { BOBO.updateRunOutput('WebSocket stream closed'); });
+            if (!resultReceived && !S.activeRunCancelled && !streamErrorReported) {
+              streamErrorReported = true;
+              bestEffort(function() { BOBO.updateRunOutput('Error: The output stream closed before the run result was received.'); });
+              bestEffort(function() { finishRunOutput({ success: false, message: lastRunError || tr('The output stream closed before the run result was received.') }, runContext); });
+            }
             bestEffort(function() { if (taskProblemSession) taskProblemSession.finish(); });
             Promise.resolve(cleanup).catch(function(error) {
               bestEffort(function() { BOBO.updateRunOutput('Run cleanup failed: ' + error.message); });
@@ -1160,6 +1290,7 @@
 
       if (!streamReady) {
         settleTaskExecution(executionHandle, { success: false, code: 'stream-connect-failed', message: tr('Failed to establish the project task output stream.'), runId: runId });
+        finishRunOutput({ success: false, message: tr('Failed to establish the project task output stream.') }, runContext);
         if (isRunContextCurrent(runContext)) {
           BOBO.updateRunOutput('Error: Failed to establish output stream (check server port 3101 and WS endpoint)');
           await cancelActiveRun();
@@ -1171,6 +1302,7 @@
       if (isRunPreparationCurrent(runContext) || isRunContextCurrent(runContext)) {
         BOBO.updateRunOutput('Run error: ' + error.message);
       }
+      finishRunOutput({ success: false, message: error.message }, runContext);
       finishRunPreparation(runContext);
       settleTaskExecution(executionHandle, { success: false, code: 'run-error', message: error.message, runId: executionHandle && executionHandle.runId });
       if (isRunContextCurrent(runContext)) await cancelActiveRun();

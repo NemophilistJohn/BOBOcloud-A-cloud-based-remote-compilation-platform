@@ -18,6 +18,8 @@ function createWorkspaceController(options) {
   const onWorkspaceChanged = options.onWorkspaceChanged || (() => {});
   const onWorkspaceFilesystemEvent = options.onWorkspaceFilesystemEvent || (() => {});
   const settings = options.settings;
+  const assertSafeLocalRoot = options.assertSafeLocalRoot || ((candidate) => path.resolve(candidate));
+  const localDirectoryAuthority = options.localDirectoryAuthority || null;
 
   const watchers = new Map();
   const watcherDebounceTimers = new Map();
@@ -82,6 +84,17 @@ function createWorkspaceController(options) {
       return fs.statSync(candidate);
     } catch (_) {
       return null;
+    }
+  }
+
+  function safeWorkspaceRoot(candidate) {
+    try {
+      return assertSafeLocalRoot(candidate);
+    } catch (error) {
+      if (error && error.code === 'PROTECTED_LOCAL_DIRECTORY') {
+        throw new Error(t('This directory is reserved by BOBOCLOUD and cannot be opened as a workspace.'));
+      }
+      throw error;
     }
   }
 
@@ -343,7 +356,7 @@ function createWorkspaceController(options) {
   }
 
   async function transitionWorkspace(folderPath) {
-    const folder = path.resolve(folderPath);
+    const folder = safeWorkspaceRoot(folderPath);
     const stat = safeStat(folder);
     if (!stat || !stat.isDirectory()) throw new Error('Workspace folder does not exist');
     const currentOpenSequence = ++openSequence;
@@ -514,9 +527,11 @@ function createWorkspaceController(options) {
       }
       return transitionWorkspace(folder);
     });
-    ipcMain.handle('write-team-mapping', async (_event, payload) => {
+    ipcMain.handle('write-team-mapping', async (event, payload) => {
       if (!payload || typeof payload.localPath !== 'string' || !payload.mapping) throw new Error('Invalid mapping metadata');
-      const directory = path.resolve(payload.localPath);
+      const directory = localDirectoryAuthority
+        ? localDirectoryAuthority.resolve(event.sender.id, payload.localGrant, payload.localPath)
+        : safeWorkspaceRoot(payload.localPath);
       const stat = safeStat(directory);
       if (!stat || !stat.isDirectory()) throw new Error('Mapping directory does not exist');
       const mapping = payload.mapping;

@@ -331,7 +331,7 @@ function loadCollaboration(options) {
   const windowApi = Object.assign({
     async localPathInfo(localPath) {
       events.push({ type: 'localPathInfo', localPath });
-      return { exists: true, directory: true, empty: false };
+      return { exists: true, directory: true, empty: false, grantId: 'active-workspace-grant' };
     },
     async writeTeamMapping(details) {
       events.push({ type: 'writeTeamMapping', details });

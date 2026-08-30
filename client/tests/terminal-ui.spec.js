@@ -217,7 +217,7 @@ test('cloud terminal streams through the main bridge and confirms only multi-lin
       const settings = {
         ip: '127.0.0.1', user: 'test', pass: 'test', apiKey: '', secureTransport: false,
         httpPort: 3100, wsPort, dapChildWsPort: 3102, certificateFingerprint: '',
-        rclonePath: '', syncInterval: 30000, setupCompleted: true
+        syncInterval: 30000, setupCompleted: true
       };
       await window.api.writeServerSettings(settings);
       window.BOBO.state.serverSettings = settings;

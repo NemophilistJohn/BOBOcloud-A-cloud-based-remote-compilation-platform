@@ -1,3 +1,5 @@
+'use strict';
+
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -6,62 +8,42 @@ const test = require('node:test');
 
 const rclone = require('../rclone');
 
-test('normalizes a directory named rclone to its executable', () => {
-  const directory = path.resolve(__dirname, '..', 'rclone');
-  assert.equal(
-    rclone.normalizeRequestedPath(directory),
-    path.join(directory, 'rclone.exe')
-  );
-});
-
-test('strips quotes around a configured executable', () => {
-  const executable = path.resolve(__dirname, '..', 'rclone', 'rclone.exe');
-  assert.equal(rclone.normalizeRequestedPath('"' + executable + '"'), executable);
-});
-
-test('falls back from a stale configured path to the bundled development binary', async () => {
-  const stalePath = path.join('C:\\', 'missing-bobocloud-rclone', 'rclone.exe');
-  const result = await rclone.checkVersion(stalePath);
-
+test('checks exactly the managed rclone executable supplied by main', async () => {
+  const executable = path.resolve(__dirname, '..', 'rclone', rclone.EXE_NAME);
+  const result = await rclone.checkVersion(executable, 'bundled');
   assert.equal(result.available, true);
-  assert.equal(result.source, 'development');
+  assert.equal(result.path, executable);
+  assert.equal(result.source, 'bundled');
   assert.match(result.version, /^rclone v/);
-  assert.equal(result.attempts[0].source, 'configured');
-  assert.equal(result.attempts[0].code, 'ENOENT');
 });
 
-test('resolves a configured rclone directory without relying on PATH', () => {
-  const directory = path.resolve(__dirname, '..', 'rclone');
-  const result = rclone.resolveExecutable(directory);
-
-  assert.equal(result.source, 'configured');
-  assert.equal(result.path, path.join(directory, 'rclone.exe'));
+test('does not search PATH or accept relative executable names', async () => {
+  const result = await rclone.checkVersion(rclone.EXE_NAME, 'system');
+  assert.equal(result.available, false);
+  assert.match(result.error, /managed absolute rclone executable path is required/);
 });
 
-test('repairs a non-executable bundled Unix binary in user-writable storage', () => {
-  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-rclone-mode-'));
-  const bundled = path.join(sandbox, 'bundled-rclone');
-  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
-  const originalHome = process.env.HOME;
-  try {
-    fs.writeFileSync(bundled, 'unix binary fixture');
-    fs.chmodSync(bundled, 0o644);
-    process.env.HOME = path.join(sandbox, 'home');
-    Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' });
-    delete require.cache[require.resolve('../rclone')];
-    const linuxRclone = require('../rclone');
-    const repaired = linuxRclone.ensureExecutableCandidate({ path: bundled, source: 'bundled' });
+test('rejects an arbitrary executable that does not identify itself as rclone', async () => {
+  const result = await rclone.checkVersion(process.execPath, 'system');
+  assert.equal(result.available, false);
+  assert.equal(result.code, 'INVALID_RCLONE');
+  assert.match(result.error, /identify itself as rclone/);
+});
 
-    assert.equal(repaired.source, 'bundled');
-    assert.notEqual(repaired.path, bundled);
-    assert.equal(fs.readFileSync(repaired.path, 'utf8'), 'unix binary fixture');
-    if (originalPlatform.value !== 'win32') assert.notEqual(fs.statSync(repaired.path).mode & 0o111, 0);
-    assert.equal(fs.statSync(bundled).mode & 0o111, 0);
-  } finally {
-    delete require.cache[require.resolve('../rclone')];
-    Object.defineProperty(process, 'platform', originalPlatform);
-    if (originalHome === undefined) delete process.env.HOME;
-    else process.env.HOME = originalHome;
-    fs.rmSync(sandbox, { recursive: true, force: true });
-  }
+test('sync fails closed when main does not provide a managed executable', async () => {
+  const result = await rclone.sync({ src: 'source', remotePath: 'remote', retries: 0 });
+  assert.equal(result.success, false);
+  assert.equal(result.error.type, 'EXECUTABLE_UNAVAILABLE');
+});
+
+test('rclone config must use an explicit app-managed absolute file', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-rclone-config-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const configPath = path.join(root, 'private', 'rclone.conf');
+  assert.equal(rclone.requireManagedConfig(configPath, true), configPath);
+  assert.equal(fs.statSync(path.dirname(configPath)).isDirectory(), true);
+  assert.throws(() => rclone.requireManagedConfig('rclone.conf', true), /app-managed absolute/);
+  assert.throws(() => rclone.requireManagedConfig(configPath, false), /config is missing/);
+  fs.writeFileSync(configPath, '[remote]\n');
+  assert.equal(rclone.requireManagedConfig(configPath, false), configPath);
 });

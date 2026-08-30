@@ -356,6 +356,92 @@ test('Stop invalidates a run waiting for pre-sync before it can send runCode', a
   assert.equal(fixture.state.activeRunId, null);
 });
 
+test('a stopped sync cannot finish the output session started by a later run', async () => {
+  const syncResult = deferred();
+  const secondRunResult = deferred();
+  const serverCalls = [];
+  const lifecycle = [];
+  let sessionSequence = 0;
+  let activeSessionId = null;
+  let beginCount = 0;
+
+  const fixture = loadRunner({
+    state: {
+      tabs: [{ path: 'C:\\workspace\\main.js', dirty: false }],
+      activeTabPath: 'C:\\workspace\\main.js',
+      workspaceChangeVersion: 2,
+      lastSyncedVersion: 1
+    },
+    BOBO: {
+      runOutput: {
+        begin(payload) {
+          const sessionId = ++sessionSequence;
+          beginCount += 1;
+          activeSessionId = sessionId;
+          lifecycle.push({ type: 'begin', payload, sessionId });
+          return sessionId;
+        },
+        isActive(sessionId) {
+          return activeSessionId !== null && (sessionId === undefined || sessionId === activeSessionId);
+        },
+        detail(_message, options) {
+          return !options || options.sessionId === undefined || options.sessionId === activeSessionId;
+        },
+        phase(_phase, _message, options) {
+          return !options || options.sessionId === undefined || options.sessionId === activeSessionId;
+        },
+        finish(payload) {
+          const sessionId = payload && payload.sessionId;
+          const accepted = activeSessionId !== null && (sessionId === undefined || sessionId === activeSessionId);
+          lifecycle.push({
+            type: 'finish',
+            payload,
+            sessionId,
+            activeSessionId,
+            beginCount,
+            accepted
+          });
+          if (accepted) activeSessionId = null;
+          return accepted;
+        }
+      },
+      rclone: { sync: () => syncResult.promise },
+      sendToServer(action, payload) {
+        serverCalls.push({ action, payload });
+        if (action === 'checkFolder') return Promise.resolve({ success: true, folderPath: '/remote/workspace' });
+        if (action === 'runCode') return secondRunResult.promise;
+        if (action === 'cancelRun') return Promise.resolve({ success: true });
+        throw new Error('Unexpected server action: ' + action);
+      }
+    }
+  });
+
+  const firstRun = fixture.BOBO.runner.runActive();
+  await waitFor(() => serverCalls.some(call => call.action === 'checkFolder'));
+  const firstSessionId = lifecycle.find(event => event.type === 'begin').sessionId;
+
+  await fixture.BOBO.runner.stopActiveRun();
+  const secondRun = fixture.BOBO.runner.runActive();
+  await waitFor(() => lifecycle.filter(event => event.type === 'begin').length === 2);
+  const secondSessionId = lifecycle.filter(event => event.type === 'begin')[1].sessionId;
+
+  syncResult.resolve({ success: true });
+  await waitFor(() => serverCalls.some(call => call.action === 'runCode'));
+
+  const lateFirstRunFinish = lifecycle.find(event =>
+    event.type === 'finish' && event.beginCount === 2 && event.payload && event.payload.cancelled === true
+  );
+  assert.ok(lateFirstRunFinish, 'the invalidated first run should attempt its own terminal update');
+  assert.equal(lateFirstRunFinish.sessionId, firstSessionId, 'the late terminal event must retain Run A session token');
+  assert.equal(lateFirstRunFinish.activeSessionId, secondSessionId);
+  assert.equal(lateFirstRunFinish.accepted, false, 'Run A must not finish Run B');
+  assert.equal(activeSessionId, secondSessionId, 'Run B summary must remain active');
+
+  secondRunResult.resolve({ success: false, error: 'test cleanup' });
+  assert.equal(await firstRun, false);
+  assert.equal(await secondRun, false);
+});
+
 test('an identity change prevents an older sync from marking the workspace current', async () => {
   const syncResult = deferred();
   let syncCalls = 0;
@@ -490,6 +576,225 @@ test('an internal project task handle waits for the final server result and expo
     label: 'Build before debug'
   });
   assert.equal(handle.getState().state, 'failed');
+  assert.equal(fixture.BOBO.runner.isBusy(), false);
+});
+
+test('a completed stream produces one structured result and normal close stays silent', async () => {
+  const lifecycle = [];
+  let active = false;
+  const execution = {
+    schemaVersion: 1,
+    label: 'Compact output',
+    kind: 'build',
+    steps: [{ id: 'build', label: 'Build', kind: 'build', type: 'process', argv: ['node', 'build.js'], cwd: '', env: {}, dependsOn: [] }]
+  };
+  const fixture = loadRunner({
+    BOBO: {
+      runOutput: {
+        begin(payload) { active = true; lifecycle.push({ type: 'begin', payload }); },
+        isActive() { return active; },
+        detail(message) { lifecycle.push({ type: 'detail', message }); },
+        phase(phase, message) { lifecycle.push({ type: 'phase', phase, message }); },
+        handleStatus(payload) { lifecycle.push({ type: 'status', payload }); },
+        finish(payload) { lifecycle.push({ type: 'finish', payload }); }
+      },
+      dap: { isActive: () => true },
+      sendToServer(action) {
+        if (action === 'runTask') return Promise.resolve({ success: true, token: 'task-token', wsPath: '/ws' });
+        if (action === 'cancelRun') return Promise.resolve({ success: true });
+        throw new Error('Unexpected server action: ' + action);
+      }
+    }
+  });
+
+  const handle = fixture.BOBO.runner.startProjectTaskExecution(execution, { owner: 'dap-lifecycle' });
+  await waitFor(() => fixture.webSockets.length === 1);
+  const socket = fixture.webSockets[0];
+  socket.readyState = 1;
+  socket.onopen();
+  socket.onmessage({ data: JSON.stringify({ type: 'status', stage: 'docker', message: '[docker] Container reused' }) });
+  socket.onmessage({ data: JSON.stringify({ type: 'stdout', stage: 'run:node', line: 'user output' }) });
+  await socket.onmessage({ data: JSON.stringify({ type: 'result', success: true, returncode: 0 }) });
+  socket.onclose();
+  await handle.completion;
+
+  const finishes = lifecycle.filter(event => event.type === 'finish');
+  assert.equal(finishes.length, 1);
+  assert.equal(finishes[0].payload.success, true);
+  assert.equal(finishes[0].payload.returnCode, 0);
+  assert.equal(lifecycle.filter(event => event.type === 'status').length, 1);
+  assert.ok(fixture.outputs.includes('user output'));
+  assert.equal(fixture.outputs.includes('WebSocket stream connected'), false);
+  assert.equal(fixture.outputs.includes('WebSocket stream closed'), false);
+  assert.equal(fixture.outputs.some(line => /^Return code:/.test(line)), false);
+});
+
+test('a run result waits for artifact persistence and reports save failures before finishing', async () => {
+  const artifactWrite = deferred();
+  const finishes = [];
+  const execution = {
+    schemaVersion: 1,
+    label: 'Artifact build',
+    kind: 'build',
+    steps: [{ id: 'build', label: 'Build', kind: 'build', type: 'process', argv: ['node', 'build.js'], cwd: '', env: {}, dependsOn: [] }]
+  };
+  const fixture = loadRunner({
+    api: {
+      saveArtifact() { return artifactWrite.promise; }
+    },
+    BOBO: {
+      runOutput: {
+        begin() { return 1; },
+        isActive() { return true; },
+        detail() { return true; },
+        phase() { return true; },
+        handleStatus() { return true; },
+        finish(payload) { finishes.push(payload); return true; }
+      },
+      dap: { isActive: () => true },
+      sendToServer(action) {
+        if (action === 'runTask') return Promise.resolve({ success: true, token: 'task-token', wsPath: '/ws' });
+        if (action === 'cancelRun') return Promise.resolve({ success: true });
+        throw new Error('Unexpected server action: ' + action);
+      }
+    }
+  });
+
+  const handle = fixture.BOBO.runner.startProjectTaskExecution(execution, { owner: 'dap-lifecycle' });
+  await waitFor(() => fixture.webSockets.length === 1);
+  const socket = fixture.webSockets[0];
+  socket.readyState = 1;
+  socket.onopen();
+  await socket.onmessage({ data: JSON.stringify({
+    type: 'artifact', path: 'dist/output.js', fileType: 'text', chunkCount: 1, chunkIndex: 0, data: 'output'
+  }) });
+  const artifactsComplete = socket.onmessage({ data: JSON.stringify({ type: 'artifactsComplete' }) });
+  const result = socket.onmessage({ data: JSON.stringify({ type: 'result', success: true, returncode: 0 }) });
+  await Promise.resolve();
+
+  assert.equal(finishes.length, 0, 'the success summary must wait until artifact persistence finishes');
+  assert.equal(handle.getState().state, 'running');
+
+  artifactWrite.reject(new Error('disk full'));
+  await Promise.all([artifactsComplete, result]);
+  const outcome = await handle.completion;
+  assert.equal(outcome.success, false);
+  assert.equal(outcome.code, 'artifact-save-failed');
+  assert.match(outcome.message, /1 artifact/);
+  assert.equal(finishes.length, 1);
+  assert.equal(finishes[0].success, false);
+  assert.equal(finishes[0].returnCode, 0);
+  assert.match(finishes[0].message, /1 artifact/);
+  assert.equal(fixture.BOBO.runner.isBusy(), false);
+});
+
+test('a project task stream error fails its summary and settles its handle', async () => {
+  const lifecycle = [];
+  let activeSessionId = null;
+  let sessionSequence = 0;
+  const execution = {
+    schemaVersion: 1,
+    label: 'Failing build',
+    kind: 'build',
+    steps: [{ id: 'build', label: 'Build', kind: 'build', type: 'process', argv: ['node', 'build.js'], cwd: '', env: {}, dependsOn: [] }]
+  };
+  const fixture = loadRunner({
+    BOBO: {
+      runOutput: {
+        begin(payload) {
+          activeSessionId = ++sessionSequence;
+          lifecycle.push({ type: 'begin', payload, sessionId: activeSessionId });
+          return activeSessionId;
+        },
+        isActive(sessionId) {
+          return activeSessionId !== null && (sessionId === undefined || sessionId === activeSessionId);
+        },
+        detail() {},
+        phase() {},
+        handleStatus() {},
+        finish(payload) {
+          const accepted = activeSessionId !== null &&
+            (payload.sessionId === undefined || payload.sessionId === activeSessionId);
+          lifecycle.push({ type: 'finish', payload, accepted });
+          if (accepted) activeSessionId = null;
+          return accepted;
+        }
+      },
+      dap: { isActive: () => true },
+      sendToServer(action) {
+        if (action === 'runTask') return Promise.resolve({ success: true, token: 'task-token', wsPath: '/ws' });
+        if (action === 'cancelRun') return Promise.resolve({ success: true });
+        throw new Error('Unexpected server action: ' + action);
+      }
+    }
+  });
+
+  const handle = fixture.BOBO.runner.startProjectTaskExecution(execution, { owner: 'dap-lifecycle' });
+  await waitFor(() => fixture.webSockets.length === 1);
+  const socket = fixture.webSockets[0];
+  socket.readyState = 1;
+  socket.onopen();
+  await socket.onmessage({ data: JSON.stringify({
+    type: 'error',
+    code: 'runtime-failed',
+    message: 'Container startup failed'
+  }) });
+
+  const outcome = await handle.completion;
+  assert.equal(outcome.success, false);
+  assert.equal(outcome.code, 'runtime-failed');
+  assert.equal(outcome.message, 'Container startup failed');
+  assert.equal(handle.getState().state, 'failed');
+  assert.equal(fixture.BOBO.runner.isBusy(), false);
+
+  const finishes = lifecycle.filter(event => event.type === 'finish');
+  assert.equal(finishes.length, 1, 'the task error should produce one terminal summary update');
+  assert.equal(finishes[0].accepted, true);
+  assert.equal(finishes[0].payload.success, false);
+  assert.equal(finishes[0].payload.message, 'Container startup failed');
+  assert.equal(finishes[0].payload.sessionId, lifecycle[0].sessionId);
+});
+
+test('a normal file run closes its completed stream without adding transport noise', async () => {
+  const finishes = [];
+  let active = false;
+  const filePath = 'C:\\workspace\\main.js';
+  const fixture = loadRunner({
+    state: {
+      tabs: [{ path: filePath, dirty: false }],
+      activeTabPath: filePath
+    },
+    BOBO: {
+      runOutput: {
+        begin() { active = true; },
+        isActive() { return active; },
+        detail() {},
+        phase() {},
+        handleStatus() {},
+        finish(payload) { finishes.push(payload); }
+      },
+      sendToServer(action) {
+        if (action === 'runCode') return Promise.resolve({ success: true, token: 'run-token', wsPath: '/ws' });
+        if (action === 'cancelRun') return Promise.resolve({ success: true });
+        throw new Error('Unexpected server action: ' + action);
+      }
+    }
+  });
+
+  const runPromise = fixture.BOBO.runner.runActive();
+  await waitFor(() => fixture.webSockets.length === 1);
+  const socket = fixture.webSockets[0];
+  socket.readyState = 1;
+  socket.onopen();
+  assert.equal(await runPromise, true);
+  await socket.onmessage({ data: JSON.stringify({ type: 'result', success: true, returncode: 0 }) });
+  socket.onclose();
+  await Promise.resolve();
+
+  assert.equal(finishes.length, 1);
+  assert.equal(finishes[0].success, true);
+  assert.equal(fixture.outputs.includes('WebSocket stream closed'), false);
+  assert.equal(fixture.outputs.some(line => /^Return code:/.test(line)), false);
   assert.equal(fixture.BOBO.runner.isBusy(), false);
 });
 

@@ -45,24 +45,6 @@
     return imageExtensions.indexOf(ext) !== -1;
   };
 
-  // ──── Rclone path normalization (cross-platform) ────
-  BOBO.isWindows = /windows/i.test(navigator.userAgent);
-  BOBO.RCLONE_EXE = BOBO.isWindows ? 'rclone.exe' : 'rclone';
-
-  BOBO.normalizeRclonePath = function(rclonePath) {
-    if (!rclonePath) return BOBO.RCLONE_EXE;
-    var exe = rclonePath;
-    var lastPart = exe.split(/[/\\]/).pop();
-    // Path ends with separator — append rclone executable name
-    if (exe.endsWith('/') || exe.endsWith('\\')) {
-      exe += BOBO.RCLONE_EXE;
-    } else if (lastPart.toLowerCase() === 'rclone') {
-      // Directory named "rclone" without executable extension
-      exe += BOBO.isWindows ? '.exe' : '';
-    }
-    return exe;
-  };
-
   // ---- Project key (avoid duplicate folder name collision) ----
   BOBO.projectKey = function(workspaceRoot) {
     var normalized = workspaceRoot.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');

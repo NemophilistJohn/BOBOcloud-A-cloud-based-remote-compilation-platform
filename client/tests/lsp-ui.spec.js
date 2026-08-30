@@ -260,7 +260,6 @@ test('configured LSP address, strategy settings and status bar work in all built
         user: '',
         pass: '',
         apiKey: 'ui-test-api-key',
-        rclonePath: '',
         syncInterval: 30000
       };
       await window.api.writeServerSettings(serverSettings);

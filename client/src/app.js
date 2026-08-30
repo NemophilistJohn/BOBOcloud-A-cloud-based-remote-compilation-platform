@@ -60,7 +60,7 @@
 
   // Bundled rclone detection is entirely local. Bind it before the auth probe
   // so Server Settings remains useful even when the remote server is slow.
-  try { initializeRcloneStatusControls(); } catch (e) { console.error('rclone status init:', e); }
+  try { if (BOBO.rcloneSettings) BOBO.rcloneSettings.initialize(); } catch (e) { console.error('rclone status init:', e); }
 
   // ── Phase 2.5: Auth — 探测单机/多人模式；多人模式用本地计时凭证免登，
   //    无有效凭证则弹出登录/注册窗口（本地编辑功能不受影响）
@@ -82,6 +82,7 @@
   try { if (BOBO.packageCenter) BOBO.packageCenter.init(); } catch (e) { console.error('package center init:', e); }
 
   // ── Phase 5: Output panel tabs ──
+  try { if (BOBO.runOutput) BOBO.runOutput.init(); } catch (e) { console.error('runOutput init:', e); }
   try { BOBO.outputPanel.init(); } catch (e) { console.error('outputPanel init:', e); }
 
   // ── Phase 5.5: Run configuration (compile & program args popover) ──
@@ -292,77 +293,6 @@
     try { if (BOBO.settings) BOBO.settings.open('server'); } catch (e) { console.error(e); }
   });
 
-  async function refreshRcloneStatus(requestedPath) {
-    var status = document.getElementById('rclone-status');
-    var detectButton = document.getElementById('rclone-detect');
-    var translate = BOBO.i18n && BOBO.i18n.t
-      ? BOBO.i18n.t
-      : function(source, replacements) {
-          return String(source).replace(/\{([^}]+)\}/g, function(match, key) {
-            return replacements && replacements[key] !== undefined ? replacements[key] : match;
-          });
-        };
-    if (!status) return null;
-
-    status.dataset.state = 'checking';
-    status.textContent = translate('Checking rclone...');
-    status.removeAttribute('title');
-    if (detectButton) detectButton.disabled = true;
-
-    try {
-      var result = await BOBO.rclone.checkVersion(requestedPath);
-      if (result.available) {
-        var sourceNames = {
-          bundled: translate('Bundled'),
-          configured: translate('Configured'),
-          path: translate('System PATH'),
-          development: translate('Development')
-        };
-        status.dataset.state = 'available';
-        status.textContent = translate('{source} rclone available: {version}', {
-          source: sourceNames[result.source] || result.source || translate('Detected'),
-          version: result.version || translate('unknown version')
-        });
-        if (result.path) status.title = result.path;
-      } else {
-        status.dataset.state = 'unavailable';
-        status.textContent = translate('rclone unavailable: {error}', {
-          error: result.error || translate('unknown error')
-        });
-        var attemptedPaths = (result.attempts || []).map(function(attempt) {
-          return attempt.path + ': ' + attempt.error;
-        });
-        if (attemptedPaths.length) status.title = attemptedPaths.join('\n');
-      }
-      return result;
-    } catch (error) {
-      status.dataset.state = 'unavailable';
-      status.textContent = translate('rclone unavailable: {error}', { error: error.message });
-      return null;
-    } finally {
-      if (detectButton) detectButton.disabled = false;
-    }
-  }
-
-  function initializeRcloneStatusControls() {
-    var rcloneDetectButton = document.getElementById('rclone-detect');
-    if (rcloneDetectButton) {
-      rcloneDetectButton.onclick = function() {
-        var input = document.getElementById('rclone-path');
-        refreshRcloneStatus(input ? input.value : '');
-      };
-    }
-    BOBO.rclone.refreshStatus = refreshRcloneStatus;
-
-    // Settings may have been opened from the native menu while Monaco was
-    // still loading. Recover that early-open case without another user click.
-    var settingsModal = document.getElementById('settings-modal');
-    if (settingsModal && settingsModal.style.display === 'flex') {
-      var currentInput = document.getElementById('rclone-path');
-      refreshRcloneStatus(currentInput ? currentInput.value : '');
-    }
-  }
-
   document.getElementById('server-save').onclick = async function() {
     try {
       var connectStatus = document.getElementById('server-connect-status');
@@ -385,7 +315,6 @@
 		    ? S.serverSettings.certificateFingerprints : [];
 		  return [entered].concat(existing.filter(function(fingerprint) { return fingerprint !== entered; }));
 		})(),
-        rclonePath: document.getElementById('rclone-path').value || '',
         syncInterval: (parseInt(document.getElementById('sync-interval').value) || 30) * 1000,
         setupCompleted: !firstRunConnection
       };
@@ -413,10 +342,10 @@
       var wrote = await window.api.writeServerSettings(config);
       if (!wrote) throw new Error('Failed to save server settings');
       S.serverSettings = config;
-      refreshRcloneStatus(config.rclonePath);
+      if (BOBO.rcloneSettings) BOBO.rcloneSettings.refreshStatus();
       // Only a transport or credential change invalidates cloud sessions.
-      // Sync cadence and the local rclone path are client preferences and
-      // must not tear down an otherwise healthy debug/LSP/auth session.
+      // Sync cadence is a client preference and must not tear down an
+      // otherwise healthy debug/LSP/auth session.
       var connectionResult = { success: true };
       if (serverIdentityChanged && BOBO.auth && BOBO.auth.onServerChanged) {
         try { connectionResult = await BOBO.auth.onServerChanged({ runInvalidated: true }); } catch (e) { connectionResult = { success: false, error: e.message }; }

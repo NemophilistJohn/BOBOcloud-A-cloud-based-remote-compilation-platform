@@ -14,6 +14,14 @@ const RCLONE_BASE_URL = 'https://downloads.rclone.org/v' + RCLONE_VERSION;
 const DEFAULT_CACHE_ROOT = path.join(PROJECT_ROOT, 'node_modules', '.cache', 'bobocloud-rclone');
 
 const RCLONE_TARGETS = Object.freeze({
+  'win32-x64': Object.freeze({
+    archiveName: 'rclone-v1.64.0-windows-amd64.zip',
+    sha256: 'b1251cfdcbc44356e001057524c3e2f7be56d94546273d10143bfa1148c155ab'
+  }),
+  'win32-arm64': Object.freeze({
+    archiveName: 'rclone-v1.64.0-windows-arm64.zip',
+    sha256: '65673e9110f58e5f801f6c7256cb09307466f22e94645b0de36f510141d02be8'
+  }),
   'darwin-x64': Object.freeze({
     archiveName: 'rclone-v1.64.0-osx-amd64.zip',
     sha256: '9ef83833296876f3182b87030b4f2e851b56621bad4ca4d7a14753553bb8b640'
@@ -39,8 +47,8 @@ function normalizeArch(arch) {
 }
 
 function resolveTarget(platform, arch, manifest = RCLONE_TARGETS) {
-  if (platform !== 'darwin' && platform !== 'linux') {
-    throw new Error('Unsupported rclone platform: ' + String(platform) + ' (expected darwin or linux)');
+  if (platform !== 'win32' && platform !== 'darwin' && platform !== 'linux') {
+    throw new Error('Unsupported rclone platform: ' + String(platform) + ' (expected win32, darwin or linux)');
   }
   const normalizedArch = normalizeArch(arch);
   const key = platform + '-' + normalizedArch;
@@ -52,7 +60,8 @@ function resolveTarget(platform, arch, manifest = RCLONE_TARGETS) {
     platform,
     arch: normalizedArch,
     key,
-    entryName: target.entryName || archiveStem + '/rclone',
+    entryName: target.entryName || archiveStem + '/' + (platform === 'win32' ? 'rclone.exe' : 'rclone'),
+    binaryName: platform === 'win32' ? 'rclone.exe' : 'rclone',
     url: target.url || RCLONE_BASE_URL + '/' + target.archiveName
   };
 }
@@ -65,7 +74,7 @@ function getCachePaths(platform, arch, cacheRoot = DEFAULT_CACHE_ROOT, manifest 
     target,
     versionRoot,
     targetDir,
-    binaryPath: path.join(targetDir, 'rclone'),
+    binaryPath: path.join(targetDir, target.binaryName),
     metadataPath: path.join(targetDir, 'rclone.source.json'),
     archivePath: path.join(versionRoot, 'archives', target.archiveName)
   };

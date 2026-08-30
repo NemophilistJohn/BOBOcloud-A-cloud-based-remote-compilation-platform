@@ -40,7 +40,6 @@ test('a packaged bootstrap seeds only server connection fields into a fresh user
   const root = makeTempDirectory(t);
   const userDataPath = path.join(root, 'user-data');
   const resourcesPath = path.join(root, 'resources');
-  const configured = [];
   writeBootstrap(resourcesPath, {
     ip: 'compiler.example.test',
     user: 'bootstrap-user',
@@ -56,11 +55,7 @@ test('a packaged bootstrap seeds only server connection fields into a fresh user
     rclonePath: 'must-not-be-copied',
     unrelatedPreference: 'must-not-be-copied'
   });
-  const store = createSettingsStore({
-    app: packagedApp(userDataPath),
-    resourcesPath,
-    rclone: { ensureConfig: async (settings) => { configured.push(settings); return { success: true }; } }
-  });
+  const store = createSettingsStore({ app: packagedApp(userDataPath), resourcesPath });
 
   const settings = await store.readServerSettings();
   const persisted = JSON.parse(fs.readFileSync(path.join(userDataPath, 'server-settings.json'), 'utf8'));
@@ -71,12 +66,9 @@ test('a packaged bootstrap seeds only server connection fields into a fresh user
   assert.equal(persisted.user, 'bootstrap-user');
   assert.equal(persisted.pass, 'bootstrap-secret');
   assert.equal(persisted.apiKey, '');
-  assert.equal(persisted.rclonePath, '');
+  assert.equal(Object.hasOwn(persisted, 'rclonePath'), false);
   assert.deepEqual(persisted.certificateFingerprints, ['AA:BB', 'CC:DD']);
   assert.equal(Object.hasOwn(persisted, 'unrelatedPreference'), false);
-  assert.equal(configured.length, 1);
-  assert.equal(configured[0].apiKey, '');
-  assert.equal(configured[0].rclonePath, '');
 });
 
 test('a packaged bootstrap never overwrites an existing user server profile', async (t) => {
@@ -88,18 +80,11 @@ test('a packaged bootstrap never overwrites an existing user server profile', as
     ip: 'existing.example.test', user: 'existing-user', pass: 'existing-secret', setupCompleted: true
   }), 'utf8');
   writeBootstrap(resourcesPath, { ip: 'bootstrap.example.test', user: 'bootstrap-user', pass: 'bootstrap-secret' });
-  const configured = [];
-  const store = createSettingsStore({
-    app: packagedApp(userDataPath),
-    resourcesPath,
-    rclone: { ensureConfig: async (settings) => { configured.push(settings); return { success: true }; } }
-  });
+  const store = createSettingsStore({ app: packagedApp(userDataPath), resourcesPath });
 
   const settings = await store.readServerSettings();
   assert.equal(settings.ip, 'existing.example.test');
   assert.equal(settings.user, 'existing-user');
-  assert.equal(configured.length, 1);
-  assert.equal(configured[0].ip, 'existing.example.test');
 });
 
 test('a normal packaged profile without the internal bootstrap still requires first-run setup', async (t) => {
@@ -107,14 +92,44 @@ test('a normal packaged profile without the internal bootstrap still requires fi
   const userDataPath = path.join(root, 'user-data');
   const store = createSettingsStore({
     app: packagedApp(userDataPath),
-    resourcesPath: path.join(root, 'resources-without-bootstrap'),
-    rclone: { ensureConfig: async () => assert.fail('a blank server profile must not configure rclone') }
+    resourcesPath: path.join(root, 'resources-without-bootstrap')
   });
 
   const settings = await store.readServerSettings();
   assert.equal(settings.setupCompleted, false);
   assert.equal(settings.firstRunRequired, true);
   assert.equal(fs.existsSync(path.join(userDataPath, 'server-settings.json')), true);
+});
+
+test('legacy renderer-controlled rclone paths are removed without being executed', async (t) => {
+  const root = makeTempDirectory(t);
+  const userDataPath = path.join(root, 'user-data');
+  fs.mkdirSync(userDataPath, { recursive: true });
+  const serverPath = path.join(userDataPath, 'server-settings.json');
+  fs.writeFileSync(serverPath, JSON.stringify({
+    ip: 'existing.example.test',
+    user: 'existing-user',
+    pass: 'existing-secret',
+    setupCompleted: true,
+    rclonePath: path.join(root, 'workspace', 'evil.exe'),
+    rcloneBinary: { path: path.join(root, 'workspace', 'other-evil.exe') }
+  }), 'utf8');
+
+  const store = createSettingsStore({ app: packagedApp(userDataPath) });
+  const settings = await store.readServerSettings();
+  const persisted = JSON.parse(fs.readFileSync(serverPath, 'utf8'));
+  assert.equal(Object.hasOwn(settings, 'rclonePath'), false);
+  assert.equal(Object.hasOwn(settings, 'rcloneBinary'), false);
+  assert.equal(Object.hasOwn(persisted, 'rclonePath'), false);
+  assert.equal(Object.hasOwn(persisted, 'rcloneBinary'), false);
+
+  await store.writeServerSettings(Object.assign({}, settings, {
+    rclonePath: path.join(root, 'workspace', 'write-evil.exe'),
+    rcloneBinary: { mode: 'external' }
+  }));
+  const rewritten = JSON.parse(fs.readFileSync(serverPath, 'utf8'));
+  assert.equal(Object.hasOwn(rewritten, 'rclonePath'), false);
+  assert.equal(Object.hasOwn(rewritten, 'rcloneBinary'), false);
 });
 
 test('the dedicated internal build stages a short-lived bootstrap resource without changing public build settings', async (t) => {

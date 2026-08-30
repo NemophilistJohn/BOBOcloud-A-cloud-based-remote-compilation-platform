@@ -7,8 +7,7 @@ async function beforePack(context, dependencies = {}) {
   const build = dependencies.buildRenderer || buildRenderer;
   await build({ mode: 'production' });
   const platform = context && context.electronPlatformName;
-  if (platform === 'win32') return null;
-  if (platform !== 'darwin' && platform !== 'linux') {
+  if (platform !== 'win32' && platform !== 'darwin' && platform !== 'linux') {
     throw new Error('Unsupported electron-builder platform for rclone packaging: ' + String(platform));
   }
 

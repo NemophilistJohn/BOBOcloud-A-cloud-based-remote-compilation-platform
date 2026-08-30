@@ -47,7 +47,7 @@ test('saving local sync preferences preserves active cloud session lifecycle', a
       const config = {
         ip: 'compiler.example', user: 'tester', pass: 'secret', apiKey: '',
         secureTransport: false, httpPort: 3100, wsPort: 3101, dapChildWsPort: 3102,
-        certificateFingerprint: '', rclonePath: '', syncInterval: 30000, setupCompleted: true
+        certificateFingerprint: '', syncInterval: 30000, setupCompleted: true
       };
       await window.api.writeServerSettings(config);
       state.serverSettings = await window.api.readServerSettings();

@@ -64,8 +64,10 @@ const EXPECTED_IPC = new Map([
   ['rclone:pull', 'handle'],
   ['pick-local-mapping', 'handle'],
   ['local-path-info', 'handle'],
+  ['rclone:list-binaries', 'handle'],
+  ['rclone:get-selection', 'handle'],
+  ['rclone:select-binary', 'handle'],
   ['rclone:check-version', 'handle'],
-  ['rclone:find-path', 'handle'],
   ['ai-chat-request', 'handle'],
   ['ai-cancel-stream', 'handle'],
   ['ai-inline-cancel', 'handle'],
@@ -218,7 +220,7 @@ test('main.js is a composition root and IPC ownership is complete and unique', (
 
   for (const moduleName of [
     'settings-store', 'window-state', 'workspace', 'workspace-settings', 'ai', 'lsp', 'dap', 'terminal', 'auth',
-    'diagnostics', 'rclone-ipc', 'language-packs', 'plugins', 'marketplace', 'package-center', 'menu'
+      'diagnostics', 'rclone-ipc', 'rclone-binary-manager', 'rclone-service', 'local-directory-authority', 'language-packs', 'plugins', 'marketplace', 'package-center', 'menu'
   ]) {
     assert.match(composition, new RegExp("require\\('./main/" + moduleName.replace('-', '\\-') + "'\\)"), moduleName + ' is composed');
   }
@@ -287,7 +289,7 @@ test('release packaging always rebuilds a production renderer and packages only 
       prepareRclone: async () => calls.push('rclone')
     }
   );
-  assert.deepEqual(calls, ['renderer:production']);
+  assert.deepEqual(calls, ['renderer:production', 'rclone']);
 
   const packageJson = JSON.parse(read('package.json'));
   assert.ok(packageJson.build.files.includes('renderer-dist/'));

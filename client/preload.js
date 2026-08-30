@@ -134,8 +134,10 @@ contextBridge.exposeInMainWorld('api', {
   // Rclone operations (Layer 3 → Layer 2 IPC bridge)
   rcloneSync: (payload) => ipcRenderer.invoke('rclone:sync', payload),
   rclonePull: (payload) => ipcRenderer.invoke('rclone:pull', payload),
-  rcloneCheckVersion: (rclonePath) => ipcRenderer.invoke('rclone:check-version', rclonePath),
-  rcloneFindPath: () => ipcRenderer.invoke('rclone:find-path'),
+  rcloneListBinaries: () => ipcRenderer.invoke('rclone:list-binaries'),
+  rcloneGetSelection: () => ipcRenderer.invoke('rclone:get-selection'),
+  rcloneSelectBinary: (payload) => ipcRenderer.invoke('rclone:select-binary', payload),
+  rcloneCheckVersion: () => ipcRenderer.invoke('rclone:check-version'),
   onRcloneProgress: (operationId, cb) => {
     // Backward compatibility for callers that do not need operation scoping.
     if (typeof operationId === 'function') {
@@ -158,7 +160,7 @@ contextBridge.exposeInMainWorld('api', {
     if (typeof dispose === 'function') dispose();
   },
   pickLocalMapping: () => ipcRenderer.invoke('pick-local-mapping'),
-  localPathInfo: (path) => ipcRenderer.invoke('local-path-info', path),
+	localPathInfo: (path, grantId) => ipcRenderer.invoke('local-path-info', { path, grantId }),
 	writeTeamMapping: (payload) => ipcRenderer.invoke('write-team-mapping', payload),
 
   onThemeOpenPicker: (cb) => subscribe('theme-open-picker', cb),

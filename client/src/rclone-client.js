@@ -6,8 +6,7 @@
 (function(global) {
   var BOBO = global.BOBO || {};
   global.BOBO = BOBO;
-  var S = BOBO.state;
-
+  var S = BOBO.state || {};
   // 与 rclone.js DEFAULT_EXCLUDES 保持一致（渲染进程无法 require 主进程模块）
   var DEFAULT_EXCLUDES = [
     '**/target/**', '**/.git/**', '**/node_modules/**',
@@ -27,6 +26,10 @@
 
   async function runOperation(kind, opts) {
     opts = opts || {};
+    var requestedLocalPath = kind === 'sync' ? opts.src : opts.dest;
+    if (!opts.localGrant && requestedLocalPath && requestedLocalPath !== S.workspaceRoot) {
+      throw new Error('The requested rclone path is not the active workspace');
+    }
     var operationId = nextOperationId(kind);
     activeOperationIds.add(operationId);
     var disposeProgress = function() {};
@@ -40,13 +43,16 @@
 
     var payload = {
       operationId: operationId,
-      rclonePath: S.serverSettings ? S.serverSettings.rclonePath : null,
       remotePath: opts.remotePath,
-      excludes: opts.excludes || DEFAULT_EXCLUDES
+      excludes: opts.excludes || DEFAULT_EXCLUDES,
+      localScope: opts.localGrant
+        ? { type: 'mapping', grantId: opts.localGrant }
+        : {
+            type: 'workspace',
+            rootPath: S.workspaceRoot,
+            workspaceIdentity: S.workspaceIdentity
+          }
     };
-    if (kind === 'sync') payload.src = opts.src;
-    else payload.dest = opts.dest;
-
     try {
       return kind === 'sync'
         ? await window.api.rcloneSync(payload)
@@ -71,12 +77,22 @@
       return runOperation('pull', opts);
     },
 
-    // checkVersion：检查 rclone 是否可用
-    checkVersion: async function(requestedPath) {
-      var rclonePath = arguments.length > 0
-        ? requestedPath
-        : (S.serverSettings ? S.serverSettings.rclonePath : null);
-      return await window.api.rcloneCheckVersion(rclonePath);
+    listBinaries: async function() {
+      return window.api.rcloneListBinaries();
+    },
+
+    getSelection: async function() {
+      return window.api.rcloneGetSelection();
+    },
+
+    selectBinary: async function(scanId, candidateId) {
+      return window.api.rcloneSelectBinary({ scanId: scanId, candidateId: candidateId });
+    },
+
+    // The main process owns the executable path; the renderer can only check
+    // whichever trusted selection is active.
+    checkVersion: async function() {
+      return window.api.rcloneCheckVersion();
     }
   };
 })(window);

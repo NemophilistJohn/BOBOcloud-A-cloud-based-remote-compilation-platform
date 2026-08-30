@@ -6,10 +6,14 @@
 
   // ──── Output logging (bounded, batched DOM appends + colored prefixes) ────
   var MAX_OUTPUT_LINES = 5000;
+  var MAX_DETAIL_LINES = 300;
   var pendingOutputLines = [];
   var outputFlushTimer = null;
   var outputFlushThreshold = 50;
   var renderedOutputCount = 0;
+  var renderedProgramCount = 0;
+  var renderedDetailCount = 0;
+  var omittedProgramCount = 0;
 
   function localizeServerError(message) {
     if (!message) return message;
@@ -120,6 +124,74 @@
     return linkified;
   }
 
+  function normalizeOutputKind(options) {
+    return options && options.kind === 'detail' ? 'detail' : 'program';
+  }
+
+  function trimPendingKind(kind, limit) {
+    var count = 0;
+    var removed = 0;
+    for (var i = 0; i < pendingOutputLines.length; i++) {
+      if (pendingOutputLines[i].kind === kind) count += 1;
+    }
+    for (var index = 0; count > limit && index < pendingOutputLines.length;) {
+      if (pendingOutputLines[index].kind === kind) {
+        pendingOutputLines.splice(index, 1);
+        count -= 1;
+        removed += 1;
+      } else {
+        index += 1;
+      }
+    }
+    return removed;
+  }
+
+  function removeOldestRendered(outputEl, kind) {
+    for (var i = 0; i < outputEl.childNodes.length; i++) {
+      var child = outputEl.childNodes[i];
+      if (child && child.getAttribute && child.getAttribute('data-output-kind') === kind) {
+        outputEl.removeChild(child);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function outputText(source, replacements) {
+    if (BOBO.i18n && typeof BOBO.i18n.t === 'function') return BOBO.i18n.t(source, replacements);
+    return String(source).replace(/\{([^}]+)\}/g, function(match, key) {
+      return replacements && replacements[key] !== undefined ? replacements[key] : match;
+    });
+  }
+
+  function updateOmissionMarker(outputEl) {
+    if (!outputEl) return;
+    var marker = null;
+    for (var i = 0; i < outputEl.childNodes.length; i++) {
+      var child = outputEl.childNodes[i];
+      if (child && child.getAttribute && child.getAttribute('data-output-omission') === 'true') {
+        marker = child;
+        break;
+      }
+    }
+    if (omittedProgramCount <= 0) {
+      if (marker) outputEl.removeChild(marker);
+      return;
+    }
+    if (!marker) {
+      marker = document.createElement('span');
+      marker.className = 'run-output-omission';
+      marker.setAttribute('data-output-kind', 'notice');
+      marker.setAttribute('data-output-omission', 'true');
+      if (typeof outputEl.insertBefore === 'function') outputEl.insertBefore(marker, outputEl.firstChild);
+      else outputEl.appendChild(marker);
+    }
+    marker.textContent = outputText('Earlier output omitted: {count} lines (latest {limit} kept).', {
+      count: omittedProgramCount,
+      limit: MAX_OUTPUT_LINES
+    });
+  }
+
   function flushOutputLines() {
     var outputEl = document.getElementById('run-log');
     var containerEl = document.getElementById('panel-output');
@@ -127,6 +199,9 @@
     if (outputEl && renderedOutputCount > 0 && outputEl.childNodes.length === 0) {
       pendingOutputLines = [];
       renderedOutputCount = 0;
+      renderedProgramCount = 0;
+      renderedDetailCount = 0;
+      omittedProgramCount = 0;
       return;
     }
     if (!outputEl || pendingOutputLines.length === 0) return;
@@ -137,18 +212,33 @@
     pendingOutputLines = [];
     var fragment = document.createDocumentFragment();
     for (var i = 0; i < batch.length; i++) {
+      var record = batch[i];
       var line = document.createElement('span');
-      line.className = 'run-output-line';
+      line.className = 'run-output-line' + (record.kind === 'detail' ? ' run-output-detail' : '');
+      line.setAttribute('data-output-kind', record.kind);
+      if (record.stage) line.setAttribute('data-output-stage', record.stage);
+      if (record.raw && record.raw !== record.text) {
+        line.setAttribute('title', record.raw);
+        line.setAttribute('aria-label', record.raw);
+        line.setAttribute('tabindex', '0');
+      }
       // colorizeMessage escapes remote output before adding known markup.
-      line.innerHTML = colorizeMessage(batch[i]);
+      line.innerHTML = colorizeMessage(record.text);
       line.appendChild(document.createTextNode('\n'));
       fragment.appendChild(line);
+      if (record.kind === 'detail') renderedDetailCount += 1;
+      else renderedProgramCount += 1;
     }
     outputEl.appendChild(fragment);
 
-    while (outputEl.childNodes.length > MAX_OUTPUT_LINES) {
-      outputEl.removeChild(outputEl.firstChild);
+    while (renderedProgramCount > MAX_OUTPUT_LINES && removeOldestRendered(outputEl, 'program')) {
+      renderedProgramCount -= 1;
+      omittedProgramCount += 1;
     }
+    while (renderedDetailCount > MAX_DETAIL_LINES && removeOldestRendered(outputEl, 'detail')) {
+      renderedDetailCount -= 1;
+    }
+    updateOmissionMarker(outputEl);
     renderedOutputCount = outputEl.childNodes.length;
 
     // Click delegation for compiler error links (bound once)
@@ -188,11 +278,13 @@
     outputFlushTimer = setTimeout(flushOutputLines, 200);
   }
 
-  BOBO.updateRunOutput = function(message) {
+  BOBO.updateRunOutput = function(message, options) {
     var outputEl = document.getElementById('run-log');
     if (outputEl && renderedOutputCount > 0 && outputEl.childNodes.length === 0) {
       pendingOutputLines = [];
       renderedOutputCount = 0;
+      renderedProgramCount = 0;
+      renderedDetailCount = 0;
     }
     if (!S.runSessionTimestamp) {
       S.runSessionTimestamp = new Date().toLocaleTimeString();
@@ -206,13 +298,20 @@
     }
     var prefix = S.showTimestampNextLine ? '[' + S.runSessionTimestamp + '] ' : '';
     S.showTimestampNextLine = false;
+    var kind = normalizeOutputKind(options);
+    var stage = options && options.stage ? String(options.stage) : '';
+    var raw = options && options.raw ? String(options.raw) : '';
     var messageLines = String(message).replace(/\r\n?/g, '\n').split('\n');
     for (var i = 0; i < messageLines.length; i++) {
-      pendingOutputLines.push((i === 0 ? prefix : '') + messageLines[i]);
+      pendingOutputLines.push({
+        text: (i === 0 ? prefix : '') + messageLines[i],
+        kind: kind,
+        stage: stage,
+        raw: raw
+      });
     }
-    if (pendingOutputLines.length > MAX_OUTPUT_LINES) {
-      pendingOutputLines.splice(0, pendingOutputLines.length - MAX_OUTPUT_LINES);
-    }
+    omittedProgramCount += trimPendingKind('program', MAX_OUTPUT_LINES);
+    trimPendingKind('detail', MAX_DETAIL_LINES);
 
     // Render the first line immediately so an external clear cannot race an
     // invisible initial batch; subsequent high-volume output stays batched.
@@ -230,9 +329,34 @@
     var outputEl = document.getElementById('run-log');
     if (outputEl) outputEl.textContent = '';
     renderedOutputCount = 0;
+    renderedProgramCount = 0;
+    renderedDetailCount = 0;
+    omittedProgramCount = 0;
     S.runLogInitialized = true;
     S.runSessionTimestamp = new Date().toLocaleTimeString();
     S.showTimestampNextLine = true;
+    if (BOBO.runOutput && typeof BOBO.runOutput.clearTranscript === 'function') {
+      BOBO.runOutput.clearTranscript();
+    }
+  };
+
+  BOBO.clearRunOutputDetails = function() {
+    pendingOutputLines = pendingOutputLines.filter(function(record) { return record.kind !== 'detail'; });
+    var outputEl = document.getElementById('run-log');
+    if (outputEl) {
+      for (var i = outputEl.childNodes.length - 1; i >= 0; i--) {
+        var child = outputEl.childNodes[i];
+        if (child && child.getAttribute && child.getAttribute('data-output-kind') === 'detail') {
+          outputEl.removeChild(child);
+        }
+      }
+      renderedOutputCount = outputEl.childNodes.length;
+    }
+    renderedDetailCount = 0;
+  };
+
+  BOBO.refreshRunOutputOmission = function() {
+    updateOmissionMarker(document.getElementById('run-log'));
   };
 
   // ──── HTTP communication ────

@@ -11,6 +11,7 @@ const { createLspController } = require('./main/lsp');
 const { createAuthController } = require('./main/auth');
 const { registerDiagnosticsIpc } = require('./main/diagnostics');
 const { registerRcloneIpc } = require('./main/rclone-ipc');
+const { createRcloneBinaryManager } = require('./main/rclone-binary-manager'), { createRcloneService } = require('./main/rclone-service'), { createLocalDirectoryAuthority } = require('./main/local-directory-authority');
 const { createLanguagePackController } = require('./main/language-packs');
 const { createMenuController } = require('./main/menu');
 const { createTasksController } = require('./main/tasks');
@@ -21,10 +22,9 @@ const { createNavigationSecurity } = require('./main/navigation-security');
 const { createPluginController } = require('./main/plugins');
 const { createMarketplaceController } = require('./main/marketplace');
 const { createPackageCenterController } = require('./main/package-center');
-
-let window = null, menu = null;
-const getWindow = () => window;
-const settings = createSettingsStore({ app, rclone });
+let window = null, menu = null; const getWindow = () => window;
+const settings = createSettingsStore({ app }), rcloneBinaries = createRcloneBinaryManager({ app, rclone }), localDirectories = createLocalDirectoryAuthority({ assertSafeLocalRoot: rcloneBinaries.assertSafeLocalRoot });
+const rcloneService = createRcloneService({ rclone, binaryManager: rcloneBinaries, settings });
 const secureTransport = createSecureTransportGuard();
 const navigationSecurity = createNavigationSecurity({ shell, trustedRendererPath: path.join(__dirname, 'index.html') });
 const lsp = createLspController({ ipcMain, getWindow, settings });
@@ -42,6 +42,7 @@ const workspace = createWorkspaceController({
   getWindow,
   settings,
   t: languagePacks.t,
+  assertSafeLocalRoot: rcloneBinaries.assertSafeLocalRoot, localDirectoryAuthority: localDirectories,
   disposeLsp: disposeRemoteEditorServices,
   stopTerminal: (reason) => terminal ? terminal.stop(reason) : { state: 'idle' },
   beforeWorkspaceChange: (reason) => packageCenter ? packageCenter.beginWorkspaceTransition(reason) : [],
@@ -68,7 +69,8 @@ const marketplace = createMarketplaceController({ app, ipcMain, getWindow, plugi
 packageCenter = createPackageCenterController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity,
   onFilesChanged: files => workspace.notifyExternalFileChanges(files), userDataPath: app.getPath('userData') });
 const auth = createAuthController({ ipcMain, settings, disposeLsp: disposeRemoteEditorServices,
-  onStateChanged: () => { if (menu) menu.rebuild(); }, onServerSettingsWritten: secureTransport.update });
+  onStateChanged: () => { if (menu) menu.rebuild(); },
+  onServerSettingsWritten: (value) => { secureTransport.update(value); rcloneService.configureInBackground(value); } });
 menu = createMenuController({ Menu, dialog, getWindow, languagePacks, getAuthState: auth.getState,
   pickAndOpenWorkspace: workspace.pickAndOpenWorkspace });
 const tasks = createTasksController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity });
@@ -88,8 +90,8 @@ plugins.registerIpc();
 marketplace.registerIpc();
 packageCenter.registerIpc();
 registerDiagnosticsIpc({ ipcMain, settings });
-registerRcloneIpc({ ipcMain, BrowserWindow, dialog, getWindow, rclone });
-
+registerRcloneIpc({ ipcMain, BrowserWindow, dialog, getWindow, service: rcloneService, t: languagePacks.t,
+  getWorkspaceIdentity: workspace.getIdentity, localDirectoryAuthority: localDirectories });
 function createWindow() {
   const savedState = windowState.load();
   const browserWindowOptions = { width: savedState ? savedState.width : 1280, height: savedState ? savedState.height : 860,
@@ -104,7 +106,6 @@ function createWindow() {
   navigationSecurity.protectWindow(window);
   if (savedState && savedState.isMaximized) window.maximize();
   window.loadFile(path.join(__dirname, 'index.html'));
-
   let saveTimer = null;
   const saveSoon = () => {
     clearTimeout(saveTimer);
@@ -147,7 +148,6 @@ function createWindow() {
   });
   menu.rebuild();
 }
-
 app.whenReady().then(async () => {
   languagePacks.initialize();
   try {
@@ -158,7 +158,7 @@ app.whenReady().then(async () => {
   }
   navigationSecurity.protectSession(electronSession.defaultSession);
   electronSession.defaultSession.setCertificateVerifyProc((request, callback) => callback(secureTransport.verify(request)));
-  settings.readServerSettings().then(secureTransport.update).catch(() => {});
+  settings.readServerSettings().then((value) => { secureTransport.update(value); rcloneService.configureInBackground(value); }).catch(() => {});
   lsp.initializeRetentionPolicy();
   createWindow();
 });

@@ -214,17 +214,24 @@ test('rclone operations isolate progress by operation id and dispose exactly one
   const pullLines = [];
   const windowObject = {
     api,
-    BOBO: { state: { serverSettings: { rclonePath: 'rclone-bin' } } }
+    BOBO: { state: { serverSettings: {}, workspaceRoot: 'a', workspaceIdentity: 7 } }
   };
   loadScript('src/rclone-client.js', windowObject);
 
   const syncPromise = windowObject.BOBO.rclone.sync({ src: 'a', remotePath: 'ra', onProgress: line => syncLines.push(line) });
-  const pullPromise = windowObject.BOBO.rclone.pull({ dest: 'b', remotePath: 'rb', onProgress: line => pullLines.push(line) });
+  const pullPromise = windowObject.BOBO.rclone.pull({ dest: 'a', remotePath: 'rb', onProgress: line => pullLines.push(line) });
   const syncId = invocations[0].payload.operationId;
   const pullId = invocations[1].payload.operationId;
   assert.notEqual(syncId, pullId);
   assert.equal(invocations[0].payload.operationId, syncId);
   assert.equal(invocations[1].payload.operationId, pullId);
+  assert.equal(Object.hasOwn(invocations[0].payload, 'rclonePath'), false);
+  assert.equal(Object.hasOwn(invocations[1].payload, 'rclonePath'), false);
+  assert.deepEqual(JSON.parse(JSON.stringify(invocations[0].payload.localScope)), {
+    type: 'workspace', rootPath: 'a', workspaceIdentity: 7
+  });
+  assert.equal(Object.hasOwn(invocations[0].payload, 'src'), false);
+  assert.equal(Object.hasOwn(invocations[1].payload, 'dest'), false);
 
   listeners.get(syncId).callback('sync only', { operationId: syncId, line: 'sync only' });
   listeners.get(pullId).callback('pull only', { operationId: pullId, line: 'pull only' });
@@ -273,7 +280,10 @@ test('run output appends escaped batches without rewriting existing DOM', async 
 
   for (let i = 100; i < 5050; i++) windowObject.BOBO.updateRunOutput('line-' + i);
   await new Promise(resolve => setTimeout(resolve, 220));
-  assert.equal(runLog.childNodes.length, 5000);
+  assert.equal(runLog.childNodes.filter(node => node.getAttribute('data-output-kind') === 'program').length, 5000);
+  const omission = runLog.childNodes.find(node => node.getAttribute('data-output-omission') === 'true');
+  assert.ok(omission);
+  assert.match(omission.textContent, /Earlier output omitted: 50 lines/);
   assert.notEqual(runLog.firstChild, firstNode, 'oldest output should be evicted at the hard limit');
 });
 

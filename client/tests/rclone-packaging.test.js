@@ -51,9 +51,17 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => fsp.rm(directory, { recursive: true, force: true })));
 });
 
-test('pins the four rclone v1.64.0 archives and official SHA256 values', () => {
+test('pins the six desktop rclone v1.64.0 archives and official SHA256 values', () => {
   assert.equal(RCLONE_VERSION, '1.64.0');
   assert.deepEqual(RCLONE_TARGETS, {
+    'win32-x64': {
+      archiveName: 'rclone-v1.64.0-windows-amd64.zip',
+      sha256: 'b1251cfdcbc44356e001057524c3e2f7be56d94546273d10143bfa1148c155ab'
+    },
+    'win32-arm64': {
+      archiveName: 'rclone-v1.64.0-windows-arm64.zip',
+      sha256: '65673e9110f58e5f801f6c7256cb09307466f22e94645b0de36f510141d02be8'
+    },
     'darwin-x64': {
       archiveName: 'rclone-v1.64.0-osx-amd64.zip',
       sha256: '9ef83833296876f3182b87030b4f2e851b56621bad4ca4d7a14753553bb8b640'
@@ -73,13 +81,14 @@ test('pins the four rclone v1.64.0 archives and official SHA256 values', () => {
   });
   assert.equal(resolveTarget('darwin', 'arm64').url, 'https://downloads.rclone.org/v1.64.0/rclone-v1.64.0-osx-arm64.zip');
   assert.equal(resolveTarget('linux', 'x64').entryName, 'rclone-v1.64.0-linux-amd64/rclone');
+  assert.equal(resolveTarget('win32', 'x64').entryName, 'rclone-v1.64.0-windows-amd64/rclone.exe');
 });
 
 test('normalizes electron-builder numeric architectures and rejects unsupported targets', () => {
   assert.equal(normalizeArch(1), 'x64');
   assert.equal(normalizeArch(3), 'arm64');
   assert.throws(() => normalizeArch(0), /Unsupported rclone architecture/);
-  assert.throws(() => resolveTarget('win32', 'x64'), /Unsupported rclone platform/);
+  assert.throws(() => resolveTarget('freebsd', 'x64'), /Unsupported rclone platform/);
 });
 
 test('verifies files with SHA256 and reports the expected and actual digest', async () => {
@@ -210,7 +219,7 @@ test('prepareRclone rejects a corrupted cached executable', async () => {
   await assert.rejects(prepareRclone(options), /cached rclone executable checksum mismatch/);
 });
 
-test('electron-builder hook prepares only darwin and linux with the context architecture', async () => {
+test('electron-builder hook prepares every supported desktop platform with the context architecture', async () => {
   const calls = [];
   const prepare = async (target) => {
     calls.push(target);
@@ -218,15 +227,16 @@ test('electron-builder hook prepares only darwin and linux with the context arch
   };
   assert.equal(await beforePack({ electronPlatformName: 'darwin', arch: 1 }, { prepareRclone: prepare }), '/cache/darwin/rclone');
   assert.equal(await beforePack({ electronPlatformName: 'linux', arch: 3 }, { prepareRclone: prepare }), '/cache/linux/rclone');
-  assert.equal(await beforePack({ electronPlatformName: 'win32', arch: 1 }, { prepareRclone: prepare }), null);
+  assert.equal(await beforePack({ electronPlatformName: 'win32', arch: 1 }, { prepareRclone: prepare }), '/cache/win32/rclone');
   assert.deepEqual(calls, [
     { platform: 'darwin', arch: 1 },
-    { platform: 'linux', arch: 3 }
+    { platform: 'linux', arch: 3 },
+    { platform: 'win32', arch: 1 }
   ]);
   await assert.rejects(beforePack({ electronPlatformName: 'freebsd', arch: 1 }, { prepareRclone: prepare }), /Unsupported electron-builder platform/);
 });
 
-test('electron-builder maps both macOS and Linux architectures to the prepared resource', () => {
+test('electron-builder maps Windows, macOS and Linux to prepared resources', () => {
   assert.equal(packageJson.build.beforePack, 'scripts/before-pack.js');
   for (const [platform, config] of [['darwin', packageJson.build.mac], ['linux', packageJson.build.linux]]) {
     for (const target of config.target) assert.deepEqual(target.arch, ['x64', 'arm64']);
@@ -235,6 +245,10 @@ test('electron-builder maps both macOS and Linux architectures to the prepared r
       to: 'rclone/rclone'
     }]);
   }
+  assert.deepEqual(packageJson.build.win.extraResources, [{
+    from: 'node_modules/.cache/bobocloud-rclone/v1.64.0/win32-${arch}/rclone.exe',
+    to: 'rclone/rclone.exe'
+  }]);
 });
 
 test('manual macOS ZIP adds the prepared rclone executable with mode 0755', async () => {

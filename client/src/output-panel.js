@@ -30,6 +30,9 @@
         if (panel) panel.classList.add('active');
 
         S.activePanel = panelName;
+        if (BOBO.runOutput && typeof BOBO.runOutput.setPanelActive === 'function') {
+          BOBO.runOutput.setPanelActive(panelName === 'output');
+        }
 
         // The terminal owns its own prompt and focus through xterm.js.
         if (panelName === 'terminal') {
@@ -55,8 +58,13 @@
     if (clearBtn) {
       clearBtn.addEventListener('click', function() {
         if (S.activePanel === 'output') {
-          document.getElementById('run-log').textContent = '';
-          S.runLogInitialized = true;
+          if (typeof BOBO.clearRunOutput === 'function') BOBO.clearRunOutput();
+          else {
+            document.getElementById('run-log').textContent = '';
+            S.runLogInitialized = true;
+            if (BOBO.runOutput && typeof BOBO.runOutput.clearTranscript === 'function') BOBO.runOutput.clearTranscript();
+            else if (BOBO.runOutput && typeof BOBO.runOutput.clear === 'function') BOBO.runOutput.clear();
+          }
         } else if (S.activePanel === 'terminal') {
           if (BOBO.terminal && BOBO.terminal.clear) BOBO.terminal.clear();
         } else if (S.activePanel === 'debug') {
@@ -65,6 +73,10 @@
           if (BOBO.taskProblemMatcher && BOBO.taskProblemMatcher.clear) BOBO.taskProblemMatcher.clear();
         }
       });
+    }
+
+    if (BOBO.runOutput && typeof BOBO.runOutput.setPanelActive === 'function') {
+      BOBO.runOutput.setPanelActive((S.activePanel || 'output') === 'output');
     }
 
   }

@@ -248,8 +248,44 @@ html, body {
   font-family: var(--font-mono);
   font-size: var(--text-base); line-height: var(--leading-normal);
   overflow: auto;
+  container: run-output / inline-size;
 }
-#run-log { white-space: pre-wrap; word-wrap: break-word; }
+#run-log { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.run-output-omission { display: block; padding: 2px 0; color: var(--text-secondary); font-size: var(--text-sm); font-style: italic; }
+.run-output-detail { display: none; color: var(--text-secondary); font-size: var(--text-sm); }
+#run-log.show-run-details .run-output-detail { display: inline; }
+.run-summary {
+  position: sticky; top: calc(-1 * var(--space-2)); z-index: 2;
+  min-height: 34px; margin: calc(-1 * var(--space-2)) calc(-1 * var(--space-2)) var(--space-2);
+  display: grid; grid-template-columns: 8px minmax(90px, auto) minmax(0, 1fr) auto;
+  align-items: center; gap: var(--space-2); padding: 5px var(--space-3);
+  border-bottom: 1px solid var(--border-default); background: var(--bg-surface);
+  font-family: var(--font-ui); font-size: var(--text-xs);
+}
+.run-summary[hidden] { display: none; }
+.run-summary-indicator { width: 7px; height: 7px; border-radius: 50%; background: var(--blue); }
+.run-summary[data-state="running"] .run-summary-indicator { box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent); animation: run-summary-pulse 1.4s ease-in-out infinite; }
+.run-summary[data-state="completed"] .run-summary-indicator { background: var(--green); }
+.run-summary[data-state="failed"] .run-summary-indicator { background: var(--red); }
+.run-summary[data-state="stopped"] .run-summary-indicator { background: var(--yellow); }
+.run-summary-title { max-width: 30ch; overflow: hidden; color: var(--text-primary); font-weight: var(--weight-semibold); text-overflow: ellipsis; white-space: nowrap; }
+.run-summary-phase { min-width: 0; overflow: hidden; color: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap; }
+.run-summary[data-state="failed"] .run-summary-phase { color: var(--red); }
+.run-summary[data-state="completed"] .run-summary-phase { color: var(--green); }
+.run-summary-meta { color: var(--text-secondary); white-space: nowrap; }
+#run-details-toggle { position: relative; width: 26px; height: 24px; display: inline-grid; place-items: center; padding: 3px !important; }
+#run-details-toggle[hidden] { display: none; }
+#run-details-toggle[aria-expanded="true"] { color: var(--text-primary); background: var(--bg-hover); }
+#run-details-toggle svg { width: 16px; height: 16px; }
+.run-details-count { position: absolute; top: 0; right: 0; min-width: 12px; height: 12px; padding: 0 2px; border-radius: 6px; background: var(--blue); color: var(--bg-deep); font-size: 8px; font-weight: var(--weight-bold); line-height: 12px; text-align: center; }
+@keyframes run-summary-pulse { 50% { opacity: 0.45; } }
+@container run-output (max-width: 480px) {
+  .run-summary { grid-template-columns: 8px minmax(70px, 38%) minmax(0, 1fr); }
+  .run-summary-meta { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-summary[data-state="running"] .run-summary-indicator { animation: none; }
+}
 
 /* Task output diagnostics stay separate from compiler/LSP markers by owner,
    but share the normal bottom-panel affordance for scan-and-jump workflows. */

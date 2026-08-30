@@ -1,10 +1,9 @@
 // rclone.js - Layer 1: Rclone 核心模块（主进程，纯 Node.js）
 //
 // 职责：
-//   - 路径规整（单一来源，合并原 main.js 内联 + utils.js 两份实现）
 //   - SFTP 配置管理（ensureConfig）
 //   - 同步执行（spawn 流式 + 错误归一化 + 重试）
-//   - 版本检查 / PATH 查找
+//   - 对主进程受管 rclone 的精确版本检查
 //
 // 不依赖 Electron，可独立测试。
 
@@ -17,8 +16,6 @@ const path = require('path');
 // ============================================================
 
 const isWindows = process.platform === 'win32';
-const isMacOS = process.platform === 'darwin';
-
 const EXE_NAME = isWindows ? 'rclone.exe' : 'rclone';
 const REMOTE_NAME = 'cloud-compiler-sftp';
 
@@ -30,177 +27,54 @@ const DEFAULT_EXCLUDES = [
 
 const DEFAULT_TIMEOUT_MS = 300000;     // 5 分钟
 const DEFAULT_RETRIES = 1;
-const executableCache = new Map();
 const STDERR_TAIL_SIZE = 8192;         // 报错时保留的 stderr 尾部
 
-const CONFIG_DIR = (function() {
-  if (isWindows) return path.join(process.env.APPDATA || '', 'rclone');
-  if (isMacOS) return path.join(process.env.HOME || '', 'Library', 'Application Support', 'rclone');
-  return path.join(process.env.HOME || '', '.config', 'rclone');
-})();
-const EXECUTABLE_CACHE_DIR = path.join(CONFIG_DIR, 'bobocloud-bin');
+function requireManagedExecutable(executablePath) {
+  if (typeof executablePath !== 'string' || !path.isAbsolute(executablePath)) {
+    throw new Error('A managed absolute rclone executable path is required');
+  }
+  var stat = fs.statSync(executablePath);
+  if (!stat.isFile()) throw new Error('The managed rclone executable is not a regular file');
+  return executablePath;
+}
 
-// ============================================================
-// 路径规整（合并原 main.js 内联 + utils.js 两份实现）
-// ============================================================
-
-function stripWrappingQuotes(value) {
-  var trimmed = String(value || '').trim();
-  if (trimmed.length >= 2) {
-    var first = trimmed.charAt(0);
-    var last = trimmed.charAt(trimmed.length - 1);
-    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-      return trimmed.slice(1, -1).trim();
+function requireManagedConfig(configPath, createParent) {
+  if (typeof configPath !== 'string' || !path.isAbsolute(configPath)) {
+    throw new Error('An app-managed absolute rclone config path is required');
+  }
+  const parent = path.dirname(configPath);
+  if (createParent) fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const parentStat = fs.lstatSync(parent);
+  if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) {
+    throw new Error('The app-managed rclone config directory is unsafe');
+  }
+  if (fs.existsSync(configPath)) {
+    const configStat = fs.lstatSync(configPath);
+    if (!configStat.isFile() || configStat.isSymbolicLink()) {
+      throw new Error('The app-managed rclone config is unsafe');
     }
+  } else if (!createParent) {
+    throw new Error('The app-managed rclone config is missing');
   }
-  return trimmed;
-}
-
-function expandWindowsEnvironmentVariables(value) {
-  if (!isWindows) return value;
-  return value.replace(/%([^%]+)%/g, function(match, name) {
-    return Object.prototype.hasOwnProperty.call(process.env, name) ? process.env[name] : match;
-  });
-}
-
-function normalizeRequestedPath(rclonePath) {
-  var exe = expandWindowsEnvironmentVariables(stripWrappingQuotes(rclonePath));
-  if (!exe) return '';
-
-  // A directory named "rclone" used to be mistaken for an extension-less
-  // executable. Check the filesystem before applying filename heuristics.
-  try {
-    if (fs.existsSync(exe) && fs.statSync(exe).isDirectory()) {
-      return path.join(exe, EXE_NAME);
-    }
-  } catch (error) {
-    // Continue with syntax-based normalization; probing reports the real error.
-  }
-
-  var lastPart = exe.split(/[/\\]/).pop();
-  if (exe.endsWith('/') || exe.endsWith('\\')) {
-    return exe + EXE_NAME;
-  }
-  if (lastPart.toLowerCase() === 'rclone' && isWindows) {
-    return exe + '.exe';
-  }
-  return exe;
-}
-
-function executableCandidates(rclonePath) {
-  var candidates = [];
-  var seen = new Set();
-
-  function add(candidatePath, source) {
-    if (!candidatePath) return;
-    var key = isWindows ? candidatePath.toLowerCase() : candidatePath;
-    if (seen.has(key)) return;
-    seen.add(key);
-    candidates.push({ path: candidatePath, source: source });
-  }
-
-  var configured = normalizeRequestedPath(rclonePath);
-  if (configured) add(configured, 'configured');
-
-  if (process.resourcesPath) {
-    add(path.join(process.resourcesPath, 'rclone', EXE_NAME), 'bundled');
-  }
-  add(path.join(__dirname, 'rclone', EXE_NAME), 'development');
-  add(EXE_NAME, 'path');
-  return candidates;
-}
-
-function isExecutableFile(candidatePath) {
-  try {
-    return fs.statSync(candidatePath).isFile();
-  } catch (error) {
-    return false;
-  }
-}
-
-function ensureExecutableCandidate(candidate) {
-  if (isWindows || candidate.source !== 'bundled' || !isExecutableFile(candidate.path)) return candidate;
-  var sourceStat = fs.statSync(candidate.path);
-  if ((sourceStat.mode & 0o111) !== 0) return candidate;
-
-  // Cross-platform packages built on Windows can contain the correct Unix
-  // binary without an executable mode. Copy it to user-writable storage so
-  // the packaged application can repair the mode without mutating itself.
-
-  fs.mkdirSync(EXECUTABLE_CACHE_DIR, { recursive: true });
-  var cachedPath = path.join(EXECUTABLE_CACHE_DIR, EXE_NAME + '-' + sourceStat.size + '-' + Math.floor(sourceStat.mtimeMs));
-  var cacheNeedsRefresh = true;
-  try {
-    cacheNeedsRefresh = fs.statSync(cachedPath).size !== sourceStat.size;
-  } catch (error) {}
-  if (cacheNeedsRefresh) {
-    var temporaryPath = cachedPath + '.tmp-' + process.pid + '-' + Date.now();
-    try {
-      fs.copyFileSync(candidate.path, temporaryPath);
-      fs.chmodSync(temporaryPath, 0o755);
-      fs.renameSync(temporaryPath, cachedPath);
-    } finally {
-      try { fs.unlinkSync(temporaryPath); } catch (error) {}
-    }
-  } else {
-    fs.chmodSync(cachedPath, 0o755);
-  }
-  return { path: cachedPath, source: candidate.source };
-}
-
-function resolveExecutable(rclonePath) {
-  var candidates = executableCandidates(rclonePath);
-  var cacheKey = stripWrappingQuotes(rclonePath || '');
-  var cached = executableCache.get(cacheKey);
-  if (cached && (cached.source === 'path' || isExecutableFile(cached.path))) {
-    return {
-      path: cached.path,
-      source: cached.source,
-      candidates: candidates
-    };
-  }
-
-  for (var i = 0; i < candidates.length; i++) {
-    if (candidates[i].source !== 'path' && isExecutableFile(candidates[i].path)) {
-      var executable = ensureExecutableCandidate(candidates[i]);
-      return {
-        path: executable.path,
-        source: executable.source,
-        candidates: candidates
-      };
-    }
-  }
-
-  var pathCandidate = candidates.find(function(candidate) { return candidate.source === 'path'; });
-  return {
-    path: pathCandidate ? pathCandidate.path : EXE_NAME,
-    source: 'path',
-    candidates: candidates
-  };
-}
-
-function normalizePath(rclonePath) {
-  return resolveExecutable(rclonePath).path;
+  return configPath;
 }
 
 // ============================================================
 // 配置管理
 // ============================================================
 
-async function ensureConfig(settings) {
+async function ensureConfig(settings, executablePath, configPath) {
   if (!settings || !settings.ip || !settings.user) {
     return { success: false, error: 'missing ip or user in settings' };
   }
 
-  if (!fs.existsSync(CONFIG_DIR)) {
-    try {
-      fs.mkdirSync(CONFIG_DIR, { recursive: true });
-    } catch (error) {
-      return { success: false, error: 'failed to create rclone config dir: ' + error.message };
-    }
+  try {
+    configPath = requireManagedConfig(configPath, true);
+  } catch (error) {
+    return { success: false, error: error.message };
   }
 
-  var detected = await checkVersion(settings.rclonePath);
+  var detected = await checkVersion(executablePath, 'managed');
   if (!detected.available) {
     return {
       success: false,
@@ -212,6 +86,7 @@ async function ensureConfig(settings) {
 
   // 用 execFile + 参数数组执行，避免经 shell 解析带来的命令注入风险
   var args = [
+    '--config', configPath,
     'config', 'create', REMOTE_NAME, 'sftp',
     'host=' + settings.ip,
     'user=' + settings.user,
@@ -223,7 +98,7 @@ async function ensureConfig(settings) {
   args.push('--non-interactive');
 
   return new Promise(function(resolve) {
-    execFile(rcloneExecutable, args, { windowsHide: true }, function(error, stdout, stderr) {
+    execFile(rcloneExecutable, args, { windowsHide: true, timeout: 30000 }, function(error, stdout, stderr) {
       if (error) {
         console.error('[rclone] config create failed:', error.message);
         console.error('[rclone] stderr:', stderr);
@@ -277,16 +152,37 @@ function classifyError(error, stderr, timedOut) {
 // syncOnce 执行一次同步（无重试）
 function syncOnce(opts) {
   return new Promise(function(resolve) {
-    var exe = normalizePath(opts.rclonePath);
+    var exe;
+    try {
+      exe = requireManagedExecutable(opts.executablePath);
+    } catch (error) {
+      resolve({
+        success: false,
+        error: { type: 'EXECUTABLE_UNAVAILABLE', message: error.message },
+        stats: { durationMs: 0 }
+      });
+      return;
+    }
     var excludes = opts.excludes || DEFAULT_EXCLUDES;
     var timeoutMs = opts.timeoutMs || DEFAULT_TIMEOUT_MS;
     var onProgress = opts.onProgress;
+    var configPath;
+    try {
+      configPath = requireManagedConfig(opts.configPath, false);
+    } catch (error) {
+      resolve({
+        success: false,
+        error: { type: 'CONFIG_UNAVAILABLE', message: error.message },
+        stats: { durationMs: 0 }
+      });
+      return;
+    }
 
     var isPull = opts.direction === 'pull';
     var localPath = opts.src || opts.dest;
     var args = isPull
-      ? ['sync', REMOTE_NAME + ':' + opts.remotePath, localPath]
-      : ['sync', localPath, REMOTE_NAME + ':' + opts.remotePath];
+      ? ['--config', configPath, 'sync', REMOTE_NAME + ':' + opts.remotePath, localPath]
+      : ['--config', configPath, 'sync', localPath, REMOTE_NAME + ':' + opts.remotePath];
     for (var i = 0; i < excludes.length; i++) {
       args.push('--exclude', excludes[i]);
     }
@@ -405,91 +301,42 @@ function probeVersion(candidate) {
         return;
       }
 
+      var version = stdout ? stdout.split('\n')[0].trim() : '';
+      if (!/^rclone v(?:\d|\s)/i.test(version)) {
+        resolve({
+          available: false,
+          path: candidate.path,
+          source: candidate.source,
+          code: 'INVALID_RCLONE',
+          error: 'Executable did not identify itself as rclone'
+        });
+        return;
+      }
       resolve({
         available: true,
         path: candidate.path,
         source: candidate.source,
-        version: stdout ? stdout.split('\n')[0].trim() : null
+        version: version
       });
     });
   });
 }
 
-async function checkVersion(rclonePath) {
-  var candidates = executableCandidates(rclonePath);
-  var attempts = [];
-
-  for (var i = 0; i < candidates.length; i++) {
-    var candidate = candidates[i];
-    if (candidate.source !== 'path' && !isExecutableFile(candidate.path)) {
-      attempts.push({
-        path: candidate.path,
-        source: candidate.source,
-        code: 'ENOENT',
-        error: 'executable not found'
-      });
-      continue;
-    }
-
-    try {
-      candidate = ensureExecutableCandidate(candidate);
-    } catch (error) {
-      attempts.push({
-        path: candidate.path,
-        source: candidate.source,
-        code: error.code || null,
-        error: 'failed to prepare executable: ' + error.message
-      });
-      continue;
-    }
-
-    var result = await probeVersion(candidate);
-    if (result.available) {
-      executableCache.set(stripWrappingQuotes(rclonePath || ''), {
-        path: result.path,
-        source: result.source
-      });
-      result.attempts = attempts;
-      return result;
-    }
-    attempts.push({
-      path: result.path,
-      source: result.source,
-      code: result.code,
-      error: result.error
+async function checkVersion(executablePath, source) {
+  try {
+    return await probeVersion({
+      path: requireManagedExecutable(executablePath),
+      source: source || 'managed'
     });
+  } catch (error) {
+    return {
+      available: false,
+      path: typeof executablePath === 'string' ? executablePath : null,
+      source: source || 'managed',
+      code: error.code || null,
+      error: error.message
+    };
   }
-
-  var configuredFailed = attempts.some(function(attempt) {
-    return attempt.source === 'configured';
-  });
-  return {
-    available: false,
-    path: null,
-    source: null,
-    error: configuredFailed
-      ? 'Configured rclone is unavailable and no bundled or PATH fallback could be started'
-      : 'No bundled or PATH rclone executable could be started',
-    attempts: attempts
-  };
-}
-
-// ============================================================
-// PATH 查找
-// ============================================================
-
-async function findInPath() {
-  var cmd = isWindows ? 'where' : 'which';
-  return new Promise(function(resolve) {
-    execFile(cmd, ['rclone'], { windowsHide: true, timeout: 5000 }, function(error, stdout) {
-      if (error) {
-        resolve({ path: null, error: 'rclone not found in PATH' });
-      } else {
-        var found = stdout.trim().split('\n')[0].trim();
-        resolve({ path: found, error: null });
-      }
-    });
-  });
 }
 
 // ============================================================
@@ -502,14 +349,10 @@ module.exports = {
   DEFAULT_EXCLUDES: DEFAULT_EXCLUDES,
   DEFAULT_TIMEOUT_MS: DEFAULT_TIMEOUT_MS,
   DEFAULT_RETRIES: DEFAULT_RETRIES,
-  normalizeRequestedPath: normalizeRequestedPath,
-  executableCandidates: executableCandidates,
-  ensureExecutableCandidate: ensureExecutableCandidate,
-  resolveExecutable: resolveExecutable,
-  normalizePath: normalizePath,
+  requireManagedExecutable: requireManagedExecutable,
+  requireManagedConfig: requireManagedConfig,
   ensureConfig: ensureConfig,
   sync: sync,
   pull: pull,
-  checkVersion: checkVersion,
-  findInPath: findInPath
+  checkVersion: checkVersion
 };

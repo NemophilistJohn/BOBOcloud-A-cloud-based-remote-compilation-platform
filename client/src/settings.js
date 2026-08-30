@@ -9,6 +9,7 @@
   var activeTab = 'local';
   var previousFocus = null;
   var firstRunOpen = false;
+  var serverPaneLoaded = false;
 
   function isVisible(element) {
     if (!element || !global.getComputedStyle) return false;
@@ -88,6 +89,31 @@
     // so we just need to close the modal after save.
   }
 
+  function activateServerPane() {
+    if (!serverPaneLoaded) {
+      var ss = S.serverSettings || {};
+      var values = {
+        'server-ip': ss.ip || '',
+        'server-user': ss.user || '',
+        'server-pass': ss.pass || '',
+        'server-apikey': ss.apiKey || '',
+        'server-http-port': ss.httpPort || 3100,
+        'server-ws-port': ss.wsPort || 3101,
+        'server-dap-child-port': ss.dapChildWsPort || 3102,
+        'server-cert-fingerprint': ss.certificateFingerprint || '',
+        'sync-interval': !ss.syncInterval ? 30 : (ss.syncInterval >= 1000 ? Math.round(ss.syncInterval / 1000) : ss.syncInterval)
+      };
+      Object.keys(values).forEach(function(id) {
+        var control = document.getElementById(id);
+        if (control) control.value = values[id];
+      });
+      var secure = document.getElementById('server-secure-transport');
+      if (secure) secure.checked = ss.secureTransport === true;
+      serverPaneLoaded = true;
+    }
+    if (BOBO.rcloneSettings) setTimeout(function() { BOBO.rcloneSettings.open(); }, 0);
+  }
+
   function switchTab(tab) {
     activeTab = tab;
     var tabs = modal.querySelectorAll('.settings-tab');
@@ -110,6 +136,8 @@
     if (tab === 'workbench' && BOBO.workbench) BOBO.workbench.refreshControls();
     if (tab === 'language' && BOBO.languagePacksPanel) BOBO.languagePacksPanel.refresh();
     if (tab === 'lsp' && BOBO.lsp) BOBO.lsp.renderStatus();
+    if (tab === 'server') activateServerPane();
+    else if (BOBO.rcloneSettings) BOBO.rcloneSettings.close();
   }
 
   function fillModelSelect(select, selectedId) {
@@ -307,40 +335,8 @@
     if (!modal) return;
     modal.style.pointerEvents = '';
     previousFocus = document.activeElement;
+    serverPaneLoaded = false;
     loadLocalSettings();
-
-    // Populate server fields if opening server tab
-    if (tab === 'server') {
-      // Trigger the existing population logic by dispatching the event
-      // that app.js listens to. The app.js onOpenServerSettings handler
-      // populates the server fields and shows the modal.
-      // But since we're opening the settings modal, we need to populate
-      // the fields ourselves.
-      var ss = S.serverSettings || {};
-      var el;
-      el = document.getElementById('server-ip'); if (el) el.value = ss.ip || '';
-      el = document.getElementById('server-user'); if (el) el.value = ss.user || '';
-      el = document.getElementById('server-pass'); if (el) el.value = ss.pass || '';
-      el = document.getElementById('server-apikey'); if (el) el.value = ss.apiKey || '';
-	  el = document.getElementById('server-secure-transport'); if (el) el.checked = ss.secureTransport === true;
-	  el = document.getElementById('server-http-port'); if (el) el.value = ss.httpPort || 3100;
-	  el = document.getElementById('server-ws-port'); if (el) el.value = ss.wsPort || 3101;
-	  el = document.getElementById('server-dap-child-port'); if (el) el.value = ss.dapChildWsPort || 3102;
-	  el = document.getElementById('server-cert-fingerprint'); if (el) el.value = ss.certificateFingerprint || '';
-      el = document.getElementById('rclone-path'); if (el) el.value = ss.rclonePath || '';
-      var rcloneStatus = document.getElementById('rclone-status');
-      if (rcloneStatus) {
-        rcloneStatus.dataset.state = 'idle';
-        rcloneStatus.textContent = BOBO.i18n && BOBO.i18n.t ? BOBO.i18n.t('Not checked') : 'Not checked';
-        rcloneStatus.removeAttribute('title');
-      }
-      if (BOBO.rclone && BOBO.rclone.refreshStatus) {
-        setTimeout(function() { BOBO.rclone.refreshStatus(ss.rclonePath || ''); }, 0);
-      }
-      var si = ss.syncInterval;
-      el = document.getElementById('sync-interval');
-      if (el) el.value = (!si) ? 30 : (si >= 1000 ? Math.round(si / 1000) : si);
-    }
 
     switchTab(tab || 'local');
     if (BOBO.workbench) BOBO.workbench.refreshControls();
@@ -375,6 +371,8 @@
 
   function close() {
     if (firstRunOpen) return;
+    if (BOBO.rcloneSettings) BOBO.rcloneSettings.close();
+    serverPaneLoaded = false;
     if (modal) modal.style.display = 'none';
     if (previousFocus && typeof previousFocus.focus === 'function') previousFocus.focus();
     previousFocus = null;

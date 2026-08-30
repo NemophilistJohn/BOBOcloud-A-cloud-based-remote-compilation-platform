@@ -578,10 +578,12 @@
     openAction('Open {name}', body, 'Open project', async function() {
       var selectedBranch = $('action-open-branch').value;
 	  var storedPath = readMapping(project.team_id, project.id, selectedBranch);
-	  var localPath = $('action-mapping-path').getAttribute('data-path') || storedPath;
+	  var mappingElement = $('action-mapping-path');
+	  var localPath = mappingElement.getAttribute('data-path') || storedPath;
       if (!localPath) throw new Error(t('Choose a local mapping directory'));
-      var pathInfo = await window.api.localPathInfo(localPath);
+      var pathInfo = await window.api.localPathInfo(localPath, mappingElement.getAttribute('data-grant') || '');
       if (!pathInfo.exists || !pathInfo.directory) throw new Error(t('Local mapping directory is unavailable'));
+	  if (!pathInfo.grantId) throw new Error(t('Choose the local mapping directory again to authorize synchronization'));
 	  var isFirst = !storedPath || storedPath !== localPath;
       if (isFirst && !pathInfo.empty) throw new Error(t('The first mapping must use an empty directory'));
 	  var mode = isFirst ? 'pull' : $('action-open-mode').value;
@@ -596,12 +598,12 @@
         var prepared = await api('prepareTeamProject', { teamId: project.team_id, projectId: project.id, branch: selectedBranch, reset: mode === 'pull' });
         if (isFirst || mode === 'pull') {
           setActionStatusKey('Pulling cloud branch...', null, false);
-          var result = await BOBO.rclone.pull({ dest: localPath, remotePath: prepared.remote_path, onProgress: function(line) { setActionStatus(line, false); } });
+          var result = await BOBO.rclone.pull({ dest: localPath, localGrant: pathInfo.grantId, remotePath: prepared.remote_path, onProgress: function(line) { setActionStatus(line, false); } });
           if (!result.success) throw new Error(result.error && result.error.message || t('Pull failed'));
         }
 	    var teamName = project.team_name || (selectedDetail && selectedDetail.team && selectedDetail.team.name) || (S.collaboration.current && S.collaboration.current.teamName) || 'Team';
         var nextCurrent = { teamId: project.team_id, teamName: teamName, projectId: project.id, projectName: project.name, branch: selectedBranch, remotePath: prepared.remote_path, localPath: localPath };
-	    await window.api.writeTeamMapping({ localPath: localPath, mapping: nextCurrent });
+	    await window.api.writeTeamMapping({ localPath: localPath, localGrant: pathInfo.grantId, mapping: nextCurrent });
         if (replacesCurrentWorkspace) {
           await refreshApprovedWorkspace(localPath);
         } else {
@@ -623,6 +625,7 @@
     if (existing) setRawText(initialPath, existing);
     else bindText(initialPath, 'Not selected');
     initialPath.setAttribute('data-path', existing || '');
+    initialPath.setAttribute('data-grant', '');
     function updateMappingForBranch() {
       var selected = $('action-open-branch').value;
       var mapped = readMapping(project.team_id, project.id, selected);
@@ -630,6 +633,7 @@
       if (mapped) setRawText(pathEl, mapped);
       else bindText(pathEl, 'Not selected');
       pathEl.setAttribute('data-path', mapped || '');
+      pathEl.setAttribute('data-grant', '');
       $('action-open-mode').innerHTML = mapped ? '<option value="local" data-i18n="Open local changes">' + esc(t('Open local changes')) + '</option><option value="pull" data-i18n="Reset from cloud (discard local changes)">' + esc(t('Reset from cloud (discard local changes)')) + '</option>' : '<option value="pull" data-i18n="Initial pull from cloud">' + esc(t('Initial pull from cloud')) + '</option>';
     }
     $('action-open-branch').addEventListener('change', updateMappingForBranch);
@@ -641,6 +645,7 @@
       if (first && !chosen.empty) { setActionStatusKey('Choose an empty directory for the initial pull', null, true); return; }
       setRawText($('action-mapping-path'), chosen.path);
       $('action-mapping-path').setAttribute('data-path', chosen.path);
+	  $('action-mapping-path').setAttribute('data-grant', chosen.grantId || '');
 	  $('action-open-mode').innerHTML = '<option value="pull" data-i18n="Initial pull from cloud">' + esc(t('Initial pull from cloud')) + '</option>';
       setActionStatus('', false);
     });

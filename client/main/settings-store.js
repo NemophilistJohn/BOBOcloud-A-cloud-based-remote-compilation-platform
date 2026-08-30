@@ -21,7 +21,6 @@ const DEFAULT_SERVER_SETTINGS = Object.freeze({
 	dapChildWsPort: 3102,
 	certificateFingerprint: '',
 	certificateFingerprints: [],
-  rclonePath: '',
   syncInterval: 30000,
   setupCompleted: false
 });
@@ -54,7 +53,6 @@ function defaultDiagnosticsSettings() {
 
 function createSettingsStore(options) {
   const app = options.app;
-  const rclone = options.rclone;
   const userDataPath = app.getPath('userData');
   const paths = Object.freeze({
     server: path.join(userDataPath, 'server-settings.json'),
@@ -71,6 +69,10 @@ function createSettingsStore(options) {
   function normalizeServerSettings(value) {
     const source = value && typeof value === 'object' ? value : {};
     const normalized = Object.assign({}, DEFAULT_SERVER_SETTINGS, source);
+    // Executable selection is privileged main-process state. Never preserve
+    // the legacy renderer-writable path field while migrating old profiles.
+    delete normalized.rclonePath;
+    delete normalized.rcloneBinary;
 		for (const [field, fallback] of [['httpPort', 3100], ['wsPort', 3101], ['dapChildWsPort', 3102]]) {
 			const port = Number(normalized[field]);
 			normalized[field] = Number.isInteger(port) && port > 0 && port <= 65535 ? port : fallback;
@@ -113,10 +115,13 @@ function createSettingsStore(options) {
   async function readServerSettings() {
     try {
       if (fs.existsSync(paths.server)) {
-        const settings = normalizeServerSettings(JSON.parse(fs.readFileSync(paths.server, 'utf-8')));
-        if (settings.ip && settings.user) {
-          const result = await rclone.ensureConfig(settings);
-          if (!result.success) console.error('[rclone] ensureConfig failed:', result.error);
+        const stored = JSON.parse(fs.readFileSync(paths.server, 'utf-8'));
+        const settings = normalizeServerSettings(stored);
+        if (Object.prototype.hasOwnProperty.call(stored, 'rclonePath') ||
+            Object.prototype.hasOwnProperty.call(stored, 'rcloneBinary')) {
+          const migrated = Object.assign({}, settings);
+          delete migrated.firstRunRequired;
+          fs.writeFileSync(paths.server, JSON.stringify(migrated, null, 2), 'utf-8');
         }
         return settings;
       }
@@ -144,10 +149,6 @@ function createSettingsStore(options) {
       persisted.setupCompleted = persisted.setupCompleted === true;
       fs.mkdirSync(path.dirname(paths.server), { recursive: true });
       fs.writeFileSync(paths.server, JSON.stringify(persisted, null, 2), 'utf-8');
-      if (persisted.ip && persisted.user) {
-        const result = await rclone.ensureConfig(persisted);
-        if (!result.success) console.error('[rclone] ensureConfig failed:', result.error);
-      }
       return true;
     } catch (error) {
       console.error('Error writing server settings:', error);
@@ -237,7 +238,7 @@ function createSettingsStore(options) {
         console.error('Error migrating AI settings:', error);
       }
     }
-    return Object.assign({}, settings, { _configPath: paths.ai });
+    return settings;
   }
 
   function writeAiSettings(settings) {
