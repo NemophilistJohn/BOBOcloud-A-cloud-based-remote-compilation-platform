@@ -18,7 +18,17 @@ const DAP_SMOKE = fs.readFileSync(path.join(REPOSITORY_ROOT, 'server', 'deploy',
 const DAP_NODE_SMOKE = fs.readFileSync(path.join(REPOSITORY_ROOT, 'server', 'deploy', 'dap-toolkit', 'node-dap-smoke.py'), 'utf8');
 const DAP_NODE_DOCKERFILE = fs.readFileSync(path.join(REPOSITORY_ROOT, 'server', 'deploy', 'dap-toolkit', 'Dockerfile.node'), 'utf8');
 const DAP_DOCS = fs.readFileSync(path.join(REPOSITORY_ROOT, 'docs', 'dap-server.md'), 'utf8');
-const IMAGE_NAMES = ['workbench.png', 'environment-center.png', 'ai-control-center.png'];
+const README_SCREENSHOTS = [
+  { name: 'workbench.png', readme: README, other: README_ZH },
+  { name: 'project-dependencies.png', readme: README, other: README_ZH },
+  { name: 'environment-center.png', readme: README, other: README_ZH },
+  { name: 'ai-control-center.png', readme: README, other: README_ZH },
+  { name: 'workbench.zh-CN.png', readme: README_ZH, other: README },
+  { name: 'project-dependencies.zh-CN.png', readme: README_ZH, other: README },
+  { name: 'environment-center.zh-CN.png', readme: README_ZH, other: README },
+  { name: 'ai-control-center.zh-CN.png', readme: README_ZH, other: README }
+];
+const IMAGE_NAMES = README_SCREENSHOTS.map((entry) => entry.name);
 
 function pngMetadata(filePath) {
   const buffer = fs.readFileSync(filePath);
@@ -50,9 +60,17 @@ test('README documents current client/server contracts, language navigation, and
   assert.match(README, /`cortex-m4`/);
   assert.match(README, /Package Center for personal Python projects/);
   assert.match(README, /project-lock dependency storage/);
+  assert.match(README, /Node\.js packages: npm and pnpm/);
+  assert.match(README, /`npm-shrinkwrap\.json`[\s\S]*not managed/);
+  assert.match(README, /current server advertises `resize: false`/);
+  assert.match(README, /trusted application renderer currently reads some configured credentials/);
   assert.match(README, /Plugin API 1\.5 Agent surface/);
   assert.match(README, /docs\/ai-agent-plugin-architecture\.md/);
   assert.match(README, /adds no Go service endpoint/);
+  assert.match(README, /BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-/);
+  assert.match(README, /bobocloud-document-preview/);
+  assert.match(README, /BOBOCloud-AI-Agent-plugin-offical/);
+  assert.match(README, /BOBOCloud-Marketplace-Registry/);
   assert.match(README, /`serverInfo` descriptor/);
   assert.match(README, /`\$\{input:\*\}` supports `promptString`/);
   assert.doesNotMatch(README, /renderer\.js/);
@@ -66,6 +84,9 @@ test('Chinese README mirrors the three audience paths and links back to English'
   assert.match(README_ZH, /服务器运维者/);
   assert.match(README_ZH, /贡献者/);
   assert.match(README_ZH, /软件包中心/);
+  assert.match(README_ZH, /Node\.js 软件包：npm 与 pnpm/);
+  assert.match(README_ZH, /当前服务端公布 `resize: false`/);
+  assert.match(README_ZH, /可信应用 Renderer 当前会读取部分已配置凭据/);
   assert.match(README_ZH, /Plugin API 1\.5 Agent 界面/);
   assert.match(README_ZH, /docs\/ai-agent-plugin-architecture\.md/);
   assert.match(README_ZH, /不新增任何 Go 服务端接口/);
@@ -87,10 +108,13 @@ test('DAP release artifacts advertise only smoke-verified Python, Go, and Node a
   assert.match(DAP_DOCS, /\| Node\.js 20、22 \|/);
 });
 
-test('README screenshot references exist and are presentation-sized PNG files', () => {
-  for (const name of IMAGE_NAMES) {
+test('each README references only its locale screenshots and every image is presentation-sized', () => {
+  for (const entry of README_SCREENSHOTS) {
+    const name = entry.name;
     const relative = 'docs/screenshots/' + name;
-    assert.match(README, new RegExp('!\\[[^\\]]+\\]\\(' + relative.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\)'));
+    const reference = new RegExp('!\\[[^\\]]+\\]\\(' + relative.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\)');
+    assert.match(entry.readme, reference);
+    assert.doesNotMatch(entry.other, reference);
     const metadata = pngMetadata(path.join(REPOSITORY_ROOT, relative));
     assert.deepEqual({ width: metadata.width, height: metadata.height }, { width: 1440, height: 900 });
     assert.ok(metadata.bytes >= 10000, name + ' must contain non-trivial rendered content');
@@ -99,7 +123,7 @@ test('README screenshot references exist and are presentation-sized PNG files', 
 
 test('docs screenshot command uses isolated local fixtures and all-or-nothing promotion', () => {
   assert.equal(PACKAGE.scripts['docs:screenshots'], 'node scripts/capture-readme-screenshots.js');
-  for (const name of ['workbench.png', 'environment-center.png', 'ai-control-center.png']) {
+  for (const name of IMAGE_NAMES) {
     assert.match(CAPTURE_SCRIPT, new RegExp(name.replace('.', '\\.')));
   }
   assert.match(CAPTURE_SCRIPT, /mkdtempSync/);
