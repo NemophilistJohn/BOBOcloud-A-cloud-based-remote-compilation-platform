@@ -80,6 +80,10 @@ test('AI contract selection gives explicit format priority and recognizes chat e
 });
 
 test('AI request admission bounds bytes, shape, messages, tools, and request ids', () => {
+  assert.doesNotThrow(() => validateRequestPayload({ messages: [], stream: false, modelConfig: {} }));
+  assert.throws(() => validateRequestPayload({ messages: [], stream: true, modelConfig: {} }), {
+    code: 'AI_REQUEST_INVALID'
+  });
   assert.throws(() => validateRequestPayload({
     requestId: 'oversized',
     messages: [{ role: 'user', content: 'x'.repeat(MAX_AI_REQUEST_INPUT_BYTES) }],

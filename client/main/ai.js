@@ -70,7 +70,8 @@ function validateRequestPayload(payload) {
     throw requestError('AI request has too many tools', 'AI_REQUEST_TOO_LARGE');
   }
   const requestId = typeof payload.requestId === 'string' ? payload.requestId : '';
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/.test(requestId)) {
+  if ((requestId && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/.test(requestId)) ||
+      (!requestId && payload.stream === true)) {
     throw requestError('AI request id is invalid', 'AI_REQUEST_INVALID');
   }
   measureStructuredInput(payload);
@@ -183,6 +184,7 @@ function createAiController(options) {
     ? options.maxNonStreamRequests
     : DEFAULT_MAX_NON_STREAM_REQUESTS;
   const laneLimits = Object.assign({}, DEFAULT_LANE_LIMITS, options.laneLimits || {});
+  let anonymousRequestSequence = 0;
 
   function send(channel, payload) {
     const window = getWindow();
@@ -221,7 +223,7 @@ function createAiController(options) {
       const { modelConfig } = payload;
       const messages = Array.isArray(payload.messages) ? payload.messages : [];
       const stream = payload.stream === true;
-      const requestId = payload.requestId;
+      const requestId = payload.requestId || 'anonymous-' + (++anonymousRequestSequence);
       const mode = payload.mode === 'fim' ? 'fim' : 'chat';
       const lane = Object.prototype.hasOwnProperty.call(DEFAULT_LANE_LIMITS, requestOptions.lane)
         ? requestOptions.lane

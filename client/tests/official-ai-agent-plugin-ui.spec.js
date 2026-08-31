@@ -289,14 +289,17 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
       }, value);
     };
     const dispatchComposerKeys = async (value, keys) => {
-      await workbench.evaluate((root, payload) => {
+      return workbench.evaluate((root, payload) => {
         const textarea = root.querySelector('.agent-composer-input');
         if (!textarea) throw new Error('Agent composer input is unavailable');
         textarea.value = payload.value;
         textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        const commands = Array.from(root.querySelectorAll('.agent-slash-option')).map((option) => option.dataset.command);
         payload.keys.forEach((key) => {
           textarea.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
         });
+        const menu = root.querySelector('.agent-slash-menu');
+        return { commands, value: textarea.value, menuHidden: !menu || menu.hidden };
       }, { value, keys });
     };
     await expect(input).toBeEnabled();
@@ -328,20 +331,17 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
     })).toBe(true);
     if (await controls.isVisible()) await controlsButton.click();
 
-    await input.fill('/g');
-    await expect(workbench.getByText('/goal', { exact: true })).toBeVisible();
-    await page.screenshot({
-      path: path.join(evidenceDirectory, 'official-ai-agent-plugin-slash-goal.png'),
-      fullPage: false,
-      animations: 'disabled'
-    });
-    await dispatchComposerKeys('/g', ['Tab']);
+    const goalTab = await dispatchComposerKeys('/g', ['Tab']);
+    expect(goalTab.commands).toEqual(['goal']);
+    expect(goalTab.value).toBe('/goal ');
     await expect(input).toHaveValue('/goal ');
-    await input.fill('/c');
-    await expect(workbench.getByText('/chat', { exact: true })).toBeVisible();
-    await dispatchComposerKeys('/c', ['Escape']);
+    const chatEscape = await dispatchComposerKeys('/c', ['Escape']);
+    expect(chatEscape.commands).toEqual(['chat']);
+    expect(chatEscape.menuHidden).toBe(true);
     await expect(workbench.getByText('/chat', { exact: true })).toBeHidden();
-    await dispatchComposerKeys('/', ['ArrowDown', 'Enter']);
+    const keyboardSelect = await dispatchComposerKeys('/', ['ArrowDown', 'Enter']);
+    expect(keyboardSelect.commands).toEqual(['chat', 'goal']);
+    expect(keyboardSelect.value).toBe('/goal ');
     await expect(input).toHaveValue('/goal ');
     await dispatchComposerKeys('/goal ', ['Enter']);
     await expect(input).toHaveValue('');
