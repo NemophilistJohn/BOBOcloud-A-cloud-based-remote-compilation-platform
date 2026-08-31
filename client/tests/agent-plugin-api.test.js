@@ -270,6 +270,82 @@ test('Agent descriptors, command payloads, and state snapshots are bounded data'
   assert.equal(boundedApproval.internalToken, undefined);
   assert.equal(Buffer.byteLength(boundedApproval.stdout) + Buffer.byteLength(boundedApproval.stderr) <= 128 * 1024, true);
   assert.equal(boundedApproval.truncated, true);
+  assert.deepEqual(core.createAgentCommandPayload('acme.agent.main', 'reject', {
+    approvalId: 'approval-123',
+    approvalResult: {
+      approved: false,
+      rejected: true,
+      failed: true,
+      tool: 'workspace_write',
+      errorCode: 'AGENT_FILE_CHANGED',
+      errorMessage: 'The file changed while approval was pending.',
+      outcome: 'not-started',
+      mayHaveExecuted: false,
+      internalPath: 'must not be forwarded'
+    }
+  }).approvalResult, {
+    approved: false,
+    rejected: true,
+    failed: true,
+    tool: 'workspace_write',
+    errorCode: 'AGENT_FILE_CHANGED',
+    errorMessage: 'The file changed while approval was pending.',
+    outcome: 'not-started',
+    mayHaveExecuted: false
+  });
+  assert.deepEqual(core.createAgentCommandPayload('acme.agent.main', 'reject', {
+    approvalId: 'approval-evicted',
+    approvalResult: {
+      approved: false,
+      rejected: true,
+      failed: true,
+      errorCode: 'AGENT_APPROVAL_NOT_FOUND',
+      errorMessage: 'The Agent approval is missing or no longer valid.',
+      outcome: 'unknown',
+      mayHaveExecuted: true
+    }
+  }).approvalResult, {
+    approved: false,
+    rejected: true,
+    failed: true,
+    errorCode: 'AGENT_APPROVAL_NOT_FOUND',
+    errorMessage: 'The Agent approval is missing or no longer valid.',
+    outcome: 'unknown',
+    mayHaveExecuted: true
+  });
+  assert.throws(
+    () => core.createAgentCommandPayload('acme.agent.main', 'reject', {
+      approvalResult: {
+        rejected: true,
+        failed: true,
+        errorCode: 'AGENT_OPERATION_FAILED',
+        errorMessage: 'Operation failed.',
+        outcome: 'unknown',
+        mayHaveExecuted: true
+      }
+    }),
+    /failure result is invalid/
+  );
+  assert.throws(
+    () => core.createAgentCommandPayload('acme.agent.main', 'reject', {
+      approvalResult: { rejected: true, failed: true, tool: 'workspace_write' }
+    }),
+    /failure result is invalid/
+  );
+  assert.throws(
+    () => core.createAgentCommandPayload('acme.agent.main', 'reject', {
+      approvalResult: {
+        rejected: true,
+        failed: true,
+        tool: 'process_run',
+        errorCode: 'AGENT_STALE_WORKSPACE',
+        errorMessage: 'Workspace changed.',
+        outcome: 'unknown',
+        mayHaveExecuted: false
+      }
+    }),
+    /failure result is invalid/
+  );
   assert.throws(
     () => core.createAgentCommandPayload('acme.agent.main', 'approve', {
       approvalResult: { approved: true, sha256: 'not-a-sha256' }
@@ -465,7 +541,8 @@ test('installed extension host gates Agent brokers and tears down Agent state', 
 
 test('extension sandbox exposes only dedicated Agent data APIs', () => {
   const source = core.buildExtensionSandboxDocument();
-  assert.match(source, /agents: Object\.freeze/);
+  assert.match(source, /agents: freeze/);
+  assert.match(source, /const safeFreeze = Object\.freeze/);
   assert.match(source, /models\.cancel/);
   assert.match(source, /agent\.tools\.invoke/);
   assert.doesNotMatch(source, /agent\.tools\.(?:approve|reject|cancel)/);

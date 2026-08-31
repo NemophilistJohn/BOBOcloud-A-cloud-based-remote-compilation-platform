@@ -48,11 +48,11 @@ async function stop(app) {
 
 async function installPackage(userData, workspace) {
   const installer = createPluginController({
-    app: { getPath: () => userData, getVersion: () => '2.8.0' },
+    app: { getPath: () => userData, getVersion: () => '2.8.1' },
     ipcMain: { handle() {} },
     getWindow: () => null,
     getWorkspaceIdentity: () => ({ rootPath: workspace, workspaceIdentity: 1 }),
-    hostVersion: '2.8.0'
+    hostVersion: '2.8.1'
   });
   return installer.installArchiveFromPath(ARTIFACT);
 }
@@ -103,6 +103,10 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
       const lastMessage = parsed.messages[parsed.messages.length - 1] || {};
       const processRequest = lastMessage.role === 'user' && lastMessage.content.includes('approved local process');
       const processResult = lastMessage.role === 'tool';
+      let processFailed = false;
+      if (processResult) {
+        try { processFailed = JSON.parse(lastMessage.content).failed === true; } catch (_) {}
+      }
       const message = processRequest
         ? {
             role: 'assistant',
@@ -123,7 +127,9 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
           }
         : {
             role: 'assistant',
-            content: processResult ? 'Approved process completed.' : [
+            content: processResult
+              ? (processFailed ? 'Process approval ended safely.' : 'Approved process completed.')
+              : [
               '# Workspace inspection complete.',
               '',
               '- **Result:** reviewed `main.js`',
@@ -429,13 +435,63 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
       fullPage: false,
       animations: 'disabled'
     });
+    await page.evaluate(() => {
+      const originalPlatform = window.BOBO.platform;
+      const originalCommands = originalPlatform.commands;
+      window.__agentApprovalDeliveryAttempts = 0;
+      window.BOBO.platform = Object.freeze({
+        ...originalPlatform,
+        commands: Object.freeze({
+          ...originalCommands,
+          async executeIsolated(command, ...args) {
+            if (command === 'bobocloud.ai-agent.approve') {
+              window.__agentApprovalDeliveryAttempts += 1;
+              if (window.__agentApprovalDeliveryAttempts === 1) return { ok: true, value: { accepted: false } };
+            }
+            return originalCommands.executeIsolated(command, ...args);
+          }
+        })
+      });
+    });
     await approval.getByRole('button', { name: 'Approve', exact: true }).click();
+    const retryDelivery = approval.getByRole('button', { name: 'Retry', exact: true });
+    await expect(retryDelivery).toBeVisible();
+    await retryDelivery.click();
     await expect(workbench.locator('.agent-message-assistant').last()).toContainText('Approved process completed.');
+    expect(await page.evaluate(() => window.__agentApprovalDeliveryAttempts)).toBe(2);
     expect(requests).toHaveLength(requestCountAfterGoal + 2);
     const processResultRequest = requests[requests.length - 1];
     const returnedToolMessage = processResultRequest.body.messages[processResultRequest.body.messages.length - 1];
     expect(returnedToolMessage).toMatchObject({ role: 'tool', name: 'process_run' });
     expect(returnedToolMessage.content).toContain('AGENT_PROCESS_APPROVED');
+
+    const requestCountBeforeUnavailable = requests.length;
+    await workbench.locator('.agent-composer-input').fill('Run an approved local process after its approval disappears.');
+    await workbench.locator('.agent-send-button').click();
+    await expect(approval).toBeVisible();
+    await expect(approval.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+    const unavailableApprovalId = await page.evaluate(({ providerId }) => {
+      return window.BOBO.platform.agents.get(providerId).state.activeSession.approval.id;
+    }, { providerId: PROVIDER_ID });
+    const consumed = await page.evaluate(({ pluginId, approvalId }) => {
+      return window.api.pluginsAgentApprovalDecide({ pluginId, approvalId, approved: false });
+    }, { pluginId: PLUGIN_ID, approvalId: unavailableApprovalId });
+    expect(consumed).toMatchObject({ rejected: true, tool: 'process_run' });
+    await approval.getByRole('button', { name: 'Approve', exact: true }).click();
+    await expect(workbench.locator('.agent-message-assistant').last()).toContainText('Process approval ended safely.');
+    expect(requests).toHaveLength(requestCountBeforeUnavailable + 2);
+    const unavailableResultRequest = requests[requests.length - 1];
+    const unavailableToolMessage = unavailableResultRequest.body.messages[unavailableResultRequest.body.messages.length - 1];
+    const unavailableResult = JSON.parse(unavailableToolMessage.content);
+    expect(unavailableResult).toMatchObject({
+      rejected: true,
+      failed: true,
+      tool: 'process_run',
+      errorCode: 'AGENT_APPROVAL_NOT_FOUND',
+      outcome: 'unknown',
+      mayHaveExecuted: true
+    });
+    expect(unavailableToolMessage.content).not.toContain('AGENT_PROCESS_APPROVED');
 
     await page.setViewportSize({ width: 600, height: 700 });
     const compactLayout = await page.evaluate(() => {

@@ -30,8 +30,10 @@ import { marked } from 'marked';
   var inflight = new Set();
   var approvalDetails = new Map();
   var approvalDecisions = new Map();
+  var approvalExpiryTimers = new Map();
   var accessRequests = new Map();
   var documentClickHandler = null;
+  var workspaceChangeHandler = null;
 
   function t(key, values) {
     var i18n = BOBO.i18n;
@@ -378,6 +380,60 @@ import { marked } from 'marked';
     return Boolean(approval && approvalKey(current, approval.id) === key);
   }
 
+  function clearApprovalExpiryTimer(key) {
+    var timer = approvalExpiryTimers.get(key);
+    if (timer !== undefined && typeof global.clearTimeout === 'function') global.clearTimeout(timer);
+    approvalExpiryTimers.delete(key);
+  }
+
+  function clearApprovalDetail(key) {
+    clearApprovalExpiryTimer(key);
+    approvalDetails.delete(key);
+  }
+
+  function approvalFallbackDetail(entry) {
+    return entry && (entry.detail || entry.fallbackDetail) || null;
+  }
+
+  function scheduleApprovalExpiry(record, key, entry) {
+    clearApprovalExpiryTimer(key);
+    var expiresAt = entry && entry.detail && Date.parse(entry.detail.expiresAt);
+    if (!Number.isFinite(expiresAt) || typeof global.setTimeout !== 'function') return;
+    var delay = Math.max(0, Math.min(2147483647, expiresAt - Date.now() + 25));
+    var timer = global.setTimeout(function() {
+      if (approvalExpiryTimers.get(key) !== timer) return;
+      approvalExpiryTimers.delete(key);
+      if (!initialized || approvalDetails.get(key) !== entry || !activeApprovalMatches(record.id, key) || approvalDecisions.has(key)) return;
+      if (expiresAt > Date.now()) {
+        scheduleApprovalExpiry(record, key, entry);
+        return;
+      }
+      var current = recordById(record.id);
+      var approval = current && current.state && current.state.activeSession && current.state.activeSession.approval;
+      if (current && approval) refreshApprovalDetail(current, approval);
+    }, delay);
+    approvalExpiryTimers.set(key, timer);
+  }
+
+  function refreshApprovalDetail(record, approval) {
+    var key = approvalKey(record, approval && approval.id);
+    if (!record || !approval || !approval.id || approvalDecisions.has(key)) return approvalDetails.get(key) || null;
+    var previous = approvalDetails.get(key);
+    var fallback = approvalFallbackDetail(previous);
+    clearApprovalDetail(key);
+    var next = ensureApprovalDetail(record, approval);
+    if (next && fallback) next.fallbackDetail = fallback;
+    return next;
+  }
+
+  function refreshPendingApprovalsForWorkspaceChange() {
+    records().forEach(function(record) {
+      var approval = record && record.state && record.state.activeSession && record.state.activeSession.approval;
+      if (approval && !approvalDecisions.has(approvalKey(record, approval.id))) refreshApprovalDetail(record, approval);
+    });
+    renderAll();
+  }
+
   function ensureApprovalDetail(record, approval) {
     var key = approvalKey(record, approval && approval.id);
     if (!record || !record.owner || !approval || !approval.id || approvalDetails.has(key)) return approvalDetails.get(key) || null;
@@ -389,21 +445,42 @@ import { marked } from 'marked';
     }
     var entry = { status: 'loading' };
     approvalDetails.set(key, entry);
-    Promise.resolve(describe({ pluginId: record.owner, approvalId: approval.id })).then(function(value) {
-      if (!initialized || !activeApprovalMatches(record.id, key)) return;
+    Promise.resolve(describe({ pluginId: record.owner, approvalId: approval.id })).then(async function(value) {
+      if (!initialized || !activeApprovalMatches(record.id, key) || approvalDetails.get(key) !== entry) return;
+      if (value && value.approvalUnavailable === true) {
+        entry.status = 'terminal';
+        clearApprovalExpiryTimer(key);
+        var current = recordById(record.id) || record;
+        var session = current.state && current.state.activeSession;
+        var decision = approvalDecisions.get(key);
+        if (!decision) {
+          decision = {
+            status: 'delivering',
+            approved: false,
+            approvalId: approval.id,
+            sessionId: session && session.id || '',
+            action: 'reject',
+            approvalResult: canonicalApprovalResult(value, entry, true)
+          };
+          approvalDecisions.set(key, decision);
+          errors.delete(record.id);
+        }
+        await deliverApprovalDecision(current, key, decision);
+        return;
+      }
       entry.status = 'ready';
       entry.detail = normalizeApprovalDetail(value, approval.id);
+      scheduleApprovalExpiry(record, key, entry);
       renderAll();
     }).catch(function() {
-      if (!initialized || !activeApprovalMatches(record.id, key)) return;
+      if (!initialized || !activeApprovalMatches(record.id, key) || approvalDetails.get(key) !== entry) return;
       entry.status = 'unavailable';
       renderAll();
       global.setTimeout(function() {
         if (!initialized || !activeApprovalMatches(record.id, key) || approvalDetails.get(key) !== entry) return;
-        approvalDetails.delete(key);
         var current = recordById(record.id);
         var currentApproval = current && current.state && current.state.activeSession && current.state.activeSession.approval;
-        if (current && currentApproval) ensureApprovalDetail(current, currentApproval);
+        if (current && currentApproval) refreshApprovalDetail(current, currentApproval);
       }, 1500);
     });
     return entry;
@@ -424,10 +501,11 @@ import { marked } from 'marked';
     return { value: result, bytes: encoder.encode(result).byteLength, truncated: true };
   }
 
-  function normalizeApprovalResult(value) {
+  function normalizeApprovalResult(value, options) {
+    options = options || {};
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Invalid approval result.');
     var result = {};
-    ['approved', 'rejected', 'truncated', 'timedOut', 'cancelled'].forEach(function(key) {
+    ['approved', 'rejected', 'truncated', 'timedOut', 'cancelled', 'failed', 'mayHaveExecuted'].forEach(function(key) {
       if (typeof value[key] === 'boolean') result[key] = value[key];
     });
     if (value.tool === 'workspace_write' || value.tool === 'process_run') result.tool = value.tool;
@@ -435,6 +513,9 @@ import { marked } from 'marked';
     if (typeof value.sha256 === 'string' && /^[a-f0-9]{64}$/i.test(value.sha256)) result.sha256 = value.sha256;
     if (value.exitCode === null || Number.isSafeInteger(value.exitCode)) result.exitCode = value.exitCode;
     if (typeof value.signal === 'string') result.signal = value.signal.slice(0, 64);
+    if (typeof value.errorCode === 'string' && /^[A-Za-z0-9_.-]{1,96}$/.test(value.errorCode)) result.errorCode = value.errorCode;
+    if (typeof value.errorMessage === 'string') result.errorMessage = value.errorMessage.slice(0, 4000);
+    if (value.outcome === 'not-started' || value.outcome === 'unknown') result.outcome = value.outcome;
     var remaining = 128 * 1024;
     ['stdout', 'stderr'].forEach(function(key) {
       if (typeof value[key] !== 'string') return;
@@ -443,55 +524,111 @@ import { marked } from 'marked';
       remaining -= bounded.bytes;
       if (bounded.truncated || value[key].length > 2 * 1024 * 1024) result.truncated = true;
     });
+    if (result.failed === true && (result.rejected !== true || result.approved === true ||
+        (!result.tool && options.allowMissingTool !== true) ||
+        !result.errorCode || typeof result.errorMessage !== 'string' ||
+        (result.outcome !== 'not-started' && result.outcome !== 'unknown') ||
+        typeof result.mayHaveExecuted !== 'boolean' ||
+        (result.outcome === 'unknown') !== result.mayHaveExecuted)) {
+      throw new TypeError('Invalid approval failure result.');
+    }
     return result;
+  }
+
+  function canonicalApprovalResult(value, cached, approved) {
+    if (value && value.approvalUnavailable === true) {
+      var unavailableCode = value.errorCode === 'AGENT_APPROVAL_EXPIRED'
+        ? 'AGENT_APPROVAL_EXPIRED'
+        : value.errorCode === 'AGENT_APPROVAL_NOT_FOUND' ? 'AGENT_APPROVAL_NOT_FOUND' : '';
+      if (!unavailableCode) throw new TypeError('Invalid unavailable approval result.');
+      var unknown = unavailableCode === 'AGENT_APPROVAL_NOT_FOUND' && approved === true;
+      var cachedDetail = approvalFallbackDetail(cached);
+      var tool = value.tool === 'workspace_write' || value.tool === 'process_run'
+        ? value.tool
+        : cachedDetail && cachedDetail.tool;
+      var failure = {
+        approved: false,
+        rejected: true,
+        failed: true,
+        errorCode: unavailableCode,
+        errorMessage: typeof value.errorMessage === 'string' ? value.errorMessage : '',
+        outcome: unknown ? 'unknown' : 'not-started',
+        mayHaveExecuted: unknown
+      };
+      if (tool) failure.tool = tool;
+      return normalizeApprovalResult(failure, { allowMissingTool: true });
+    }
+    var canonical = Object.assign({}, value);
+    var fallbackDetail = approvalFallbackDetail(cached);
+    if (!canonical.tool && fallbackDetail) canonical.tool = fallbackDetail.tool;
+    return normalizeApprovalResult(canonical);
+  }
+
+  async function deliverApprovalDecision(record, key, decision) {
+    if (approvalDecisions.get(key) !== decision || !decision.approvalResult || !decision.action) return false;
+    decision.status = 'delivering';
+    renderAll();
+    var delivered = await invoke(record, decision.action, {
+      sessionId: decision.sessionId,
+      approvalId: decision.approvalId,
+      approvalResult: decision.approvalResult
+    }, { requireAccepted: true });
+    if (approvalDecisions.get(key) !== decision) return false;
+    if (delivered) {
+      decision.status = 'delivered';
+      renderAll();
+      return true;
+    }
+    decision.status = 'delivery-failed';
+    renderAll();
+    return false;
   }
 
   async function decideApproval(record, approvalId, approved) {
     var key = approvalKey(record, approvalId);
     var cached = approvalDetails.get(key);
-    if (approved && (!cached || cached.status !== 'ready')) return false;
+    if (!cached || cached.status !== 'ready') return false;
     var api = global.api;
     if (!record || !record.owner || !api || typeof api.pluginsAgentApprovalDecide !== 'function') return false;
-    if (approvalDecisions.has(key)) return false;
+    var existing = approvalDecisions.get(key);
+    if (existing) return existing.status === 'delivery-failed'
+      ? deliverApprovalDecision(record, key, existing)
+      : false;
     var session = record.state && record.state.activeSession;
     var decision = {
       status: approved && cached.detail.tool === 'process_run' ? 'running' : 'deciding',
-      approved: approved
+      approved: approved,
+      approvalId: approvalId,
+      sessionId: session && session.id || '',
+      action: '',
+      approvalResult: null
     };
+    clearApprovalExpiryTimer(key);
     approvalDecisions.set(key, decision);
     errors.delete(record.id);
     renderAll();
     try {
       var rawResult = await api.pluginsAgentApprovalDecide({ pluginId: record.owner, approvalId: approvalId, approved: approved });
-      var canonicalResult = Object.assign({}, rawResult);
-      if (!canonicalResult.tool && cached && cached.detail) canonicalResult.tool = cached.detail.tool;
-      var approvalResult = normalizeApprovalResult(canonicalResult);
-      decision.status = 'delivering';
-      renderAll();
-      return invoke(record, approved ? 'approve' : 'reject', {
-        sessionId: session && session.id || '',
-        approvalId: approvalId,
-        approvalResult: approvalResult
-      });
+      decision.approvalResult = canonicalApprovalResult(rawResult, cached, approved);
+      decision.action = approved && decision.approvalResult.failed !== true ? 'approve' : 'reject';
+      return await deliverApprovalDecision(record, key, decision);
     } catch (error) {
       var cancelled = decision.status === 'cancelling';
       if (cancelled) {
-        decision.status = 'delivering';
-        await invoke(record, 'reject', {
-          sessionId: session && session.id || '',
-          approvalId: approvalId,
-          approvalResult: normalizeApprovalResult({
-            approved: false,
-            rejected: true,
-            cancelled: true,
-            tool: cached && cached.detail && cached.detail.tool
-          })
+        decision.action = 'reject';
+        decision.approvalResult = normalizeApprovalResult({
+          approved: false,
+          rejected: true,
+          cancelled: true,
+          tool: cached.detail.tool
         });
+        return await deliverApprovalDecision(record, key, decision);
       }
-      if (!cancelled) errors.set(record.id, t('Agent action failed: {message}', { message: exceptionMessage(error) }));
+      if (approvalDecisions.get(key) === decision) approvalDecisions.delete(key);
+      scheduleApprovalExpiry(record, key, cached);
+      errors.set(record.id, t('Agent action failed: {message}', { message: exceptionMessage(error) }));
       return false;
     } finally {
-      if (approvalDecisions.get(key) === decision) approvalDecisions.delete(key);
       renderAll();
     }
   }
@@ -554,7 +691,8 @@ import { marked } from 'marked';
     return inflight.has(busyKey(id, action));
   }
 
-  async function invoke(record, action, values) {
+  async function invoke(record, action, values, options) {
+    options = options || {};
     if (!record || !record.descriptor || !record.descriptor.commands) return false;
     var command = record.descriptor.commands[action];
     var commandApi = BOBO.platform && BOBO.platform.commands;
@@ -569,6 +707,9 @@ import { marked } from 'marked';
       var payload = api.createCommandPayload(record.id, action, values || {});
       var result = await commandApi.executeIsolated(command, payload);
       if (!result || result.ok !== true) throw (result && result.error) || new Error(t('Unknown error'));
+      if (options.requireAccepted === true && (!result.value || result.value.accepted !== true)) {
+        throw new Error(t('The Agent did not accept the approval result. Retry delivery.'));
+      }
       return true;
     } catch (error) {
       errors.set(record.id, t('Agent action failed: {message}', { message: exceptionMessage(error) }));
@@ -1350,10 +1491,17 @@ import { marked } from 'marked';
     mark.appendChild(icon(detail && detail.tool === 'process_run' ? 'tool' : running ? 'clock' : 'check'));
     heading.append(mark, element('strong', '', running ? t('Running command...') : t('Approval required')));
     if (detail) heading.appendChild(element('span', 'agent-approval-risk', riskLabel(detail.risk)));
-    copy.append(heading, element('p', '', detail ? detail.summary : t('Loading approval details')));
+    copy.append(heading, element('p', '', detail
+      ? detail.summary
+      : cached && cached.status === 'terminal' ? t('Approval no longer available') : t('Loading approval details')));
     if (detail) copy.appendChild(approvalDetailsNode(detail));
     var actions = element('div', 'agent-approval-actions');
-    if (running && detail && detail.tool === 'process_run') {
+    if (decision && decision.status === 'delivery-failed') {
+      var retry = element('button', 'agent-button-secondary', t('Retry'));
+      retry.type = 'button';
+      retry.addEventListener('click', function() { deliverApprovalDecision(record, key, decision); });
+      actions.appendChild(retry);
+    } else if (running && detail && detail.tool === 'process_run') {
       var cancel = element('button', 'agent-button-secondary', decision.status === 'cancelling' ? t('Cancelling...') : t('Cancel command'));
       cancel.type = 'button';
       cancel.disabled = decision.status === 'cancelling';
@@ -1362,7 +1510,7 @@ import { marked } from 'marked';
     } else {
       var reject = element('button', 'agent-button-secondary', t('Reject'));
       reject.type = 'button';
-      reject.disabled = Boolean(decision);
+      reject.disabled = !detail || Boolean(decision);
       reject.addEventListener('click', function() { decideApproval(record, approval.id, false); });
       var approve = element('button', 'agent-button-primary', t('Approve'));
       approve.type = 'button';
@@ -1797,11 +1945,14 @@ import { marked } from 'marked';
     var activeAccessKeys = new Set();
     available.forEach(function(record) {
       var approval = record.state && record.state.activeSession && record.state.activeSession.approval;
-      if (approval) activeApprovalKeys.add(approvalKey(record, approval.id));
+      if (approval) {
+        activeApprovalKeys.add(approvalKey(record, approval.id));
+        ensureApprovalDetail(record, approval);
+      }
       var identity = accessIdentity(record);
       if (identity) activeAccessKeys.add(accessKey(identity));
     });
-    Array.from(approvalDetails.keys()).forEach(function(key) { if (!activeApprovalKeys.has(key)) approvalDetails.delete(key); });
+    Array.from(approvalDetails.keys()).forEach(function(key) { if (!activeApprovalKeys.has(key)) clearApprovalDetail(key); });
     Array.from(approvalDecisions.keys()).forEach(function(key) { if (!activeApprovalKeys.has(key)) approvalDecisions.delete(key); });
     Array.from(accessRequests.keys()).forEach(function(key) { if (!activeAccessKeys.has(key)) accessRequests.delete(key); });
     var activeRemoved = '';
@@ -1847,6 +1998,8 @@ import { marked } from 'marked';
       global.addEventListener('bobo:language-changed', renderAll);
       languageSubscription = { dispose: function() { global.removeEventListener('bobo:language-changed', renderAll); } };
     }
+    workspaceChangeHandler = refreshPendingApprovalsForWorkspaceChange;
+    global.addEventListener('bobo:workspace-changed', workspaceChangeHandler);
     documentClickHandler = function(event) {
       var controlMenu = document.querySelector('.agent-composer-control-menu:not([hidden])');
       if (controlMenu && !event.target.closest('.agent-composer-control-wrap')) {
@@ -1878,10 +2031,13 @@ import { marked } from 'marked';
     try { if (languageSubscription && languageSubscription.dispose) languageSubscription.dispose(); } catch (error) {}
     try { if (tabRegistration && tabRegistration.dispose) tabRegistration.dispose(); } catch (error) {}
     if (documentClickHandler) document.removeEventListener('click', documentClickHandler);
+    if (workspaceChangeHandler) global.removeEventListener('bobo:workspace-changed', workspaceChangeHandler);
     agentSubscription = null;
     languageSubscription = null;
     tabRegistration = null;
     documentClickHandler = null;
+    workspaceChangeHandler = null;
+    Array.from(approvalExpiryTimers.keys()).forEach(clearApprovalExpiryTimer);
     approvalDetails.clear();
     approvalDecisions.clear();
     accessRequests.clear();

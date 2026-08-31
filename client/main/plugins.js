@@ -12,6 +12,7 @@ const zlib = require('node:zlib');
 const { SCM_GIT_METHODS, createScmGitBroker } = require('./scm-git');
 const { createPluginDocumentBroker } = require('./plugin-documents');
 const { capturePluginRpcResult } = require('./plugin-rpc-transport');
+const { compareSemver, isValidSemver, satisfiesVersionRange } = require('../shared/plugin-semver');
 
 const PLUGIN_API_VERSION = '1.5.0';
 const PACKAGE_SCHEMA_VERSIONS = new Set([1, 2]);
@@ -132,130 +133,6 @@ function isPlainObject(value) {
 
 function isNonEmptyString(value, maxLength = 4096) {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= maxLength;
-}
-
-function isValidSemver(value) {
-  return /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.test(String(value || ''));
-}
-
-function parseVersion(value) {
-  const match = String(value || '').match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)/);
-  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
-}
-
-function compareVersion(left, right) {
-  for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index] < right[index] ? -1 : 1;
-  }
-  return 0;
-}
-
-function compareSemver(leftValue, rightValue) {
-  const left = String(leftValue || '').match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/);
-  const right = String(rightValue || '').match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/);
-  if (!left || !right) return 0;
-  for (let index = 1; index <= 3; index += 1) {
-    const difference = Number(left[index]) - Number(right[index]);
-    if (difference) return difference < 0 ? -1 : 1;
-  }
-  const leftPrerelease = left[4] || '';
-  const rightPrerelease = right[4] || '';
-  if (!leftPrerelease || !rightPrerelease) return leftPrerelease === rightPrerelease ? 0 : (leftPrerelease ? -1 : 1);
-  const leftParts = leftPrerelease.split('.');
-  const rightParts = rightPrerelease.split('.');
-  const length = Math.max(leftParts.length, rightParts.length);
-  for (let index = 0; index < length; index += 1) {
-    const leftPart = leftParts[index];
-    const rightPart = rightParts[index];
-    if (leftPart === rightPart) continue;
-    if (leftPart === undefined) return -1;
-    if (rightPart === undefined) return 1;
-    const leftNumeric = /^\d+$/.test(leftPart);
-    const rightNumeric = /^\d+$/.test(rightPart);
-    if (leftNumeric && rightNumeric) return Number(leftPart) < Number(rightPart) ? -1 : 1;
-    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
-    return leftPart < rightPart ? -1 : 1;
-  }
-  return 0;
-}
-
-function parsePartialVersion(value) {
-  const parts = String(value || '').split('.');
-  if (!parts.length || parts.length > 3 || parts.some((part) => !/^(?:0|[1-9]\d*|x|X|\*)$/.test(part))) return null;
-  const numbers = [];
-  let wildcard = false;
-  for (const part of parts) {
-    if (/^(x|X|\*)$/.test(part)) {
-      wildcard = true;
-      numbers.push(null);
-    } else {
-      if (wildcard) return null;
-      numbers.push(Number(part));
-    }
-  }
-  while (numbers.length < 3) numbers.push(null);
-  return { numbers, specified: parts.length };
-}
-
-function satisfiesVersionToken(version, token) {
-  if (token === '*' || token === 'x' || token === 'X') return true;
-  const special = token.match(/^([\^~])(.+)$/);
-  if (special) {
-    const partial = parsePartialVersion(special[2]);
-    if (!partial || partial.numbers[0] == null) return false;
-    const lower = partial.numbers.map((number) => number == null ? 0 : number);
-    const upper = [...lower];
-    if (special[1] === '~') {
-      const index = partial.specified <= 1 ? 0 : 1;
-      upper[index] += 1;
-      for (let cursor = index + 1; cursor < 3; cursor += 1) upper[cursor] = 0;
-    } else if (lower[0] > 0) {
-      upper[0] += 1; upper[1] = 0; upper[2] = 0;
-    } else if (lower[1] > 0) {
-      upper[1] += 1; upper[2] = 0;
-    } else {
-      upper[2] += 1;
-    }
-    return compareVersion(version, lower) >= 0 && compareVersion(version, upper) < 0;
-  }
-  const comparator = token.match(/^(<=|>=|<|>|=)?(.+)$/);
-  if (!comparator) return false;
-  const partial = parsePartialVersion(comparator[2]);
-  if (!partial) return false;
-  const lower = partial.numbers.map((number) => number == null ? 0 : number);
-  const firstMissing = partial.numbers.indexOf(null);
-  const exact = firstMissing < 0;
-  const operator = comparator[1] || '';
-  if (!operator) {
-    if (exact) return compareVersion(version, lower) === 0;
-    const upper = [...lower];
-    upper[firstMissing - 1] += 1;
-    for (let index = firstMissing; index < 3; index += 1) upper[index] = 0;
-    return compareVersion(version, lower) >= 0 && compareVersion(version, upper) < 0;
-  }
-  const comparison = compareVersion(version, lower);
-  if (operator === '=') return exact ? comparison === 0 : satisfiesVersionToken(version, comparator[2]);
-  if (operator === '>=') return comparison >= 0;
-  if (operator === '>') return exact ? comparison > 0 : comparison >= 0;
-  if (operator === '<') return comparison < 0;
-  if (operator === '<=') {
-    if (exact) return comparison <= 0;
-    const upper = [...lower];
-    upper[firstMissing - 1] += 1;
-    for (let index = firstMissing; index < 3; index += 1) upper[index] = 0;
-    return compareVersion(version, upper) < 0;
-  }
-  return false;
-}
-
-function satisfiesVersionRange(versionValue, range) {
-  const version = parseVersion(versionValue);
-  if (!version || !isNonEmptyString(range, 160)) return false;
-  return range.trim().split(/\s*\|\|\s*/).some((clause) => {
-    if (!clause) return false;
-    const tokens = clause.trim().split(/\s+/).filter(Boolean);
-    return tokens.length > 0 && tokens.every((token) => satisfiesVersionToken(version, token));
-  });
 }
 
 function normalizeRelativePath(value, label = 'Package path') {
@@ -766,12 +643,47 @@ function defaultInstallDialogState() {
 }
 
 async function readJsonFile(filePath, fallback) {
+  return (await readJsonFileState(filePath, fallback)).value;
+}
+
+function unavailableAgentApproval(error) {
+  const code = error && error.code;
+  const tool = error && (error.approvalTool === 'workspace_write' || error.approvalTool === 'process_run')
+    ? error.approvalTool
+    : '';
+  if (code === 'AGENT_APPROVAL_EXPIRED') {
+    const result = {
+      approvalUnavailable: true,
+      errorCode: code,
+      errorMessage: 'The Agent approval expired before the operation could start.'
+    };
+    if (tool) result.tool = tool;
+    return result;
+  }
+  if (code === 'AGENT_APPROVAL_NOT_FOUND') {
+    const result = {
+      approvalUnavailable: true,
+      errorCode: code,
+      errorMessage: 'The Agent approval is missing or no longer valid.'
+    };
+    if (tool) result.tool = tool;
+    return result;
+  }
+  return null;
+}
+
+async function readJsonFileState(filePath, fallback) {
   try {
     const source = await fsp.readFile(filePath, 'utf8');
     const value = JSON.parse(source);
-    return isPlainObject(value) ? value : fallback();
-  } catch (_) {
-    return fallback();
+    return isPlainObject(value)
+      ? { status: 'valid', value }
+      : { status: 'invalid', value: fallback() };
+  } catch (error) {
+    return {
+      status: error && error.code === 'ENOENT' ? 'missing' : 'invalid',
+      value: fallback()
+    };
   }
 }
 
@@ -802,6 +714,23 @@ function normalizedPermissions(value) {
     }
   }
   return result;
+}
+
+function isValidPermissionsState(value) {
+  if (!isPlainObject(value) || (value.schemaVersion !== 1 && value.schemaVersion !== PERMISSIONS_SCHEMA_VERSION) ||
+      !isPlainObject(value.grants)) return false;
+  for (const [id, grants] of Object.entries(value.grants)) {
+    if (!isSafePluginId(id) || !Array.isArray(grants) || grants.some((permission) => typeof permission !== 'string')) {
+      return false;
+    }
+  }
+  if (value.schemaVersion === PERMISSIONS_SCHEMA_VERSION) {
+    if (!isPlainObject(value.initialized)) return false;
+    for (const [id, initialized] of Object.entries(value.initialized)) {
+      if (!isSafePluginId(id) || initialized !== true) return false;
+    }
+  }
+  return true;
 }
 
 function normalizedInstallDialogState(value) {
@@ -971,6 +900,7 @@ function createPluginController(options) {
         requestedPermissions: [...requested],
         grantedPermissions: [...granted],
         manifest: safeManifestDescriptor(checked.manifest),
+        revision: sha256(checked.manifestSource),
         entryHash: checked.manifest.integrity.files[checked.manifest.main],
         fileHashes: checked.manifest.integrity.files,
         integrity: { valid: true, reason: '' },
@@ -989,6 +919,7 @@ function createPluginController(options) {
         requestedPermissions: [],
         grantedPermissions: [],
         manifest: null,
+        revision: '',
         entryHash: '',
         fileHashes: {},
         integrity: { valid: false, reason: error && error.code ? error.code : 'plugins.integrity.invalid' },
@@ -1000,17 +931,31 @@ function createPluginController(options) {
   async function scanInstalled() {
     await ensureRoot();
     registry = normalizedRegistry(await readJsonFile(registryPath, defaultRegistry));
-    permissions = normalizedPermissions(await readJsonFile(permissionsPath, defaultPermissions));
+    const permissionsFile = await readJsonFileState(permissionsPath, defaultPermissions);
+    const permissionsTrusted = permissionsFile.status === 'valid' && isValidPermissionsState(permissionsFile.value);
+    permissions = normalizedPermissions(permissionsFile.value);
     const entries = await fsp.readdir(pluginRoot, { withFileTypes: true });
     const ids = entries
       .filter((entry) => entry.isDirectory() && isSafePluginId(entry.name))
       .map((entry) => entry.name)
       .sort();
     const next = new Map();
-    let changed = false;
+    let changed = permissionsFile.status === 'invalid';
     for (const id of ids) {
       const inspected = await inspectInstalledPackage(id);
-      if (inspected.integrity.valid && permissions.initialized[id] !== true) {
+      if (inspected.integrity.valid && !permissionsTrusted) {
+        // A missing or malformed permission file cannot prove prior consent or
+        // revocation state. Repair it without silently restoring capabilities.
+        permissions.grants[id] = [];
+        permissions.initialized[id] = true;
+        inspected.grantedPermissions = [];
+        if (inspected.requestedPermissions.length > 0 && registry.plugins[id] && registry.plugins[id].enabled === true) {
+          registry.plugins[id].enabled = false;
+          inspected.enabled = false;
+          inspected.status = 'disabled';
+        }
+        changed = true;
+      } else if (inspected.integrity.valid && permissions.initialized[id] !== true) {
         // Permission prompts were removed in API 1.2's installed-extension
         // workflow. A manifest remains the upper bound, but every declared
         // capability is available immediately after installation. The marker
@@ -1324,7 +1269,8 @@ function createPluginController(options) {
       descriptors.push(immutable({
         id: record.id,
         manifest: record.manifest,
-        grantedPermissions: [...record.grantedPermissions]
+        grantedPermissions: [...record.grantedPermissions],
+        revision: record.revision
       }));
     }
     return immutable(descriptors.sort((left, right) => left.id.localeCompare(right.id)));
@@ -1596,13 +1542,25 @@ function createPluginController(options) {
   }
 
   async function describeAgentApproval(payload) {
-    const current = await agentApprovalRecord(payload && payload.pluginId, payload && payload.approvalId);
-    return immutable(current.approval);
+    try {
+      const current = await agentApprovalRecord(payload && payload.pluginId, payload && payload.approvalId);
+      return immutable(current.approval);
+    } catch (error) {
+      const unavailable = unavailableAgentApproval(error);
+      if (unavailable) return immutable(unavailable);
+      throw error;
+    }
   }
 
   async function decideAgentApproval(payload) {
-    const current = await agentApprovalRecord(payload && payload.pluginId, payload && payload.approvalId);
-    return immutable(await agentBroker.decideApproval(current.id, current.approval.approvalId, payload && payload.approved === true));
+    try {
+      const current = await agentApprovalRecord(payload && payload.pluginId, payload && payload.approvalId);
+      return immutable(await agentBroker.decideApproval(current.id, current.approval.approvalId, payload && payload.approved === true));
+    } catch (error) {
+      const unavailable = unavailableAgentApproval(error);
+      if (unavailable) return immutable(unavailable);
+      throw error;
+    }
   }
 
   async function cancelAgentApproval(payload) {

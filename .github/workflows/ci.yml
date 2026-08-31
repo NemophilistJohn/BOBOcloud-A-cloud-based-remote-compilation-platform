@@ -304,14 +304,14 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical
-          ref: 21b20707cdc09d9cdc8ceeb6f58481aaff151f29
+          ref: e37beeb52e6b5de6b672c2ed4163e21d9f842fae
           path: .ci-plugins/ai-agent
           persist-credentials: false
       - name: Check out document preview plugin
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: NemophilistJohn/bobocloud-document-preview
-          ref: fa527df003c9cc136b6c93653e7c008232d3fed2
+          ref: 9e0f25631cddb10cacfdee61eb01374b55f4fdba
           path: .ci-plugins/document-preview
           persist-credentials: false
       - name: Check out local SCM plugin

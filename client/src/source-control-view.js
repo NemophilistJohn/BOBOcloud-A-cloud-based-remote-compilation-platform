@@ -167,6 +167,7 @@
   function useAction(panel, record, action) {
     if (action.form) {
       panel.activeForm = panel.activeForm === action.id ? '' : action.id;
+      panel.formDraft = null;
       closeOverflow(panel);
       renderPanel(panel, sourceControl().get(record.id) || record);
       return;
@@ -370,7 +371,7 @@
     return container;
   }
 
-  function appendField(form, field) {
+  function appendField(form, field, draft) {
     var wrapper = element('label', 'source-control-field');
     wrapper.htmlFor = form.id + '-' + field.id;
     wrapper.appendChild(element('span', 'source-control-field-label', field.label));
@@ -397,6 +398,10 @@
     if (field.placeholder) control.placeholder = field.placeholder;
     if (field.type === 'checkbox') control.checked = field.value === true;
     else if (field.type !== 'select') control.value = field.value || '';
+    if (draft && Object.prototype.hasOwnProperty.call(draft, field.id)) {
+      if (field.type === 'checkbox') control.checked = draft[field.id] === true;
+      else control.value = String(draft[field.id] == null ? '' : draft[field.id]);
+    }
     wrapper.appendChild(control);
     if (field.description) wrapper.appendChild(element('small', 'source-control-field-description', field.description));
     return wrapper;
@@ -405,10 +410,11 @@
   function appendActionForm(panel, record, action) {
     var formSchema = action.form;
     var form = element('form', 'source-control-form');
+    var draft = panel.formDraft && panel.formDraft.actionId === action.id ? panel.formDraft.values : null;
     form.id = 'source-control-form-' + record.id.replace(/[^A-Za-z0-9_-]/g, '-') + '-' + action.id;
     form.noValidate = true;
     if (formSchema.title) form.appendChild(element('h2', 'source-control-form-title', formSchema.title));
-    formSchema.fields.forEach(function(field) { form.appendChild(appendField(form, field)); });
+    formSchema.fields.forEach(function(field) { form.appendChild(appendField(form, field, draft)); });
     var controls = element('div', 'source-control-form-actions');
     var submit = button(formSchema.submitLabel || action.title, 'source-control-action source-control-action-primary');
     submit.type = 'submit';
@@ -416,6 +422,7 @@
     var cancel = button(t('Cancel'), 'source-control-action source-control-action-secondary');
     cancel.addEventListener('click', function() {
       panel.activeForm = '';
+      panel.formDraft = null;
       renderPanel(panel, sourceControl().get(record.id) || record);
     });
     controls.appendChild(submit);
@@ -456,8 +463,21 @@
     panel.body.appendChild(dock);
   }
 
+  function captureFormDraft(panel) {
+    if (!panel.activeForm || !panel.body) return;
+    var form = panel.body.querySelector('.source-control-form');
+    if (!form) return;
+    var values = Object.create(null);
+    Array.prototype.forEach.call(form.elements, function(control) {
+      if (!control || !control.name || control.type === 'submit' || control.type === 'button') return;
+      values[control.name] = control.type === 'checkbox' ? control.checked === true : control.value;
+    });
+    panel.formDraft = { actionId: panel.activeForm, values: values };
+  }
+
   function renderPanel(panel, record) {
     if (!panel || !record) return;
+    captureFormDraft(panel);
     applyLabels(panel, record);
     appendHeaderActions(panel, record, record.state || { actions: [] });
     panel.body.replaceChildren();
@@ -480,6 +500,10 @@
     if (state.phase === 'error' && !state.summary && !state.sections.length && !state.actions.length) return;
     var active = state.actions.find(function(action) { return action.id === panel.activeForm && action.form; });
     if (active) appendActionForm(panel, record, active);
+    else if (panel.activeForm) {
+      panel.activeForm = '';
+      panel.formDraft = null;
+    }
     appendSummary(panel.body, state.summary);
     state.sections.forEach(function(section) { panel.body.appendChild(renderSection(panel, record, state, section)); });
     appendActions(panel, record, state);
@@ -539,6 +563,7 @@
       tools: tools,
       body: body,
       activeForm: '',
+      formDraft: null,
       overflowOpen: false,
       overflowCleanup: null,
       overflowMenu: null,

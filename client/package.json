@@ -1,6 +1,6 @@
 {
   "name": "bobocloud-editer",
-  "version": "2.8.0",
+  "version": "2.8.1",
   "description": "BOBOCLOUD CODE EDITOR",
   "main": "main.js",
   "scripts": {
@@ -57,6 +57,7 @@
     "marked": "14.0.0",
     "minimatch": "3.1.5",
     "monaco-editor": "0.56.0",
+    "semver": "7.7.3",
     "ssh2-sftp-client": "^9.0.5",
     "ws": "^8.21.3"
   },
@@ -73,6 +74,7 @@
     "files": [
       "main.js",
       "main/",
+      "shared/",
       "preload.js",
       "client-analysis-cache.js",
       "language-pack-manager.js",

@@ -13,9 +13,9 @@
   var optionText = null;
   var confirmBtn = null;
   var cancelBtn = null;
-  var resolveFn = null;
-  var previouslyFocused = null;
-  var activeOptions = null;
+  var activeRequest = null;
+  var pendingRequests = [];
+  var closing = false;
 
   function ensureDOM() {
     if (overlay) return;
@@ -97,34 +97,10 @@
     document.body.appendChild(overlay);
   }
 
-  function close(result) {
-    if (!overlay || !resolveFn) return;
-    var response = result;
-    if (activeOptions && activeOptions.returnDetails === true) {
-      response = {
-        confirmed: result === true,
-        checkboxChecked: Boolean(!optionEl.hidden && optionInput.checked)
-      };
-    }
-    overlay.classList.remove('open');
-    overlay.setAttribute('aria-hidden', 'true');
-    var fn = resolveFn;
-    resolveFn = null;
-    activeOptions = null;
-    optionEl.hidden = true;
-    optionInput.checked = false;
-    optionText.textContent = '';
-    // Wait for the exit animation, then resolve
-    setTimeout(function() {
-      if (previouslyFocused && typeof previouslyFocused.focus === 'function') previouslyFocused.focus();
-      previouslyFocused = null;
-      fn(response);
-    }, 150);
-  }
-
-  function confirm(options) {
-    ensureDOM();
-    options = options || {};
+  function showNext() {
+    if (activeRequest || closing || pendingRequests.length === 0) return;
+    activeRequest = pendingRequests.shift();
+    var options = activeRequest.options;
 
     titleEl.textContent = options.title || 'Confirm';
     messageEl.textContent = options.message || '';
@@ -136,17 +112,55 @@
 
     confirmBtn.textContent = options.confirmLabel || 'Confirm';
     cancelBtn.textContent = options.cancelLabel || 'Cancel';
-
     confirmBtn.className = 'confirm-btn ' +
       (options.danger ? 'confirm-btn-danger' : 'confirm-btn-primary');
 
-    previouslyFocused = document.activeElement;
-    activeOptions = options;
+    activeRequest.previouslyFocused = document.activeElement;
     overlay.setAttribute('aria-hidden', 'false');
     overlay.classList.add('open');
-    setTimeout(function() { confirmBtn.focus(); }, 50);
+    var request = activeRequest;
+    setTimeout(function() {
+      if (activeRequest === request && !closing) confirmBtn.focus();
+    }, 50);
+  }
 
-    return new Promise(function(resolve) { resolveFn = resolve; });
+  function close(result) {
+    if (!overlay || !activeRequest || closing) return;
+    closing = true;
+    var request = activeRequest;
+    var response = result;
+    if (request.options.returnDetails === true) {
+      response = {
+        confirmed: result === true,
+        checkboxChecked: Boolean(!optionEl.hidden && optionInput.checked)
+      };
+    }
+    overlay.classList.remove('open');
+    overlay.setAttribute('aria-hidden', 'true');
+    activeRequest = null;
+    optionEl.hidden = true;
+    optionInput.checked = false;
+    optionText.textContent = '';
+    // Wait for the exit animation, then resolve
+    setTimeout(function() {
+      if (request.previouslyFocused && typeof request.previouslyFocused.focus === 'function') {
+        request.previouslyFocused.focus();
+      }
+      closing = false;
+      request.resolve(response);
+      showNext();
+    }, 150);
+  }
+
+  function confirm(options) {
+    ensureDOM();
+    var requestOptions = options && typeof options === 'object'
+      ? Object.assign({}, options)
+      : {};
+    return new Promise(function(resolve) {
+      pendingRequests.push({ options: requestOptions, resolve: resolve, previouslyFocused: null });
+      showNext();
+    });
   }
 
   BOBO.confirm = confirm;

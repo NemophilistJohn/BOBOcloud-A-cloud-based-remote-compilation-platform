@@ -724,11 +724,26 @@ export interface AgentToolRejectedResult {
   readonly rejected: true;
   readonly cancelled?: boolean;
   readonly tool: 'workspace_write' | 'process_run';
+  readonly failed?: false;
+}
+/** The trusted host authorized the operation but could not complete it. */
+export interface AgentToolExecutionFailedResult extends AgentAutomaticToolMetadata {
+  readonly approved?: false;
+  readonly rejected: true;
+  readonly failed: true;
+  /** Omitted only when an expired or missing approval has outlived the host's bounded identity cache. */
+  readonly tool?: 'workspace_write' | 'process_run';
+  readonly errorCode: string;
+  readonly errorMessage: string;
+  /** `unknown` means the operation may have produced side effects and must not be retried without verification. */
+  readonly outcome: 'not-started' | 'unknown';
+  readonly mayHaveExecuted: boolean;
 }
 export type AgentApprovalResult =
   | AgentWorkspaceWriteResult
   | AgentProcessRunResult
-  | AgentToolRejectedResult;
+  | AgentToolRejectedResult
+  | AgentToolExecutionFailedResult;
 
 export interface PluginTools {
   /** `workspace_list`, `workspace_read`, and `workspace_search` require `workspace.read`. */
@@ -736,8 +751,8 @@ export interface PluginTools {
   invoke(tool: 'workspace_read', input: AgentWorkspaceReadInput): Promise<AgentWorkspaceReadResult>;
   invoke(tool: 'workspace_search', input: AgentWorkspaceSearchInput): Promise<AgentWorkspaceSearchResult>;
   /** `ask`, or a host-classified high-risk `auto` call, returns an approval without executing. */
-  invoke(tool: 'workspace_write', input: AgentWorkspaceWriteInput): Promise<AgentToolApprovalRequired | AgentWorkspaceWriteResult>;
-  invoke(tool: 'process_run', input: AgentProcessRunInput): Promise<AgentToolApprovalRequired | AgentProcessRunResult>;
+  invoke(tool: 'workspace_write', input: AgentWorkspaceWriteInput): Promise<AgentToolApprovalRequired | AgentWorkspaceWriteResult | AgentToolExecutionFailedResult>;
+  invoke(tool: 'process_run', input: AgentProcessRunInput): Promise<AgentToolApprovalRequired | AgentProcessRunResult | AgentToolExecutionFailedResult>;
   invoke(tool: string, input?: JsonObject): Promise<JsonValue>;
 }
 

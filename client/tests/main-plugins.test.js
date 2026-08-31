@@ -142,6 +142,7 @@ test('plugin packages install atomically, remain disabled, and receive declared 
   const descriptors = harness.controller.runtimeDescriptors();
   assert.equal(descriptors.length, 1);
   assert.equal(descriptors[0].manifest.main, 'dist/extension.js');
+  assert.match(descriptors[0].revision, /^[a-f0-9]{64}$/);
   assert.equal(JSON.stringify(descriptors).includes(harness.root), false, 'descriptors must not leak plugin paths');
   const entry = await harness.controller.loadEntry(installed.id);
   assert.match(entry.source, /activate/);
@@ -184,6 +185,14 @@ test('Agent broker RPC denies Worker decisions while trusted approval IPC retain
     },
     describeApproval: (pluginId, approvalId) => {
       calls.push({ pluginId, method: 'describeApproval', args: { approvalId } });
+      if (approvalId === 'approval-expired' || approvalId === 'approval-missing' || approvalId === 'approval-evicted') {
+        const error = new Error(approvalId === 'approval-expired' ? 'Agent approval expired.' : 'Agent approval is missing or no longer valid.');
+        error.code = approvalId === 'approval-expired' ? 'AGENT_APPROVAL_EXPIRED' : 'AGENT_APPROVAL_NOT_FOUND';
+        if (approvalId !== 'approval-evicted') {
+          error.approvalTool = approvalId === 'approval-expired' ? 'workspace_write' : 'process_run';
+        }
+        throw error;
+      }
       if (approvalId === 'approval-write') {
         return {
           approvalId,
@@ -280,6 +289,29 @@ test('Agent broker RPC denies Worker decisions while trusted approval IPC retain
   assert.equal((await harness.handlers.get('plugins:agent-approval-decide')(trustedEvent, {
     pluginId: 'acme.sample-plugin', approvalId: 'approval-write', approved: true
   })).approved, true);
+  assert.deepEqual(await harness.handlers.get('plugins:agent-approval-decide')(trustedEvent, {
+    pluginId: 'acme.sample-plugin', approvalId: 'approval-expired', approved: true
+  }), {
+    approvalUnavailable: true,
+    tool: 'workspace_write',
+    errorCode: 'AGENT_APPROVAL_EXPIRED',
+    errorMessage: 'The Agent approval expired before the operation could start.'
+  });
+  assert.deepEqual(await harness.handlers.get('plugins:agent-approval-decide')(trustedEvent, {
+    pluginId: 'acme.sample-plugin', approvalId: 'approval-missing', approved: true
+  }), {
+    approvalUnavailable: true,
+    tool: 'process_run',
+    errorCode: 'AGENT_APPROVAL_NOT_FOUND',
+    errorMessage: 'The Agent approval is missing or no longer valid.'
+  });
+  assert.deepEqual(await harness.handlers.get('plugins:agent-approval-describe')(trustedEvent, {
+    pluginId: 'acme.sample-plugin', approvalId: 'approval-evicted'
+  }), {
+    approvalUnavailable: true,
+    errorCode: 'AGENT_APPROVAL_NOT_FOUND',
+    errorMessage: 'The Agent approval is missing or no longer valid.'
+  });
   assert.deepEqual(await harness.handlers.get('plugins:agent-approval-cancel')(trustedEvent, {
     pluginId: 'acme.sample-plugin', approvalId: 'approval-process'
   }), { cancelled: true });
@@ -351,6 +383,59 @@ test('legacy permission state migrates installed plugins to declared default gra
   const persisted = JSON.parse(await fsp.readFile(permissionsPath, 'utf8'));
   assert.equal(persisted.schemaVersion, 2);
   assert.equal(persisted.initialized['acme.sample-plugin'], true);
+});
+
+test('a damaged permission file disables plugins instead of restoring revoked grants', async (t) => {
+  const harness = await createHarness(t);
+  const source = path.join(harness.root, 'permission-recovery-package');
+  await writePackage(source);
+  await harness.controller.installFromPath(source);
+  await harness.controller.setEnabled('acme.sample-plugin', true);
+  await harness.controller.grant('acme.sample-plugin', 'services.read', false);
+  assert.deepEqual(harness.controller.get('acme.sample-plugin').grantedPermissions, ['commands.register']);
+
+  const permissionsPath = path.join(harness.root, 'plugins', '.permissions.json');
+  await fsp.writeFile(permissionsPath, '{ damaged json', 'utf8');
+  await harness.controller.refresh('permission-file-damaged');
+
+  const recovered = harness.controller.get('acme.sample-plugin');
+  assert.equal(recovered.enabled, false);
+  assert.equal(recovered.status, 'disabled');
+  assert.deepEqual(recovered.grantedPermissions, []);
+  assert.deepEqual(harness.controller.runtimeDescriptors(), []);
+  const persisted = JSON.parse(await fsp.readFile(permissionsPath, 'utf8'));
+  assert.equal(persisted.schemaVersion, 2);
+  assert.deepEqual(persisted.grants['acme.sample-plugin'], []);
+  assert.equal(persisted.initialized['acme.sample-plugin'], true);
+});
+
+test('a missing permission file fails closed and explicit grants recover the plugin', async (t) => {
+  const harness = await createHarness(t);
+  const source = path.join(harness.root, 'permission-missing-package');
+  await writePackage(source);
+  await harness.controller.installFromPath(source);
+  await harness.controller.setEnabled('acme.sample-plugin', true);
+
+  const permissionsPath = path.join(harness.root, 'plugins', '.permissions.json');
+  await fsp.rm(permissionsPath);
+  await harness.controller.refresh('permission-file-missing');
+
+  const recovered = harness.controller.get('acme.sample-plugin');
+  assert.equal(recovered.enabled, false);
+  assert.deepEqual(recovered.grantedPermissions, []);
+  assert.deepEqual(harness.controller.runtimeDescriptors(), []);
+
+  await harness.controller.grant('acme.sample-plugin', 'commands.register', true);
+  await harness.controller.setEnabled('acme.sample-plugin', true);
+  assert.deepEqual(harness.controller.get('acme.sample-plugin').grantedPermissions, ['commands.register']);
+  assert.deepEqual(
+    await harness.controller.rpc('acme.sample-plugin', 'commands.register', { id: 'acme.sample-plugin.hello' }),
+    { authorized: true, method: 'commands.register', permission: 'commands.register' }
+  );
+  await assert.rejects(
+    () => harness.controller.rpc('acme.sample-plugin', 'services.get', { id: 'workbench.projectTasks' }),
+    { code: 'plugins.rpc.permission' }
+  );
 });
 
 test('plugin-localization loader returns only a verified selected flat message table', async (t) => {
@@ -533,6 +618,25 @@ test('a replacement package is disabled and receives its declared permissions', 
   assert.equal(replacement.enabled, false);
   assert.deepEqual(replacement.grantedPermissions, ['commands.register', 'services.read']);
   assert.deepEqual(harness.controller.runtimeDescriptors(), []);
+});
+
+test('runtime revisions change when same-version package bytes are replaced', async (t) => {
+  const harness = await createHarness(t);
+  const first = path.join(harness.root, 'revision-first');
+  const second = path.join(harness.root, 'revision-second');
+  await writePackage(first, '1.0.0', 'export const revision = 1;\n');
+  await writePackage(second, '1.0.0', 'export const revision = 2;\n');
+
+  await harness.controller.installFromPath(first);
+  await harness.controller.setEnabled('acme.sample-plugin', true);
+  const firstRevision = harness.controller.runtimeDescriptors()[0].revision;
+  await harness.controller.installFromPath(second);
+  await harness.controller.setEnabled('acme.sample-plugin', true);
+  const secondRevision = harness.controller.runtimeDescriptors()[0].revision;
+
+  assert.match(firstRevision, /^[a-f0-9]{64}$/);
+  assert.match(secondRevision, /^[a-f0-9]{64}$/);
+  assert.notEqual(secondRevision, firstRevision);
 });
 
 test('plugin mutations serialize concurrent replacement requests', async (t) => {

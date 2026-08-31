@@ -15,8 +15,10 @@ const MAX_SEARCH_FILES = 4000;
 const MAX_PROCESS_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_PROCESS_ARGUMENT_BYTES = 32 * 1024;
 const APPROVAL_TTL_MS = 10 * 60 * 1000;
+const APPROVAL_TOMBSTONE_TTL_MS = 10 * 60 * 1000;
 const MAX_PENDING_APPROVALS = 64;
 const MAX_PENDING_APPROVALS_PER_PLUGIN = 8;
+const MAX_APPROVAL_TOMBSTONES = 128;
 const MAX_ACTIVE_MODELS = 8;
 const MAX_ACTIVE_MODELS_PER_PLUGIN = 2;
 const MAX_ACTIVE_SEARCHES = 2;
@@ -24,6 +26,19 @@ const MAX_ACTIVE_OPERATIONS = 8;
 const MAX_ACTIVE_OPERATIONS_PER_PLUGIN = 2;
 const ACCESS_MODES = new Set(['ask', 'auto', 'full']);
 const ACCESS_MODE_RANK = Object.freeze({ ask: 0, auto: 1, full: 2 });
+const APPROVAL_FAILURE_MESSAGES = Object.freeze({
+  AGENT_CANCELLED: 'The approved Agent operation was cancelled.',
+  AGENT_STALE_WORKSPACE: 'The active workspace changed before the approved Agent operation completed.',
+  AGENT_WORKSPACE_CHANGED: 'The workspace changed before the approved Agent operation started.',
+  AGENT_INVALID_PATH: 'The approved Agent target path is no longer valid.',
+  AGENT_FILE_TOO_LARGE: 'The approved Agent file exceeds the host size limit.',
+  AGENT_FILE_CHANGED: 'The file changed while approval was pending.',
+  AGENT_INVALID_COMMAND: 'The approved Agent command is no longer valid.',
+  AGENT_COMMAND_NOT_FOUND: 'The approved executable is not available in the local toolchain PATH.',
+  AGENT_COMMAND_CHANGED: 'The approved executable changed before it could start.',
+  AGENT_PROCESS_FAILED: 'The approved Agent process could not be started.',
+  AGENT_TOOL_NOT_FOUND: 'The approved Agent tool is no longer available.'
+});
 const ALLOWED_COMMANDS = new Set([
   'node', 'npm', 'npm.cmd', 'npx', 'npx.cmd', 'pnpm', 'pnpm.cmd', 'yarn', 'yarn.cmd',
   'bun', 'deno', 'git', 'go', 'cargo', 'rustc', 'python', 'python3', 'py', 'java',
@@ -158,9 +173,14 @@ async function resolveProcessCommand(command, snapshot) {
   throw agentError('AGENT_COMMAND_NOT_FOUND', 'The approved executable is not available in the local toolchain PATH.');
 }
 
-async function replaceFileAtomic(temporary, destination) {
+function markAtomicReplacementEffect(effectState) {
+  if (effectState) effectState.effectApplied = true;
+}
+
+async function replaceFileAtomic(temporary, destination, effectState = null) {
   try {
     await fsp.rename(temporary, destination);
+    markAtomicReplacementEffect(effectState);
     return;
   } catch (error) {
     if (process.platform !== 'win32' || (error.code !== 'EEXIST' && error.code !== 'EPERM')) throw error;
@@ -170,11 +190,13 @@ async function replaceFileAtomic(temporary, destination) {
   try {
     await fsp.rename(destination, backup);
     movedExisting = true;
+    markAtomicReplacementEffect(effectState);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
   try {
     await fsp.rename(temporary, destination);
+    markAtomicReplacementEffect(effectState);
     if (movedExisting) await fsp.unlink(backup).catch(() => {});
   } catch (error) {
     if (movedExisting) await fsp.rename(backup, destination).catch(() => {});
@@ -209,6 +231,7 @@ function createAgentPlatformBroker(options) {
   if (typeof runWorkspaceMutation !== 'function') throw new TypeError('Agent workspace writes require the workspace mutation coordinator.');
   const storageRoot = path.join(app.getPath('userData'), 'agent-data');
   const approvals = new Map();
+  const approvalTombstones = new Map();
   const activeOperations = new Map();
   const activeModelRequests = new Map();
   const activeSearches = new Map();
@@ -219,6 +242,40 @@ function createAgentPlatformBroker(options) {
 
   function pluginEpoch(pluginId) {
     return pluginEpochs.get(pluginId) || 0;
+  }
+
+  function pruneApprovalTombstones() {
+    const current = Date.now();
+    for (const [id, tombstone] of approvalTombstones) {
+      if (tombstone.expiresAt <= current) approvalTombstones.delete(id);
+    }
+  }
+
+  function rememberUnavailableApproval(operation, errorCode) {
+    if (!operation || !operation.id || !operation.pluginId ||
+        (operation.tool !== 'workspace_write' && operation.tool !== 'process_run')) return;
+    pruneApprovalTombstones();
+    while (approvalTombstones.size >= MAX_APPROVAL_TOMBSTONES) {
+      approvalTombstones.delete(approvalTombstones.keys().next().value);
+    }
+    approvalTombstones.set(operation.id, {
+      pluginId: operation.pluginId,
+      tool: operation.tool,
+      errorCode: errorCode === 'AGENT_APPROVAL_EXPIRED' ? errorCode : 'AGENT_APPROVAL_NOT_FOUND',
+      expiresAt: Date.now() + APPROVAL_TOMBSTONE_TTL_MS
+    });
+  }
+
+  function unavailableApprovalError(pluginId, approvalId, fallbackCode = 'AGENT_APPROVAL_NOT_FOUND') {
+    pruneApprovalTombstones();
+    const tombstone = approvalTombstones.get(approvalId);
+    const owned = tombstone && tombstone.pluginId === pluginId ? tombstone : null;
+    const code = owned ? owned.errorCode : fallbackCode;
+    const error = code === 'AGENT_APPROVAL_EXPIRED'
+      ? agentError(code, 'Agent approval expired.')
+      : agentError('AGENT_APPROVAL_NOT_FOUND', 'Agent approval is missing or no longer valid.');
+    if (owned) error.approvalTool = owned.tool;
+    return error;
   }
 
   function accessIdentity(pluginId, args) {
@@ -641,6 +698,7 @@ function createAgentPlatformBroker(options) {
       riskLevel,
       accessMode: access.accessMode,
       accessKey: access.key,
+      effectApplied: false,
       expiresAt: Date.now() + APPROVAL_TTL_MS
     };
   }
@@ -672,7 +730,12 @@ function createAgentPlatformBroker(options) {
     const automatic = access.accessMode === 'full' || (access.accessMode === 'auto' && riskLevel !== 'high');
     if (!automatic) return queueApproval(operation);
     operation.autoApproved = true;
-    const result = await executeOperation(operation);
+    let result;
+    try {
+      result = await executeOperation(operation);
+    } catch (error) {
+      result = failedOperationResult(operation, error);
+    }
     return Object.assign({}, result, {
       autoApproved: true,
       accessMode: access.accessMode,
@@ -764,7 +827,7 @@ function createAgentPlatformBroker(options) {
       try {
         assertOperationCurrent(operation);
         mutation.assertCurrent();
-        await replaceFileAtomic(temporary, target.absolute);
+        await replaceFileAtomic(temporary, target.absolute, operation);
         mutation.assertCurrent();
       } finally {
         await fsp.unlink(temporary).catch(() => {});
@@ -820,6 +883,8 @@ function createAgentPlatformBroker(options) {
       });
       const running = operation;
       running.child = child;
+      running.effectApplied = Number.isInteger(child.pid) && child.pid > 0;
+      child.once('spawn', () => { running.effectApplied = true; });
       runningProcesses.set(operation.id, running);
       let stdout = '';
       let stderr = '';
@@ -855,10 +920,11 @@ function createAgentPlatformBroker(options) {
   function findApproval(pluginId, approvalId) {
     const id = boundedText(approvalId, 120);
     const operation = approvals.get(id);
-    if (!operation || operation.pluginId !== pluginId) throw agentError('AGENT_APPROVAL_NOT_FOUND', 'Agent approval is missing or no longer valid.');
+    if (!operation || operation.pluginId !== pluginId) throw unavailableApprovalError(pluginId, id);
     if (operation.expiresAt < Date.now()) {
       approvals.delete(id);
-      throw agentError('AGENT_APPROVAL_EXPIRED', 'Agent approval expired.');
+      rememberUnavailableApproval(operation, 'AGENT_APPROVAL_EXPIRED');
+      throw unavailableApprovalError(pluginId, id, 'AGENT_APPROVAL_EXPIRED');
     }
     if (operation.epoch !== pluginEpoch(pluginId)) throw agentError('AGENT_CANCELLED', 'The Agent approval is no longer active.');
     assertCurrentWorkspace(operation.snapshot);
@@ -882,7 +948,7 @@ function createAgentPlatformBroker(options) {
   function describeApproval(pluginId, approvalId) {
     const id = boundedText(approvalId, 120);
     const operation = approvals.has(id) ? findApproval(pluginId, id) : activeOperations.get(id);
-    if (!operation || operation.pluginId !== pluginId) throw agentError('AGENT_APPROVAL_NOT_FOUND', 'Agent approval is missing or no longer valid.');
+    if (!operation || operation.pluginId !== pluginId) throw unavailableApprovalError(pluginId, id);
     assertOperationCurrent(operation);
     const details = operation.tool === 'workspace_write'
       ? {
@@ -934,21 +1000,48 @@ function createAgentPlatformBroker(options) {
     }
   }
 
+  function failedOperationResult(operation, error) {
+    const rawCode = boundedText(error && error.code, 96);
+    const knownMessage = Object.prototype.hasOwnProperty.call(APPROVAL_FAILURE_MESSAGES, rawCode)
+      ? APPROVAL_FAILURE_MESSAGES[rawCode]
+      : '';
+    const errorCode = knownMessage ? rawCode : 'AGENT_OPERATION_FAILED';
+    const errorMessage = knownMessage || 'The approved Agent operation could not be completed.';
+    const mayHaveExecuted = operation.effectApplied === true;
+    return {
+      approved: false,
+      rejected: true,
+      failed: true,
+      tool: operation.tool,
+      errorCode,
+      errorMessage,
+      outcome: mayHaveExecuted ? 'unknown' : 'not-started',
+      mayHaveExecuted
+    };
+  }
+
   async function decideApproval(pluginId, approvalId, approved) {
     const operation = findApproval(pluginId, approvalId);
     if (approved !== true) {
+      rememberUnavailableApproval(operation, 'AGENT_APPROVAL_NOT_FOUND');
       approvals.delete(operation.id);
       return { rejected: true, tool: operation.tool };
     }
     assertOperationCapacity(pluginId);
+    rememberUnavailableApproval(operation, 'AGENT_APPROVAL_NOT_FOUND');
     approvals.delete(operation.id);
-    return executeOperation(operation);
+    try {
+      return await executeOperation(operation);
+    } catch (error) {
+      return failedOperationResult(operation, error);
+    }
   }
 
   function cancelApproval(pluginId, approvalId) {
     approvalId = boundedText(approvalId, 120);
     const pending = approvals.get(approvalId);
     if (pending && pending.pluginId === pluginId) {
+      rememberUnavailableApproval(pending, 'AGENT_APPROVAL_NOT_FOUND');
       approvals.delete(approvalId);
       return { cancelled: true };
     }
@@ -1062,7 +1155,10 @@ function createAgentPlatformBroker(options) {
   async function request(pluginId, method, args) {
     const id = safePluginId(pluginId);
     for (const [approvalId, operation] of approvals) {
-      if (operation.expiresAt < Date.now()) approvals.delete(approvalId);
+      if (operation.expiresAt < Date.now()) {
+        approvals.delete(approvalId);
+        rememberUnavailableApproval(operation, 'AGENT_APPROVAL_EXPIRED');
+      }
     }
     if (method === 'models.list') return listModels();
     if (method === 'models.generate') return generate(id, args);
@@ -1078,6 +1174,7 @@ function createAgentPlatformBroker(options) {
   function disposePlugin(pluginId) {
     pluginEpochs.set(pluginId, pluginEpoch(pluginId) + 1);
     for (const [id, operation] of approvals) if (operation.pluginId === pluginId) approvals.delete(id);
+    for (const [id, tombstone] of approvalTombstones) if (tombstone.pluginId === pluginId) approvalTombstones.delete(id);
     for (const operation of activeOperations.values()) {
       if (operation.pluginId !== pluginId) continue;
       operation.cancelled = true;
@@ -1102,6 +1199,7 @@ function createAgentPlatformBroker(options) {
     for (const request of activeModelRequests.values()) affectedPlugins.add(request.pluginId);
     for (const search of activeSearches.values()) affectedPlugins.add(search.pluginId);
     for (const pluginId of affectedPlugins) pluginEpochs.set(pluginId, pluginEpoch(pluginId) + 1);
+    for (const operation of approvals.values()) rememberUnavailableApproval(operation, 'AGENT_APPROVAL_NOT_FOUND');
     approvals.clear();
     for (const operation of activeOperations.values()) {
       operation.cancelled = true;
@@ -1118,6 +1216,7 @@ function createAgentPlatformBroker(options) {
 
   function dispose() {
     workspaceChanged();
+    approvalTombstones.clear();
     runningProcesses.clear();
     activeOperations.clear();
     activeModelRequests.clear();

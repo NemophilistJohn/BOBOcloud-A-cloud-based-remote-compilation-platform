@@ -90,6 +90,28 @@ function treeRow(page, name) {
   return page.locator(`.tree-row[data-name="${name}"]`).first();
 }
 
+async function waitForTreeToSettle(page, quietMs = 500, timeoutMs = 3000) {
+  await page.locator('#file-tree').evaluate((tree, options) => new Promise((resolve, reject) => {
+    let quietTimer;
+    let timeoutTimer;
+    const observer = new MutationObserver(() => scheduleQuietPeriod());
+    const finish = (error) => {
+      clearTimeout(quietTimer);
+      clearTimeout(timeoutTimer);
+      observer.disconnect();
+      if (error) reject(error);
+      else resolve();
+    };
+    const scheduleQuietPeriod = () => {
+      clearTimeout(quietTimer);
+      quietTimer = setTimeout(() => finish(), options.quietMs);
+    };
+    observer.observe(tree, { attributes: true, childList: true, subtree: true });
+    timeoutTimer = setTimeout(() => finish(new Error('Workspace tree did not settle.')), options.timeoutMs);
+    scheduleQuietPeriod();
+  }), { quietMs, timeoutMs });
+}
+
 test('file-tree context menu is translated, keyboard accessible, bounded, and dismissible', async () => {
   test.setTimeout(60000);
   let fixture;
@@ -253,6 +275,7 @@ test('rename and create editors stay at their tree locations and preserve action
     await fileInput.press('Enter');
     await expect(treeRow(page, 'created.js')).toBeVisible();
     expect(fs.existsSync(path.join(workspace, 'src', 'created.js'))).toBe(true);
+    await waitForTreeToSettle(page);
 
     const beta = treeRow(page, 'beta.txt');
     await beta.click({ button: 'right' });

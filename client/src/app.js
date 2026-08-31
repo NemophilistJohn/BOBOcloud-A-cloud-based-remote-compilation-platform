@@ -29,9 +29,9 @@
   } catch (error) {
     console.error('Language pack bootstrap:', error);
   }
-  require.config(loaderConfig);
+  window.require.config(loaderConfig);
 
-  require(['vs/editor/editor.main'], async function(_monaco) {
+  window.require(['vs/editor/editor.main'], async function(_monaco) {
   // _monaco is the AMD-loaded module; also available as window.monaco.
   var monacoInstance = _monaco || window.monaco;
   var BOBO = window.BOBO;

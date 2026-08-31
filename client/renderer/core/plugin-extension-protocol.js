@@ -61,11 +61,9 @@ export const ExtensionErrorCode = Object.freeze({
   UNAVAILABLE: 'EXTENSION_UNAVAILABLE'
 });
 
-const MAX_DEPTH = 24;
-const MAX_ITEMS = 4096;
-const MAX_STRING_LENGTH = 512 * 1024;
-const MAX_PLUGIN_RPC_ERROR_CODE_LENGTH = 160;
-const MAX_PLUGIN_RPC_ERROR_MESSAGE_LENGTH = 8 * 1024;
+const MAX_ERROR_CODE_LENGTH = 160;
+const MAX_ERROR_MESSAGE_LENGTH = 8 * 1024;
+const ERROR_CODE_PATTERN = /^[A-Za-z][A-Za-z0-9._-]*$/;
 
 export function createExtensionError(code, message) {
   const error = new Error(message);
@@ -74,23 +72,40 @@ export function createExtensionError(code, message) {
 }
 
 export function serializeExtensionError(error, fallbackCode = ExtensionErrorCode.UNAVAILABLE) {
-  const code = error && typeof error.code === 'string' && error.code
+  const safeFallback = typeof fallbackCode === 'string' &&
+      ERROR_CODE_PATTERN.test(fallbackCode) && fallbackCode.length <= MAX_ERROR_CODE_LENGTH
+    ? fallbackCode
+    : ExtensionErrorCode.UNAVAILABLE;
+  const code = error && typeof error.code === 'string' &&
+      ERROR_CODE_PATTERN.test(error.code) && error.code.length <= MAX_ERROR_CODE_LENGTH
     ? error.code
-    : fallbackCode;
+    : safeFallback;
   const message = error && typeof error.message === 'string' && error.message
     ? error.message
     : 'Extension operation failed.';
-  return Object.freeze({ code, message: message.slice(0, MAX_STRING_LENGTH) });
+  return Object.freeze({ code, message: message.slice(0, MAX_ERROR_MESSAGE_LENGTH) });
 }
 
 export function deserializeExtensionError(value, fallbackCode = ExtensionErrorCode.UNAVAILABLE) {
-  if (value && typeof value === 'object') {
-    return createExtensionError(
-      typeof value.code === 'string' && value.code ? value.code : fallbackCode,
-      typeof value.message === 'string' && value.message ? value.message : 'Extension operation failed.'
-    );
-  }
-  return createExtensionError(fallbackCode, 'Extension operation failed.');
+  const serialized = normalizeSerializedExtensionError(value, fallbackCode);
+  return createExtensionError(serialized.code, serialized.message);
+}
+
+function normalizeSerializedExtensionError(value, fallbackCode = ExtensionErrorCode.UNAVAILABLE) {
+  const fallback = typeof fallbackCode === 'string' &&
+      ERROR_CODE_PATTERN.test(fallbackCode) && fallbackCode.length <= MAX_ERROR_CODE_LENGTH
+    ? fallbackCode
+    : ExtensionErrorCode.UNAVAILABLE;
+  if (!isSerializedExtensionError(value)) return { code: fallback, message: 'Extension operation failed.' };
+  return { code: value.code, message: value.message };
+}
+
+export function isSerializedExtensionError(value) {
+  if (!isPlainObject(value)) return false;
+  return hasExactStringKeys(value, ['code', 'message']) &&
+    typeof value.code === 'string' && ERROR_CODE_PATTERN.test(value.code) &&
+    value.code.length <= MAX_ERROR_CODE_LENGTH && typeof value.message === 'string' &&
+    value.message.length > 0 && value.message.length <= MAX_ERROR_MESSAGE_LENGTH;
 }
 
 export function unwrapPluginRpcResult(result) {
@@ -104,10 +119,10 @@ export function unwrapPluginRpcResult(result) {
   if (!isPlainObject(failure) ||
       typeof failure.code !== 'string' ||
       !/^[A-Za-z][A-Za-z0-9._-]*$/.test(failure.code) ||
-      failure.code.length > MAX_PLUGIN_RPC_ERROR_CODE_LENGTH ||
+      failure.code.length > MAX_ERROR_CODE_LENGTH ||
       typeof failure.message !== 'string' ||
       !failure.message ||
-      failure.message.length > MAX_PLUGIN_RPC_ERROR_MESSAGE_LENGTH) {
+      failure.message.length > MAX_ERROR_MESSAGE_LENGTH) {
     throw createExtensionError(ExtensionErrorCode.PROTOCOL, 'Plugin RPC returned an invalid failure.');
   }
   throw createExtensionError(failure.code, failure.message);
@@ -134,85 +149,226 @@ export function isPlainObject(value) {
   }
 }
 
-// Never let a trusted renderer object (or an accessor/function hidden inside
-// it) cross the extension boundary. This is intentionally narrower than the
-// structured-clone algorithm.
-export function cloneExtensionData(value, options = {}) {
-  const maxDepth = Number.isInteger(options.maxDepth) ? options.maxDepth : MAX_DEPTH;
-  const maxItems = Number.isInteger(options.maxItems) ? options.maxItems : MAX_ITEMS;
-  const maxStringLength = Number.isInteger(options.maxStringLength) ? options.maxStringLength : MAX_STRING_LENGTH;
-  const seen = new WeakSet();
-  let itemCount = 0;
+// This factory is embedded verbatim into the isolated Worker. Capture every
+// intrinsic once, before downloaded code runs, instead of freezing the
+// plugin's JavaScript realm or consulting mutable globals at request time.
+export function createExtensionDataCloner() {
+  const SafeError = Error;
+  const SafeWeakSet = WeakSet;
+  const safeApply = Reflect.apply;
+  const safeArrayIsArray = Array.isArray;
+  const safeFunctionToString = Function.prototype.toString;
+  const safeHasOwn = Object.prototype.hasOwnProperty;
+  const safeNumberIsFinite = Number.isFinite;
+  const safeNumberIsInteger = Number.isInteger;
+  const safeObjectCreate = Object.create;
+  const safeObjectDefineProperty = Object.defineProperty;
+  const safeObjectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+  const safeObjectGetOwnPropertyDescriptors = Object.getOwnPropertyDescriptors;
+  const safeObjectGetPrototypeOf = Object.getPrototypeOf;
+  const safeObjectPrototype = Object.prototype;
+  const safeOwnKeys = Reflect.ownKeys;
+  const safeRegExpTest = RegExp.prototype.test;
+  const safeWeakSetAdd = WeakSet.prototype.add;
+  const safeWeakSetDelete = WeakSet.prototype.delete;
+  const safeWeakSetHas = WeakSet.prototype.has;
+  const arrayIndexPattern = /^(0|[1-9][0-9]*)$/;
+  const nativeObjectPattern = /^function Object\(\) \{ \[native code\] \}$/;
 
-  function clone(current, depth) {
-    itemCount += 1;
-    if (itemCount > maxItems * 8) {
-      throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension payload is too large.');
-    }
-    if (depth > maxDepth) {
-      throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension payload exceeds the maximum depth.');
-    }
-    if (current === null || typeof current === 'boolean') return current;
-    if (typeof current === 'string') {
-      if (current.length > maxStringLength) {
-        throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension payload contains an oversized string.');
-      }
-      return current;
-    }
-    if (typeof current === 'number') {
-      if (!Number.isFinite(current)) {
-        throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension payload contains a non-finite number.');
-      }
-      return current;
-    }
-    if (current === undefined) return undefined;
-    if (typeof current !== 'object') {
-      throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension payload must contain data only.');
-    }
-    if (seen.has(current)) {
-      throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension payload cannot contain circular data.');
-    }
-    seen.add(current);
-    if (Array.isArray(current)) {
-      if (current.length > maxItems) {
-        throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension payload contains too many items.');
-      }
-      const result = current.map((item) => clone(item, depth + 1));
-      seen.delete(current);
-      return result;
-    }
-    if (!isPlainObject(current)) {
-      throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension payload must contain plain objects only.');
-    }
-    const descriptors = Object.getOwnPropertyDescriptors(current);
-    const keys = Object.keys(descriptors);
-    if (keys.length > maxItems) {
-      throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension payload contains too many properties.');
-    }
-    const result = Object.create(null);
-    for (const key of keys) {
-      const descriptor = descriptors[key];
-      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
-        throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension payload cannot contain accessors.');
-      }
-      result[key] = clone(descriptor.value, depth + 1);
-    }
-    seen.delete(current);
-    return result;
+  function apply(method, receiver, args) {
+    return safeApply(method, receiver, args);
   }
 
-  return clone(value, 0);
+  function hasOwn(value, key) {
+    return apply(safeHasOwn, value, [key]);
+  }
+
+  function matches(pattern, value) {
+    return apply(safeRegExpTest, pattern, [value]);
+  }
+
+  function option(options, name, fallback) {
+    if (!options || typeof options !== 'object' || !hasOwn(options, name)) return fallback;
+    return safeNumberIsInteger(options[name]) ? options[name] : fallback;
+  }
+
+  // Never let a trusted renderer object (or an accessor/function hidden
+  // inside it) cross the extension boundary. This is intentionally narrower
+  // than the structured-clone algorithm.
+  return function cloneExtensionData(value, options = {}) {
+    const maxDepth = option(options, 'maxDepth', 24);
+    const maxItems = option(options, 'maxItems', 4096);
+    const maxStringLength = option(options, 'maxStringLength', 512 * 1024);
+    const maxBytes = option(options, 'maxBytes', 2 * 1024 * 1024);
+    const seen = new SafeWeakSet();
+    let itemCount = 0;
+    let byteCount = 0;
+
+    function invalid(message) {
+      const error = new SafeError(message);
+      error.code = 'EXTENSION_INVALID_REQUEST';
+      return error;
+    }
+
+    function plainObject(current) {
+      if (!current || typeof current !== 'object') return false;
+      try {
+        const prototype = safeObjectGetPrototypeOf(current);
+        if (prototype === safeObjectPrototype || prototype === null) return true;
+        if (safeObjectGetPrototypeOf(prototype) !== null) return false;
+        const constructor = safeObjectGetOwnPropertyDescriptor(prototype, 'constructor');
+        if (!constructor || typeof constructor.value !== 'function') return false;
+        return constructor.value.name === 'Object' &&
+          matches(nativeObjectPattern, apply(safeFunctionToString, constructor.value, []));
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function countBytes(bytes) {
+      byteCount += bytes;
+      if (byteCount > maxBytes) throw invalid('Extension payload exceeds the total size limit.');
+    }
+
+    function descriptorValue(descriptor) {
+      if (!descriptor || !hasOwn(descriptor, 'value')) {
+        throw invalid('Extension payload cannot contain accessors.');
+      }
+      return descriptor.value;
+    }
+
+    function cloneArray(current, depth) {
+      if (current.length > maxItems) {
+        throw invalid('Extension payload contains too many items.');
+      }
+      countBytes(current.length * 4);
+      const descriptors = safeObjectGetOwnPropertyDescriptors(current);
+      const keys = safeOwnKeys(descriptors);
+      const result = [];
+      result.length = current.length;
+      for (let position = 0; position < keys.length; position += 1) {
+        const key = keys[position];
+        if (typeof key !== 'string') {
+          throw invalid('Extension payload cannot contain symbol properties.');
+        }
+        if (key === 'length') continue;
+        if (!matches(arrayIndexPattern, key) || +key >= current.length) {
+          throw invalid('Extension arrays cannot contain custom properties.');
+        }
+        safeObjectDefineProperty(result, key, {
+          configurable: true,
+          enumerable: true,
+          value: clone(descriptorValue(descriptors[key]), depth + 1),
+          writable: true
+        });
+      }
+      return result;
+    }
+
+    function clone(current, depth) {
+      itemCount += 1;
+      if (itemCount > maxItems * 8) {
+        throw invalid('Extension payload is too large.');
+      }
+      if (depth > maxDepth) {
+        throw invalid('Extension payload exceeds the maximum depth.');
+      }
+      if (current === null || typeof current === 'boolean') {
+        countBytes(4);
+        return current;
+      }
+      if (typeof current === 'string') {
+        if (current.length > maxStringLength) {
+          throw invalid('Extension payload contains an oversized string.');
+        }
+        countBytes(current.length * 2);
+        return current;
+      }
+      if (typeof current === 'number') {
+        if (!safeNumberIsFinite(current)) {
+          throw invalid('Extension payload contains a non-finite number.');
+        }
+        countBytes(8);
+        return current;
+      }
+      if (current === undefined) {
+        countBytes(1);
+        return undefined;
+      }
+      if (typeof current !== 'object') {
+        throw invalid('Extension payload must contain data only.');
+      }
+      if (apply(safeWeakSetHas, seen, [current])) {
+        throw invalid('Extension payload cannot contain circular data.');
+      }
+      apply(safeWeakSetAdd, seen, [current]);
+      let result;
+      if (safeArrayIsArray(current)) {
+        result = cloneArray(current, depth);
+      } else {
+        if (!plainObject(current)) {
+          throw invalid('Extension payload must contain plain objects only.');
+        }
+        const descriptors = safeObjectGetOwnPropertyDescriptors(current);
+        const keys = safeOwnKeys(descriptors);
+        if (keys.length > maxItems) {
+          throw invalid('Extension payload contains too many properties.');
+        }
+        result = safeObjectCreate(null);
+        for (let position = 0; position < keys.length; position += 1) {
+          const key = keys[position];
+          if (typeof key !== 'string') {
+            throw invalid('Extension payload cannot contain symbol properties.');
+          }
+          if (key.length > maxStringLength) throw invalid('Extension payload contains an oversized property name.');
+          countBytes(key.length * 2);
+          result[key] = clone(descriptorValue(descriptors[key]), depth + 1);
+        }
+      }
+      apply(safeWeakSetDelete, seen, [current]);
+      return result;
+    }
+
+    return clone(value, 0);
+  };
 }
+
+export const cloneExtensionData = createExtensionDataCloner();
 
 export function isExtensionRequestId(value) {
   return (Number.isSafeInteger(value) && value >= 1) ||
     (typeof value === 'string' && /^[A-Za-z0-9_-]{1,96}$/.test(value));
 }
 
+function hasExactStringKeys(value, allowed) {
+  const keys = Reflect.ownKeys(value);
+  return keys.length === allowed.length &&
+    !keys.some((key) => typeof key !== 'string') &&
+    keys.every((key) => allowed.includes(key));
+}
+
 export function isExtensionMessage(value) {
-  return isPlainObject(value) &&
-    value.protocolVersion === EXTENSION_PROTOCOL_VERSION &&
-    typeof value.type === 'string';
+  if (!isPlainObject(value) || value.protocolVersion !== EXTENSION_PROTOCOL_VERSION || typeof value.type !== 'string') {
+    return false;
+  }
+  if (value.type === ExtensionMessageType.ACTIVATED) {
+    return hasExactStringKeys(value, ['protocolVersion', 'type']);
+  }
+  if (value.type === ExtensionMessageType.ACTIVATION_FAILED || value.type === ExtensionMessageType.FATAL) {
+    return hasExactStringKeys(value, ['protocolVersion', 'type', 'error']) && isSerializedExtensionError(value.error);
+  }
+  if (value.type === ExtensionMessageType.REQUEST) {
+    return hasExactStringKeys(value, ['protocolVersion', 'type', 'id', 'method', 'args']) &&
+      isExtensionRequestId(value.id) && typeof value.method === 'string' &&
+      value.method.length > 0 && value.method.length <= 160;
+  }
+  if (value.type === ExtensionMessageType.RESPONSE) {
+    if (!isExtensionRequestId(value.id) || typeof value.ok !== 'boolean') return false;
+    return value.ok === true
+      ? hasExactStringKeys(value, ['protocolVersion', 'type', 'id', 'ok', 'value'])
+      : hasExactStringKeys(value, ['protocolVersion', 'type', 'id', 'ok', 'error']) && isSerializedExtensionError(value.error);
+  }
+  return false;
 }
 
 export function isNamespacedExtensionId(value) {
