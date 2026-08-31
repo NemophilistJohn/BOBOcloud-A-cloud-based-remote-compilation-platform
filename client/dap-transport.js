@@ -98,6 +98,7 @@ class DapChildChannel {
     this.pending = new Map();
     this.ready = false;
     this.closed = false;
+    this.connectFinish = null;
   }
 
   async connect() {
@@ -106,12 +107,18 @@ class DapChildChannel {
     const config = parent.config;
     return new Promise((resolve, reject) => {
       let settled = false;
+      let timer = null;
       const finish = (error) => {
         if (settled) return;
         settled = true;
-        if (error) reject(error);
-        else resolve(this);
+        if (this.connectFinish === finish) this.connectFinish = null;
+        parent.clearTimer(timer);
+        if (error) {
+          reject(error);
+          if (socket) { try { socket.close(); } catch (_) {} }
+        } else resolve(this);
       };
+      this.connectFinish = finish;
       let socket;
       try {
         socket = parent.webSocketFactory(normalizeDapChildUrl(config.serverHost, config.childPort));
@@ -120,6 +127,12 @@ class DapChildChannel {
         return;
       }
       this.socket = socket;
+      timer = parent.setTimer(() => {
+        const error = new Error('Timed out connecting to the cloud debug child service');
+        error.code = 'connection_timeout';
+        finish(error);
+        this.close();
+      }, parent.connectTimeoutMs);
       const onOpen = async () => {
         try {
           const token = await parent.getCredential(config.serverHost);
@@ -260,6 +273,8 @@ class DapChildChannel {
 
   close() {
     this.closed = true;
+    const finish = this.connectFinish;
+    if (finish) finish(this.parent._cancelledStartError());
     this._rejectPending(new Error('Debug child session stopped'));
     const socket = this.socket;
     this.socket = null;
@@ -418,8 +433,12 @@ class DapTransport {
         }
         if (message.type === 'dap.child') {
           this._startChild(message).catch((error) => {
-            this._respondRoot(message.request, false, {}, error && error.message ? error.message : 'Unable to attach debug child session');
-            this._setState('error', { error: error && error.message ? error.message : 'Unable to attach debug session' });
+            if (generation === this.generation && this.socket && this.socket.readyState === 1) {
+              try { this._respondRoot(message.request, false, {}, error && error.message ? error.message : 'Unable to attach debug child session'); } catch (_) {}
+            }
+            if (!error || error.code !== 'DAP_START_CANCELLED') {
+              this._setState('error', { error: error && error.message ? error.message : 'Unable to attach debug session' });
+            }
           });
           return;
         }
@@ -509,14 +528,20 @@ class DapTransport {
     }
     this.childStarting = (async () => {
       const child = new DapChildChannel(this, control);
-      await child.connect();
-      const initialize = Object.assign({}, this.initializeArguments || {}, { clientID: 'bobocloud-editor', clientName: 'BOBOCLOUD Editor', supportsVariablePaging: true });
-      await child.request('initialize', initialize, this.requestTimeoutMs);
-      const command = String(configuration.request || 'launch');
-      child.startTarget(command, configuration);
-      await child.request('configurationDone', {}, this.requestTimeoutMs);
       this.child = child;
-      this._respondRoot(request, true, {});
+      try {
+        await child.connect();
+        const initialize = Object.assign({}, this.initializeArguments || {}, { clientID: 'bobocloud-editor', clientName: 'BOBOCLOUD Editor', supportsVariablePaging: true });
+        await child.request('initialize', initialize, this.requestTimeoutMs);
+        const command = String(configuration.request || 'launch');
+        child.startTarget(command, configuration);
+        await child.request('configurationDone', {}, this.requestTimeoutMs);
+        this._respondRoot(request, true, {});
+      } catch (error) {
+        child.close();
+        if (this.child === child) this.child = null;
+        throw error;
+      }
     })();
     try {
       return await this.childStarting;

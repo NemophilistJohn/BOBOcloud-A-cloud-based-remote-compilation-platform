@@ -17,6 +17,12 @@ const (
 )
 
 func acquireHandlerRuntimeResource(ctx context.Context, controller *resourcecontrol.Controller, workload resourcecontrol.Workload, ownerID, scopeID, workloadID, runtimeID, language, image string, dockerContainer bool) (*resourcecontrol.Lease, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if controller == nil {
 		return nil, nil
 	}

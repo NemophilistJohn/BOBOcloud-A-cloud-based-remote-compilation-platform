@@ -3,9 +3,11 @@
 const fs = require('fs');
 const path = require('path');
 const { parse, printParseErrorCode } = require('jsonc-parser');
+const { readFileBoundedSync } = require('./atomic-file');
 
 const BUILTIN_CONFIGURATION_ID = 'builtin:current-file';
 const UNSUPPORTED_VARIABLE = /\$\{(?:input|command|config|env):[^}]+\}/;
+const MAX_LAUNCH_CONFIGURATION_BYTES = 1024 * 1024;
 
 function lineColumn(text, offset) {
   const before = text.slice(0, Math.max(0, offset));
@@ -21,7 +23,7 @@ function readJsonc(filePath) {
   if (!fs.existsSync(filePath)) return { exists: false, value: null, warnings: [] };
   let text;
   try {
-    text = fs.readFileSync(filePath, 'utf8');
+    text = readFileBoundedSync(filePath, { maxBytes: MAX_LAUNCH_CONFIGURATION_BYTES, encoding: 'utf8' });
   } catch (error) {
     return { exists: true, value: null, warnings: [warning('read-error', { path: filePath, reason: error.message })] };
   }

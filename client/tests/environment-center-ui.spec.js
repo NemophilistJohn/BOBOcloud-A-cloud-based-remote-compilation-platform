@@ -74,10 +74,19 @@ test('environment view switches, persists, localizes, and fits at 180px', async 
     const manifestRow = page.locator('#environment-manifest-list button.environment-list-link');
     await expect(manifestRow).toHaveCount(1);
     await manifestRow.focus();
-    const manifestStyle = await manifestRow.evaluate((element) => {
-      const style = getComputedStyle(element);
-      return { width: element.getBoundingClientRect().width, parentWidth: element.parentElement.getBoundingClientRect().width, appearance: style.appearance };
-    });
+    let manifestStyle = null;
+    await expect.poll(async () => {
+      try {
+        manifestStyle = await manifestRow.evaluate((element) => {
+          if (!element.isConnected || !element.parentElement) return null;
+          const style = getComputedStyle(element);
+          return { width: element.getBoundingClientRect().width, parentWidth: element.parentElement.getBoundingClientRect().width, appearance: style.appearance };
+        });
+      } catch (_) {
+        manifestStyle = null;
+      }
+      return Boolean(manifestStyle);
+    }).toBe(true);
     expect(Math.abs(manifestStyle.width - manifestStyle.parentWidth)).toBeLessThanOrEqual(1);
     expect(manifestStyle.appearance).toBe('none');
 

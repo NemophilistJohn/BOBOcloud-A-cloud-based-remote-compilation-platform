@@ -108,6 +108,49 @@ test('routes js-debug target requests through a ticket-bound child WebSocket', a
   await transport.stop('test');
 });
 
+test('debug child connection has a deadline and stop closes a provisional child', async () => {
+  const sockets = [];
+  const transport = new DapTransport({
+    webSocketFactory: () => {
+      const socket = new MockSocket();
+      sockets.push(socket);
+      return socket;
+    },
+    getCredential: () => 'token',
+    connectTimeoutMs: 20
+  });
+  const starting = transport.start({
+    serverHost: 'cloud.test', childPort: 3102, languageId: 'node', runtimeId: 'node:22',
+    workspace: { kind: 'personal', folderKey: 'demo' }
+  });
+  sockets[0].open();
+  await new Promise((resolve) => setImmediate(resolve));
+  ready(sockets[0], { adapter: { id: 'node-js-debug', languageId: 'node', runtimeId: 'node:22', supportsChildSessions: true } });
+  await starting;
+  sockets[0].fire('message', {
+    type: 'dap.child', ticket: 'timeout-ticket', request: {
+      seq: 91, type: 'request', command: 'startDebugging',
+      arguments: { configuration: { type: 'pwa-node', request: 'launch', program: '/workspace/app.js' } }
+    }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sockets.length, 2);
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  assert.equal(sockets[1].closed, true);
+  assert.equal(sockets[0].sent.at(-1).success, false);
+
+  sockets[0].fire('message', {
+    type: 'dap.child', ticket: 'cancel-ticket', request: {
+      seq: 92, type: 'request', command: 'startDebugging',
+      arguments: { configuration: { type: 'pwa-node', request: 'launch', program: '/workspace/app.js' } }
+    }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sockets.length, 3);
+  await transport.stop('workspace-change');
+  assert.equal(sockets[2].closed, true);
+});
+
 test('uses one gateway handshake then exchanges raw DAP messages', async () => {
   const events = [];
   let socket;
@@ -389,6 +432,31 @@ test('launch configuration parser accepts JSONC and BOBO overrides VS Code by na
     assert.equal(resolved.configuration.program, '/workspace/app.py');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('launch configuration reads are bounded and never follow symbolic files', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-dap-bounded-config-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, '.vscode'));
+  const launchPath = path.join(root, '.vscode', 'launch.json');
+  fs.writeFileSync(launchPath, ' '.repeat(1024 * 1024 + 1));
+  let parsed = readLaunchConfigurations(root);
+  assert.equal(parsed.configurations.length, 0);
+  assert.equal(parsed.warnings.some((item) => item.code === 'read-error'), true);
+
+  const outside = path.join(root, 'outside.json');
+  fs.writeFileSync(outside, JSON.stringify({
+    configurations: [{ name: 'Outside', type: 'python', request: 'launch', program: '/private.py' }]
+  }));
+  fs.rmSync(launchPath);
+  try {
+    fs.symlinkSync(outside, launchPath);
+    parsed = readLaunchConfigurations(root);
+    assert.equal(parsed.configurations.length, 0);
+    assert.equal(parsed.warnings.some((item) => item.code === 'read-error'), true);
+  } catch (error) {
+    if (!error || error.code !== 'EPERM') throw error;
   }
 });
 

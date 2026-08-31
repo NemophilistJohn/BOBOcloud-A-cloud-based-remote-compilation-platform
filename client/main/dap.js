@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { DapTransport } = require('../dap-transport');
 const { endpoint: serverEndpoint } = require('./server-transport');
+const { credentialForServer } = require('./server-identity');
 const {
   readLaunchConfigurations,
   resolveLaunchConfiguration
@@ -48,14 +49,15 @@ function createDapController(options) {
   const ipcMain = options.ipcMain;
   const getWindow = options.getWindow;
   const getWorkspaceIdentity = options.getWorkspaceIdentity;
+  const runWorkspaceMutation = options.runWorkspaceMutation;
   const settings = options.settings;
+  if (typeof runWorkspaceMutation !== 'function') throw new TypeError('DAP requires the workspace mutation coordinator');
   let transport = null;
   let sessionContext = null;
 
   async function currentCredential() {
     const serverSettings = await settings.readServerSettings();
-    const serverKey = serverSettings.ip || '';
-    const stored = settings.readAuth().servers[serverKey];
+    const stored = credentialForServer(settings.readAuth(), serverSettings).credential;
     if (stored && stored.token && (!stored.expiresAt || stored.expiresAt > Date.now())) return stored.token;
     return serverSettings.apiKey || '';
   }
@@ -112,14 +114,27 @@ function createDapController(options) {
       return resolveLaunchConfiguration(configurations, String(value.id || ''), value.context || {});
     });
     ipcMain.handle('dap:ensure-configuration', async () => {
-      const current = assertCurrentWorkspace();
-      const directory = path.join(current.rootPath, '.vscode');
-      const filePath = path.join(directory, 'launch.json');
-      await fs.promises.mkdir(directory, { recursive: true });
-      if (!fs.existsSync(filePath)) {
-        await fs.promises.writeFile(filePath, '{\n  "version": "0.2.0",\n  "configurations": []\n}\n', 'utf8');
-      }
-      return filePath;
+      return runWorkspaceMutation('.vscode/launch.json', async (mutation) => {
+        const directory = mutation.resolvePath(path.join(mutation.rootPath, '.vscode'));
+        mutation.assertCurrent();
+        await fs.promises.mkdir(directory, { recursive: true });
+        mutation.assertCurrent();
+        const filePath = mutation.resolvePath(path.join(directory, 'launch.json'));
+        if (!fs.existsSync(filePath)) {
+          mutation.assertCurrent();
+          try {
+            await fs.promises.writeFile(
+              filePath,
+              '{\n  "version": "0.2.0",\n  "configurations": []\n}\n',
+              { encoding: 'utf8', flag: 'wx' }
+            );
+          } catch (error) {
+            if (!error || error.code !== 'EEXIST') throw error;
+          }
+        }
+        mutation.assertCurrent();
+        return filePath;
+      });
     });
     ipcMain.handle('dap:start', async (_event, payload) => {
       const value = payload && typeof payload === 'object' ? payload : {};

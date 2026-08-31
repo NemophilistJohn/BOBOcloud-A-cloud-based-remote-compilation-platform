@@ -26,6 +26,7 @@ import (
 	"bobocloud-server/internal/packagecatalog"
 	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/resourcecontrol"
+	"bobocloud-server/internal/safefile"
 )
 
 const (
@@ -184,11 +185,8 @@ func (h *HTTPHandler) inspectProjectEnvironment(r *http.Request, req *model.Requ
 	if err != nil {
 		return nil, resolved, err
 	}
-	info, err := os.Stat(resolved.root)
-	if err != nil || !info.IsDir() {
-		if err == nil {
-			err = fmt.Errorf("workspace does not exist")
-		}
+	resolved.root, err = safefile.RealDirectory(resolved.root)
+	if err != nil {
 		return nil, resolved, err
 	}
 	language := canonicalEnvironmentLanguage(req.Language)
@@ -1883,15 +1881,12 @@ func buildProjectEnvironmentPlan(environment *model.ProjectEnvironment, root, re
 		}
 	}
 	if root != "" {
-		full, err := safePath(root, manifest)
+		file, _, err := safefile.OpenRegularBeneath(root, filepath.FromSlash(manifest), maxEnvironmentManifestBytes)
 		if err != nil {
-			plan.Reason = "Dependency manifest is outside the project workspace"
-			return plan
-		}
-		if info, err := os.Stat(full); err != nil || !info.Mode().IsRegular() || info.Size() > maxEnvironmentManifestBytes {
 			plan.Reason = "Dependency manifest is unavailable or too large"
 			return plan
 		}
+		_ = file.Close()
 	}
 	plan.Supported = true
 	plan.Reason = ""
@@ -1939,21 +1934,6 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 	}
 	userID := auth.UserIDFromContext(r.Context())
 	workspaceKey := resolved.folderKey
-	// A debugger pins the exact project cache against writers. Stop it before
-	// repair/rebuild so the install cannot survive in a detached container or
-	// leave the namespace permanently reported as in use.
-	if resolved.workspace.Kind == "personal" && h.DAP != nil {
-		if err := h.DAP.StopUserWorkspace(userID, workspaceKey); err != nil {
-			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
-			return
-		}
-	}
-	if action == "rebuild" && h.LSP != nil {
-		if err := h.LSP.StopUserOwner(userID, "user", userID, ""); err != nil {
-			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
-			return
-		}
-	}
 	environmentResourceLease, resourceErr := acquireHandlerRuntimeResource(
 		r.Context(), h.Resources, resourcecontrol.WorkloadPackage, userID, environmentResourceScope(environment), "environment:"+workspaceKey+":"+action,
 		environment.Runtime.ID, environment.Language.ID, environment.Runtime.Image, true,
@@ -1971,6 +1951,20 @@ func (h *HTTPHandler) applyProjectEnvironmentAction(w http.ResponseWriter, r *ht
 			releaseEnvironmentResource()
 		}
 	}()
+	// Stopping cache readers mutates service state, so it happens only after
+	// central admission has accepted the environment operation.
+	if resolved.workspace.Kind == "personal" && h.DAP != nil {
+		if err := h.DAP.StopUserWorkspace(userID, workspaceKey); err != nil {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
+			return
+		}
+	}
+	if action == "rebuild" && h.LSP != nil {
+		if err := h.LSP.StopUserOwner(userID, "user", userID, ""); err != nil {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
+			return
+		}
+	}
 	var environmentActivityReleases []func()
 	defer func() { runReleaseCallbacksReverse(environmentActivityReleases) }()
 	if h.Lifecycle != nil {
@@ -2138,6 +2132,18 @@ func (h *HTTPHandler) applyProjectEnvironmentClearCache(w http.ResponseWriter, r
 			writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "Only the team administrator can clear project analysis caches"})
 			return
 		}
+	}
+	cacheResourceLease, resourceErr := acquireHandlerRuntimeResource(
+		r.Context(), h.Resources, resourcecontrol.WorkloadPackage, userID,
+		environmentResourceScope(environment), "environment-cache:"+environment.Workspace.ID,
+		environment.Runtime.ID, environment.Language.ID, environment.Runtime.Image, false,
+	)
+	if resourceErr != nil {
+		writeResourcePressure(w)
+		return
+	}
+	defer releaseHandlerResource(cacheResourceLease)
+	if environment.Workspace.Kind == "team" {
 		if err := h.LSP.StopUserOwner(userID, ownerKind, ownerID, projectID); err != nil {
 			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
 			return

@@ -22,7 +22,7 @@ import (
 func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *model.RunSession, channel *session.RunChannel, stdinReader io.Reader) (runResult *model.RunResult) {
 	ctx, cleanupGate := containercleanup.WithReleaseGate(ctx)
 	defer cleanupGate.Finalize()
-	output := session.NewWebSocketWriter(channel, h.Config.ChunkSize)
+	output := session.NewWebSocketWriter(channel, h.Config.ChunkSizeBytes())
 	started := time.Now()
 	output.WriteStatus("setup", "Validating task request")
 	defer func() {
@@ -32,9 +32,7 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 		}
 	}()
 	defer func() {
-		if runResult != nil && ctx.Err() == context.Canceled {
-			runResult.Cancelled = true
-		}
+		applyRunTerminationStatus(ctx, runResult)
 	}()
 
 	fail := func(message string) {
@@ -185,7 +183,8 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 	}
 	defer os.RemoveAll(tempDir)
 	copyStarted := time.Now()
-	copyErr := files.CopyProjectToTemp(projectPath, tempDir)
+	copyLimits := workspaceCopyLimits(h.Config)
+	copyErr := files.CopyProjectToTemp(ctx, projectPath, tempDir, copyLimits)
 	if h.Metrics != nil {
 		h.Metrics.Observe("workspace.copy.host", time.Since(copyStarted))
 	}
@@ -194,7 +193,16 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 		return
 	}
 	output.WriteStatus("setup", fmt.Sprintf("Isolated task workspace ready in %d ms", time.Since(copyStarted).Milliseconds()))
-	beforeSnapshot := files.SnapshotFiles(tempDir)
+	beforeSnapshotResult, snapshotErr := files.SnapshotProjectFiles(ctx, tempDir, copyLimits)
+	if snapshotErr != nil {
+		fail("Failed to inventory isolated task workspace: " + snapshotErr.Error())
+		return
+	}
+	if beforeSnapshotResult.Truncated || beforeSnapshotResult.LimitReached {
+		fail("Project file inventory exceeds the server safety limit")
+		return
+	}
+	beforeSnapshot := beforeSnapshotResult.Files
 
 	dockerRunner := runner.NewDockerRunner(*runtimeDef, h.DockerPool, h.Security)
 	dockerRunner.SetUserID(sess.UserID)
@@ -247,12 +255,22 @@ func (h *WSHandler) runProjectTask(ctx context.Context, runID string, sess *mode
 		result.Stderr = "personal storage quota exceeded"
 	}
 	if shouldPublishRunArtifacts(ctx, result) {
-		changedFiles := files.SyncGeneratedArtifacts(tempDir, projectPath, beforeSnapshot, "")
-		if shouldPublishRunArtifacts(ctx, result) {
-			files.SendArtifacts(channel, tempDir, changedFiles, h.Config.ChunkSize)
+		artifactResult, artifactErr := files.SyncGeneratedArtifactsWithLimits(ctx, tempDir, projectPath, beforeSnapshot, "", runArtifactLimits(h.Config))
+		changedFiles := artifactResult.Paths
+		if artifactErr != nil && ctx.Err() == nil {
+			output.WriteStderr("Artifact synchronization stopped: "+artifactErr.Error(), "artifact")
+		}
+		if message := artifactOmissionWarning(ctx, artifactResult); message != "" {
+			output.WriteStderr(message, "artifact")
+		}
+		if artifactErr == nil && shouldPublishRunArtifacts(ctx, result) {
+			if sendErr := files.SendArtifacts(ctx, channel, tempDir, changedFiles, h.Config.ChunkSizeBytes()); sendErr != nil && ctx.Err() == nil {
+				output.WriteStderr("Artifact transfer stopped: "+sendErr.Error(), "artifact")
+			}
 		}
 	}
 	output.WriteArtifactEnd()
+	applyRunTerminationStatus(ctx, result)
 	output.WriteResult(result.Success, result.ReturnCode)
 	slog.Info("Project task completed", "run_id", runID, "task", sess.Task.Label,
 		"duration_ms", time.Since(started).Milliseconds(), "success", result.Success)

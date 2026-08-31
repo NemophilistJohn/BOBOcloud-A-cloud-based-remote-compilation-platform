@@ -46,6 +46,15 @@ func (o *captureOutput) WriteStdoutFragment(fragment session.OutputFragment, _ s
 
 func (o *captureOutput) WriteStderrFragment(session.OutputFragment, string) {}
 
+func TestSetOutputRetentionLimitClampsOversizedValues(t *testing.T) {
+	previous := outputRetentionLimit()
+	t.Cleanup(func() { SetOutputRetentionLimit(previous) })
+	SetOutputRetentionLimit(maxOutputRetentionBytes + 1)
+	if got := outputRetentionLimit(); got != maxOutputRetentionBytes {
+		t.Fatalf("retained output limit = %d, want %d", got, maxOutputRetentionBytes)
+	}
+}
+
 func TestStreamProcessRetainsTailWithoutTruncatingLiveOutput(t *testing.T) {
 	SetOutputRetentionLimit(32)
 	t.Cleanup(func() { SetOutputRetentionLimit(256 << 10) })

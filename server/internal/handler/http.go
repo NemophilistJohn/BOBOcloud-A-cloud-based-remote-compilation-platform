@@ -197,17 +197,38 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clearBodyDeadline := limitRequestBodyRead(w, h.Config.HTTPRequestBodyTimeout())
+	defer clearBodyDeadline()
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	decoder := json.NewDecoder(r.Body)
 	var req model.Request
 	if err := decoder.Decode(&req); err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, model.Response{Success: false, Error: "Request body exceeds 1 MiB"})
+			return
+		}
+		if requestBodyReadTimedOut(err) {
+			writeJSON(w, http.StatusRequestTimeout, model.Response{Success: false, Error: "Request body read timed out"})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: fmt.Sprintf("Invalid JSON: %v", err)})
 		return
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, model.Response{Success: false, Error: "Request body exceeds 1 MiB"})
+			return
+		}
+		if requestBodyReadTimedOut(err) {
+			writeJSON(w, http.StatusRequestTimeout, model.Response{Success: false, Error: "Request body read timed out"})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Request body must contain exactly one JSON object"})
 		return
 	}
+	clearBodyDeadline()
 
 	// ---- 预认证动作（无需登录即可调用）----
 	switch req.Action {
@@ -260,6 +281,15 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer requestLease.Release()
 	}
+	// The authoritative user reload below closes the bind/revocation race and
+	// refreshes role/quota fields, so binding itself needs no duplicate DB read.
+	operationCtx, releaseOperation, err := bindUserOperation(r.Context(), h.Lifecycle, nil, userID)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, model.Response{Success: false, Error: err.Error()})
+		return
+	}
+	defer releaseOperation()
+	r = r.WithContext(operationCtx)
 	if h.authEnabled {
 		latestUser, err := h.UserStore.Get(userID)
 		if err != nil {
@@ -436,24 +466,24 @@ func (h *HTTPHandler) routeRequest(w http.ResponseWriter, r *http.Request, req *
 
 // ---------- 工作区路径解析 ----------
 
-// safePath 清理 rel 并确保结果严格位于 root 之下，防止 ".." 路径穿越。
-// folderName/filePath 都是用户可控的，必须校验，否则 root 服务端可读写任意路径。
+// safePath is the lexical half of a root-bounded operation. Callers that touch
+// an existing path use safefile's descriptor-based open/mutation functions.
 func safePath(root, rel string) (string, error) {
-	if rel == "" {
-		return "", fmt.Errorf("path is empty")
+	return safefile.JoinBeneath(root, rel)
+}
+
+func safeWorkspaceKey(folderName, folderKey string) (string, error) {
+	key := strings.TrimSpace(folderKey)
+	if key == "" {
+		key = strings.TrimSpace(folderName)
 	}
-	if strings.ContainsAny(rel, "\x00") {
-		return "", fmt.Errorf("invalid path")
+	if key == "" {
+		return "", fmt.Errorf("folderKey or folderName is required")
 	}
-	root = filepath.Clean(root)
-	full := filepath.Clean(filepath.Join(root, rel))
-	if full == root {
-		return "", fmt.Errorf("path must be a subdirectory under the workspace, not the workspace root")
+	if err := safefile.ValidateChildName(key); err != nil {
+		return "", err
 	}
-	if !strings.HasPrefix(full, root+string(filepath.Separator)) {
-		return "", fmt.Errorf("path escapes the workspace: %q", rel)
-	}
-	return full, nil
+	return key, nil
 }
 
 // resolveWorkspace 返回用户隔离的工作区路径（已校验路径穿越）。
@@ -462,25 +492,36 @@ func safePath(root, rel string) (string, error) {
 // auth 禁用：{ServerRoot}/{key}（向后兼容）
 func (h *HTTPHandler) resolveWorkspace(r *http.Request, folderName, folderKey string) (string, error) {
 	userID := auth.UserIDFromContext(r.Context())
-	key := folderKey
-	if key == "" {
-		key = folderName
+	key, err := safeWorkspaceKey(folderName, folderKey)
+	if err != nil {
+		return "", err
 	}
 	var root string
 	if h.authEnabled {
-		root = filepath.Join(h.Config.DataDir, "users", userID, "workspaces")
+		userRoot, rootErr := auth.UserDataRoot(h.Config.DataDir, userID)
+		if rootErr != nil {
+			return "", rootErr
+		}
+		root = filepath.Join(userRoot, "workspaces")
 	} else {
 		root = h.Config.ServerRoot
 	}
-	return safePath(root, key)
+	return safefile.JoinChild(root, key)
 }
 
 // ensureUserDir 确保用户根目录存在
-func (h *HTTPHandler) ensureUserDir(userID string) string {
-	userDir := filepath.Join(h.Config.DataDir, "users", userID)
-	os.MkdirAll(filepath.Join(userDir, "workspaces"), 0755)
-	os.MkdirAll(filepath.Join(userDir, "temp"), 0755)
-	return userDir
+func (h *HTTPHandler) ensureUserDir(userID string) (string, error) {
+	userDir, err := auth.UserDataRoot(h.Config.DataDir, userID)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Join(userDir, "workspaces"), 0755); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Join(userDir, "temp"), 0755); err != nil {
+		return "", err
+	}
+	return userDir, nil
 }
 
 // ---------- checkFolder ----------
@@ -500,19 +541,33 @@ func (h *HTTPHandler) handleCheckFolder(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		folderPath, err = h.Collaboration.ResolveWorktree(r.Context(), userID, req.TeamID, req.ProjectID, req.Branch)
+		if err == nil {
+			folderPath, err = safefile.RealDirectory(folderPath)
+		}
 	} else {
-		folderPath, err = h.resolveWorkspace(r, req.FolderName, req.FolderKey)
+		userDir, userErr := h.ensureUserDir(userID)
+		if userErr != nil {
+			err = userErr
+		} else {
+			key, keyErr := safeWorkspaceKey(req.FolderName, req.FolderKey)
+			if keyErr != nil {
+				err = keyErr
+			} else {
+				root := h.Config.ServerRoot
+				if h.authEnabled {
+					root = filepath.Join(userDir, "workspaces")
+				}
+				folderPath, err = safefile.EnsureDirectoryBeneath(root, key, 0755)
+			}
+		}
 	}
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid folderName: " + err.Error()})
 		return
 	}
 
-	h.ensureUserDir(userID)
-
-	if err := os.MkdirAll(folderPath, 0755); err != nil {
-		slog.Error("Failed to create folder", "path", folderPath, "error", err)
-		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: fmt.Sprintf("Failed to create folder: %v", err)})
+	if _, err := h.ensureUserDir(userID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to prepare user directory"})
 		return
 	}
 
@@ -658,23 +713,30 @@ func (h *HTTPHandler) handleRun(w http.ResponseWriter, r *http.Request, req *mod
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid folderName: " + err.Error()})
 		return
 	}
+	projectPath, err = safefile.RealDirectory(projectPath)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid workspace: " + err.Error()})
+		return
+	}
 	if !taskMode {
-		serverFilePath, pathErr := safePath(projectPath, req.FilePath)
+		entry, _, pathErr := safefile.OpenRegularBeneath(projectPath, filepath.FromSlash(req.FilePath), 0)
 		if pathErr != nil {
-			writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid filePath: " + pathErr.Error()})
-			return
-		}
-		if _, statErr := os.Stat(serverFilePath); os.IsNotExist(statErr) {
 			writeJSON(w, http.StatusNotFound, model.Response{
 				Success: false,
 				Error:   fmt.Sprintf("File not found on server: %s", req.FilePath),
 			})
 			return
 		}
+		_ = entry.Close()
 	}
 
 	token := auth.GenerateToken()
 	runSessionLifecycleMu.Lock()
+	if err := r.Context().Err(); err != nil {
+		runSessionLifecycleMu.Unlock()
+		writeJSON(w, http.StatusUnauthorized, model.Response{Success: false, Error: "User access changed before the run was accepted"})
+		return
+	}
 	if runCancellationRememberedLocked(userID, runID, time.Now()) {
 		runSessionLifecycleMu.Unlock()
 		writeRunCancelledBeforeStart(w)
@@ -763,8 +825,9 @@ func (h *HTTPHandler) handleRun(w http.ResponseWriter, r *http.Request, req *mod
 		"user_id", userID,
 		"file", req.FilePath,
 		"runtime", req.Runtime,
-		"compile_args", req.CompileArgs,
-		"run_args", req.RunArgs,
+		"compile_arg_count", len(req.CompileArgs),
+		"run_arg_count", len(req.RunArgs),
+		"setup_command_count", len(req.SetupCommands),
 		"build_target", req.BuildTarget,
 	)
 
@@ -939,17 +1002,20 @@ func (h *HTTPHandler) handleDeleteFile(w http.ResponseWriter, r *http.Request, r
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid folderName: " + err.Error()})
 		return
 	}
+	folderPath, err = safefile.RealDirectory(folderPath)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid workspace: " + err.Error()})
+		return
+	}
 	serverFilePath, err := safePath(folderPath, req.FilePath)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid filePath: " + err.Error()})
 		return
 	}
-	if _, err := os.Stat(serverFilePath); os.IsNotExist(err) {
+	if err := safefile.RemoveEntryBeneath(folderPath, req.FilePath); os.IsNotExist(err) {
 		writeJSON(w, http.StatusOK, model.Response{Success: true, Message: fmt.Sprintf("File not found: %s", req.FilePath)})
 		return
-	}
-
-	if err := os.Remove(serverFilePath); err != nil {
+	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: fmt.Sprintf("Failed to delete file: %v", err)})
 		return
 	}
@@ -1109,7 +1175,7 @@ func (h *HTTPHandler) handleTerminal(w http.ResponseWriter, r *http.Request, req
 		}
 		terminalActivityReleases = append(terminalActivityReleases, activity.Release)
 	}
-	slog.Info("Terminal", "user_id", userID, "runtime", runtimeID, "command", req.Command)
+	slog.Info("Terminal command accepted", "user_id", userID, "runtime", runtimeID, "command_bytes", len(req.Command))
 
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(h.Config.DockerTerminalTimeout)*time.Second)
 	defer cancel()
@@ -1533,36 +1599,25 @@ func (h *HTTPHandler) handleDeleteProject(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	folderPath, err := h.resolveWorkspace(r, req.FolderName, req.FolderKey)
+	userID := auth.UserIDFromContext(r.Context())
+	folderKey, err := safeWorkspaceKey(req.FolderName, req.FolderKey)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid folder: " + err.Error()})
 		return
 	}
-
-	// 安全检查：不允许删除工作区根目录
-	var wsRoot string
+	wsRoot := h.Config.ServerRoot
 	if h.authEnabled {
-		userID := auth.UserIDFromContext(r.Context())
 		wsRoot = filepath.Join(h.Config.DataDir, "users", userID, "workspaces")
-	} else {
-		wsRoot = h.Config.ServerRoot
 	}
-	if folderPath == wsRoot {
-		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Cannot delete workspace root"})
-		return
-	}
-
-	// 检查目录是否存在
-	if _, err := os.Stat(folderPath); os.IsNotExist(err) {
+	folderPath, err := safefile.ResolveDirectoryBeneath(wsRoot, folderKey)
+	if os.IsNotExist(err) {
 		writeJSON(w, http.StatusOK, model.Response{Success: false, Error: "Project not found"})
 		return
+	} else if err != nil {
+		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid folder: " + err.Error()})
+		return
 	}
 
-	userID := auth.UserIDFromContext(r.Context())
-	folderKey := req.FolderKey
-	if folderKey == "" {
-		folderKey = req.FolderName
-	}
 	if userID != "" {
 		if err := h.stopUserWorkspaceServices(userID, folderKey); err != nil {
 			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
@@ -1611,7 +1666,7 @@ func (h *HTTPHandler) handleDeleteProject(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	if err := os.RemoveAll(folderPath); err != nil {
+	if err := safefile.RemoveAllBeneath(wsRoot, folderKey); err != nil {
 		slog.Error("Failed to delete project", "path", folderPath, "error", err)
 		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: fmt.Sprintf("Failed to delete: %v", err)})
 		return

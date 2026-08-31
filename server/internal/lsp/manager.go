@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"bobocloud-server/internal/resourcecontrol"
+	"bobocloud-server/internal/resourcegovernor"
 )
 
 const (
@@ -36,6 +37,14 @@ type ManagerOptions struct {
 	DependencyPollInterval time.Duration
 	DependencyPollJitter   time.Duration
 	ResourceController     *resourcecontrol.Controller
+}
+
+func (m *Manager) RequiresDocker(languageID, runtimeID string) bool {
+	if m == nil || m.catalog == nil {
+		return false
+	}
+	spec, ok := m.catalog.Lookup(languageID)
+	return ok && (strings.TrimSpace(spec.Docker.Image) != "" || strings.TrimSpace(runtimeID) != "local")
 }
 
 type Session struct {
@@ -340,10 +349,12 @@ func NewManager(catalog *Catalog, cache *CacheManager, starter ProcessStarter, o
 	return m
 }
 
-func randomSessionID() string {
+func randomSessionID() (string, error) {
 	b := make([]byte, 12)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate LSP session ID: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func (m *Manager) reserve(userID, key string) error {
@@ -438,9 +449,16 @@ func (m *Manager) Start(ctx SessionContext) (*Session, error) {
 		return nil, err
 	}
 	defer m.finishReservation(ctx.UserID, key)
-	id := randomSessionID()
+	id, err := randomSessionID()
+	if err != nil {
+		return nil, err
+	}
 	if resourceLease == nil && m.opts.ResourceController != nil {
-		resourceLease, err = m.opts.ResourceController.TryAcquire(resourcecontrol.WorkloadLSP, ctx.UserID, id)
+		minimum := resourcegovernor.Resources{}
+		if useDocker {
+			minimum.DockerContainers = 1
+		}
+		resourceLease, err = m.opts.ResourceController.TryAcquireWithDemand(resourcecontrol.WorkloadLSP, ctx.UserID, id, minimum)
 		if err != nil {
 			return nil, fmt.Errorf("admit LSP session resources: %w", err)
 		}

@@ -928,12 +928,6 @@ func (h *HTTPHandler) applyProjectPackageChanges(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusServiceUnavailable, model.Response{Success: false, Error: "Project package installation is unavailable", ErrorCode: "package_service_unavailable"})
 		return
 	}
-	if h.DAP != nil {
-		if err := h.DAP.StopUserWorkspace(userID, resolved.folderKey); err != nil {
-			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error(), ErrorCode: "package_debug_session_active"})
-			return
-		}
-	}
 	packageResourceLease, resourceErr := acquireHandlerRuntimeResource(
 		r.Context(), h.Resources, resourcecontrol.WorkloadPackage, userID, environmentResourceScope(environment), planID,
 		environment.Runtime.ID, environment.Language.ID, environment.Runtime.Image, true,
@@ -951,6 +945,12 @@ func (h *HTTPHandler) applyProjectPackageChanges(w http.ResponseWriter, r *http.
 			releasePackageResource()
 		}
 	}()
+	if h.DAP != nil {
+		if err := h.DAP.StopUserWorkspace(userID, resolved.folderKey); err != nil {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error(), ErrorCode: "package_debug_session_active"})
+			return
+		}
+	}
 	var packageActivityReleases []func()
 	defer func() { runReleaseCallbacksReverse(packageActivityReleases) }()
 	if h.Lifecycle != nil {

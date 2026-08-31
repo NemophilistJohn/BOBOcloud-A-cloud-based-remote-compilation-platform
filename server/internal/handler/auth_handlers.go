@@ -13,6 +13,7 @@ import (
 
 	"bobocloud-server/internal/auth"
 	"bobocloud-server/internal/model"
+	"bobocloud-server/internal/rootbootstrap"
 	"bobocloud-server/internal/storage"
 )
 
@@ -123,9 +124,9 @@ func (h *HTTPHandler) auditEvent(r *http.Request, userID, username, action, targ
 	}
 }
 
-// sanitizeUser 把 auth.User 转成安全视图（不含密码哈希）
-func sanitizeUser(u *auth.User, includeAPIKey bool) *model.UserInfo {
-	info := &model.UserInfo{
+// sanitizeUser 把 auth.User 转成安全视图（不含密码哈希或长期 API Key）
+func sanitizeUser(u *auth.User) *model.UserInfo {
+	return &model.UserInfo{
 		ID:             u.ID,
 		UID:            u.UID,
 		Avatar:         u.Avatar,
@@ -139,10 +140,6 @@ func sanitizeUser(u *auth.User, includeAPIKey bool) *model.UserInfo {
 		DiskQuotaMB:    u.DiskQuotaMB,
 		CreatedAt:      u.CreatedAt,
 	}
-	if includeAPIKey {
-		info.APIKey = u.APIKey
-	}
-	return info
 }
 
 // requireRole 检查当前请求角色是否达到 minLevel，不足则写 403 并返回 nil
@@ -247,7 +244,7 @@ func (h *HTTPHandler) handleLogin(w http.ResponseWriter, r *http.Request, req *m
 		Success:   true,
 		Token:     sess.Token,
 		ExpiresAt: &sess.ExpiresAt,
-		User:      sanitizeUser(user, true),
+		User:      sanitizeUser(user),
 	})
 }
 
@@ -361,7 +358,7 @@ func (h *HTTPHandler) handleRegister(w http.ResponseWriter, r *http.Request, req
 		Message:   "Registration successful",
 		Token:     sess.Token,
 		ExpiresAt: &sess.ExpiresAt,
-		User:      sanitizeUser(user, true),
+		User:      sanitizeUser(user),
 	})
 }
 
@@ -391,7 +388,7 @@ func (h *HTTPHandler) handleUpdateProfile(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to update profile"})
 		return
 	}
-	writeJSON(w, http.StatusOK, model.Response{Success: true, User: sanitizeUser(user, true)})
+	writeJSON(w, http.StatusOK, model.Response{Success: true, User: sanitizeUser(user)})
 }
 
 func (h *HTTPHandler) handleGetCompileActivity(w http.ResponseWriter, r *http.Request) {
@@ -449,7 +446,7 @@ func (h *HTTPHandler) handleWhoami(w http.ResponseWriter, r *http.Request) {
 		Success:  true,
 		AuthMode: mode,
 		Version:  h.Version,
-		User:     sanitizeUser(user, true),
+		User:     sanitizeUser(user),
 	})
 }
 
@@ -509,6 +506,12 @@ func (h *HTTPHandler) handleChangePassword(w http.ResponseWriter, r *http.Reques
 	if h.AuthSessions != nil {
 		currentToken, _ := r.Context().Value(contextKeySessionToken).(string)
 		h.AuthSessions.DeleteByUserExcept(updatedUser.ID, currentToken)
+	}
+	_ = h.revokeUserWorkBounded(updatedUser.ID)
+	if updatedUser.EffectiveRole() == auth.RoleRoot && h.Config != nil {
+		if err := rootbootstrap.RemoveCredentialFile(h.Config.DataDir); err != nil {
+			slog.Warn("Failed to remove one-time root credential file", "error", err)
+		}
 	}
 	h.auditEvent(r, "", "", "changePassword", "", "", true)
 	writeJSON(w, http.StatusOK, model.Response{Success: true, Message: "Password changed. Other sessions have been logged out."})
@@ -573,8 +576,13 @@ func (h *HTTPHandler) handleCreateInvite(w http.ResponseWriter, r *http.Request,
 		maxUses = 1
 	}
 
+	inviteCode, err := auth.GenerateInviteCode()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to create invite"})
+		return
+	}
 	inv := &auth.Invite{
-		Code:      auth.GenerateInviteCode(),
+		Code:      inviteCode,
 		Role:      role,
 		CreatedBy: caller.ID,
 		CreatedAt: time.Now(),
@@ -647,7 +655,7 @@ func (h *HTTPHandler) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	infos := make([]*model.UserInfo, 0, len(users))
 	for _, u := range users {
-		infos = append(infos, sanitizeUser(u, false)) // 列表不暴露 API Key
+		infos = append(infos, sanitizeUser(u))
 	}
 	writeJSON(w, http.StatusOK, model.Response{Success: true, Users: infos})
 }
@@ -710,6 +718,11 @@ func (h *HTTPHandler) handleSetUserDisabled(w http.ResponseWriter, r *http.Reque
 	// 禁用立即生效：作废目标用户全部会话
 	if target.Disabled && h.AuthSessions != nil {
 		h.AuthSessions.DeleteByUser(target.ID)
+	}
+	if target.Disabled {
+		// The account flag is already durable. Teardown is best-effort and
+		// idempotent, so a transient cleanup error must not reactivate access.
+		_ = h.revokeUserWorkBounded(target.ID)
 	}
 	h.auditEvent(r, "", "", "setUserDisabled", target.ID, fmt.Sprintf("disabled=%v", target.Disabled), true)
 	writeJSON(w, http.StatusOK, model.Response{Success: true, Message: fmt.Sprintf("User %s disabled=%v", target.ID, target.Disabled)})
@@ -781,7 +794,11 @@ func (h *HTTPHandler) handleResetUserPassword(w http.ResponseWriter, r *http.Req
 	}
 	newPassword := req.NewPassword
 	if newPassword == "" {
-		newPassword = auth.GeneratePassword() // 未指定则自动生成，返回给管理员转交
+		newPassword, err = auth.GeneratePassword() // 未指定则自动生成，返回给管理员转交
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to generate password"})
+			return
+		}
 	} else if err := auth.ValidatePassword(newPassword); err != nil {
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: err.Error()})
 		return
@@ -810,6 +827,7 @@ func (h *HTTPHandler) handleResetUserPassword(w http.ResponseWriter, r *http.Req
 	if h.AuthSessions != nil {
 		h.AuthSessions.DeleteByUser(target.ID) // 重置后强制重新登录
 	}
+	_ = h.revokeUserWorkBounded(target.ID)
 	h.auditEvent(r, "", "", "resetUserPassword", target.ID, "", true)
 	writeJSON(w, http.StatusOK, model.Response{
 		Success:     true,
@@ -913,6 +931,15 @@ func (h *HTTPHandler) handleDeleteUser(w http.ResponseWriter, r *http.Request, r
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Cannot delete yourself"})
 		return
 	}
+	// Validate durable collaboration ownership before revoking live work. A
+	// rejected deletion must not disconnect an otherwise valid account.
+	if h.Collaboration != nil {
+		if err := h.Collaboration.ValidateUserDeletion(target.ID); err != nil {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
+			return
+		}
+	}
+	_ = h.revokeUserWorkBounded(target.ID)
 	if h.Lifecycle != nil {
 		mutation, leaseErr := h.Lifecycle.BeginUserDeletion(target.ID)
 		if leaseErr != nil {
@@ -921,15 +948,6 @@ func (h *HTTPHandler) handleDeleteUser(w http.ResponseWriter, r *http.Request, r
 		}
 		defer mutation.Release()
 	}
-	// Collaboration validation must not mutate memberships here. All cleanup is
-	// post-commit so a failing user-store delete leaves the account untouched.
-	if h.Collaboration != nil {
-		if err := h.Collaboration.ValidateUserDeletion(target.ID); err != nil {
-			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
-			return
-		}
-	}
-
 	// Commit point: the account record and durable cleanup job change atomically.
 	// Every auxiliary store/resource cleanup below is idempotent and retryable;
 	// trying to roll the account back would race with reuse of its unique indexes.

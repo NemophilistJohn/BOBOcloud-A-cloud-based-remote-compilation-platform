@@ -19,10 +19,15 @@ import (
 
 var retainedOutputBytes atomic.Int64
 
+const maxOutputRetentionBytes = 16 << 20
+
 func init() { retainedOutputBytes.Store(256 << 10) }
 
 func SetOutputRetentionLimit(limit int) {
 	if limit > 0 {
+		if limit > maxOutputRetentionBytes {
+			limit = maxOutputRetentionBytes
+		}
 		retainedOutputBytes.Store(int64(limit))
 	}
 }

@@ -51,6 +51,9 @@ func NewBoltUserStore(db *bolt.DB) *BoltUserStore {
 
 // Get 根据用户 ID 获取用户
 func (s *BoltUserStore) Get(id string) (*User, error) {
+	if err := ValidateUserID(id); err != nil {
+		return nil, err
+	}
 	var user User
 	found := false
 
@@ -68,6 +71,12 @@ func (s *BoltUserStore) Get(id string) (*User, error) {
 	}
 	if !found {
 		return nil, fmt.Errorf("user not found: %s", id)
+	}
+	if user.ID != id {
+		return nil, fmt.Errorf("stored user ID does not match its key")
+	}
+	if err := validateUserRecord(&user); err != nil {
+		return nil, fmt.Errorf("unsafe user record: %w", err)
 	}
 	return &user, nil
 }
@@ -134,8 +143,8 @@ func (s *BoltUserStore) UpdateExisting(user *User) error {
 }
 
 func (s *BoltUserStore) storeUser(user *User, requireExisting bool) error {
-	if user == nil || user.ID == "" {
-		return fmt.Errorf("user ID is required")
+	if err := validateUserRecord(user); err != nil {
+		return err
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return s.storeUserTx(tx, user, requireExisting)
@@ -143,8 +152,11 @@ func (s *BoltUserStore) storeUser(user *User, requireExisting bool) error {
 }
 
 func (s *BoltUserStore) MutateExisting(id string, mutate func(*User) error) (*User, error) {
-	if id == "" || mutate == nil {
-		return nil, fmt.Errorf("user ID and mutation are required")
+	if err := ValidateUserID(id); err != nil {
+		return nil, err
+	}
+	if mutate == nil {
+		return nil, fmt.Errorf("user mutation is required")
 	}
 	var updated User
 	err := s.db.Update(func(tx *bolt.Tx) error {
@@ -157,6 +169,12 @@ func (s *BoltUserStore) MutateExisting(id string, mutate func(*User) error) (*Us
 		}
 		if err := json.Unmarshal(data, &updated); err != nil {
 			return fmt.Errorf("failed to decode user: %w", err)
+		}
+		if updated.ID != id {
+			return fmt.Errorf("stored user ID does not match its key")
+		}
+		if err := validateUserRecord(&updated); err != nil {
+			return fmt.Errorf("unsafe user record: %w", err)
 		}
 		if err := mutate(&updated); err != nil {
 			return err
@@ -173,7 +191,17 @@ func (s *BoltUserStore) MutateExisting(id string, mutate func(*User) error) (*Us
 }
 
 func (s *BoltUserStore) storeUserTx(tx *bolt.Tx, user *User, requireExisting bool) error {
+	if err := validateUserRecord(user); err != nil {
+		return err
+	}
 	ub := tx.Bucket(usersBucket)
+	cursor := ub.Cursor()
+	for key, _ := cursor.First(); key != nil; key, _ = cursor.Next() {
+		existingID := string(key)
+		if existingID != user.ID && strings.EqualFold(existingID, user.ID) {
+			return fmt.Errorf("user ID already exists with different casing")
+		}
+	}
 	if tx.Bucket(userDeletionCleanupBucket).Get([]byte(user.ID)) != nil {
 		return fmt.Errorf("user deletion cleanup is pending: %s", user.ID)
 	}
@@ -270,8 +298,8 @@ func (s *BoltUserStore) storeUserTx(tx *bolt.Tx, user *User, requireExisting boo
 
 // UpdateProfile patches only user-owned fields in one Bolt write transaction.
 func (s *BoltUserStore) UpdateProfile(id, name, avatar string) (*User, error) {
-	if id == "" {
-		return nil, fmt.Errorf("user ID is required")
+	if err := ValidateUserID(id); err != nil {
+		return nil, err
 	}
 	var updated User
 	err := s.db.Update(func(tx *bolt.Tx) error {
@@ -282,6 +310,9 @@ func (s *BoltUserStore) UpdateProfile(id, name, avatar string) (*User, error) {
 		}
 		if err := json.Unmarshal(data, &updated); err != nil {
 			return fmt.Errorf("failed to decode user: %w", err)
+		}
+		if err := validateUserRecord(&updated); err != nil {
+			return fmt.Errorf("unsafe user record: %w", err)
 		}
 		if name != "" {
 			updated.Name = name
@@ -305,13 +336,19 @@ func (s *BoltUserStore) UpdateProfile(id, name, avatar string) (*User, error) {
 }
 
 func (s *BoltUserStore) Restore(user *User) error {
-	if user == nil || user.ID == "" {
-		return fmt.Errorf("user ID is required")
+	if err := validateUserRecord(user); err != nil {
+		return err
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
 		ub := tx.Bucket(usersBucket)
 		if ub.Get([]byte(user.ID)) != nil {
 			return fmt.Errorf("user already exists: %s", user.ID)
+		}
+		cursor := ub.Cursor()
+		for key, _ := cursor.First(); key != nil; key, _ = cursor.Next() {
+			if strings.EqualFold(string(key), user.ID) {
+				return fmt.Errorf("user ID already exists with different casing")
+			}
 		}
 		checks := []struct {
 			bucket []byte
@@ -351,6 +388,9 @@ func (s *BoltUserStore) Restore(user *User) error {
 
 // Delete 删除用户及其全部索引（root 专属操作；调用方负责审计）
 func (s *BoltUserStore) Delete(id string) error {
+	if err := ValidateUserID(id); err != nil {
+		return err
+	}
 	return s.db.Update(func(tx *bolt.Tx) error {
 		ub := tx.Bucket(usersBucket)
 		data := ub.Get([]byte(id))
@@ -377,6 +417,9 @@ func (s *BoltUserStore) Delete(id string) error {
 }
 
 func (s *BoltUserStore) DeleteWithCleanupMarker(id string) error {
+	if err := ValidateUserID(id); err != nil {
+		return err
+	}
 	return s.db.Update(func(tx *bolt.Tx) error {
 		ub := tx.Bucket(usersBucket)
 		data := ub.Get([]byte(id))
@@ -413,8 +456,8 @@ func (s *BoltUserStore) DeleteWithCleanupMarker(id string) error {
 // List 返回所有用户
 func (s *BoltUserStore) SaveDeletionCleanup(userID string) error {
 	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return fmt.Errorf("user ID is required")
+	if err := ValidateUserID(userID); err != nil {
+		return err
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(userDeletionCleanupBucket).Put([]byte(userID), []byte{1})
@@ -425,7 +468,11 @@ func (s *BoltUserStore) ListDeletionCleanup() ([]string, error) {
 	var result []string
 	err := s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(userDeletionCleanupBucket).ForEach(func(key, _ []byte) error {
-			result = append(result, string(key))
+			userID := string(key)
+			if err := ValidateUserID(userID); err != nil {
+				return fmt.Errorf("unsafe user deletion marker: %w", err)
+			}
+			result = append(result, userID)
 			return nil
 		})
 	})
@@ -433,13 +480,18 @@ func (s *BoltUserStore) ListDeletionCleanup() ([]string, error) {
 }
 
 func (s *BoltUserStore) DeleteDeletionCleanup(userID string) error {
+	userID = strings.TrimSpace(userID)
+	if err := ValidateUserID(userID); err != nil {
+		return err
+	}
 	return s.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(userDeletionCleanupBucket).Delete([]byte(strings.TrimSpace(userID)))
+		return tx.Bucket(userDeletionCleanupBucket).Delete([]byte(userID))
 	})
 }
 
 func (s *BoltUserStore) List() ([]*User, error) {
 	var users []*User
+	seenIDs := make(map[string]struct{})
 
 	err := s.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(usersBucket)
@@ -450,6 +502,17 @@ func (s *BoltUserStore) List() ([]*User, error) {
 				slog.Warn("Skipping corrupt user record", "key", string(k), "error", err)
 				continue
 			}
+			if user.ID != string(k) {
+				return fmt.Errorf("stored user ID does not match key %q", string(k))
+			}
+			if err := validateUserRecord(&user); err != nil {
+				return fmt.Errorf("unsafe user record %q: %w", string(k), err)
+			}
+			identityKey := strings.ToLower(user.ID)
+			if _, exists := seenIDs[identityKey]; exists {
+				return fmt.Errorf("user IDs collide on a case-insensitive filesystem")
+			}
+			seenIDs[identityKey] = struct{}{}
 			users = append(users, &user)
 		}
 		return nil

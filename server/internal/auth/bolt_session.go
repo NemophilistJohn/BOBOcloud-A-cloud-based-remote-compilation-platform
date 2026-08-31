@@ -33,8 +33,12 @@ func NewBoltAuthSessionStore(db *bolt.DB) *BoltAuthSessionStore {
 }
 
 func (s *BoltAuthSessionStore) Create(userID string, ttl time.Duration) (*AuthSession, error) {
+	token, err := GenerateSessionToken()
+	if err != nil {
+		return nil, err
+	}
 	sess := &AuthSession{
-		Token:     GenerateSessionToken(),
+		Token:     token,
 		UserID:    userID,
 		CreatedAt: time.Now(),
 		ExpiresAt: time.Now().Add(ttl),

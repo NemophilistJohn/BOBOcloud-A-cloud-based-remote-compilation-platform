@@ -705,7 +705,7 @@ test('workspace switching preserves local project truth and releases the transit
   packageController = createPackageCenterController({
     ipcMain: { handle() {} },
     getWorkspaceIdentity: workspace.getIdentity,
-    onFilesChanged: files => workspace.notifyExternalFileChanges(files),
+    onFilesChanged: (files, context) => workspace.notifyExternalFileChanges(files, context),
     userDataPath
   });
   const current = {
@@ -768,7 +768,7 @@ test('an aborted workspace switch releases the barrier without reviving preserve
   packageController = createPackageCenterController({
     ipcMain: { handle() {} },
     getWorkspaceIdentity: workspace.getIdentity,
-    onFilesChanged: files => workspace.notifyExternalFileChanges(files),
+    onFilesChanged: (files, context) => workspace.notifyExternalFileChanges(files, context),
     userDataPath
   });
   const source = {
@@ -824,7 +824,11 @@ test('package center IPC exposes structured failures and rejects inactive render
 });
 
 test('window close releases its package transition before a macOS window can be recreated', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'main.js'), 'utf8');
-  assert.match(source, /await packageCenter\.beginWorkspaceTransition\('window-close'\);\s*packageTransitionHeld = true;/);
-  assert.match(source, /window\.on\('closed',[\s\S]*?if \(packageTransitionHeld\) \{[\s\S]*?packageCenter\.endWorkspaceTransition\(\);[\s\S]*?\}/);
+  const composition = fs.readFileSync(path.resolve(__dirname, '..', 'main.js'), 'utf8');
+  const lifecycle = fs.readFileSync(path.resolve(__dirname, '../main/window-lifecycle.js'), 'utf8');
+  const workspace = fs.readFileSync(path.resolve(__dirname, '../main/workspace.js'), 'utf8');
+  assert.match(composition, /attachWindowLifecycle\(\{/);
+  assert.match(lifecycle, /const prepared = await workspace\.prepareWindowClose\(\);\s*finishWorkspaceClose = prepared\.complete;/);
+  assert.match(lifecycle, /owner\.on\('closed',[\s\S]*?finishWorkspaceClose\('window-close-complete'\)/);
+  assert.match(workspace, /closeWorkspaceState\(reason,[\s\S]*?workspaceWriteQueue\.transition\(reason,[\s\S]*?beforeWorkspaceChange\(reason\)/);
 });

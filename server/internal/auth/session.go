@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"sync"
@@ -41,10 +40,12 @@ type AuthSessionStore interface {
 }
 
 // GenerateSessionToken 生成 session token（带前缀便于识别）
-func GenerateSessionToken() string {
-	b := make([]byte, 24)
-	rand.Read(b)
-	return "bobsess_" + hex.EncodeToString(b)
+func GenerateSessionToken() (string, error) {
+	b, err := randomBytes(24)
+	if err != nil {
+		return "", err
+	}
+	return "bobsess_" + hex.EncodeToString(b), nil
 }
 
 // ---------- MemoryAuthSessionStore ----------
@@ -61,8 +62,12 @@ func NewMemoryAuthSessionStore() *MemoryAuthSessionStore {
 }
 
 func (s *MemoryAuthSessionStore) Create(userID string, ttl time.Duration) (*AuthSession, error) {
+	token, err := GenerateSessionToken()
+	if err != nil {
+		return nil, err
+	}
 	sess := &AuthSession{
-		Token:     GenerateSessionToken(),
+		Token:     token,
 		UserID:    userID,
 		CreatedAt: time.Now(),
 		ExpiresAt: time.Now().Add(ttl),

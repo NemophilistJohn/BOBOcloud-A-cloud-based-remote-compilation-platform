@@ -159,7 +159,8 @@ func TestSynchronizeUserContainerLimitsIncludesPersistedUsersAfterRestart(t *tes
 }
 
 func TestRemoveUserDataWaitsForConfirmedContainerRemoval(t *testing.T) {
-	userDir := filepath.Join(t.TempDir(), "users", "alice")
+	dataDir := t.TempDir()
+	userDir := filepath.Join(dataDir, "users", "alice")
 	if err := os.MkdirAll(userDir, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +170,7 @@ func TestRemoveUserDataWaitsForConfirmedContainerRemoval(t *testing.T) {
 	}
 
 	destroyer := &testUserContainerDestroyer{err: errors.New("container may still be live")}
-	if err := removeUserDataAfterContainerCleanup(destroyer, "alice", userDir); err == nil {
+	if err := removeUserDataAfterContainerCleanup(destroyer, "alice", dataDir); err == nil {
 		t.Fatal("unconfirmed container removal was accepted")
 	}
 	if _, err := os.Stat(marker); err != nil {
@@ -177,7 +178,7 @@ func TestRemoveUserDataWaitsForConfirmedContainerRemoval(t *testing.T) {
 	}
 
 	destroyer.err = nil
-	if err := removeUserDataAfterContainerCleanup(destroyer, "alice", userDir); err != nil {
+	if err := removeUserDataAfterContainerCleanup(destroyer, "alice", dataDir); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(userDir); !os.IsNotExist(err) {
@@ -185,6 +186,25 @@ func TestRemoveUserDataWaitsForConfirmedContainerRemoval(t *testing.T) {
 	}
 	if destroyer.calls != 2 {
 		t.Fatalf("container cleanup calls = %d, want 2", destroyer.calls)
+	}
+}
+
+func TestRemoveUserDataRejectsTraversalBeforeCleanupSideEffects(t *testing.T) {
+	dataDir := t.TempDir()
+	outside := t.TempDir()
+	marker := filepath.Join(outside, "must-remain")
+	if err := os.WriteFile(marker, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	destroyer := &testUserContainerDestroyer{}
+	if err := removeUserDataAfterContainerCleanup(destroyer, "../../outside", dataDir); err == nil {
+		t.Fatal("traversal user ID was accepted")
+	}
+	if destroyer.calls != 0 {
+		t.Fatalf("container cleanup ran for unsafe identity: calls=%d", destroyer.calls)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "keep" {
+		t.Fatalf("outside data changed: data=%q err=%v", data, err)
 	}
 }
 

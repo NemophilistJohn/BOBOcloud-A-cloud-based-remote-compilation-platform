@@ -28,6 +28,7 @@ import (
 	"bobocloud-server/internal/resourcecontrol"
 	"bobocloud-server/internal/ringbuffer"
 	"bobocloud-server/internal/runner"
+	"bobocloud-server/internal/safefile"
 	"bobocloud-server/internal/security"
 	"bobocloud-server/internal/session"
 	"bobocloud-server/internal/storage"
@@ -87,7 +88,7 @@ func (h *WSHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	stopContextClose := closeWebSocketOnContext(r.Context(), conn)
 	defer stopContextClose()
 
-	conn.SetReadLimit(int64(h.Config.WSReadLimit))
+	conn.SetReadLimit(h.Config.WSReadLimitBytes())
 	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 
 	_, rawMsg, err := conn.ReadMessage()
@@ -153,6 +154,20 @@ func (h *WSHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		slog.Error("WS attach rejected: invalid token", "runId", msg.RunID)
 		return
 	}
+	operationStore := auth.UserStore(nil)
+	if h.AuthEnabled {
+		operationStore = h.UserStore
+	}
+	operationCtx, releaseOperation, operationErr := bindUserOperation(r.Context(), h.Lifecycle, operationStore, sess.UserID)
+	if operationErr != nil {
+		runSessionLifecycleMu.Unlock()
+		sendWSErrorAndClose(conn, operationErr.Error())
+		return
+	}
+	defer releaseOperation()
+	r = r.WithContext(operationCtx)
+	stopRevocationClose := closeWebSocketOnContext(operationCtx, conn)
+	defer stopRevocationClose()
 
 	if startErr := h.Sessions.MarkStarted(msg.RunID); startErr != nil {
 		switch {
@@ -192,8 +207,10 @@ func (h *WSHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		"file", sess.FilePath,
 	)
 
-	// 可取消的运行上下文：客户端发 {type:"cancel"} 即可中止运行
-	runCtx, cancelRun := context.WithCancel(r.Context())
+	// One wall-clock budget covers preparation, setup, execution and publish.
+	// Per-step timeouts remain narrower guards, but can no longer accumulate
+	// into an hours-long task graph.
+	runCtx, cancelRun := context.WithTimeout(r.Context(), h.Config.ExecutionMaxSessionDuration())
 	defer cancelRun()
 
 	// stdin 管道：客户端发 {type:"stdin", data:"..."} 时写入 stdinWrite，
@@ -353,7 +370,7 @@ func readRunMessages(conn *websocket.Conn, runID string, stdinQueue *stdinWriteQ
 func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.RunSession, channel *session.RunChannel, stdinReader io.Reader) (runResult *model.RunResult) {
 	ctx, cleanupGate := containercleanup.WithReleaseGate(ctx)
 	defer cleanupGate.Finalize()
-	output := session.NewWebSocketWriter(channel, h.Config.ChunkSize)
+	output := session.NewWebSocketWriter(channel, h.Config.ChunkSizeBytes())
 	taskStarted := time.Now()
 	output.WriteStatus("setup", "Validating run request")
 
@@ -364,9 +381,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		}
 	}()
 	defer func() {
-		if runResult != nil && ctx.Err() == context.Canceled {
-			runResult.Cancelled = true
-		}
+		applyRunTerminationStatus(ctx, runResult)
 	}()
 
 	// 辅助：在错误流程中设置失败结果并返回
@@ -643,7 +658,8 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 
 	copyStarted := time.Now()
 	output.WriteStatus("setup", fmt.Sprintf("Preparing isolated workspace for %s", entryRel))
-	copyErr := files.CopyProjectToTemp(projectPath, tempDir)
+	copyLimits := workspaceCopyLimits(h.Config)
+	copyErr := files.CopyProjectToTemp(ctx, projectPath, tempDir, copyLimits)
 	if h.Metrics != nil {
 		h.Metrics.Observe("workspace.copy.host", time.Since(copyStarted))
 	}
@@ -661,7 +677,16 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 	}
 	output.WriteStatus("setup", fmt.Sprintf("Isolated workspace ready in %d ms", time.Since(copyStarted).Milliseconds()))
 
-	beforeSnapshot := files.SnapshotFiles(tempDir)
+	projectSnapshot, snapshotErr := files.SnapshotProjectFiles(ctx, tempDir, copyLimits)
+	if snapshotErr != nil {
+		fail("Failed to inventory isolated workspace: " + snapshotErr.Error())
+		return
+	}
+	if projectSnapshot.Truncated || projectSnapshot.LimitReached {
+		fail("Project file inventory exceeds the server safety limit")
+		return
+	}
+	beforeSnapshot := projectSnapshot.Files
 
 	tempFilePath := filepath.Join(tempDir, filepath.FromSlash(entryRel))
 	if _, err := os.Stat(tempFilePath); os.IsNotExist(err) {
@@ -830,7 +855,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 	if runtimeID == "" {
 		runtimeID = "local"
 	}
-	if plugin.Language() == "node" && dependencySetupPassed && h.LSP != nil && h.DependencyViews != nil && (preparedCache != nil || personalLease == nil) {
+	if ctx.Err() == nil && plugin.Language() == "node" && dependencySetupPassed && h.LSP != nil && h.DependencyViews != nil && (preparedCache != nil || personalLease == nil) {
 		snapshotRoot, releaseSnapshotRoot, snapshotRootErr := h.dependencySnapshotRoot(sess.UserID, preparedCache)
 		if snapshotRootErr != nil {
 			output.WriteStderr("Analysis dependency snapshot skipped: "+snapshotRootErr.Error(), "analysis")
@@ -882,7 +907,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 			}
 		}
 	}
-	if plugin.Language() == "java" && gradleSetupPassed && h.LSP != nil && h.DependencyViews != nil && (preparedCache != nil || personalLease == nil) {
+	if ctx.Err() == nil && plugin.Language() == "java" && gradleSetupPassed && h.LSP != nil && h.DependencyViews != nil && (preparedCache != nil || personalLease == nil) {
 		snapshotRoot, releaseSnapshotRoot, snapshotRootErr := h.dependencySnapshotRoot(sess.UserID, preparedCache)
 		if snapshotRootErr != nil {
 			output.WriteStderr("Gradle analysis dependency snapshot skipped: "+snapshotRootErr.Error(), "analysis")
@@ -925,16 +950,26 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		}
 	}
 	if shouldPublishRunArtifacts(ctx, result) {
-		changedFiles := files.SyncGeneratedArtifacts(tempDir, projectPath, beforeSnapshot, entryRel)
-		if shouldPublishRunArtifacts(ctx, result) {
-			files.SendArtifacts(channel, tempDir, changedFiles, h.Config.ChunkSize)
+		artifactResult, artifactErr := files.SyncGeneratedArtifactsWithLimits(ctx, tempDir, projectPath, beforeSnapshot, entryRel, runArtifactLimits(h.Config))
+		changedFiles := artifactResult.Paths
+		if artifactErr != nil && ctx.Err() == nil {
+			output.WriteStderr("Artifact synchronization stopped: "+artifactErr.Error(), "artifact")
+		}
+		if message := artifactOmissionWarning(ctx, artifactResult); message != "" {
+			output.WriteStderr(message, "artifact")
+		}
+		if artifactErr == nil && shouldPublishRunArtifacts(ctx, result) {
+			if sendErr := files.SendArtifacts(ctx, channel, tempDir, changedFiles, h.Config.ChunkSizeBytes()); sendErr != nil && ctx.Err() == nil {
+				output.WriteStderr("Artifact transfer stopped: "+sendErr.Error(), "artifact")
+			}
 		}
 	}
 	output.WriteArtifactEnd()
 
+	applyRunTerminationStatus(ctx, result)
 	output.WriteResult(result.Success, result.ReturnCode)
 	slog.Info("Run completed", "run_id", runID, "duration_ms", time.Since(taskStarted).Milliseconds(), "success", result.Success)
-	if dependencySetupPassed && h.LSP != nil && h.DependencyViews != nil && sess.TeamID != "" {
+	if ctx.Err() == nil && dependencySetupPassed && h.LSP != nil && h.DependencyViews != nil && sess.TeamID != "" {
 		scope := lsp.DependencyRefreshScope{
 			ProjectID: sess.ProjectID, Branch: sess.Branch,
 			RuntimeID: runtimeID, LanguageID: plugin.Language(),
@@ -956,6 +991,64 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 
 func shouldPublishRunArtifacts(ctx context.Context, result *model.RunResult) bool {
 	return ctx.Err() == nil && result != nil && !result.TimedOut
+}
+
+func artifactOmissionWarning(ctx context.Context, result files.ArtifactSyncResult) string {
+	if ctx.Err() != nil || (result.OmittedFiles == 0 && !result.ScanTruncated) {
+		return ""
+	}
+	if result.OmittedFiles == 0 {
+		return "Artifact scan reached a safety limit before all entries were inspected"
+	}
+	message := fmt.Sprintf("Artifact safety limits omitted %d known files", result.OmittedFiles)
+	if result.ScanTruncated {
+		message += "; additional files may be omitted because the bounded scan stopped early"
+	}
+	return message
+}
+
+func workspaceCopyLimits(cfg *config.Config) files.ProjectCopyLimits {
+	if cfg == nil {
+		return files.ProjectCopyLimits{}
+	}
+	return files.ProjectCopyLimits{
+		MaxFiles: cfg.WorkspaceCopyMaxFiles, MaxTotalBytes: cfg.WorkspaceCopyMaxTotalBytes,
+		MaxPathBytes: cfg.WorkspaceCopyMaxPathBytes,
+	}
+}
+
+func runArtifactLimits(cfg *config.Config) files.ArtifactLimits {
+	copyLimits := workspaceCopyLimits(cfg)
+	limits := files.ArtifactLimits{
+		MaxPathBytes:   copyLimits.MaxPathBytes,
+		MaxScanEntries: files.ProjectCopyScanEntries(copyLimits),
+	}
+	if cfg != nil {
+		limits.MaxFiles = cfg.ArtifactMaxFiles
+		limits.MaxTotalBytes = cfg.ArtifactMaxTotalBytes
+	}
+	return limits
+}
+
+func applyRunTerminationStatus(ctx context.Context, result *model.RunResult) {
+	if ctx == nil || result == nil {
+		return
+	}
+	cause := context.Cause(ctx)
+	switch {
+	case errors.Is(cause, context.DeadlineExceeded):
+		result.TimedOut = true
+		result.Success = false
+		if result.ReturnCode == 0 {
+			result.ReturnCode = 124
+		}
+	case ctx.Err() == context.Canceled && !errors.Is(cause, personalcache.ErrQuotaExceeded):
+		result.Cancelled = true
+		result.Success = false
+		if result.ReturnCode == 0 {
+			result.ReturnCode = 130
+		}
+	}
 }
 
 func nodeDependencySnapshotPolicy(quotaBytes, otherBytes int64) lsp.DependencySnapshotPolicy {
@@ -1032,19 +1125,27 @@ func (h *WSHandler) resolveWorkspace(ctx context.Context, sess *model.RunSession
 		if h.Collaboration == nil || sess.TeamID == "" || sess.ProjectID == "" {
 			return "", fmt.Errorf("invalid team project context")
 		}
-		return h.Collaboration.ResolveWorktree(ctx, sess.UserID, sess.TeamID, sess.ProjectID, sess.Branch)
+		root, err := h.Collaboration.ResolveWorktree(ctx, sess.UserID, sess.TeamID, sess.ProjectID, sess.Branch)
+		if err != nil {
+			return "", err
+		}
+		return safefile.RealDirectory(root)
 	}
 	var root string
 	if h.AuthEnabled && sess.UserID != "" {
-		root = filepath.Join(h.Config.DataDir, "users", sess.UserID, "workspaces")
+		userRoot, err := auth.UserDataRoot(h.Config.DataDir, sess.UserID)
+		if err != nil {
+			return "", err
+		}
+		root = filepath.Join(userRoot, "workspaces")
 	} else {
 		root = h.Config.ServerRoot
 	}
-	key := sess.FolderKey
-	if key == "" {
-		key = sess.FolderName
+	key, err := safeWorkspaceKey(sess.FolderName, sess.FolderKey)
+	if err != nil {
+		return "", err
 	}
-	return safePath(root, key)
+	return safefile.ResolveDirectoryBeneath(root, key)
 }
 
 func sendWSErrorAndClose(conn *websocket.Conn, msg string) {

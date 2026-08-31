@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { resolveAsarPath } = require('../scripts/audit-release');
+const { resolveAsarPath, sourceMapEmbedsSources } = require('../scripts/audit-release');
 
 function createAsar(root, unpackedDirectory = 'win-unpacked') {
   const asarPath = path.join(root, 'dist', unpackedDirectory, 'resources', 'app.asar');
@@ -13,6 +13,12 @@ function createAsar(root, unpackedDirectory = 'win-unpacked') {
   fs.writeFileSync(asarPath, 'fixture');
   return asarPath;
 }
+
+test('release source maps may retain symbols but never embedded source text', () => {
+  assert.equal(sourceMapEmbedsSources(JSON.stringify({ sources: ['app.js'] })), false);
+  assert.equal(sourceMapEmbedsSources(JSON.stringify({ sources: ['app.js'], sourcesContent: ['const secret = true;'] })), true);
+  assert.equal(sourceMapEmbedsSources('{invalid'), true);
+});
 
 test('default release audit uses the Electron Builder dist app.asar', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bobocloud-release-audit-'));

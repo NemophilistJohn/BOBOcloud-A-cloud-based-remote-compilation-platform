@@ -1,18 +1,22 @@
 const { contextBridge, ipcRenderer } = require('electron');
+// Sandboxed preload scripts cannot import local modules. A unit test binds this
+// value to main/workspace-limits.js so the early and authoritative checks stay aligned.
+const MAX_WORKSPACE_TEXT_FILE_BYTES = 8 * 1024 * 1024;
 
 function subscribe(channel, callback) {
-  ipcRenderer.on(channel, callback);
-  return () => ipcRenderer.removeListener(channel, callback);
+  const listener = (_event, ...args) => callback(...args);
+  ipcRenderer.on(channel, listener);
+  return () => ipcRenderer.removeListener(channel, listener);
 }
 
 function subscribePayload(channel, callback) {
-  const listener = (_event, payload) => callback(payload);
-  return subscribe(channel, listener);
+  return subscribe(channel, (payload) => callback(payload));
 }
 
 contextBridge.exposeInMainWorld('api', {
   // Workspace
   pickWorkspace: (dirPath) => ipcRenderer.invoke('pick-workspace', dirPath),
+  forgetRecentWorkspace: (dirPath) => ipcRenderer.invoke('forget-recent-workspace', dirPath),
   closeWorkspace: () => ipcRenderer.invoke('close-workspace'),
   readTree: (path) => ipcRenderer.invoke('read-tree', path),
   onWorkspaceOpened: (cb) => subscribePayload('workspace-opened', cb),
@@ -54,14 +58,21 @@ contextBridge.exposeInMainWorld('api', {
   onTerminalPackageIntentRejected: (cb) => subscribePayload('terminal:package-intent-rejected', cb),
   // Incremental file events (lightweight, no full tree rebuild)
   onFileEvent: (cb) => {
-    const listener = (_e, data) => cb(data);
-    return subscribe('file-event', listener);
+    return subscribe('file-event', (data) => cb(data));
   },
   refreshWorkspace: () => ipcRenderer.invoke('refresh-workspace'),
 
   // Files
   readFile: (filePath) => ipcRenderer.invoke('read-file', filePath),
-  saveFile: (payload) => ipcRenderer.invoke('save-file', payload),
+  saveFile: (payload) => {
+    if (!payload || typeof payload.content !== 'string' ||
+        Buffer.byteLength(payload.content, 'utf8') > MAX_WORKSPACE_TEXT_FILE_BYTES) {
+      const error = new Error('Workspace text file exceeds the editor write limit');
+      error.code = 'DATA_TOO_LARGE';
+      return Promise.reject(error);
+    }
+    return ipcRenderer.invoke('save-file', payload);
+  },
   saveBinaryFile: (payload) => ipcRenderer.invoke('save-binary-file', payload),
   saveArtifact: (payload) => ipcRenderer.invoke('save-artifact', payload),
 
@@ -105,46 +116,47 @@ contextBridge.exposeInMainWorld('api', {
   lspControl: (payload) => ipcRenderer.invoke('lsp:control', payload),
   lspStatus: () => ipcRenderer.invoke('lsp:status'),
   onLspStatus: (cb) => {
-    const listener = (_e, data) => cb(data);
-    return subscribe('lsp:status', listener);
+    return subscribe('lsp:status', (data) => cb(data));
   },
   onLspNotification: (cb) => {
-    const listener = (_e, data) => cb(data);
-    return subscribe('lsp:notification', listener);
+    return subscribe('lsp:notification', (data) => cb(data));
   },
   onLspCache: (cb) => {
-    const listener = (_e, data) => cb(data);
-    return subscribe('lsp:cache', listener);
+    return subscribe('lsp:cache', (data) => cb(data));
   },
   onLspDependencyIndex: (cb) => {
-    const listener = (_e, data) => cb(data);
-    return subscribe('lsp:dependency-index', listener);
+    return subscribe('lsp:dependency-index', (data) => cb(data));
   },
 
   // Server Projects management
   onOpenServerProjects: (cb) => subscribe('open-server-projects', cb),
-  calculateDirSize: (dir) => ipcRenderer.invoke('calculate-dir-size', dir),
   readProjectNames: () => ipcRenderer.invoke('read-project-names'),
   saveProjectName: (key, name) => ipcRenderer.invoke('save-project-name', { key, name }),
 
   // Server settings
   readServerSettings: () => ipcRenderer.invoke('read-server-settings'),
   writeServerSettings: (settings) => ipcRenderer.invoke('write-server-settings', settings),
+  commitServerSettings: () => ipcRenderer.invoke('write-server-settings', { __serverSettingsAction: 'commit' }),
+  rollbackServerSettings: () => ipcRenderer.invoke('write-server-settings', { __serverSettingsAction: 'rollback' }),
 
   // Rclone operations (Layer 3 → Layer 2 IPC bridge)
+  rclonePrepareRemote: (payload) => ipcRenderer.invoke('rclone:prepare-remote', payload),
   rcloneSync: (payload) => ipcRenderer.invoke('rclone:sync', payload),
   rclonePull: (payload) => ipcRenderer.invoke('rclone:pull', payload),
+  rcloneCancel: (operationId) => ipcRenderer.invoke('rclone:cancel', { operationId }),
+  rcloneCancelAll: (reason) => ipcRenderer.invoke('rclone:cancel-all', { reason }),
   rcloneListBinaries: () => ipcRenderer.invoke('rclone:list-binaries'),
   rcloneGetSelection: () => ipcRenderer.invoke('rclone:get-selection'),
   rcloneSelectBinary: (payload) => ipcRenderer.invoke('rclone:select-binary', payload),
   rcloneCheckVersion: () => ipcRenderer.invoke('rclone:check-version'),
+  rcloneValidateConnection: () => ipcRenderer.invoke('rclone:validate-connection'),
   onRcloneProgress: (operationId, cb) => {
     // Backward compatibility for callers that do not need operation scoping.
     if (typeof operationId === 'function') {
       cb = operationId;
       operationId = '';
     }
-    const listener = (_event, progress) => {
+    const listener = (progress) => {
       const payload = progress && typeof progress === 'object'
         ? progress
         : { operationId: '', line: progress };
@@ -175,10 +187,7 @@ contextBridge.exposeInMainWorld('api', {
   languagePackRemove: (id) => ipcRenderer.invoke('language-packs:remove', id),
   languagePacksOpenFolder: () => ipcRenderer.invoke('language-packs:open-folder'),
   languagePacksRefresh: () => ipcRenderer.invoke('language-packs:refresh'),
-  onLanguagePacksChanged: (cb) => {
-    const listener = (_e, data) => cb(data);
-    return subscribe('language-packs:changed', listener);
-  },
+  onLanguagePacksChanged: (cb) => subscribePayload('language-packs:changed', cb),
 
   // User plugin packages stay outside the generic file APIs. The renderer can
   // manage metadata and request only a verified enabled entry bundle for its
@@ -245,9 +254,9 @@ contextBridge.exposeInMainWorld('api', {
   onOpenDiagnosticsSettings: (cb) => subscribe('open-diagnostics-settings', cb),
 
   // ──── Auth credentials (local timed token per server) ────
-  authGet: (serverIp) => ipcRenderer.invoke('auth-get', serverIp),
-  authSet: (serverIp, credential) => ipcRenderer.invoke('auth-set', { serverIp, credential }),
-  authClear: (serverIp) => ipcRenderer.invoke('auth-clear', serverIp),
+  authGet: () => ipcRenderer.invoke('auth-get'),
+  authSet: (credential) => ipcRenderer.invoke('auth-set', { credential }),
+  authClear: () => ipcRenderer.invoke('auth-clear'),
   // 推送认证状态到主进程（用于动态显示"管理"菜单）：{ loggedIn, role }
   authUpdateState: (state) => ipcRenderer.send('auth-state-update', state),
   onOpenAuthLogin: (cb) => subscribe('open-auth-login', cb),

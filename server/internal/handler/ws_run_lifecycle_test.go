@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"bobocloud-server/internal/config"
+	"bobocloud-server/internal/files"
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/session"
 	"bobocloud-server/internal/storage"
@@ -29,6 +30,24 @@ type wsDeleteFailingSessionStore struct {
 	deleteErr   error
 	deleteOK    bool
 	deleteCalls int
+}
+
+func TestRunTerminationStatusDistinguishesDeadlineAndRevocation(t *testing.T) {
+	deadlineCtx, cancelDeadline := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelDeadline()
+	timedOut := &model.RunResult{Success: true}
+	applyRunTerminationStatus(deadlineCtx, timedOut)
+	if !timedOut.TimedOut || timedOut.Cancelled || timedOut.Success || timedOut.ReturnCode != 124 {
+		t.Fatalf("deadline result = %+v", timedOut)
+	}
+
+	revokedCtx, revoke := context.WithCancelCause(context.Background())
+	revoke(errors.New("account revoked"))
+	cancelled := &model.RunResult{Success: true}
+	applyRunTerminationStatus(revokedCtx, cancelled)
+	if !cancelled.Cancelled || cancelled.TimedOut || cancelled.Success || cancelled.ReturnCode != 130 {
+		t.Fatalf("revoked result = %+v", cancelled)
+	}
 }
 
 type wsTransientGetSessionStore struct {
@@ -317,4 +336,35 @@ func TestShouldPublishRunArtifacts(t *testing.T) {
 			t.Fatal("timed out run should not publish artifacts")
 		}
 	})
+}
+
+func TestArtifactOmissionWarning(t *testing.T) {
+	if message := artifactOmissionWarning(context.Background(), files.ArtifactSyncResult{}); message != "" {
+		t.Fatalf("empty result warning=%q", message)
+	}
+	if message := artifactOmissionWarning(context.Background(), files.ArtifactSyncResult{OmittedFiles: 2}); !strings.Contains(message, "2 known files") {
+		t.Fatalf("omission warning=%q", message)
+	}
+	if message := artifactOmissionWarning(context.Background(), files.ArtifactSyncResult{ScanTruncated: true}); !strings.Contains(message, "before all entries") {
+		t.Fatalf("truncation warning=%q", message)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if message := artifactOmissionWarning(ctx, files.ArtifactSyncResult{OmittedFiles: 2, ScanTruncated: true}); message != "" {
+		t.Fatalf("cancelled warning=%q", message)
+	}
+}
+
+func TestRunArtifactScanUsesWorkspaceCopyTraversalBudget(t *testing.T) {
+	cfg := &config.Config{
+		ArtifactMaxFiles: 17, ArtifactMaxTotalBytes: 1234,
+		WorkspaceCopyMaxFiles: 20_000, WorkspaceCopyMaxTotalBytes: 1 << 30, WorkspaceCopyMaxPathBytes: 2048,
+	}
+	limits := runArtifactLimits(cfg)
+	if limits.MaxFiles != 17 || limits.MaxTotalBytes != 1234 || limits.MaxPathBytes != 2048 {
+		t.Fatalf("artifact limits=%+v", limits)
+	}
+	if limits.MaxScanEntries <= 4096 {
+		t.Fatalf("artifact scan budget did not inherit workspace traversal bounds: %+v", limits)
+	}
 }

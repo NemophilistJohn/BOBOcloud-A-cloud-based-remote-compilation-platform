@@ -136,6 +136,7 @@ test('production renderer build is minified, source-mapped and records ordered m
   const sourceMap = JSON.parse(await fsp.readFile(built.outputFile + '.map', 'utf8'));
   const aiUiSourceMap = JSON.parse(await fsp.readFile(built.aiUiOutputFile + '.map', 'utf8'));
   const terminalUiSourceMap = JSON.parse(await fsp.readFile(built.terminalUiOutputFile + '.map', 'utf8'));
+  const terminalCssSourceMap = JSON.parse(await fsp.readFile(path.join(directory, 'bobo-terminal-ui.css.map'), 'utf8'));
   const manifest = JSON.parse(await fsp.readFile(built.manifestFile, 'utf8'));
 
   assert.match(bundle, /sourceMappingURL=bobo-renderer\.js\.map/);
@@ -154,6 +155,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/node_modules/temml/dist/temml.mjs')));
   assert.ok(terminalUiSourceMap.sources.some((source) => source.endsWith('/renderer/terminal-ui-entry.js')));
   assert.ok(terminalUiSourceMap.sources.some((source) => source.includes('/node_modules/@xterm/xterm/')));
+  assert.equal(sourceMap.sourcesContent, undefined);
+  assert.equal(aiUiSourceMap.sourcesContent, undefined);
+  assert.equal(terminalUiSourceMap.sourcesContent, undefined);
+  assert.equal(terminalCssSourceMap.sourcesContent, undefined);
   assert.ok(aiUiBundle.length > 0);
   assert.ok(terminalUiBundle.length > 0);
   assert.equal(manifest.mode, 'production');
@@ -163,7 +168,9 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(manifest.entries.aiUi.load, 'first-visible-ai-ui');
   assert.deepEqual(manifest.entries.terminalUi.orderedModules, EXPECTED_TERMINAL_UI_MODULES);
   assert.equal(manifest.entries.terminalUi.load, 'first-visible-terminal');
-  assert.deepEqual(manifest.entries.terminalUi.outputs, ['bobo-terminal-ui.js', 'bobo-terminal-ui.js.map', 'bobo-terminal-ui.css']);
+  assert.deepEqual(manifest.entries.terminalUi.outputs, [
+    'bobo-terminal-ui.js', 'bobo-terminal-ui.js.map', 'bobo-terminal-ui.css', 'bobo-terminal-ui.css.map'
+  ]);
   assert.equal(manifest.entries.extensionHost.implementation, 'opaque-sandboxed-iframe-worker');
   assert.equal(manifest.entries.extensionHost.directNetwork, 'blocked-by-sandbox-csp');
 });
@@ -184,12 +191,13 @@ test('package and release audit use bundle artifacts instead of raw renderer scr
     '/renderer-dist/bobo-terminal-ui.js',
     '/renderer-dist/bobo-terminal-ui.js.map',
     '/renderer-dist/bobo-terminal-ui.css',
+    '/renderer-dist/bobo-terminal-ui.css.map',
     '/renderer-dist/bobo-renderer.manifest.json',
     '/src/ai-settings-schema.js'
   ]), { missingEntries: [], legacyRendererEntries: [] });
 
   const invalid = inspectRendererBundleEntries(['/src/app.js', '/editor-rules/plugins/go.js']);
-  assert.equal(invalid.missingEntries.length, 8);
+  assert.equal(invalid.missingEntries.length, 9);
   assert.deepEqual(invalid.legacyRendererEntries, ['src/app.js', 'editor-rules/plugins/go.js']);
 });
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"bobocloud-server/internal/resourcecontrol"
+	"bobocloud-server/internal/resourcegovernor"
 )
 
 type SessionContext struct {
@@ -370,10 +371,12 @@ func (m *Manager) Capabilities(ctx context.Context) []Capability {
 	return m.catalog.Capabilities(ctx, m.inspector)
 }
 
-func randomID() string {
+func randomID() (string, error) {
 	value := make([]byte, 12)
-	_, _ = rand.Read(value)
-	return hex.EncodeToString(value)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate DAP session ID: %w", err)
+	}
+	return hex.EncodeToString(value), nil
 }
 
 func (m *Manager) reserve(userID, key string) error {
@@ -450,9 +453,15 @@ func (m *Manager) Start(sessionContext SessionContext) (*Session, error) {
 		return nil, err
 	}
 	defer m.finishReservation(sessionContext.UserID, key)
-	id := randomID()
+	id, err := randomID()
+	if err != nil {
+		return nil, err
+	}
 	if resourceLease == nil && m.opts.ResourceController != nil {
-		resourceLease, err = m.opts.ResourceController.TryAcquire(resourcecontrol.WorkloadDAP, sessionContext.UserID, id)
+		resourceLease, err = m.opts.ResourceController.TryAcquireWithDemand(
+			resourcecontrol.WorkloadDAP, sessionContext.UserID, id,
+			resourcegovernor.Resources{DockerContainers: 1},
+		)
 		if err != nil {
 			return nil, fmt.Errorf("admit DAP session resources: %w", err)
 		}

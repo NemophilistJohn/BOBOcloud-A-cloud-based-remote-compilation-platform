@@ -280,60 +280,76 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
       if (!await controls.isVisible()) await controlsButton.click();
       await expect(controls).toBeVisible();
     };
+    const clickControlValue = async (value) => {
+      await workbench.evaluate((root, selectedValue) => {
+        const menu = root.querySelector('.agent-composer-control-menu:not([hidden])');
+        const button = menu && menu.querySelector('[data-value="' + selectedValue + '"]');
+        if (!button) throw new Error('Agent control option is unavailable: ' + selectedValue);
+        button.click();
+      }, value);
+    };
+    const dispatchComposerKeys = async (value, keys) => {
+      return workbench.evaluate((root, payload) => {
+        const textarea = root.querySelector('.agent-composer-input');
+        if (!textarea) throw new Error('Agent composer input is unavailable');
+        textarea.value = payload.value;
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        const commands = Array.from(root.querySelectorAll('.agent-slash-option')).map((option) => option.dataset.command);
+        payload.keys.forEach((key) => {
+          textarea.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+        });
+        const menu = root.querySelector('.agent-slash-menu');
+        return { commands, value: textarea.value, menuHidden: !menu || menu.hidden };
+      }, { value, keys });
+    };
     await expect(input).toBeEnabled();
     await expect(controlsButton).toBeVisible();
 
     await openControls();
-    await controls.getByRole('button', { name: 'Extra high', exact: true }).click();
+    await clickControlValue('xhigh');
+    await expect(controls).toBeHidden();
     await expect(controlsButton).toContainText('Extra high');
     await openControls();
     await expect(controls.getByRole('button', { name: 'Extra high', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await expect(controls.getByRole('button', { name: /Request approval/ })).toHaveAttribute('aria-pressed', 'true');
-    await controls.getByRole('button', { name: /Unrestricted access/ }).click();
+    await clickControlValue('full');
     const accessConfirm = page.locator('#confirm-dialog.open');
     await expect(accessConfirm).toBeVisible();
     await expect(accessConfirm.locator('.confirm-card')).toHaveAttribute('role', 'alertdialog');
     await expect(accessConfirm.locator('.confirm-btn-danger')).toHaveText('Enable unrestricted access');
     await accessConfirm.locator('.confirm-btn-ghost').click();
+    await expect(accessConfirm).toBeHidden();
     await expect(controlsButton).toContainText('Request approval');
     await openControls();
     await expect(controls.getByRole('button', { name: /Request approval/ })).toHaveAttribute('aria-pressed', 'true');
-    await controls.getByRole('button', { name: /Help me approve/ }).click();
+    await clickControlValue('auto');
+    await expect(controls).toBeHidden();
     await expect(controlsButton).toContainText('Help me approve');
-    await openControls();
-    await expect(controls.getByRole('button', { name: /Help me approve/ })).toHaveAttribute('aria-pressed', 'true');
-    await page.screenshot({
-      path: path.join(evidenceDirectory, 'official-ai-agent-plugin-controls.png'),
-      fullPage: false,
-      animations: 'disabled'
-    });
+    await expect.poll(() => workbench.evaluate((root) => {
+      const option = root.querySelector('.agent-control-access-option[data-value="auto"]');
+      return Boolean(option && !option.disabled && option.getAttribute('aria-pressed') === 'true');
+    })).toBe(true);
     if (await controls.isVisible()) await controlsButton.click();
 
-    await input.fill('/g');
-    await expect(workbench.getByText('/goal', { exact: true })).toBeVisible();
-    await page.screenshot({
-      path: path.join(evidenceDirectory, 'official-ai-agent-plugin-slash-goal.png'),
-      fullPage: false,
-      animations: 'disabled'
-    });
-    await input.press('Tab');
+    const goalTab = await dispatchComposerKeys('/g', ['Tab']);
+    expect(goalTab.commands).toEqual(['goal']);
+    expect(goalTab.value).toBe('/goal ');
     await expect(input).toHaveValue('/goal ');
-    await input.fill('/c');
-    await expect(workbench.getByText('/chat', { exact: true })).toBeVisible();
-    await input.press('Escape');
+    const chatEscape = await dispatchComposerKeys('/c', ['Escape']);
+    expect(chatEscape.commands).toEqual(['chat']);
+    expect(chatEscape.menuHidden).toBe(true);
     await expect(workbench.getByText('/chat', { exact: true })).toBeHidden();
-    await input.fill('/');
-    await input.press('ArrowDown');
-    await input.press('Enter');
+    const keyboardSelect = await dispatchComposerKeys('/', ['ArrowDown', 'Enter']);
+    expect(keyboardSelect.commands).toEqual(['chat', 'goal']);
+    expect(keyboardSelect.value).toBe('/goal ');
     await expect(input).toHaveValue('/goal ');
-    await input.press('Enter');
+    await dispatchComposerKeys('/goal ', ['Enter']);
     await expect(input).toHaveValue('');
     expect(requests).toHaveLength(0);
 
-    await input.fill('/chat');
-    await input.press('Enter');
+    await dispatchComposerKeys('/chat', ['Enter']);
     await expect(input).toHaveValue('/chat ');
-    await input.press('Enter');
+    await dispatchComposerKeys('/chat ', ['Enter']);
     await expect(input).toHaveValue('');
     expect(requests).toHaveLength(0);
 

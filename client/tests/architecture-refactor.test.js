@@ -2,7 +2,6 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
@@ -22,6 +21,7 @@ const EXPECTED_IPC = new Map([
   ['workspace-switch-reject', 'handle'],
   ['artifact-run-context', 'handle'],
   ['pick-workspace', 'handle'],
+  ['forget-recent-workspace', 'handle'],
   ['write-team-mapping', 'handle'],
   ['close-workspace', 'handle'],
   ['read-file', 'handle'],
@@ -35,7 +35,6 @@ const EXPECTED_IPC = new Map([
   ['create-folder', 'handle'],
   ['rename-entry', 'handle'],
   ['delete-entry', 'handle'],
-  ['calculate-dir-size', 'handle'],
   ['read-project-names', 'handle'],
   ['save-project-name', 'handle'],
   ['read-server-settings', 'handle'],
@@ -62,12 +61,16 @@ const EXPECTED_IPC = new Map([
   ['lsp:status', 'handle'],
   ['rclone:sync', 'handle'],
   ['rclone:pull', 'handle'],
+  ['rclone:prepare-remote', 'handle'],
+  ['rclone:cancel', 'handle'],
+  ['rclone:cancel-all', 'handle'],
   ['pick-local-mapping', 'handle'],
   ['local-path-info', 'handle'],
   ['rclone:list-binaries', 'handle'],
   ['rclone:get-selection', 'handle'],
   ['rclone:select-binary', 'handle'],
   ['rclone:check-version', 'handle'],
+  ['rclone:validate-connection', 'handle'],
   ['ai-chat-request', 'handle'],
   ['ai-cancel-stream', 'handle'],
   ['ai-inline-cancel', 'handle'],
@@ -264,12 +267,18 @@ test('HTML has at most two startup scripts and the renderer build covers every f
 });
 
 test('checked renderer bundles are fresh for their recorded build mode', async (t) => {
-  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-renderer-freshness-'));
+  const temporaryDirectory = fs.mkdtempSync(path.join(ROOT, '.bobo-renderer-freshness-'));
   t.after(() => fs.rmSync(temporaryDirectory, { recursive: true, force: true }));
   const manifest = JSON.parse(read('renderer-dist/bobo-renderer.manifest.json'));
   await buildRenderer({ mode: manifest.mode, outputDirectory: temporaryDirectory, logLevel: 'silent' });
 
-  for (const fileName of ['bobo-renderer.js', 'bobo-ai-ui.js']) {
+  for (const fileName of [
+    'bobo-renderer.js', 'bobo-renderer.js.map',
+    'bobo-ai-ui.js', 'bobo-ai-ui.js.map',
+    'bobo-terminal-ui.js', 'bobo-terminal-ui.js.map',
+    'bobo-terminal-ui.css', 'bobo-terminal-ui.css.map',
+    'bobo-renderer.manifest.json'
+  ]) {
     assert.equal(
       fs.readFileSync(path.join(temporaryDirectory, fileName)).equals(
         fs.readFileSync(path.join(RENDERER_OUTPUT, fileName))

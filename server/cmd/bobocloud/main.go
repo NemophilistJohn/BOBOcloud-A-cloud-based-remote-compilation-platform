@@ -36,6 +36,7 @@ import (
 	"bobocloud-server/internal/packageops"
 	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/resourcecontrol"
+	"bobocloud-server/internal/rootbootstrap"
 	"bobocloud-server/internal/runner"
 	"bobocloud-server/internal/safefile"
 	"bobocloud-server/internal/security"
@@ -137,22 +138,26 @@ func finishRuntimeShutdown(ctx context.Context, runtime runtimeShutdowner, initi
 	}
 }
 
-func removeUserDataAfterContainerCleanup(destroyer userContainerDestroyer, userID, userDir string) error {
-	return removeUserDataAfterContainerCleanupContext(context.Background(), destroyer, userID, userDir)
+func removeUserDataAfterContainerCleanup(destroyer userContainerDestroyer, userID, dataDir string) error {
+	return removeUserDataAfterContainerCleanupContext(context.Background(), destroyer, userID, dataDir)
 }
 
-func removeUserDataAfterContainerCleanupContext(ctx context.Context, destroyer userContainerDestroyer, userID, userDir string) error {
+func removeUserDataAfterContainerCleanupContext(ctx context.Context, destroyer userContainerDestroyer, userID, dataDir string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	var err error
-	if contextual, ok := destroyer.(userContainerContextDestroyer); ok {
-		err = contextual.DestroyUserContainersContext(ctx, userID)
-	} else {
-		err = destroyer.DestroyUserContainers(userID)
-	}
+	userDir, err := auth.UserDataRoot(dataDir, userID)
 	if err != nil {
-		return fmt.Errorf("destroy user containers before deleting data: %w", err)
+		return fmt.Errorf("resolve user data directory: %w", err)
+	}
+	var destroyErr error
+	if contextual, ok := destroyer.(userContainerContextDestroyer); ok {
+		destroyErr = contextual.DestroyUserContainersContext(ctx, userID)
+	} else {
+		destroyErr = destroyer.DestroyUserContainers(userID)
+	}
+	if destroyErr != nil {
+		return fmt.Errorf("destroy user containers before deleting data: %w", destroyErr)
 	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("delete user data directory: %w", err)
@@ -557,7 +562,13 @@ func main() {
 
 	// 多人模式：确保 root 管理员存在（全系统唯一，由配置/环境变量/自动生成种子）
 	if multiUser {
-		if rootUser := seedRootUser(cfg, userStore); rootUser != nil {
+		rootUser, seedErr := seedRootUser(cfg, userStore)
+		if seedErr != nil {
+			slog.Error("Failed to initialize root account", "error", seedErr)
+			shutdownStartupAndExit(seedErr)
+			return
+		}
+		if rootUser != nil {
 			createdUsers = append(createdUsers, rootUser)
 		}
 	}
@@ -685,7 +696,7 @@ func main() {
 	// 登录/注册限速（按 IP，防爆破），多人模式才需要
 	var loginLimiter *handler.RateLimiter
 	if multiUser && cfg.LoginRateLimit > 0 {
-		loginLimiter = handler.NewRateLimiter(cfg.LoginRateLimit, cfg.LoginRateLimit)
+		loginLimiter = handler.NewRateLimiterWithCapacity(cfg.LoginRateLimit, cfg.LoginRateLimit, 4096)
 		slog.Info("Login rate limiter enabled", "rate_per_minute", cfg.LoginRateLimit)
 	}
 
@@ -751,7 +762,10 @@ func main() {
 	httpHandler.Readiness = serverReadinessProbe(db, dockerPool, cfg, lspManager, dapManager)
 	httpHandler.Accepting = serverRuntime.IsAccepting
 	httpHandler.AcquireWork = serverRuntime.Acquire
-	httpHandler.EnvironmentSetup = makeEnvironmentSetupExecutor(dockerPool, sec)
+	httpHandler.EnvironmentSetup = makeEnvironmentSetupExecutor(dockerPool, sec, files.ProjectCopyLimits{
+		MaxFiles: cfg.WorkspaceCopyMaxFiles, MaxTotalBytes: cfg.WorkspaceCopyMaxTotalBytes,
+		MaxPathBytes: cfg.WorkspaceCopyMaxPathBytes,
+	})
 	httpHandler.PackageLockResolver = makePackageLockResolver(dockerPool, sec, cfg.PackageNodePNPMVersion)
 	httpHandler.OnBuildCacheCleared = dockerPool.InvalidateIdleBuildCacheContainers
 	httpHandler.OnPersonalCacheCleared = dockerPool.InvalidateIdleBuildCacheContainers
@@ -761,6 +775,10 @@ func main() {
 	cleanupDeletedUserResources := func(ctx context.Context, userID string) error {
 		if ctx == nil {
 			ctx = context.Background()
+		}
+		userDir, identityErr := auth.UserDataRoot(cfg.DataDir, userID)
+		if identityErr != nil {
+			return fmt.Errorf("reject unsafe user cleanup identity: %w", identityErr)
 		}
 		var stopErrors []error
 		if lspManager != nil {
@@ -790,8 +808,7 @@ func main() {
 		// Docker must confirm every user-owned container is absent before the
 		// bind-mounted directory can be removed. A cleanup error remains in the
 		// durable deletion queue and is retried without losing ownership state.
-		userDir := filepath.Join(cfg.DataDir, "users", userID)
-		if err := removeUserDataAfterContainerCleanupContext(ctx, dockerPool, userID, userDir); err != nil {
+		if err := removeUserDataAfterContainerCleanupContext(ctx, dockerPool, userID, cfg.DataDir); err != nil {
 			slog.Error("Failed to delete user data directory",
 				"user_id", userID, "path", userDir, "error", err)
 			return err
@@ -925,10 +942,15 @@ func main() {
 		})
 	}
 	// 限流器旧桶清理（每 5 分钟）
-	if rateLimiter != nil {
+	if rateLimiter != nil || loginLimiter != nil {
 		startManaged("rate-limit-cleanup", func(ctx context.Context) {
 			periodicLoop(ctx, 5*time.Minute, func() {
-				rateLimiter.CleanupExpired(10 * time.Minute)
+				if rateLimiter != nil {
+					rateLimiter.CleanupExpired(10 * time.Minute)
+				}
+				if loginLimiter != nil {
+					loginLimiter.CleanupExpired(10 * time.Minute)
+				}
 			})
 		})
 	}
@@ -1186,86 +1208,10 @@ func teamCacheCleanupLoop(ctx context.Context, cache *buildcache.Manager, store 
 	}
 }
 
-// seedRootUser 多人模式下确保 root 管理员存在。
-// 密码优先级：root_user.password > 环境变量 BOBOCLOUD_ROOT_PASSWORD > 自动生成（打印到日志，仅首次可见）。
-// 声明式密码：若 root_user.password 非空，每次启动都确保 root 密码等于该值
-// （不存在则创建，存在则覆盖密码哈希）——管理员无需注册即可用配置中的默认密码登录。
-// 若 root_user.password 留空，则仅首次启动自动生成随机密码，之后不再覆盖（管理员可自行修改密码）。
-func seedRootUser(cfg *config.Config, userStore auth.UserStore) *auth.User {
-	users, err := userStore.List()
-	if err == nil {
-		for _, u := range users {
-			if u.EffectiveRole() == auth.RoleRoot {
-				// root 已存在。若配置声明了密码，则把密码同步为配置值（声明式 root 密码）。
-				if cfg.RootUser.Password != "" {
-					hash, hErr := auth.HashPassword(cfg.RootUser.Password)
-					if hErr != nil {
-						slog.Error("Failed to hash root password from config", "error", hErr)
-					} else if hash != u.PasswordHash {
-						u.PasswordHash = hash
-						if cErr := userStore.Create(u); cErr != nil {
-							slog.Error("Failed to sync root password from config", "error", cErr)
-						} else {
-							slog.Info("Root password synced from config (declarative override)", "username", u.Username)
-						}
-					}
-				}
-				slog.Info("Root account already exists", "username", u.Username)
-				return nil
-			}
-		}
-	}
-
-	username := cfg.RootUser.Username
-	if username == "" {
-		username = "root"
-	}
-	name := cfg.RootUser.Name
-	if name == "" {
-		name = "Root Admin"
-	}
-	password := cfg.RootUser.Password
-	generated := false
-	if password == "" {
-		password = auth.GeneratePassword()
-		generated = true
-	}
-	hash, err := auth.HashPassword(password)
-	if err != nil {
-		slog.Error("Failed to hash root password", "error", err)
-		return nil
-	}
-
-	rootUser := &auth.User{
-		ID:             username,
-		Username:       username,
-		Email:          cfg.RootUser.Email,
-		Name:           name,
-		PasswordHash:   hash,
-		Role:           auth.RoleRoot,
-		APIKey:         "bobo_" + auth.GenerateToken(),
-		ContainerLimit: 20,
-		RateLimit:      300,
-		DiskQuotaMB:    0, // root 不限磁盘
-		CreatedAt:      time.Now(),
-	}
-	if err := userStore.Create(rootUser); err != nil {
-		slog.Error("Failed to create root user", "error", err)
-		return nil
-	}
-
-	if generated {
-		// 自动生成的密码只在此处出现一次，请立即登录修改
-		slog.Info("════════════════════════════════════════════════════════")
-		slog.Info(" ROOT ACCOUNT CREATED — save this password NOW:")
-		slog.Info("   username: " + username)
-		slog.Info("   password: " + password)
-		slog.Info(" (change it after first login; it will NOT be shown again)")
-		slog.Info("════════════════════════════════════════════════════════")
-	} else {
-		slog.Info("Root account created from config (declarative password)", "username", username)
-	}
-	return rootUser
+// seedRootUser keeps composition compatibility while rootbootstrap owns the
+// credential file and account initialization transaction.
+func seedRootUser(cfg *config.Config, userStore auth.UserStore) (*auth.User, error) {
+	return rootbootstrap.Ensure(cfg, userStore)
 }
 
 // ──── Terminal 桥接 ────
@@ -1338,7 +1284,7 @@ func makeTerminalExecutor(pool *docker.Pool) handler.TerminalExecutor {
 // makeEnvironmentSetupExecutor reuses the runner's Docker pool, persistence
 // environment, workspace copy, and command policy. The HTTP request can select
 // only a server-generated plan; it cannot supply these commands directly.
-func makeEnvironmentSetupExecutor(pool *docker.Pool, policy security.Policy) handler.EnvironmentSetupExecutor {
+func makeEnvironmentSetupExecutor(pool *docker.Pool, policy security.Policy, copyLimits files.ProjectCopyLimits) handler.EnvironmentSetupExecutor {
 	return func(ctx context.Context, userID, runtimeID, workspaceRoot string, commands []string) (stdout, stderr string, exitCode int, err error) {
 		rt := model.GetRuntimeDef(runtimeID)
 		if rt == nil {
@@ -1356,7 +1302,7 @@ func makeEnvironmentSetupExecutor(pool *docker.Pool, policy security.Policy) han
 		}
 		defer os.RemoveAll(isolatedRoot)
 		if !handler.IsManagedPackageOperation(ctx) {
-			if copyErr := files.CopyProjectToTemp(workspaceRoot, isolatedRoot); copyErr != nil {
+			if copyErr := files.CopyProjectToTemp(ctx, workspaceRoot, isolatedRoot, copyLimits); copyErr != nil {
 				return "", "", 0, fmt.Errorf("copy isolated environment workspace: %w", copyErr)
 			}
 		}

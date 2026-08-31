@@ -185,8 +185,13 @@ func (dp *Pool) observeQueueDepth() {
 	}
 }
 
+const maxPoolOutputRetentionBytes = 16 << 20
+
 func (dp *Pool) SetOutputRetentionLimit(limit int) {
 	if limit > 0 {
+		if limit > maxPoolOutputRetentionBytes {
+			limit = maxPoolOutputRetentionBytes
+		}
 		dp.outputRetainedBytes = limit
 	}
 }

@@ -8,6 +8,7 @@ const vm = require('node:vm');
 
 const projectRoot = path.resolve(__dirname, '..');
 const pluginRpcTransport = require('../main/plugin-rpc-transport');
+const workspaceLimits = require('../main/workspace-limits');
 
 function loadPreloadApi(ipcRenderer) {
   let exposedApi = null;
@@ -16,6 +17,7 @@ function loadPreloadApi(ipcRenderer) {
   };
   const source = fs.readFileSync(path.join(projectRoot, 'preload.js'), 'utf8');
   vm.runInNewContext(source, {
+    Buffer,
     require(id) {
       if (id === 'electron') return { contextBridge, ipcRenderer };
       throw new Error('Unexpected preload dependency: ' + id);
@@ -98,7 +100,10 @@ function createDocument(elements) {
   };
 }
 
-test('preload subscriptions return exact disposers and scope rclone progress', () => {
+test('preload subscriptions return exact disposers and scope rclone progress', async () => {
+  const preloadSource = fs.readFileSync(path.join(projectRoot, 'preload.js'), 'utf8');
+  assert.match(preloadSource, /const MAX_WORKSPACE_TEXT_FILE_BYTES = 8 \* 1024 \* 1024;/);
+  assert.equal(workspaceLimits.MAX_WORKSPACE_TEXT_FILE_BYTES, 8 * 1024 * 1024);
   const subscriptions = new Map();
   const ipcRenderer = {
     on(channel, listener) {
@@ -112,7 +117,10 @@ test('preload subscriptions return exact disposers and scope rclone progress', (
     removeAllListeners() {
       throw new Error('removeAllListeners must never be used by a disposer');
     },
-    invoke() { return Promise.resolve(); },
+    invoke(channel) {
+      if (channel === 'save-file') throw new Error('oversized save reached IPC');
+      return Promise.resolve();
+    },
     send() {}
   };
   const exposedApi = loadPreloadApi(ipcRenderer);
@@ -152,6 +160,16 @@ test('preload subscriptions return exact disposers and scope rclone progress', (
   assert.equal(workspacePayload.rootPath, 'demo');
   disposeWorkspace();
   assert.equal(subscriptions.get('workspace-opened').length, 0);
+
+  let languagePayload = null;
+  const disposeLanguage = exposedApi.onLanguagePacksChanged(value => { languagePayload = value; });
+  subscriptions.get('language-packs:changed')[0]({}, { activeId: 'ja' });
+  assert.equal(languagePayload.activeId, 'ja', 'preload must strip IpcRendererEvent without dropping the payload');
+  disposeLanguage();
+  assert.equal(subscriptions.get('language-packs:changed').length, 0);
+  await assert.rejects(exposedApi.saveFile({ filePath: 'large.txt', content: 'x'.repeat(8 * 1024 * 1024 + 1) }), {
+    code: 'DATA_TOO_LARGE'
+  });
 });
 
 test('preload plugin RPC forwards structured main-process results unchanged', async () => {
@@ -209,7 +227,8 @@ test('rclone operations isolate progress by operation id and dispose exactly one
       invocations.push({ kind: 'pull', payload });
       return new Promise((resolve) => pending.push({ operationId: payload.operationId, resolve }));
     },
-    rcloneCheckVersion() { return Promise.resolve({ available: true }); }
+    rcloneCheckVersion() { return Promise.resolve({ available: true }); },
+    rcloneValidateConnection() { return Promise.resolve({ success: true }); }
   };
   const syncLines = [];
   const pullLines = [];
@@ -218,9 +237,10 @@ test('rclone operations isolate progress by operation id and dispose exactly one
     BOBO: { state: { serverSettings: {}, workspaceRoot: 'a', workspaceIdentity: 7 } }
   };
   loadScript('src/rclone-client.js', windowObject);
+  assert.deepEqual(await windowObject.BOBO.rclone.validateConnection(), { success: true });
 
-  const syncPromise = windowObject.BOBO.rclone.sync({ src: 'a', remotePath: 'ra', onProgress: line => syncLines.push(line) });
-  const pullPromise = windowObject.BOBO.rclone.pull({ dest: 'a', remotePath: 'rb', onProgress: line => pullLines.push(line) });
+  const syncPromise = windowObject.BOBO.rclone.sync({ src: 'a', remoteGrantId: 'grant-sync', onProgress: line => syncLines.push(line) });
+  const pullPromise = windowObject.BOBO.rclone.pull({ dest: 'a', remoteGrantId: 'grant-pull', onProgress: line => pullLines.push(line) });
   const syncId = invocations[0].payload.operationId;
   const pullId = invocations[1].payload.operationId;
   assert.notEqual(syncId, pullId);
@@ -228,6 +248,12 @@ test('rclone operations isolate progress by operation id and dispose exactly one
   assert.equal(invocations[1].payload.operationId, pullId);
   assert.equal(Object.hasOwn(invocations[0].payload, 'rclonePath'), false);
   assert.equal(Object.hasOwn(invocations[1].payload, 'rclonePath'), false);
+  assert.equal(Object.hasOwn(invocations[0].payload, 'remotePath'), false);
+  assert.equal(Object.hasOwn(invocations[1].payload, 'remotePath'), false);
+  assert.equal(Object.hasOwn(invocations[0].payload, 'excludes'), false);
+  assert.equal(Object.hasOwn(invocations[1].payload, 'excludes'), false);
+  assert.equal(invocations[0].payload.remoteGrantId, 'grant-sync');
+  assert.equal(invocations[1].payload.remoteGrantId, 'grant-pull');
   assert.deepEqual(JSON.parse(JSON.stringify(invocations[0].payload.localScope)), {
     type: 'workspace', rootPath: 'a', workspaceIdentity: 7
   });

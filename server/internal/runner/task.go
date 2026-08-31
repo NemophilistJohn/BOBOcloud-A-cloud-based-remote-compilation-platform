@@ -35,25 +35,31 @@ func (r *DockerRunner) RunTaskExecution(ctx context.Context, task *model.TaskExe
 	output.WriteStatus("docker", fmt.Sprintf("Container acquired in %d ms", time.Since(acquireStarted).Milliseconds()))
 	defer func() {
 		cleanupStarted := time.Now()
-		pruneCtx, cancelPrune := context.WithTimeout(context.Background(), 15*time.Second)
-		_, pruneStderr, pruneCode, pruneErr := r.pool.Exec(pruneCtx, containerID, []string{
-			"sh", "-c", `find . -type d \( -name .git -o -name .bobocloud -o -name node_modules -o -name target -o -name __pycache__ \) -prune -exec rm -rf -- {} \;`,
-		}, containerWorkDir)
-		cancelPrune()
-		if pruneErr != nil || pruneCode != 0 {
-			output.WriteStderr(fmt.Sprintf("Warning: failed to prune task cache directories before artifact collection: %s %v", pruneStderr, pruneErr), "setup")
+		if ctx.Err() == nil {
+			pruneCtx, cancelPrune := context.WithTimeout(ctx, 15*time.Second)
+			_, pruneStderr, pruneCode, pruneErr := r.pool.Exec(pruneCtx, containerID, []string{
+				"sh", "-c", `find . -type d \( -name .git -o -name .bobocloud -o -name node_modules -o -name target -o -name __pycache__ \) -prune -exec rm -rf -- {} \;`,
+			}, containerWorkDir)
+			cancelPrune()
+			if pruneErr != nil || pruneCode != 0 {
+				output.WriteStderr(fmt.Sprintf("Warning: failed to prune task cache directories before artifact collection: %s %v", pruneStderr, pruneErr), "setup")
+			}
+			copyCtx, cancelCopy := context.WithTimeout(ctx, 45*time.Second)
+			copyBackStarted := time.Now()
+			if copyErr := r.copyFromContainer(copyCtx, containerID, hostWorkDir, containerWorkDir); copyErr != nil {
+				output.WriteStderr(fmt.Sprintf("Warning: failed to copy task artifacts: %v", copyErr), "setup")
+			}
+			if r.metrics != nil {
+				r.metrics.Observe("workspace.copy.from_container", time.Since(copyBackStarted))
+			}
+			cancelCopy()
 		}
-		copyCtx, cancelCopy := context.WithTimeout(context.Background(), 45*time.Second)
-		copyBackStarted := time.Now()
-		if copyErr := r.copyFromContainer(copyCtx, containerID, hostWorkDir, containerWorkDir); copyErr != nil {
-			output.WriteStderr(fmt.Sprintf("Warning: failed to copy task artifacts: %v", copyErr), "setup")
+		r.finalizeContainer(ctx, containerID, r.discardCached || ctx.Err() != nil || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded))
+		if ctx.Err() != nil {
+			output.WriteStatus("docker", fmt.Sprintf("Cancelled task container discarded in %d ms", time.Since(cleanupStarted).Milliseconds()))
+		} else {
+			output.WriteStatus("docker", fmt.Sprintf("Task artifacts collected and container recycled in %d ms", time.Since(cleanupStarted).Milliseconds()))
 		}
-		if r.metrics != nil {
-			r.metrics.Observe("workspace.copy.from_container", time.Since(copyBackStarted))
-		}
-		cancelCopy()
-		r.finalizeContainer(ctx, containerID, r.discardCached || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded))
-		output.WriteStatus("docker", fmt.Sprintf("Task artifacts collected and container recycled in %d ms", time.Since(cleanupStarted).Milliseconds()))
 	}()
 
 	copyStarted := time.Now()

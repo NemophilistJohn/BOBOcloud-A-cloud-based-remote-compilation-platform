@@ -21,6 +21,8 @@ server-settings.json
 renderer-dist/
 test-results/
 server/release/
+/server/data/
+/data/
 coverage/
 .cache/
 .gocache/

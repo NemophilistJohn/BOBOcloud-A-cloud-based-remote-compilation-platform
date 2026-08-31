@@ -6,6 +6,7 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { readFileBounded } = require('./atomic-file');
 
 const MAX_STORAGE_BYTES = 8 * 1024 * 1024;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -56,6 +57,16 @@ const LOW_RISK_GIT_COMMANDS = new Set(['status', 'diff', 'log', 'show', 'rev-par
 function agentError(code, message) {
   const error = new Error(message);
   error.code = code;
+  return error;
+}
+
+function agentWorkspaceFileError(error, action) {
+  if (error && error.code === 'DATA_TOO_LARGE') {
+    return agentError('AGENT_FILE_TOO_LARGE', 'Agent can ' + action + ' text files up to 2 MiB.');
+  }
+  if (error && error.code === 'UNSAFE_DATA_FILE') {
+    return agentError('AGENT_INVALID_PATH', 'Agent file access requires a regular non-symbolic file.');
+  }
   return error;
 }
 
@@ -191,9 +202,11 @@ function createAgentPlatformBroker(options) {
   const app = options.app;
   const settings = options.settings;
   const getWorkspaceIdentity = options.getWorkspaceIdentity;
+  const runWorkspaceMutation = options.runWorkspaceMutation;
   const requestModel = options.requestModel;
   const cancelModel = typeof options.cancelModel === 'function' ? options.cancelModel : () => ({ success: true, cancelled: false });
   const notifyWorkspaceFiles = typeof options.notifyWorkspaceFiles === 'function' ? options.notifyWorkspaceFiles : () => {};
+  if (typeof runWorkspaceMutation !== 'function') throw new TypeError('Agent workspace writes require the workspace mutation coordinator.');
   const storageRoot = path.join(app.getPath('userData'), 'agent-data');
   const approvals = new Map();
   const activeOperations = new Map();
@@ -487,12 +500,12 @@ function createAgentPlatformBroker(options) {
 
   async function readStorage(pluginId) {
     try {
-      const content = await fsp.readFile(storagePath(pluginId), 'utf8');
-      if (Buffer.byteLength(content, 'utf8') > MAX_STORAGE_BYTES) throw agentError('AGENT_STORAGE_TOO_LARGE', 'Agent storage exceeds the host limit.');
+      const content = await readFileBounded(storagePath(pluginId), { maxBytes: MAX_STORAGE_BYTES, encoding: 'utf8' });
       const value = JSON.parse(content);
       return { value: isPlainObject(value) ? value : {} };
     } catch (error) {
       if (error && error.code === 'ENOENT') return { value: {} };
+      if (error && error.code === 'DATA_TOO_LARGE') throw agentError('AGENT_STORAGE_TOO_LARGE', 'Agent storage exceeds the host limit.');
       if (error && String(error.code).startsWith('AGENT_')) throw error;
       throw agentError('AGENT_STORAGE_INVALID', 'Agent storage could not be read.');
     }
@@ -540,9 +553,12 @@ function createAgentPlatformBroker(options) {
 
   async function readWorkspace(args) {
     const target = await resolveWorkspacePath(args && args.path);
-    const stat = await fsp.stat(target.absolute);
-    if (!stat.isFile() || stat.size > MAX_FILE_BYTES) throw agentError('AGENT_FILE_TOO_LARGE', 'Agent can read text files up to 2 MiB.');
-    const content = await fsp.readFile(target.absolute, 'utf8');
+    let content;
+    try {
+      content = await readFileBounded(target.absolute, { maxBytes: MAX_FILE_BYTES, encoding: 'utf8' });
+    } catch (error) {
+      throw agentWorkspaceFileError(error, 'read');
+    }
     assertCurrentWorkspace(target.snapshot);
     return { path: target.normalized, content, sha256: sha256(content), size: Buffer.byteLength(content, 'utf8') };
   }
@@ -585,9 +601,13 @@ function createAgentPlatformBroker(options) {
         }
         if (!TEXT_FILE_EXTENSIONS.has(path.extname(child.name).toLowerCase())) continue;
         scannedFiles += 1;
-        const stat = await fsp.stat(absolute);
-        if (stat.size > MAX_SEARCH_FILE_BYTES) continue;
-        const lines = (await fsp.readFile(absolute, 'utf8')).split(/\r?\n/);
+        let content;
+        try {
+          content = await readFileBounded(absolute, { maxBytes: MAX_SEARCH_FILE_BYTES, encoding: 'utf8' });
+        } catch (_) {
+          continue;
+        }
+        const lines = content.split(/\r?\n/);
         for (let index = 0; index < lines.length && results.length < maximumResults; index += 1) {
           const haystack = caseSensitive ? lines[index] : lines[index].toLowerCase();
           if (!haystack.includes(needle)) continue;
@@ -667,12 +687,10 @@ function createAgentPlatformBroker(options) {
     if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw agentError('AGENT_FILE_TOO_LARGE', 'Agent can write text files up to 2 MiB.');
     let currentHash = '';
     try {
-      const stat = await fsp.lstat(target.absolute);
-      if (stat.isSymbolicLink() || !stat.isFile()) throw agentError('AGENT_INVALID_PATH', 'Agent writes require a regular file target.');
-      const current = await fsp.readFile(target.absolute);
+      const current = await readFileBounded(target.absolute, { maxBytes: MAX_FILE_BYTES });
       currentHash = sha256(current);
     } catch (error) {
-      if (error && error.code !== 'ENOENT') throw error;
+      if (error && error.code !== 'ENOENT') throw agentWorkspaceFileError(error, 'write');
     }
     const expected = boundedText(args && args.expectedSha256, 64);
     if ((expected && expected !== currentHash) || (currentHash && !expected)) {
@@ -723,25 +741,42 @@ function createAgentPlatformBroker(options) {
   }
 
   async function executeWrite(operation) {
-    assertOperationCurrent(operation);
-    const target = await resolveWorkspacePath(operation.args.path, { snapshot: operation.snapshot, allowMissing: true });
-    let currentHash = '';
-    try {
-      const stat = await fsp.lstat(target.absolute);
-      if (stat.isSymbolicLink() || !stat.isFile()) throw agentError('AGENT_INVALID_PATH', 'Agent writes require a regular file target.');
-      currentHash = sha256(await fsp.readFile(target.absolute));
-    } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    if (currentHash !== operation.args.expectedSha256) throw agentError('AGENT_FILE_CHANGED', 'The file changed while approval was pending.');
-    await fsp.mkdir(path.dirname(target.absolute), { recursive: true });
-    const temporary = target.absolute + '.bobo-agent-' + process.pid + '-' + Date.now();
-    await fsp.writeFile(temporary, operation.args.content, 'utf8');
-    try {
+    return runWorkspaceMutation(operation.args.path, async (mutation) => {
       assertOperationCurrent(operation);
-      await replaceFileAtomic(temporary, target.absolute);
-    }
-    finally { await fsp.unlink(temporary).catch(() => {}); }
-    try { notifyWorkspaceFiles([{ path: target.absolute, event: operation.args.expectedSha256 ? 'file-changed' : 'file-created' }]); } catch (_) {}
-    return { approved: true, path: operation.args.path, sha256: sha256(operation.args.content) };
+      if (mutation.rootPath !== path.resolve(operation.snapshot.rootPath) ||
+          mutation.workspaceIdentity !== operation.snapshot.workspaceIdentity) {
+        throw agentError('AGENT_WORKSPACE_CHANGED', 'The workspace changed before the Agent write started.');
+      }
+      const target = await resolveWorkspacePath(operation.args.path, { snapshot: operation.snapshot, allowMissing: true });
+      mutation.assertCurrent();
+      let currentHash = '';
+      try {
+        currentHash = sha256(await readFileBounded(target.absolute, { maxBytes: MAX_FILE_BYTES }));
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw agentWorkspaceFileError(error, 'write');
+      }
+      if (currentHash !== operation.args.expectedSha256) throw agentError('AGENT_FILE_CHANGED', 'The file changed while approval was pending.');
+      mutation.assertCurrent();
+      await fsp.mkdir(path.dirname(target.absolute), { recursive: true });
+      mutation.assertCurrent();
+      const temporary = target.absolute + '.bobo-agent-' + process.pid + '-' + Date.now();
+      await fsp.writeFile(temporary, operation.args.content, 'utf8');
+      try {
+        assertOperationCurrent(operation);
+        mutation.assertCurrent();
+        await replaceFileAtomic(temporary, target.absolute);
+        mutation.assertCurrent();
+      } finally {
+        await fsp.unlink(temporary).catch(() => {});
+      }
+      try {
+        notifyWorkspaceFiles(
+          [{ path: target.absolute, event: operation.args.expectedSha256 ? 'file-changed' : 'file-created' }],
+          { rootPath: mutation.rootPath, workspaceIdentity: mutation.workspaceIdentity }
+        );
+      } catch (_) {}
+      return { approved: true, path: operation.args.path, sha256: sha256(operation.args.content) };
+    });
   }
 
   function terminateProcess(record) {
@@ -982,9 +1017,12 @@ function createAgentPlatformBroker(options) {
           const id = 'skill-' + sha256(real).slice(0, 24);
           if (seen.has(id)) continue;
           seen.add(id);
-          const content = await fsp.readFile(real, 'utf8');
+          const content = await readFileBounded(real, { maxBytes: 512 * 1024, encoding: 'utf8' });
           const metadata = skillMetadata(content, entry.name);
-          result.push({ id, source: candidate.source, name: metadata.name, description: metadata.description, filePath: real, size: stat.size });
+          result.push({
+            id, source: candidate.source, name: metadata.name, description: metadata.description,
+            filePath: real, size: Buffer.byteLength(content, 'utf8')
+          });
         } catch (_) {}
       }
     }
@@ -1006,12 +1044,18 @@ function createAgentPlatformBroker(options) {
     if (!real || real !== record.filePath || stat.size > 512 * 1024) {
       throw agentError('AGENT_SKILL_NOT_FOUND', 'The selected Skill changed before it could be read.');
     }
+    let content;
+    try {
+      content = await readFileBounded(real, { maxBytes: 512 * 1024, encoding: 'utf8' });
+    } catch (_) {
+      throw agentError('AGENT_SKILL_NOT_FOUND', 'The selected Skill changed before it could be read.');
+    }
     return {
       id: record.id,
       source: record.source,
       name: record.name,
       description: record.description,
-      content: await fsp.readFile(real, 'utf8')
+      content
     };
   }
 

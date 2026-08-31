@@ -25,6 +25,7 @@ import (
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/resourcecontrol"
+	"bobocloud-server/internal/safefile"
 
 	"github.com/gorilla/websocket"
 )
@@ -318,6 +319,28 @@ type terminalWorkspaceResolution struct {
 	publicFields map[string]string
 }
 
+func terminalWorkspaceAdmissionIdentity(request terminalWorkspaceRequest) (activityKey, teamID, projectID string, err error) {
+	switch strings.ToLower(strings.TrimSpace(request.Kind)) {
+	case "personal":
+		activityKey = strings.TrimSpace(request.FolderKey)
+		if activityKey == "" {
+			activityKey = strings.TrimSpace(request.FolderName)
+		}
+		if activityKey == "" {
+			return "", "", "", fmt.Errorf("folderKey or folderName is required")
+		}
+		return activityKey, "", "", nil
+	case "team":
+		teamID, projectID = strings.TrimSpace(request.TeamID), strings.TrimSpace(request.ProjectID)
+		if teamID == "" || projectID == "" {
+			return "", "", "", fmt.Errorf("teamId and projectId are required")
+		}
+		return "", teamID, projectID, nil
+	default:
+		return "", "", "", fmt.Errorf("workspace kind must be personal or team")
+	}
+}
+
 func (h *WSHandler) authenticateTerminal(token string) (*auth.User, error) {
 	if !h.AuthEnabled {
 		return &auth.User{ID: "default", Username: "default", Name: "Default User", Role: auth.RoleRoot}, nil
@@ -359,14 +382,18 @@ func (h *WSHandler) resolveTerminalWorkspace(ctx context.Context, userID string,
 		}
 		base := h.Config.ServerRoot
 		if h.AuthEnabled {
-			base = filepath.Join(h.Config.DataDir, "users", userID, "workspaces")
+			userRoot, err := auth.UserDataRoot(h.Config.DataDir, userID)
+			if err != nil {
+				return terminalWorkspaceResolution{}, err
+			}
+			base = filepath.Join(userRoot, "workspaces")
 		}
-		root, err := safePath(base, key)
-		if err != nil {
+		if err := safefile.ValidateChildName(key); err != nil {
 			return terminalWorkspaceResolution{}, err
 		}
-		if info, err := os.Lstat(root); err != nil || !info.IsDir() {
-			return terminalWorkspaceResolution{}, fmt.Errorf("workspace does not exist")
+		root, err := safefile.ResolveDirectoryBeneath(base, key)
+		if err != nil {
+			return terminalWorkspaceResolution{}, fmt.Errorf("workspace does not exist or is redirected: %w", err)
 		}
 		return terminalWorkspaceResolution{
 			root: root, activityKey: key,
@@ -384,6 +411,10 @@ func (h *WSHandler) resolveTerminalWorkspace(ctx context.Context, userID string,
 		root, err := h.Collaboration.ResolveWorktree(ctx, userID, request.TeamID, request.ProjectID, request.Branch)
 		if err != nil {
 			return terminalWorkspaceResolution{}, err
+		}
+		root, err = safefile.RealDirectory(root)
+		if err != nil {
+			return terminalWorkspaceResolution{}, fmt.Errorf("workspace is redirected or unavailable: %w", err)
 		}
 		return terminalWorkspaceResolution{
 			root: root, teamID: request.TeamID, projectID: request.ProjectID,
@@ -513,7 +544,7 @@ func copyTerminalWorkspaceFiles(ctx context.Context, source, destination string,
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 			return err
 		}
-		written, err := copyTerminalWorkspaceFile(ctx, path, target, entry, maxBytes-copied)
+		written, err := copyTerminalWorkspaceFile(ctx, source, rel, target, maxBytes-copied)
 		if err != nil {
 			return err
 		}
@@ -522,22 +553,18 @@ func copyTerminalWorkspaceFiles(ctx context.Context, source, destination string,
 	})
 }
 
-func copyTerminalWorkspaceFile(ctx context.Context, source, destination string, entry fs.DirEntry, remaining int64) (int64, error) {
+func copyTerminalWorkspaceFile(ctx context.Context, sourceRoot, relative, destination string, remaining int64) (int64, error) {
 	if remaining < 0 {
 		return 0, errTerminalWorkspaceTooLarge
 	}
-	info, err := entry.Info()
-	if err != nil {
-		return 0, err
-	}
-	if info.Size() > remaining {
-		return 0, errTerminalWorkspaceTooLarge
-	}
-	input, err := openTerminalSnapshotInput(source)
+	input, info, err := safefile.OpenRegularBeneath(sourceRoot, relative, 0)
 	if err != nil {
 		return 0, err
 	}
 	defer input.Close()
+	if info.Size() > remaining {
+		return 0, errTerminalWorkspaceTooLarge
+	}
 	output, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
 	if err != nil {
 		return 0, err
@@ -805,6 +832,19 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 		_ = writer.control(map[string]any{"type": "terminal.error", "code": "unauthorized", "message": err.Error()})
 		return
 	}
+	operationStore := auth.UserStore(nil)
+	if h.AuthEnabled {
+		operationStore = h.UserStore
+	}
+	operationCtx, releaseOperation, err := bindUserOperation(r.Context(), h.Lifecycle, operationStore, user.ID)
+	if err != nil {
+		_ = writer.control(map[string]any{"type": "terminal.error", "code": "unauthorized", "message": err.Error()})
+		return
+	}
+	defer releaseOperation()
+	r = r.WithContext(operationCtx)
+	stopRevocationClose := closeWebSocketOnContext(operationCtx, conn)
+	defer stopRevocationClose()
 	runtimeID := strings.TrimSpace(start.RuntimeID)
 	if runtimeID == "" || strings.EqualFold(runtimeID, "local") {
 		_ = writer.control(map[string]any{"type": "terminal.error", "code": "local_runtime_unsupported", "message": "interactive terminals require a Docker runtime"})
@@ -836,19 +876,16 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 	var sessionReady atomic.Bool
 	go readTerminalClientMessages(conn, writer, &sessionReady, cancel, readerDone, readMessages, readErrs)
 
-	workspace, err := h.resolveTerminalWorkspace(ctx, user.ID, start.Workspace)
+	activityKey, teamID, projectID, err := terminalWorkspaceAdmissionIdentity(start.Workspace)
 	if err != nil {
 		_ = writer.control(map[string]any{"type": "terminal.error", "code": "workspace_denied", "message": err.Error()})
 		return
 	}
-	packagePolicy := newTerminalPackagePolicy(h.Config)
-	packageIntentsEnabled := terminalPackageIntentEligible(start.PackageIntents, workspace.teamID, runtime.Language, h.PersonalCache != nil, packagePolicy)
-	packageFrameNonce := ""
 	pendingResourceRelease := combineTerminalResourceReleases()
 	defer func() { pendingResourceRelease() }()
 	resourceLease, resourceErr := acquireHandlerRuntimeResource(
 		ctx, h.Resources, resourcecontrol.WorkloadTerminal, user.ID,
-		projectResourceScope(workspace.activityKey, workspace.teamID, workspace.projectID), "terminal:"+auth.GenerateToken(),
+		projectResourceScope(activityKey, teamID, projectID), "terminal:"+auth.GenerateToken(),
 		runtime.RuntimeID, runtime.Language, runtime.DockerImage, true,
 	)
 	if resourceErr != nil {
@@ -858,6 +895,14 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 	pendingResourceRelease = combineTerminalResourceReleases(func() {
 		releaseHandlerResource(resourceLease)
 	}, pendingResourceRelease)
+	workspace, err := h.resolveTerminalWorkspace(ctx, user.ID, start.Workspace)
+	if err != nil {
+		_ = writer.control(map[string]any{"type": "terminal.error", "code": "workspace_denied", "message": err.Error()})
+		return
+	}
+	packagePolicy := newTerminalPackagePolicy(h.Config)
+	packageIntentsEnabled := terminalPackageIntentEligible(start.PackageIntents, workspace.teamID, runtime.Language, h.PersonalCache != nil, packagePolicy)
+	packageFrameNonce := ""
 	if h.Lifecycle != nil {
 		// Team workspaces intentionally use an empty generic key. The
 		// collaboration lease below is the exact team/project authority; this

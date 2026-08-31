@@ -33,7 +33,7 @@ func (err *pendingDAPStartError) CleanupDone() <-chan struct{} { return err.done
 func newDAPResourceController(t *testing.T, slots int64) *resourcecontrol.Controller {
 	t.Helper()
 	governor, err := resourcegovernor.New(resourcegovernor.NodeResources{
-		Capacity: resourcegovernor.Resources{Slots: slots},
+		Capacity: resourcegovernor.Resources{Slots: slots, DockerContainers: slots},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestDAPResourceLeaseHeldUntilProcessWaitCompletes(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := controller.Snapshot()
-	if snapshot.Used.Slots != 1 || len(snapshot.Leases) != 1 {
+	if snapshot.Used.Slots != 1 || snapshot.Used.DockerContainers != 1 || len(snapshot.Leases) != 1 {
 		t.Fatalf("active DAP resource snapshot = %+v", snapshot)
 	}
 	if snapshot.Leases[0].Metadata.OwnerID != "user-a" || snapshot.Leases[0].Metadata.WorkloadID != session.ID {

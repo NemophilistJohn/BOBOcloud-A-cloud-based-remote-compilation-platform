@@ -1,10 +1,15 @@
-const fs = require('fs');
 const { LspTransport } = require('../lsp-transport');
 const {
   ClientAnalysisCache,
   normalizeScope: normalizeClientAnalysisScope
 } = require('../client-analysis-cache');
 const { endpoint: serverEndpoint } = require('./server-transport');
+const {
+  credentialForServer,
+  effectiveCredential,
+  serverAccountIdentity,
+  serverEndpointIdentity
+} = require('./server-identity');
 
 function nonFatalLspRequestResult(error) {
   const message = String(error && error.message || '');
@@ -21,8 +26,11 @@ function createLspController(options) {
   const ipcMain = options.ipcMain;
   const getWindow = options.getWindow;
   const settings = options.settings;
+  const now = options.now || Date.now;
   let transport = null;
   let analysisCache = null;
+  let cacheNamespacePromise = null;
+  let cacheNamespaceEpoch = 0;
 
   function cachePolicy() {
     const current = settings.readLspSettings();
@@ -46,40 +54,61 @@ function createLspController(options) {
     return analysisCache;
   }
 
-  function readCacheServerIdentity() {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(settings.paths.server, 'utf-8'));
-      return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch (_) {
-      return {};
+  function cacheServerId(serverSettings) {
+    return serverSettings && serverSettings.ip ? serverEndpointIdentity(serverSettings) : 'local-profile';
+  }
+
+  function cacheNamespace() {
+    if (!cacheNamespacePromise) {
+      const pending = Promise.resolve(settings.readServerSettings()).then((serverSettings) => {
+        const currentTime = now();
+        const stored = serverSettings && serverSettings.ip
+          ? credentialForServer(settings.readAuth(), serverSettings).credential
+          : null;
+        const active = effectiveCredential(stored, currentTime);
+        return {
+          serverId: cacheServerId(serverSettings),
+          userId: serverAccountIdentity(serverSettings, stored, currentTime),
+          validUntil: active && active.expiresAt ? Number(active.expiresAt) : 0
+        };
+      });
+      cacheNamespacePromise = pending;
+      void pending.catch(() => {
+        if (cacheNamespacePromise === pending) cacheNamespacePromise = null;
+      });
+    }
+    return cacheNamespacePromise;
+  }
+
+  async function currentCacheNamespace() {
+    for (;;) {
+      const pending = cacheNamespace();
+      const namespace = await pending;
+      if (!namespace.validUntil || now() < namespace.validUntil) {
+        return { namespace, epoch: cacheNamespaceEpoch };
+      }
+      if (cacheNamespacePromise === pending) {
+        cacheNamespacePromise = null;
+        cacheNamespaceEpoch += 1;
+      }
     }
   }
 
-  function cacheServerId(serverSettings) {
-    return String(serverSettings && serverSettings.ip || '').trim().toLowerCase() || 'local-profile';
-  }
-
-  function cacheUserId(serverSettings) {
-    const host = String(serverSettings && serverSettings.ip || '');
-    const credential = host ? settings.readAuth().servers[host] : null;
-    const user = credential && credential.user;
-    return String(user && (user.uid || user.id || user.userId || user.username) || 'local-profile');
-  }
-
-  function rendererCacheScope(rawScope) {
-    const serverSettings = readCacheServerIdentity();
+  async function rendererCacheScope(rawScope) {
+    const current = await currentCacheNamespace();
+    if (current.epoch !== cacheNamespaceEpoch) throw new Error('The cache identity changed');
     const raw = rawScope && typeof rawScope === 'object' ? rawScope : {};
     return normalizeClientAnalysisScope(Object.assign({}, raw, {
-      serverId: cacheServerId(serverSettings),
-      userId: cacheUserId(serverSettings)
+      serverId: current.namespace.serverId,
+      userId: current.namespace.userId
     })).value;
   }
 
   async function currentCredential() {
     const serverSettings = await settings.readServerSettings();
-    const serverKey = serverSettings.ip || '';
-    const stored = settings.readAuth().servers[serverKey];
-    if (stored && stored.token && (!stored.expiresAt || stored.expiresAt > Date.now())) return stored.token;
+    const stored = credentialForServer(settings.readAuth(), serverSettings).credential;
+    const active = effectiveCredential(stored, now());
+    if (active) return active.token;
     return serverSettings.apiKey || '';
   }
 
@@ -98,6 +127,8 @@ function createLspController(options) {
   }
 
   function dispose() {
+    cacheNamespaceEpoch += 1;
+    cacheNamespacePromise = null;
     if (!transport) return;
     transport.dispose();
     transport = null;
@@ -130,20 +161,20 @@ function createLspController(options) {
       return next;
     });
     ipcMain.handle('lsp:client-cache-get', async (_event, scope, key) => {
-      return ensureAnalysisCache().get(rendererCacheScope(scope), key, cachePolicy());
+      return ensureAnalysisCache().get(await rendererCacheScope(scope), key, cachePolicy());
     });
     ipcMain.handle('lsp:client-cache-put', async (_event, scope, key, value) => {
-      return ensureAnalysisCache().put(rendererCacheScope(scope), key, value, cachePolicy());
+      return ensureAnalysisCache().put(await rendererCacheScope(scope), key, value, cachePolicy());
     });
     ipcMain.handle('lsp:client-cache-stats', async (_event, scope) => {
-      const normalized = scope && typeof scope === 'object' && scope.workspace ? rendererCacheScope(scope) : null;
+      const normalized = scope && typeof scope === 'object' && scope.workspace ? await rendererCacheScope(scope) : null;
       return ensureAnalysisCache().stats(normalized, cachePolicy());
     });
     ipcMain.handle('lsp:client-cache-clear', async (_event, request) => {
       const raw = typeof request === 'string' ? { scope: request } : (request && typeof request === 'object' ? request : {});
       const context = raw.context && typeof raw.context === 'object'
-        ? rendererCacheScope(raw.context)
-        : (raw.scope && typeof raw.scope === 'object' && raw.scope.workspace ? rendererCacheScope(raw.scope) : null);
+        ? await rendererCacheScope(raw.context)
+        : (raw.scope && typeof raw.scope === 'object' && raw.scope.workspace ? await rendererCacheScope(raw.scope) : null);
       return ensureAnalysisCache().clear({
         scope: typeof raw.scope === 'string' ? raw.scope : 'workspace',
         context
@@ -153,14 +184,14 @@ function createLspController(options) {
       return ensureAnalysisCache().prune(cachePolicy(), force === true);
     });
     ipcMain.handle('lsp:client-cache-dependency-index-get', async (_event, scope, key) => {
-      return ensureAnalysisCache().getDependencyIndex(rendererCacheScope(scope), key, cachePolicy());
+      return ensureAnalysisCache().getDependencyIndex(await rendererCacheScope(scope), key, cachePolicy());
     });
     ipcMain.handle('lsp:client-cache-dependency-index-put', async (_event, scope, key, value) => {
-      return ensureAnalysisCache().putDependencyIndex(rendererCacheScope(scope), key, value, cachePolicy());
+      return ensureAnalysisCache().putDependencyIndex(await rendererCacheScope(scope), key, value, cachePolicy());
     });
     ipcMain.handle('lsp:client-cache-dependency-index-clear', async (_event, request) => {
       const raw = typeof request === 'string' ? { scope: request } : (request && typeof request === 'object' ? request : {});
-      const context = raw.context && typeof raw.context === 'object' ? rendererCacheScope(raw.context) : null;
+      const context = raw.context && typeof raw.context === 'object' ? await rendererCacheScope(raw.context) : null;
       return ensureAnalysisCache().clearDependencyIndexes({
         scope: typeof raw.scope === 'string' ? raw.scope : 'workspace',
         context

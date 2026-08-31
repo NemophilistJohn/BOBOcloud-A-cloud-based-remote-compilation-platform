@@ -74,6 +74,7 @@ test('classifies superseded and timed-out LSP calls as normal IPC outcomes', () 
 test('normalizes the dedicated LSP WebSocket endpoint', () => {
   assert.equal(normalizeLspUrl('compiler.example.com:3100'), 'ws://compiler.example.com:3100/lsp');
   assert.equal(normalizeLspUrl('https://compiler.example.com/api'), 'wss://compiler.example.com:3100/lsp');
+  assert.equal(normalizeLspUrl('https://compiler.example.com:8443/api'), 'wss://compiler.example.com:8443/lsp');
 });
 
 test('workspace identity never accepts a client absolute path', () => {
@@ -631,7 +632,7 @@ test('expired authentication clears renderer completion state without scheduling
   assert.ok(expiredStart >= 0 && expiredEnd > expiredStart);
   const expiredBody = authSource.slice(expiredStart, expiredEnd);
   assert.match(expiredBody, /dropCredential\(\);\s*if \(BOBO\.lsp.*identityChanged/);
-  assert.match(expiredBody, /identityChanged.*\n\s*if \(ip\) clearCredential/);
+  assert.match(expiredBody, /identityChanged.*\n\s*if \(S\.serverSettings\.ip\) clearCredential/);
 });
 
 test('completion cache crosses context only for its programmatic retrigger', async () => {
@@ -1229,18 +1230,13 @@ test('preserves gateway errors for UI detail and clears them in local mode', asy
   transport.dispose();
 });
 
-test('main process tears down authenticated LSP sessions on identity boundaries', () => {
-  const authSource = fs.readFileSync(require.resolve('../main/auth'), 'utf8');
+test('main process tears down authenticated LSP sessions on workspace boundaries', () => {
   const workspaceSource = fs.readFileSync(require.resolve('../main/workspace'), 'utf8');
-  for (const handler of ['write-server-settings', 'auth-set', 'auth-clear']) {
-    const source = authSource;
-    const start = source.indexOf(`ipcMain.handle('${handler}'`);
-    assert.notEqual(start, -1, `${handler} handler exists`);
-    const body = source.slice(start, source.indexOf('\n    });', start) + 7);
-    assert.match(body, /disposeLsp\(\)/, `${handler} closes the old LSP session`);
-  }
   const closeStart = workspaceSource.indexOf("ipcMain.handle('close-workspace'");
   assert.notEqual(closeStart, -1, 'close-workspace handler exists');
   const closeBody = workspaceSource.slice(closeStart, workspaceSource.indexOf('\n    });', closeStart) + 7);
-  assert.match(closeBody, /disposeLsp\(\)/, 'close-workspace closes the old LSP session');
+  assert.match(closeBody, /closeWorkspaceState\('workspace-close'/, 'close-workspace uses the shared transition');
+  const sharedCloseStart = workspaceSource.indexOf('async function closeWorkspaceState');
+  assert.notEqual(sharedCloseStart, -1, 'shared close transition exists');
+  assert.match(workspaceSource.slice(sharedCloseStart, closeStart), /disposeLsp\(reason\)/, 'shared close transition closes the old LSP session');
 });

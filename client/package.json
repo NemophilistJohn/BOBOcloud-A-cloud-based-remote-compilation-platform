@@ -56,9 +56,12 @@
     "jsonc-parser": "^3.3.1",
     "marked": "14.0.0",
     "minimatch": "3.1.5",
-    "monaco-editor": "^0.55.1",
+    "monaco-editor": "0.56.0",
     "ssh2-sftp-client": "^9.0.5",
     "ws": "^8.21.3"
+  },
+  "overrides": {
+    "dompurify": "3.4.14"
   },
   "build": {
     "appId": "com.bobocloud.editor",
@@ -77,6 +80,7 @@
       "language-packs/*/messages.json",
       "index.html",
       "rclone.js",
+      "rclone-policy.js",
       "lsp-transport.js",
       "dap-transport.js",
       "terminal-transport.js",

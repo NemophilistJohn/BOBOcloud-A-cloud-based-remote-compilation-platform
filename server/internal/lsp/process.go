@@ -299,13 +299,17 @@ func (ExecStarter) Start(ctx context.Context, spec LaunchSpec) (Process, error) 
 	if spec.Docker {
 		return startDockerProcess(ctx, spec)
 	}
+	workspace, err := safefile.RealDirectory(spec.Workspace)
+	if err != nil {
+		return nil, fmt.Errorf("local LSP workspace must be a real, unredirected directory: %w", err)
+	}
 	selected := launchCommand(spec, false)
 	if len(selected) == 0 {
 		return nil, fmt.Errorf("local language server command is not configured")
 	}
 	command := expandCommand(selected, spec, false)
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
-	cmd.Dir = spec.Workspace
+	cmd.Dir = workspace
 	cmd.Env = appendEnvironment(os.Environ(), commandEnvironment(spec, false))
 	return startCommand(cmd, spec.SessionID)
 }
@@ -323,13 +327,13 @@ func startDockerProcess(ctx context.Context, spec LaunchSpec) (Process, error) {
 		return nil, fmt.Errorf("Docker LSP command is not configured for %s", spec.LanguageID)
 	}
 	command = expandCommand(command, spec, true)
-	workspace, err := filepath.Abs(spec.Workspace)
+	workspace, err := validateDockerMountSource(spec.Workspace)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("LSP workspace changed before launch: %w", err)
 	}
-	cache, err := filepath.Abs(spec.CacheDir)
+	cache, err := validateDockerMountSource(spec.CacheDir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("LSP cache changed before launch: %w", err)
 	}
 	name := "bobocloud-lsp-" + spec.SessionID
 	if len(name) > 60 {
@@ -361,7 +365,7 @@ func startDockerProcess(ctx context.Context, spec LaunchSpec) (Process, error) {
 		args = append(args, "-v", hostPath+":"+mount.ContainerPath+":ro")
 	}
 	if spec.MemoryLimit != "" {
-		args = append(args, "--memory", spec.MemoryLimit)
+		args = append(args, "--memory", spec.MemoryLimit, "--memory-swap", spec.MemoryLimit)
 	}
 	if spec.CPULimit != "" {
 		args = append(args, "--cpus", spec.CPULimit)

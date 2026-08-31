@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { readFileBounded } = require('./atomic-file');
 
 // Package-manager transactions may bind a manifest and its lock file. Keep the
 // set deliberately small so every file can be inspected, CAS-written, and
@@ -221,7 +222,7 @@ async function readRegularFile(target, maximumBytes) {
   if (stat.size > maximumBytes) {
     throw packageCenterError('PACKAGE_CHANGE_FILE_TOO_LARGE', 'Dependency file exceeds the transaction size limit');
   }
-  const content = await fs.promises.readFile(target);
+  const content = await readFileBounded(target, { maxBytes: maximumBytes });
   return { exists: true, stat, content, digest: sha256(content) };
 }
 
@@ -276,8 +277,13 @@ function createPackageCenterController(options) {
     } catch (_) {}
   }
 
-  function reportFilesChanged(files) {
-    try { onFilesChanged(files); } catch (_) {}
+  function reportFilesChanged(files, transaction) {
+    try {
+      onFilesChanged(files, transaction && {
+        rootPath: transaction.rootPath,
+        workspaceIdentity: transaction.workspaceIdentity
+      });
+    } catch (_) {}
   }
 
   function publicRecoveryConflict(conflict) {
@@ -973,7 +979,7 @@ function createPackageCenterController(options) {
       event: change.existed ? 'file-changed' : 'file-deleted',
       path: change.target,
       relativePath: change.relativePath
-    })));
+    })), transaction);
     await finalizeTransactionJournal(transaction, 'rolled-back', false);
     return { success: true, transactionId: transaction.id, state: 'rolled-back', recovered: true };
   }
@@ -1146,7 +1152,7 @@ function createPackageCenterController(options) {
       event: change.existed ? 'file-changed' : 'file-created',
       path: change.target,
       relativePath: change.relativePath
-    })));
+    })), transaction);
     notify('applied', transaction);
     return publicTransaction(transaction);
   }
@@ -1308,7 +1314,7 @@ function createPackageCenterController(options) {
       event: change.existed ? 'file-changed' : 'file-deleted',
       path: change.target,
       relativePath: change.relativePath
-    })));
+    })), transaction);
     await releaseTransaction(transaction, 'rolled-back');
     notify('rolled-back', transaction, { reason: String(reason || '') });
     return publicTransaction(transaction, { rolledBack: true });

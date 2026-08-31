@@ -104,6 +104,7 @@ function inspectRendererBundleEntries(entries) {
     'renderer-dist/bobo-terminal-ui.js',
     'renderer-dist/bobo-terminal-ui.js.map',
     'renderer-dist/bobo-terminal-ui.css',
+    'renderer-dist/bobo-terminal-ui.css.map',
     'renderer-dist/bobo-renderer.manifest.json'
   ];
   const missingEntries = requiredEntries.filter((entry) => !entrySet.has(entry));
@@ -115,6 +116,15 @@ function inspectRendererBundleEntries(entries) {
     (/^src\/.*\.js$/i.test(entry) && entry !== 'src/ai-settings-schema.js')
   ));
   return { missingEntries, legacyRendererEntries };
+}
+
+function sourceMapEmbedsSources(content) {
+  try {
+    const value = JSON.parse(String(content || ''));
+    return Array.isArray(value.sourcesContent) && value.sourcesContent.some((source) => typeof source === 'string' && source.length > 0);
+  } catch {
+    return true;
+  }
 }
 
 function main() {
@@ -144,6 +154,12 @@ function main() {
   }
   if (rendererInspection.legacyRendererEntries.length) {
     fail('legacy renderer source files were packaged: ' + rendererInspection.legacyRendererEntries.join(', '));
+  }
+  if (!rendererInspection.missingEntries.length) {
+    for (const entry of normalizedEntries.filter((value) => /renderer-dist\/.*\.map$/i.test(value))) {
+      const content = asar.extractFile(asarPath, entry.replace(/^\//, '')).toString('utf8');
+      if (sourceMapEmbedsSources(content)) fail('production source map embeds source content: ' + entry);
+    }
   }
 
   const sensitiveValues = [
@@ -184,5 +200,6 @@ if (require.main === module) main();
 module.exports = {
   findAppAsars,
   inspectRendererBundleEntries,
-  resolveAsarPath
+  resolveAsarPath,
+  sourceMapEmbedsSources
 };

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"bobocloud-server/internal/safefile"
 )
 
 type LaunchSpec struct {
@@ -336,13 +338,9 @@ func dapEnvironment(spec LaunchSpec) map[string]string {
 }
 
 func dockerRunArgs(spec LaunchSpec, name string, detached bool) ([]string, error) {
-	workspace, err := filepath.Abs(strings.TrimSpace(spec.Workspace))
-	if err != nil || workspace == "" {
-		return nil, fmt.Errorf("resolve DAP workspace")
-	}
-	info, err := os.Lstat(workspace)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("DAP workspace must be a real directory")
+	workspace, err := safefile.RealDirectory(strings.TrimSpace(spec.Workspace))
+	if err != nil {
+		return nil, fmt.Errorf("DAP workspace must be a real directory: %w", err)
 	}
 	args := []string{"run", "--rm"}
 	if detached {
@@ -385,37 +383,33 @@ func dockerRunArgs(spec LaunchSpec, name string, detached bool) ([]string, error
 		if err := os.MkdirAll(persist, 0755); err != nil {
 			return nil, fmt.Errorf("prepare DAP persist directory: %w", err)
 		}
-		persistInfo, statErr := os.Lstat(persist)
-		if statErr != nil || !persistInfo.IsDir() || persistInfo.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("DAP persist directory must be a real directory")
+		persist, err = safefile.RealDirectory(persist)
+		if err != nil {
+			return nil, fmt.Errorf("DAP persist directory must be a real directory: %w", err)
 		}
 		for _, cacheDirectory := range []string{"pip", "go-build", "npm"} {
 			hostCache := filepath.Join(persist, cacheDirectory)
 			if err := os.MkdirAll(hostCache, 0755); err != nil {
 				return nil, fmt.Errorf("prepare DAP %s directory: %w", cacheDirectory, err)
 			}
-			cacheInfo, cacheErr := os.Lstat(hostCache)
-			if cacheErr != nil || !cacheInfo.IsDir() || cacheInfo.Mode()&os.ModeSymlink != 0 {
-				return nil, fmt.Errorf("DAP %s directory must be a real directory", cacheDirectory)
+			hostCache, err = safefile.RealDirectory(hostCache)
+			if err != nil {
+				return nil, fmt.Errorf("DAP %s directory must be a real directory: %w", cacheDirectory, err)
 			}
 			args = append(args, "-v", hostCache+":/dap-cache/"+cacheDirectory+":rw")
 		}
 	}
 	if strings.TrimSpace(spec.DependencyRoot) != "" {
-		dependencyRoot, absErr := filepath.Abs(spec.DependencyRoot)
-		if absErr != nil {
-			return nil, fmt.Errorf("resolve DAP dependency cache: %w", absErr)
-		}
-		dependencyInfo, statErr := os.Lstat(dependencyRoot)
-		if statErr != nil || !dependencyInfo.IsDir() || dependencyInfo.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("DAP dependency cache must be a real directory")
+		dependencyRoot, err := safefile.RealDirectory(spec.DependencyRoot)
+		if err != nil {
+			return nil, fmt.Errorf("DAP dependency cache must be a real directory: %w", err)
 		}
 		args = append(args, "-v", dependencyRoot+":/project-deps:ro")
 		if spec.Adapter.LanguageID == "node" {
 			nodeModules := filepath.Join(dependencyRoot, "node_modules")
-			nodeInfo, nodeErr := os.Lstat(nodeModules)
-			if nodeErr != nil || !nodeInfo.IsDir() || nodeInfo.Mode()&os.ModeSymlink != 0 {
-				return nil, fmt.Errorf("DAP Node dependency cache must contain a real node_modules directory")
+			nodeModules, err = safefile.RealDirectory(nodeModules)
+			if err != nil {
+				return nil, fmt.Errorf("DAP Node dependency cache must contain a real node_modules directory: %w", err)
 			}
 			args = append(args, "-v", nodeModules+":"+ContainerRoot+"/node_modules:ro")
 		}

@@ -18,7 +18,7 @@ function normalizeLspUrl(serverHost) {
   const parsed = new URL(input);
   const secure = parsed.protocol === 'https:' || parsed.protocol === 'wss:';
   parsed.protocol = secure ? 'wss:' : 'ws:';
-  parsed.port = '3100';
+  if (!parsed.port) parsed.port = '3100';
   parsed.pathname = '/lsp';
   parsed.search = '';
   parsed.hash = '';

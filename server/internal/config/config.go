@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"bobocloud-server/internal/auth"
 	"bobocloud-server/internal/nodetoolchain"
 )
 
@@ -16,6 +18,13 @@ const (
 	minimumPackagePlanResultBytes       int64 = 4 << 10
 	defaultPersonalCacheMaxGenerations        = 2
 	maximumPersonalCacheMaxGenerations        = 32
+	maximumRunOutputRetainedBytes             = 16 << 20
+	minimumWSReadLimit                        = 4 << 10
+	maximumWSReadLimit                        = 1 << 20
+	maximumWSWriteWaitSeconds                 = 120
+	maximumWSPingPeriodSeconds                = 300
+	minimumChunkSize                          = 4 << 10
+	maximumChunkSize                          = 1 << 20
 	PersonalBuildResultReuseCompileOnly       = "compile-only"
 	PersonalBuildResultReuseOff               = "off"
 )
@@ -69,6 +78,7 @@ type Config struct {
 	// Listener limits protect the public HTTP/WebSocket entry points without
 	// imposing a write deadline on long-running compilation or streaming flows.
 	HTTPReadHeaderTimeoutSeconds    int `json:"http_read_header_timeout_seconds"`
+	HTTPRequestBodyTimeoutSeconds   int `json:"http_request_body_timeout_seconds"`
 	HTTPIdleTimeoutSeconds          int `json:"http_idle_timeout_seconds"`
 	HTTPMaxHeaderBytes              int `json:"http_max_header_bytes"`
 	ShutdownGracePeriodSeconds      int `json:"shutdown_grace_period_seconds"`
@@ -95,10 +105,15 @@ type Config struct {
 	DockerQueueTimeoutSeconds    int      `json:"docker_queue_timeout_seconds"`
 
 	// 编译观测与有界结果保留。实时 WebSocket 输出不受结果保留上限影响。
-	PerformanceMetricsEnabled bool                     `json:"performance_metrics_enabled"`
-	PerformanceMetricsWindow  int                      `json:"performance_metrics_window"`
-	RunOutputRetainedBytes    int                      `json:"run_output_retained_bytes"`
-	ResourceGovernance        ResourceGovernanceConfig `json:"resource_governance"`
+	PerformanceMetricsEnabled  bool                     `json:"performance_metrics_enabled"`
+	PerformanceMetricsWindow   int                      `json:"performance_metrics_window"`
+	RunOutputRetainedBytes     int                      `json:"run_output_retained_bytes"`
+	ArtifactMaxFiles           int                      `json:"artifact_max_files"`
+	ArtifactMaxTotalBytes      int64                    `json:"artifact_max_total_bytes"`
+	WorkspaceCopyMaxFiles      int                      `json:"workspace_copy_max_files"`
+	WorkspaceCopyMaxTotalBytes int64                    `json:"workspace_copy_max_total_bytes"`
+	WorkspaceCopyMaxPathBytes  int                      `json:"workspace_copy_max_path_bytes"`
+	ResourceGovernance         ResourceGovernanceConfig `json:"resource_governance"`
 
 	// Personal cache-v2 stores immutable dependency generations separately from
 	// mutable incremental build state and reusable compile results.
@@ -139,11 +154,12 @@ type Config struct {
 	PackageSources                  []PackageSourceConfig `json:"package_sources"`
 
 	// 超时配置
-	DefaultCompileTimeout  int `json:"compile_timeout_seconds"`
-	RustCompileTimeout     int `json:"rust_compile_timeout_seconds"`
-	DefaultRunTimeout      int `json:"run_timeout_seconds"`
-	SessionTTL             int `json:"session_ttl_seconds"`
-	SessionCleanupInterval int `json:"session_cleanup_interval_seconds"`
+	DefaultCompileTimeout      int `json:"compile_timeout_seconds"`
+	RustCompileTimeout         int `json:"rust_compile_timeout_seconds"`
+	DefaultRunTimeout          int `json:"run_timeout_seconds"`
+	ExecutionMaxSessionSeconds int `json:"execution_max_session_seconds"`
+	SessionTTL                 int `json:"session_ttl_seconds"`
+	SessionCleanupInterval     int `json:"session_cleanup_interval_seconds"`
 
 	// WebSocket 配置
 	WSReadLimit  int `json:"ws_read_limit"`
@@ -230,6 +246,7 @@ func Default() *Config {
 		DAPChildWSPort:                  3102,
 		TLSEnabled:                      false,
 		HTTPReadHeaderTimeoutSeconds:    10,
+		HTTPRequestBodyTimeoutSeconds:   15,
 		HTTPIdleTimeoutSeconds:          90,
 		HTTPMaxHeaderBytes:              1 << 20,
 		ShutdownGracePeriodSeconds:      15,
@@ -255,6 +272,11 @@ func Default() *Config {
 		PerformanceMetricsEnabled:         true,
 		PerformanceMetricsWindow:          512,
 		RunOutputRetainedBytes:            256 << 10,
+		ArtifactMaxFiles:                  128,
+		ArtifactMaxTotalBytes:             64 << 20,
+		WorkspaceCopyMaxFiles:             20_000,
+		WorkspaceCopyMaxTotalBytes:        1 << 30,
+		WorkspaceCopyMaxPathBytes:         4096,
 		ResourceGovernance:                DefaultResourceGovernance(),
 		PersonalCacheMaxGenerations:       defaultPersonalCacheMaxGenerations,
 		PersonalBuildCacheEnabled:         true,
@@ -292,6 +314,7 @@ func Default() *Config {
 		DefaultCompileTimeout:               30,
 		RustCompileTimeout:                  60,
 		DefaultRunTimeout:                   30,
+		ExecutionMaxSessionSeconds:          600,
 		SessionTTL:                          120,
 		SessionCleanupInterval:              30,
 		WSReadLimit:                         65536,
@@ -308,6 +331,7 @@ func Default() *Config {
 		AuthMode:                            "", // 留空按 auth_enabled 推断
 		AuthEnabled:                         false,
 		Users:                               nil, // 预设用户列表，留空则使用 admin_api_key 创建单用户
+		RootUser:                            RootUserConfig{Username: "root", Name: "Root Admin"},
 		DefaultQuota:                        5,
 		DefaultRateLimit:                    60,
 		DefaultDiskQuotaMB:                  2048, // 2GB
@@ -395,7 +419,13 @@ func Load(path string) (*Config, error) {
 			if _, retired := fields["personal_dependency_scope"]; retired {
 				return nil, fmt.Errorf("personal_dependency_scope was removed with cache-v2; remove the retired field")
 			}
-			if err := json.Unmarshal(data, cfg); err != nil {
+			strictData, err := stripDocumentationFields(data)
+			if err != nil {
+				return nil, fmt.Errorf("failed to normalize config file %s: %w", path, err)
+			}
+			decoder := json.NewDecoder(bytes.NewReader(strictData))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(cfg); err != nil {
 				return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
 			}
 			if _, configured := fields["package_default_sources"]; !configured {
@@ -412,6 +442,9 @@ func Load(path string) (*Config, error) {
 
 	// 环境变量覆盖
 	applyEnvOverrides(cfg)
+	if err := normalizeUserIdentities(cfg); err != nil {
+		return nil, err
+	}
 
 	// 推导 DBPath（如果未显式设置）
 	if cfg.DBPath == "" {
@@ -440,6 +473,11 @@ func Load(path string) (*Config, error) {
 	if cfg.HTTPReadHeaderTimeoutSeconds <= 0 {
 		cfg.HTTPReadHeaderTimeoutSeconds = 10
 	}
+	if cfg.HTTPRequestBodyTimeoutSeconds <= 0 {
+		cfg.HTTPRequestBodyTimeoutSeconds = 15
+	} else if cfg.HTTPRequestBodyTimeoutSeconds > 300 {
+		return nil, fmt.Errorf("http_request_body_timeout_seconds must not exceed 300")
+	}
 	if cfg.HTTPIdleTimeoutSeconds <= 0 {
 		cfg.HTTPIdleTimeoutSeconds = 90
 	}
@@ -451,6 +489,11 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.UserDeletionCleanupRetrySeconds <= 0 {
 		cfg.UserDeletionCleanupRetrySeconds = 15
+	}
+	if cfg.ExecutionMaxSessionSeconds <= 0 {
+		cfg.ExecutionMaxSessionSeconds = 600
+	} else if cfg.ExecutionMaxSessionSeconds > 24*60*60 {
+		return nil, fmt.Errorf("execution_max_session_seconds must not exceed 86400")
 	}
 	cfg.DockerContainerResetStrategy = strings.ToLower(strings.TrimSpace(cfg.DockerContainerResetStrategy))
 	if cfg.DockerContainerResetStrategy == "" {
@@ -467,6 +510,45 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.RunOutputRetainedBytes <= 0 {
 		cfg.RunOutputRetainedBytes = 256 << 10
+	} else if cfg.RunOutputRetainedBytes > maximumRunOutputRetainedBytes {
+		return nil, fmt.Errorf("run_output_retained_bytes must not exceed %d", maximumRunOutputRetainedBytes)
+	}
+	if cfg.WSReadLimit < minimumWSReadLimit || cfg.WSReadLimit > maximumWSReadLimit {
+		return nil, fmt.Errorf("ws_read_limit must be between %d and %d", minimumWSReadLimit, maximumWSReadLimit)
+	}
+	if cfg.WSWriteWait <= 0 || cfg.WSWriteWait > maximumWSWriteWaitSeconds {
+		return nil, fmt.Errorf("ws_write_wait_seconds must be between 1 and %d", maximumWSWriteWaitSeconds)
+	}
+	if cfg.WSPingPeriod <= 0 || cfg.WSPingPeriod > maximumWSPingPeriodSeconds {
+		return nil, fmt.Errorf("ws_ping_period_seconds must be between 1 and %d", maximumWSPingPeriodSeconds)
+	}
+	if cfg.ChunkSize < minimumChunkSize || cfg.ChunkSize > maximumChunkSize {
+		return nil, fmt.Errorf("chunk_size must be between %d and %d", minimumChunkSize, maximumChunkSize)
+	}
+	if cfg.ArtifactMaxFiles <= 0 {
+		cfg.ArtifactMaxFiles = 128
+	} else if cfg.ArtifactMaxFiles > 4096 {
+		return nil, fmt.Errorf("artifact_max_files must not exceed 4096")
+	}
+	if cfg.ArtifactMaxTotalBytes <= 0 {
+		cfg.ArtifactMaxTotalBytes = 64 << 20
+	} else if cfg.ArtifactMaxTotalBytes > 4<<30 {
+		return nil, fmt.Errorf("artifact_max_total_bytes must not exceed 4 GiB")
+	}
+	if cfg.WorkspaceCopyMaxFiles <= 0 {
+		cfg.WorkspaceCopyMaxFiles = 20_000
+	} else if cfg.WorkspaceCopyMaxFiles > 100_000 {
+		return nil, fmt.Errorf("workspace_copy_max_files must not exceed 100000")
+	}
+	if cfg.WorkspaceCopyMaxTotalBytes <= 0 {
+		cfg.WorkspaceCopyMaxTotalBytes = 1 << 30
+	} else if cfg.WorkspaceCopyMaxTotalBytes > 8<<30 {
+		return nil, fmt.Errorf("workspace_copy_max_total_bytes must not exceed 8 GiB")
+	}
+	if cfg.WorkspaceCopyMaxPathBytes <= 0 {
+		cfg.WorkspaceCopyMaxPathBytes = 4096
+	} else if cfg.WorkspaceCopyMaxPathBytes > 4096 {
+		return nil, fmt.Errorf("workspace_copy_max_path_bytes must not exceed 4096")
 	}
 	if cfg.PersonalCacheMaxGenerations < 1 || cfg.PersonalCacheMaxGenerations > maximumPersonalCacheMaxGenerations {
 		return nil, fmt.Errorf("personal_cache_max_generations must be between 1 and %d", maximumPersonalCacheMaxGenerations)
@@ -715,6 +797,72 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+func normalizeUserIdentities(cfg *Config) error {
+	username := cfg.RootUser.Username
+	if username == "" {
+		username = "root"
+	}
+	if err := auth.ValidateUsername(username); err != nil {
+		return fmt.Errorf("root_user.username: %w", err)
+	}
+	cfg.RootUser.Username = username
+	seen := make(map[string]struct{}, len(cfg.Users))
+	for index := range cfg.Users {
+		userID := cfg.Users[index].ID
+		if err := auth.ValidateUsername(userID); err != nil {
+			return fmt.Errorf("users[%d].id: %w", index, err)
+		}
+		identityKey := strings.ToLower(userID)
+		if _, exists := seen[identityKey]; exists {
+			return fmt.Errorf("users[%d].id duplicates another configured user", index)
+		}
+		seen[identityKey] = struct{}{}
+		cfg.Users[index].ID = userID
+	}
+	return nil
+}
+
+func stripDocumentationFields(data json.RawMessage) (json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return data, nil
+	}
+	switch trimmed[0] {
+	case '{':
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &object); err != nil {
+			return nil, err
+		}
+		for key, value := range object {
+			if strings.HasPrefix(key, "_") {
+				delete(object, key)
+				continue
+			}
+			cleaned, err := stripDocumentationFields(value)
+			if err != nil {
+				return nil, err
+			}
+			object[key] = cleaned
+		}
+		return json.Marshal(object)
+	case '[':
+		var array []json.RawMessage
+		if err := json.Unmarshal(trimmed, &array); err != nil {
+			return nil, err
+		}
+		for index, value := range array {
+			cleaned, err := stripDocumentationFields(value)
+			if err != nil {
+				return nil, err
+			}
+			array[index] = cleaned
+		}
+		return json.Marshal(array)
+	default:
+		return append(json.RawMessage(nil), trimmed...), nil
+	}
+}
+
 func applyPersonalCacheV2EnvOverrides(cfg *Config) error {
 	if strings.TrimSpace(os.Getenv("BOBOCLOUD_PERSONAL_DEPENDENCY_SCOPE")) != "" {
 		return fmt.Errorf("BOBOCLOUD_PERSONAL_DEPENDENCY_SCOPE was removed with cache-v2")
@@ -757,6 +905,41 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("BOBOCLOUD_HTTP_READ_HEADER_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.HTTPReadHeaderTimeoutSeconds = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_HTTP_REQUEST_BODY_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.HTTPRequestBodyTimeoutSeconds = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_EXECUTION_MAX_SESSION_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.ExecutionMaxSessionSeconds = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_ARTIFACT_MAX_FILES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.ArtifactMaxFiles = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_ARTIFACT_MAX_TOTAL_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			cfg.ArtifactMaxTotalBytes = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_WORKSPACE_COPY_MAX_FILES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.WorkspaceCopyMaxFiles = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_WORKSPACE_COPY_MAX_TOTAL_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			cfg.WorkspaceCopyMaxTotalBytes = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_WORKSPACE_COPY_MAX_PATH_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.WorkspaceCopyMaxPathBytes = n
 		}
 	}
 	if v := os.Getenv("BOBOCLOUD_HTTP_IDLE_TIMEOUT_SECONDS"); v != "" {
@@ -970,14 +1153,68 @@ func (c *Config) RunTimeoutDuration() time.Duration {
 	return time.Duration(c.DefaultRunTimeout) * time.Second
 }
 
+// ExecutionMaxSessionDuration is the shared wall-clock budget for validation,
+// admission, workspace preparation, setup, execution, and artifact publishing.
+func (c *Config) ExecutionMaxSessionDuration() time.Duration {
+	if c == nil || c.ExecutionMaxSessionSeconds <= 0 {
+		return 10 * time.Minute
+	}
+	return time.Duration(c.ExecutionMaxSessionSeconds) * time.Second
+}
+
+func (c *Config) HTTPRequestBodyTimeout() time.Duration {
+	if c == nil || c.HTTPRequestBodyTimeoutSeconds <= 0 {
+		return 15 * time.Second
+	}
+	return time.Duration(c.HTTPRequestBodyTimeoutSeconds) * time.Second
+}
+
 // WSWriteWaitDuration 返回 WebSocket 写超时的 time.Duration。
 func (c *Config) WSWriteWaitDuration() time.Duration {
+	if c == nil || c.WSWriteWait <= 0 {
+		return 10 * time.Second
+	}
+	if c.WSWriteWait > maximumWSWriteWaitSeconds {
+		return maximumWSWriteWaitSeconds * time.Second
+	}
 	return time.Duration(c.WSWriteWait) * time.Second
 }
 
 // WSPingDuration 返回 WebSocket ping 间隔的 time.Duration。
 func (c *Config) WSPingDuration() time.Duration {
+	if c == nil || c.WSPingPeriod <= 0 {
+		return 30 * time.Second
+	}
+	if c.WSPingPeriod > maximumWSPingPeriodSeconds {
+		return maximumWSPingPeriodSeconds * time.Second
+	}
 	return time.Duration(c.WSPingPeriod) * time.Second
+}
+
+func (c *Config) WSReadLimitBytes() int64 {
+	if c == nil || c.WSReadLimit <= 0 {
+		return 65536
+	}
+	if c.WSReadLimit < minimumWSReadLimit {
+		return minimumWSReadLimit
+	}
+	if c.WSReadLimit > maximumWSReadLimit {
+		return maximumWSReadLimit
+	}
+	return int64(c.WSReadLimit)
+}
+
+func (c *Config) ChunkSizeBytes() int {
+	if c == nil || c.ChunkSize <= 0 {
+		return 200000
+	}
+	if c.ChunkSize < minimumChunkSize {
+		return minimumChunkSize
+	}
+	if c.ChunkSize > maximumChunkSize {
+		return maximumChunkSize
+	}
+	return c.ChunkSize
 }
 
 func (c *Config) HTTPReadHeaderTimeout() time.Duration {

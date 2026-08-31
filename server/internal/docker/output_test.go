@@ -16,3 +16,11 @@ func TestCappedBuffer(t *testing.T) {
 		t.Fatalf("unexpected capped output: %q", value)
 	}
 }
+
+func TestPoolOutputRetentionLimitClampsOversizedValues(t *testing.T) {
+	pool := &Pool{}
+	pool.SetOutputRetentionLimit(maxPoolOutputRetentionBytes + 1)
+	if pool.outputRetainedBytes != maxPoolOutputRetentionBytes {
+		t.Fatalf("pool retained output limit = %d, want %d", pool.outputRetainedBytes, maxPoolOutputRetentionBytes)
+	}
+}

@@ -25,8 +25,14 @@ function fileFingerprint(fileSystem, filePath) {
 }
 
 function contentDigest(content, encoding) {
-  const bytes = Buffer.isBuffer(content) ? content : Buffer.from(String(content ?? ''), encoding || 'utf8');
-  return crypto.createHash('sha256').update(bytes).digest('hex');
+  const hash = crypto.createHash('sha256');
+  if (Buffer.isBuffer(content)) hash.update(content);
+  else hash.update(String(content ?? ''), encoding || 'utf8');
+  return hash.digest('hex');
+}
+
+function contentBytes(content, encoding) {
+  return Buffer.isBuffer(content) ? content.length : Buffer.byteLength(String(content ?? ''), encoding || 'utf8');
 }
 
 function trackerError(code, message) {
@@ -92,6 +98,7 @@ function createWorkspaceWriteTracker(options = {}) {
       filePath: path.resolve(filePath),
       workspaceIdentity,
       expectedDigest: contentDigest(content, encoding),
+      expectedBytes: contentBytes(content, encoding),
       pending: true,
       completedAt: 0,
       fingerprint: null,
@@ -103,21 +110,45 @@ function createWorkspaceWriteTracker(options = {}) {
 
   async function complete(record) {
     if (!record || records.get(record.key) !== record) return false;
-    const fingerprintBefore = fileFingerprint(fileSystem, record.filePath);
-    if (!fingerprintBefore) {
+    let before;
+    try { before = fileSystem.statSync(record.filePath, { bigint: true }); } catch (_) {}
+    if (!before || !before.isFile() || before.size !== BigInt(record.expectedBytes)) {
       records.delete(record.key);
       return false;
     }
-    let content;
+    const fingerprintBefore = [before.dev, before.ino, before.size, before.mode, before.mtimeNs, before.ctimeNs]
+      .map((value) => String(value)).join(':');
+    const noFollow = Number(fileSystem.constants && fileSystem.constants.O_NOFOLLOW) || 0;
+    let handle;
+    let actualDigest = '';
+    let total = 0;
     try {
-      content = await fileSystem.promises.readFile(record.filePath);
+      handle = await fileSystem.promises.open(record.filePath, fileSystem.constants.O_RDONLY | noFollow);
+      const opened = await handle.stat({ bigint: true });
+      if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) {
+        records.delete(record.key);
+        return false;
+      }
+      const hash = crypto.createHash('sha256');
+      while (total <= record.expectedBytes) {
+        const capacity = Math.min(64 * 1024, record.expectedBytes + 1 - total);
+        if (capacity <= 0) break;
+        const chunk = Buffer.allocUnsafe(capacity);
+        const read = await handle.read(chunk, 0, capacity, null);
+        if (!read.bytesRead) break;
+        total += read.bytesRead;
+        hash.update(chunk.subarray(0, read.bytesRead));
+      }
+      actualDigest = hash.digest('hex');
     } catch (_) {
       records.delete(record.key);
       return false;
+    } finally {
+      if (handle) await handle.close().catch(() => {});
     }
     const fingerprintAfter = fileFingerprint(fileSystem, record.filePath);
     if (records.get(record.key) !== record || !fingerprintAfter || fingerprintBefore !== fingerprintAfter ||
-        contentDigest(content) !== record.expectedDigest) {
+        total !== record.expectedBytes || actualDigest !== record.expectedDigest) {
       if (records.get(record.key) === record) records.delete(record.key);
       return false;
     }
@@ -125,6 +156,7 @@ function createWorkspaceWriteTracker(options = {}) {
     record.completedAt = now();
     record.fingerprint = fingerprintAfter;
     record.expectedDigest = '';
+    record.expectedBytes = 0;
     return true;
   }
 
@@ -168,17 +200,38 @@ function createWorkspaceWriteTracker(options = {}) {
 
 function createWorkspaceWriteQueue() {
   let tail = Promise.resolve();
+  let transitionTail = Promise.resolve();
+  let pendingTransitions = 0;
+
+  function transitionError() {
+    const error = new Error('Workspace transition is in progress');
+    error.code = 'WORKSPACE_TRANSITION_IN_PROGRESS';
+    return error;
+  }
 
   function run(_scopePath, operation) {
     if (typeof operation !== 'function') return Promise.reject(new TypeError('Workspace write operation is required'));
-    const current = tail.catch(() => undefined).then(operation);
-    tail = current;
-    return current.finally(() => {
-      if (tail === current) tail = Promise.resolve();
-    });
+    if (pendingTransitions > 0) return Promise.reject(transitionError());
+    const current = tail.then(operation);
+    tail = current.catch(() => undefined);
+    return current;
   }
 
-  return Object.freeze({ run });
+  function transition(_reason, operation) {
+    if (typeof operation !== 'function') return Promise.reject(new TypeError('Workspace transition operation is required'));
+    pendingTransitions += 1;
+    const current = transitionTail.then(async () => {
+      await tail;
+      return operation();
+    });
+    const settled = current.finally(() => {
+      pendingTransitions -= 1;
+    });
+    transitionTail = settled.catch(() => undefined);
+    return settled;
+  }
+
+  return Object.freeze({ run, transition });
 }
 
 module.exports = {
