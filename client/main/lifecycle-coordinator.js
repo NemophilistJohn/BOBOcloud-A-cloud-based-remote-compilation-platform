@@ -33,7 +33,6 @@ function createLifecycleCoordinator(options = {}) {
     let timer;
     const timeout = new Promise((resolve) => {
       timer = setTimeout(() => resolve({ timedOut: true, results: [] }), timeoutMs);
-      if (timer && typeof timer.unref === 'function') timer.unref();
     });
     const result = await Promise.race([
       settled.then((results) => ({ timedOut: false, results })),
