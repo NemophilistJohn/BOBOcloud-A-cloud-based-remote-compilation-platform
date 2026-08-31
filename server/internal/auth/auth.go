@@ -167,6 +167,16 @@ func cloneUser(user *User) *User {
 	return &copy
 }
 
+func validateUserRecord(user *User) error {
+	if user == nil {
+		return fmt.Errorf("user is required")
+	}
+	if err := ValidateUserID(user.ID); err != nil {
+		return err
+	}
+	return nil
+}
+
 // SeedDefaultUser 创建默认管理员用户（auth_enabled 但 users 列表为空时使用）
 func (s *MemoryUserStore) SeedDefaultUser(adminAPIKey string) *User {
 	if adminAPIKey == "" {
@@ -258,13 +268,18 @@ func (s *MemoryUserStore) SeedUsers(configs []SeedUserConfig) []*User {
 			DiskQuotaMB:    uc.DiskQuotaMB,
 			CreatedAt:      time.Now(),
 		}
-		s.Create(user)
+		if err := s.Create(user); err != nil {
+			continue
+		}
 		created = append(created, user)
 	}
 	return created
 }
 
 func (s *MemoryUserStore) Get(id string) (*User, error) {
+	if err := ValidateUserID(id); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u, ok := s.users[id]
@@ -327,8 +342,8 @@ func (s *MemoryUserStore) UpdateExisting(user *User) error {
 }
 
 func (s *MemoryUserStore) storeUser(user *User, requireExisting bool) error {
-	if user == nil || user.ID == "" {
-		return fmt.Errorf("user ID is required")
+	if err := validateUserRecord(user); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -336,8 +351,11 @@ func (s *MemoryUserStore) storeUser(user *User, requireExisting bool) error {
 }
 
 func (s *MemoryUserStore) MutateExisting(id string, mutate func(*User) error) (*User, error) {
-	if id == "" || mutate == nil {
-		return nil, fmt.Errorf("user ID and mutation are required")
+	if err := ValidateUserID(id); err != nil {
+		return nil, err
+	}
+	if mutate == nil {
+		return nil, fmt.Errorf("user mutation is required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -362,6 +380,14 @@ func (s *MemoryUserStore) MutateExisting(id string, mutate func(*User) error) (*
 }
 
 func (s *MemoryUserStore) storeUserLocked(user *User, requireExisting bool) error {
+	if err := validateUserRecord(user); err != nil {
+		return err
+	}
+	for existingID := range s.users {
+		if existingID != user.ID && strings.EqualFold(existingID, user.ID) {
+			return fmt.Errorf("user ID already exists with different casing")
+		}
+	}
 	if s.deletionCleanup[user.ID] {
 		return fmt.Errorf("user deletion cleanup is pending: %s", user.ID)
 	}
@@ -427,8 +453,8 @@ func (s *MemoryUserStore) storeUserLocked(user *User, requireExisting bool) erro
 
 // UpdateProfile applies only user-owned fields to the latest stored record.
 func (s *MemoryUserStore) UpdateProfile(id, name, avatar string) (*User, error) {
-	if id == "" {
-		return nil, fmt.Errorf("user ID is required")
+	if err := ValidateUserID(id); err != nil {
+		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -446,13 +472,18 @@ func (s *MemoryUserStore) UpdateProfile(id, name, avatar string) (*User, error) 
 }
 
 func (s *MemoryUserStore) Restore(user *User) error {
-	if user == nil || user.ID == "" {
-		return fmt.Errorf("user ID is required")
+	if err := validateUserRecord(user); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.users[user.ID]; exists {
 		return fmt.Errorf("user already exists: %s", user.ID)
+	}
+	for existingID := range s.users {
+		if strings.EqualFold(existingID, user.ID) {
+			return fmt.Errorf("user ID already exists with different casing")
+		}
 	}
 	checks := []struct {
 		index map[string]string
@@ -483,6 +514,9 @@ func (s *MemoryUserStore) Restore(user *User) error {
 }
 
 func (s *MemoryUserStore) Delete(id string) error {
+	if err := ValidateUserID(id); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u, ok := s.users[id]
@@ -506,6 +540,9 @@ func (s *MemoryUserStore) Delete(id string) error {
 }
 
 func (s *MemoryUserStore) DeleteWithCleanupMarker(id string) error {
+	if err := ValidateUserID(id); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u, ok := s.users[id]
@@ -534,8 +571,8 @@ func (s *MemoryUserStore) DeleteWithCleanupMarker(id string) error {
 
 func (s *MemoryUserStore) SaveDeletionCleanup(userID string) error {
 	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return fmt.Errorf("user ID is required")
+	if err := ValidateUserID(userID); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	if s.deletionCleanup == nil {
@@ -558,8 +595,12 @@ func (s *MemoryUserStore) ListDeletionCleanup() ([]string, error) {
 }
 
 func (s *MemoryUserStore) DeleteDeletionCleanup(userID string) error {
+	userID = strings.TrimSpace(userID)
+	if err := ValidateUserID(userID); err != nil {
+		return err
+	}
 	s.mu.Lock()
-	delete(s.deletionCleanup, strings.TrimSpace(userID))
+	delete(s.deletionCleanup, userID)
 	s.mu.Unlock()
 	return nil
 }
@@ -568,7 +609,16 @@ func (s *MemoryUserStore) List() ([]*User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	result := make([]*User, 0, len(s.users))
+	seenIDs := make(map[string]struct{}, len(s.users))
 	for _, u := range s.users {
+		if err := validateUserRecord(u); err != nil {
+			return nil, fmt.Errorf("unsafe user record: %w", err)
+		}
+		identityKey := strings.ToLower(u.ID)
+		if _, exists := seenIDs[identityKey]; exists {
+			return nil, fmt.Errorf("user IDs collide on a case-insensitive filesystem")
+		}
+		seenIDs[identityKey] = struct{}{}
 		result = append(result, cloneUser(u))
 	}
 	return result, nil
@@ -619,15 +669,13 @@ func ConstantTimeCompare(a, b string) bool {
 
 // GenerateToken 生成 32 字符的十六进制随机 token（保留给 HTTP handler 使用）
 func GenerateToken() string {
-	b := make([]byte, 16)
-	rand.Read(b)
+	b := mustRandomBytes(16)
 	return hex.EncodeToString(b)
 }
 
 // GenerateUUID 生成 UUID v4 格式字符串
 func GenerateUUID() string {
-	b := make([]byte, 16)
-	rand.Read(b)
+	b := mustRandomBytes(16)
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",

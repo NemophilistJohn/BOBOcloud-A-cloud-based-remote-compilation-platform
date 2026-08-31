@@ -72,3 +72,51 @@ test('saving local sync preferences preserves active cloud session lifecycle', a
     await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
   }
 });
+
+test('SSH account changes require a new password and failed validation rolls settings back', async () => {
+  test.setTimeout(60000);
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-server-ssh-settings-'));
+  let fixture;
+  try {
+    fixture = await launch(sandbox);
+    const { page } = fixture;
+    await page.evaluate(async () => {
+      await window.api.writeServerSettings({
+        ip: 'compiler.example', user: 'tester', pass: 'old-secret', apiKey: '',
+        secureTransport: false, httpPort: 3100, wsPort: 3101, dapChildWsPort: 3102,
+        certificateFingerprint: '', syncInterval: 30000, setupCompleted: true
+      });
+      await window.api.commitServerSettings();
+      window.BOBO.state.serverSettings = await window.api.readServerSettings();
+      window.__sshValidationCalls = { auth: 0, rclone: 0 };
+      window.BOBO.auth.onServerChanged = async () => {
+        window.__sshValidationCalls.auth += 1;
+        return { success: true };
+      };
+      window.BOBO.rclone.validateConnection = async () => {
+        window.__sshValidationCalls.rclone += 1;
+        return { success: false, error: { type: 'AUTH_FAILED', message: 'Authentication failed' } };
+      };
+      window.BOBO.rcloneSettings.refreshStatus = () => {};
+      window.BOBO.settings.open('server');
+    });
+    await expect(page.locator('#settings-modal')).toBeVisible();
+    await page.locator('#server-user').fill('other-user');
+    await page.locator('#server-save').click();
+    await expect(page.locator('#server-connect-status')).toContainText('password are required');
+    expect(await page.evaluate(async () => (await window.api.readServerSettings()).user)).toBe('tester');
+
+    await page.locator('#server-pass').fill('wrong-secret');
+    await page.locator('#server-save').click();
+    await expect(page.locator('#server-connect-status')).toContainText('Could not connect to the server');
+    await expect(page.locator('#settings-modal')).toBeVisible();
+    expect(await page.evaluate(() => window.__sshValidationCalls)).toEqual({ auth: 0, rclone: 1 });
+    expect(await page.evaluate(async () => {
+      const stored = await window.api.readServerSettings();
+      return { user: stored.user, pass: stored.pass, passConfigured: stored.passConfigured };
+    })).toEqual({ user: 'tester', pass: '', passConfigured: true });
+  } finally {
+    if (fixture) await stop(fixture.app);
+    await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+  }
+});

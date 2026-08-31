@@ -2,6 +2,7 @@
 
 const { TerminalTransport, cleanSetupCommands, MAX_STDIN_CHARS, MAX_STDIN_BYTES } = require('../terminal-transport');
 const { endpoint: serverEndpoint } = require('./server-transport');
+const { credentialForServer } = require('./server-identity');
 const { createTerminalWebSocketFactory, createTerminalPeerVerifier } = require('./terminal-websocket');
 
 const MAX_DIMENSION = 500;
@@ -57,8 +58,7 @@ function createTerminalController(options) {
 
   async function currentCredential() {
     const serverSettings = await settings.readServerSettings();
-    const serverKey = serverSettings.ip || '';
-    const stored = settings.readAuth().servers[serverKey];
+    const stored = credentialForServer(settings.readAuth(), serverSettings).credential;
     if (stored && stored.token && (!stored.expiresAt || stored.expiresAt > Date.now())) return stored.token;
     return serverSettings.apiKey || '';
   }

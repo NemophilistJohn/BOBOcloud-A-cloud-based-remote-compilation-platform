@@ -9,6 +9,19 @@ const {
   createBootstrapServerSettings,
   getBootstrapResourcePath
 } = require('./server-settings-bootstrap');
+const { readJsonFileSync, writeJsonAtomicSync } = require('./atomic-file');
+const { createSecretCodec } = require('./secret-codec');
+
+const STORAGE_LIMITS = Object.freeze({
+  server: 128 * 1024,
+  lsp: 64 * 1024,
+  auth: 2 * 1024 * 1024,
+  ai: 4 * 1024 * 1024,
+  diagnostics: 256 * 1024,
+  chatHistory: 16 * 1024 * 1024,
+  projectNames: 2 * 1024 * 1024,
+  recentWorkspaces: 128 * 1024
+});
 
 const DEFAULT_SERVER_SETTINGS = Object.freeze({
   ip: '',
@@ -53,6 +66,7 @@ function defaultDiagnosticsSettings() {
 
 function createSettingsStore(options) {
   const app = options.app;
+  const secretCodec = createSecretCodec(options.safeStorage);
   const userDataPath = app.getPath('userData');
   const paths = Object.freeze({
     server: path.join(userDataPath, 'server-settings.json'),
@@ -63,6 +77,7 @@ function createSettingsStore(options) {
     auth: path.join(userDataPath, 'auth.json'),
     lsp: path.join(userDataPath, 'lsp-settings.json'),
     projectNames: path.join(userDataPath, 'project-names.json'),
+    recentWorkspaces: path.join(userDataPath, 'recent-workspaces.json'),
     clientAnalysisCache: path.join(userDataPath, 'client-analysis-cache')
   });
 
@@ -100,7 +115,7 @@ function createSettingsStore(options) {
     if (!resourcePath || !fs.existsSync(resourcePath)) return null;
 
     try {
-      const bootstrap = createBootstrapServerSettings(JSON.parse(fs.readFileSync(resourcePath, 'utf-8')));
+      const bootstrap = createBootstrapServerSettings(readJsonFileSync(resourcePath, { maxBytes: STORAGE_LIMITS.server }));
       if (!bootstrap) {
         console.error('[server-settings] bundled bootstrap configuration is missing a server address or SSH account');
         return null;
@@ -115,13 +130,19 @@ function createSettingsStore(options) {
   async function readServerSettings() {
     try {
       if (fs.existsSync(paths.server)) {
-        const stored = JSON.parse(fs.readFileSync(paths.server, 'utf-8'));
+        const persisted = readJsonFileSync(paths.server, { maxBytes: STORAGE_LIMITS.server });
+        const stored = secretCodec.open(persisted);
         const settings = normalizeServerSettings(stored);
         if (Object.prototype.hasOwnProperty.call(stored, 'rclonePath') ||
-            Object.prototype.hasOwnProperty.call(stored, 'rcloneBinary')) {
+            Object.prototype.hasOwnProperty.call(stored, 'rcloneBinary') ||
+            (secretCodec.available() && !secretCodec.isSealed(persisted))) {
           const migrated = Object.assign({}, settings);
           delete migrated.firstRunRequired;
-          fs.writeFileSync(paths.server, JSON.stringify(migrated, null, 2), 'utf-8');
+          try {
+            writeJsonAtomicSync(paths.server, secretCodec.seal(migrated), { maxBytes: STORAGE_LIMITS.server });
+          } catch (error) {
+            console.error('Error migrating server settings:', error);
+          }
         }
         return settings;
       }
@@ -134,7 +155,7 @@ function createSettingsStore(options) {
       }
       const defaults = { ...DEFAULT_SERVER_SETTINGS };
       fs.mkdirSync(path.dirname(paths.server), { recursive: true });
-      fs.writeFileSync(paths.server, JSON.stringify(defaults, null, 2), 'utf-8');
+      writeJsonAtomicSync(paths.server, defaults, { maxBytes: STORAGE_LIMITS.server });
       return normalizeServerSettings(defaults);
     } catch (error) {
       console.error('Error reading server settings:', error);
@@ -148,7 +169,7 @@ function createSettingsStore(options) {
       delete persisted.firstRunRequired;
       persisted.setupCompleted = persisted.setupCompleted === true;
       fs.mkdirSync(path.dirname(paths.server), { recursive: true });
-      fs.writeFileSync(paths.server, JSON.stringify(persisted, null, 2), 'utf-8');
+      writeJsonAtomicSync(paths.server, secretCodec.seal(persisted), { maxBytes: STORAGE_LIMITS.server });
       return true;
     } catch (error) {
       console.error('Error writing server settings:', error);
@@ -158,7 +179,7 @@ function createSettingsStore(options) {
 
   function readLspSettings() {
     try {
-      const parsed = JSON.parse(fs.readFileSync(paths.lsp, 'utf-8'));
+      const parsed = readJsonFileSync(paths.lsp, { maxBytes: STORAGE_LIMITS.lsp });
       if (parsed && typeof parsed === 'object') {
         const clientCacheMode = normalizeClientCacheMode(parsed.clientCacheMode);
         const clientCacheSizeMiB = normalizeClientCacheSizeMiB(parsed.clientCacheSizeMiB);
@@ -194,16 +215,24 @@ function createSettingsStore(options) {
       clientCacheSizeMiB
     );
     const next = { mode, clientCacheMode, clientCacheSizeMiB, clientCacheDependencyIndexEnabled };
-    fs.writeFileSync(paths.lsp, JSON.stringify(next, null, 2), 'utf-8');
+    writeJsonAtomicSync(paths.lsp, next, { maxBytes: STORAGE_LIMITS.lsp });
     return next;
   }
 
   function readAuth() {
     try {
       if (fs.existsSync(paths.auth)) {
-        const data = JSON.parse(fs.readFileSync(paths.auth, 'utf-8'));
+        const persisted = readJsonFileSync(paths.auth, { maxBytes: STORAGE_LIMITS.auth });
+        const data = secretCodec.open(persisted);
         if (data && typeof data === 'object') {
           if (!data.servers || typeof data.servers !== 'object') data.servers = {};
+          if (secretCodec.available() && !secretCodec.isSealed(persisted)) {
+            try {
+              writeJsonAtomicSync(paths.auth, secretCodec.seal(data), { maxBytes: STORAGE_LIMITS.auth });
+            } catch (error) {
+              console.error('Error migrating auth file:', error);
+            }
+          }
           return data;
         }
       }
@@ -215,7 +244,7 @@ function createSettingsStore(options) {
 
   function writeAuth(data) {
     try {
-      fs.writeFileSync(paths.auth, JSON.stringify(data, null, 2), 'utf-8');
+      writeJsonAtomicSync(paths.auth, secretCodec.seal(data), { maxBytes: STORAGE_LIMITS.auth });
       return true;
     } catch (error) {
       console.error('Error writing auth file:', error);
@@ -225,15 +254,23 @@ function createSettingsStore(options) {
 
   function readAiSettings() {
     let stored = {};
+    let persisted = null;
+    let readable = true;
     try {
-      if (fs.existsSync(paths.ai)) stored = JSON.parse(fs.readFileSync(paths.ai, 'utf-8'));
+      if (fs.existsSync(paths.ai)) {
+        persisted = readJsonFileSync(paths.ai, { maxBytes: STORAGE_LIMITS.ai });
+        stored = secretCodec.open(persisted);
+      }
     } catch (error) {
+      readable = false;
       console.error('Error reading AI settings:', error);
     }
     const settings = aiSettingsSchema.normalizeSettings(stored);
-    if (!aiSettingsSchema.settingsEqual(stored, settings) || stored.schemaVersion !== aiSettingsSchema.SCHEMA_VERSION) {
+    if (readable && (!aiSettingsSchema.settingsEqual(stored, settings) ||
+        stored.schemaVersion !== aiSettingsSchema.SCHEMA_VERSION ||
+        (persisted && secretCodec.available() && !secretCodec.isSealed(persisted)))) {
       try {
-        fs.writeFileSync(paths.ai, JSON.stringify(settings, null, 2), 'utf-8');
+        writeJsonAtomicSync(paths.ai, secretCodec.seal(settings), { maxBytes: STORAGE_LIMITS.ai });
       } catch (error) {
         console.error('Error migrating AI settings:', error);
       }
@@ -244,7 +281,7 @@ function createSettingsStore(options) {
   function writeAiSettings(settings) {
     try {
       const normalized = aiSettingsSchema.normalizeSettings(settings);
-      fs.writeFileSync(paths.ai, JSON.stringify(normalized, null, 2), 'utf-8');
+      writeJsonAtomicSync(paths.ai, secretCodec.seal(normalized), { maxBytes: STORAGE_LIMITS.ai });
       return true;
     } catch (error) {
       console.error('Error writing AI settings:', error);
@@ -255,7 +292,7 @@ function createSettingsStore(options) {
   function readDiagnosticsSettings() {
     try {
       if (fs.existsSync(paths.diagnostics)) {
-        const raw = JSON.parse(fs.readFileSync(paths.diagnostics, 'utf-8'));
+        const raw = readJsonFileSync(paths.diagnostics, { maxBytes: STORAGE_LIMITS.diagnostics });
         const merged = defaultDiagnosticsSettings();
         if (typeof raw.enabled === 'boolean') merged.enabled = raw.enabled;
         if (typeof raw.checkOn === 'string') merged.checkOn = raw.checkOn;
@@ -278,7 +315,7 @@ function createSettingsStore(options) {
 
   function writeDiagnosticsSettings(settings) {
     try {
-      fs.writeFileSync(paths.diagnostics, JSON.stringify(settings, null, 2), 'utf-8');
+      writeJsonAtomicSync(paths.diagnostics, settings, { maxBytes: STORAGE_LIMITS.diagnostics });
       return true;
     } catch (error) {
       console.error('Error writing diagnostics settings:', error);
@@ -290,7 +327,7 @@ function createSettingsStore(options) {
     if (!workspaceRoot) return { messages: [], referencedFiles: [] };
     try {
       if (fs.existsSync(paths.chatHistory)) {
-        const all = JSON.parse(fs.readFileSync(paths.chatHistory, 'utf-8'));
+        const all = readJsonFileSync(paths.chatHistory, { maxBytes: STORAGE_LIMITS.chatHistory });
         return all[workspaceRoot] || { messages: [], referencedFiles: [] };
       }
     } catch (error) {
@@ -300,20 +337,26 @@ function createSettingsStore(options) {
   }
 
   function writeChatHistory(workspaceRoot, data) {
-    if (!workspaceRoot) return;
+    if (!workspaceRoot) return false;
     try {
       let all = {};
-      if (fs.existsSync(paths.chatHistory)) all = JSON.parse(fs.readFileSync(paths.chatHistory, 'utf-8'));
+      if (Buffer.byteLength(JSON.stringify(data), 'utf8') > 4 * 1024 * 1024) return false;
+      if (fs.existsSync(paths.chatHistory)) all = readJsonFileSync(paths.chatHistory, { maxBytes: STORAGE_LIMITS.chatHistory });
+      delete all[workspaceRoot];
       all[workspaceRoot] = data;
-      fs.writeFileSync(paths.chatHistory, JSON.stringify(all, null, 2), 'utf-8');
+      const roots = Object.keys(all);
+      while (roots.length > 32) delete all[roots.shift()];
+      writeJsonAtomicSync(paths.chatHistory, all, { maxBytes: STORAGE_LIMITS.chatHistory });
+      return true;
     } catch (error) {
       console.error('Error writing chat history:', error);
+      return false;
     }
   }
 
   function readProjectNames() {
     try {
-      if (fs.existsSync(paths.projectNames)) return JSON.parse(fs.readFileSync(paths.projectNames, 'utf-8'));
+      if (fs.existsSync(paths.projectNames)) return readJsonFileSync(paths.projectNames, { maxBytes: STORAGE_LIMITS.projectNames });
     } catch (error) {
       console.error('read-project-names:', error);
     }
@@ -325,12 +368,45 @@ function createSettingsStore(options) {
     try {
       const data = readProjectNames();
       data[key] = name;
-      fs.writeFileSync(paths.projectNames, JSON.stringify(data, null, 2), 'utf-8');
+      writeJsonAtomicSync(paths.projectNames, data, { maxBytes: STORAGE_LIMITS.projectNames });
       return true;
     } catch (error) {
       console.error('save-project-name:', error);
       return false;
     }
+  }
+
+  function readRecentWorkspaces() {
+    try {
+      const values = readJsonFileSync(paths.recentWorkspaces, { maxBytes: STORAGE_LIMITS.recentWorkspaces });
+      if (!Array.isArray(values)) return [];
+      return values.filter((value) => typeof value === 'string' && value.length > 0 && value.length <= 4096).slice(0, 5);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function rememberRecentWorkspace(workspacePath) {
+    if (typeof workspacePath !== 'string' || !workspacePath || workspacePath.length > 4096) return false;
+    const compare = process.platform === 'win32'
+      ? (value) => value.toLowerCase()
+      : (value) => value;
+    const key = compare(workspacePath);
+    const values = readRecentWorkspaces().filter((value) => compare(value) !== key);
+    values.unshift(workspacePath);
+    writeJsonAtomicSync(paths.recentWorkspaces, values.slice(0, 5), { maxBytes: STORAGE_LIMITS.recentWorkspaces });
+    return true;
+  }
+
+  function forgetRecentWorkspace(workspacePath) {
+    if (typeof workspacePath !== 'string' || !workspacePath) return false;
+    const compare = process.platform === 'win32'
+      ? (value) => value.toLowerCase()
+      : (value) => value;
+    const key = compare(workspacePath);
+    const values = readRecentWorkspaces().filter((value) => compare(value) !== key);
+    writeJsonAtomicSync(paths.recentWorkspaces, values, { maxBytes: STORAGE_LIMITS.recentWorkspaces });
+    return true;
   }
 
   return {
@@ -348,7 +424,10 @@ function createSettingsStore(options) {
     readChatHistory,
     writeChatHistory,
     readProjectNames,
-    saveProjectName
+    saveProjectName,
+    readRecentWorkspaces,
+    rememberRecentWorkspace,
+    forgetRecentWorkspace
   };
 }
 

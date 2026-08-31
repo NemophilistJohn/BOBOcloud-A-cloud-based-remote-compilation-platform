@@ -3,7 +3,12 @@
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const test = require('node:test');
-const { createAiController, resolveApiContract } = require('../main/ai');
+const {
+  MAX_AI_REQUEST_INPUT_BYTES,
+  createAiController,
+  resolveApiContract,
+  validateRequestPayload
+} = require('../main/ai');
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -35,6 +40,8 @@ function createHarness(options = {}) {
     ipcMain,
     getWindow: () => window,
     maxStreamOutputBytes: options.maxStreamOutputBytes,
+    maxNonStreamRequests: options.maxNonStreamRequests,
+    laneLimits: options.laneLimits,
     settings: {
       readAiSettings: () => ({}),
       writeAiSettings: () => true,
@@ -46,6 +53,23 @@ function createHarness(options = {}) {
   return { controller, handlers, events };
 }
 
+function payloadFor(port, requestId) {
+  return {
+    requestId,
+    mode: 'chat',
+    stream: false,
+    messages: [{ role: 'user', content: 'hello' }],
+    modelConfig: {
+      name: 'Bounded request test',
+      provider: 'openai-compatible',
+      endpoint: `http://127.0.0.1:${port}/v1/chat/completions`,
+      modelId: 'test-model',
+      apiKey: 'test-key',
+      options: {}
+    }
+  };
+}
+
 test('AI contract selection gives explicit format priority and recognizes chat endpoints', () => {
   const chatUrl = new URL('https://api.deepseek.com/v1/chat/completions');
   const fimUrl = new URL('https://api.deepseek.com/beta/completions');
@@ -53,6 +77,58 @@ test('AI contract selection gives explicit format priority and recognizes chat e
   assert.equal(resolveApiContract({ mode: 'fim', modelConfig: {} }, fimUrl), 'fim');
   assert.equal(resolveApiContract({ apiFormat: 'chat', modelConfig: {} }, fimUrl), 'chat');
   assert.equal(resolveApiContract({ modelConfig: { apiFormat: 'fim' } }, chatUrl), 'fim');
+});
+
+test('AI request admission bounds bytes, shape, messages, tools, and request ids', () => {
+  assert.throws(() => validateRequestPayload({
+    requestId: 'oversized',
+    messages: [{ role: 'user', content: 'x'.repeat(MAX_AI_REQUEST_INPUT_BYTES) }],
+    modelConfig: {}
+  }), { code: 'AI_REQUEST_TOO_LARGE' });
+  assert.throws(() => validateRequestPayload({
+    requestId: 'messages', messages: Array.from({ length: 97 }, () => ({ role: 'user', content: 'x' })), modelConfig: {}
+  }), { code: 'AI_REQUEST_TOO_LARGE' });
+  assert.throws(() => validateRequestPayload({
+    requestId: 'tools', tools: Array.from({ length: 49 }, () => ({ type: 'function' })), modelConfig: {}
+  }), { code: 'AI_REQUEST_TOO_LARGE' });
+  let nested = {};
+  for (let index = 0; index < 40; index += 1) nested = { nested };
+  assert.throws(() => validateRequestPayload({ requestId: 'deep', messages: [], modelConfig: { options: nested } }), {
+    code: 'AI_REQUEST_TOO_COMPLEX'
+  });
+  assert.throws(() => validateRequestPayload({ requestId: '../invalid', messages: [], modelConfig: {} }), {
+    code: 'AI_REQUEST_INVALID'
+  });
+  const wide = {};
+  for (let index = 0; index < 20_000; index += 1) wide['field' + index] = index;
+  assert.throws(() => validateRequestPayload({ requestId: 'wide', messages: [], modelConfig: { options: wide } }), {
+    code: 'AI_REQUEST_TOO_COMPLEX'
+  });
+});
+
+test('AI inline admission caps concurrent paid provider requests', async (t) => {
+  let received = 0;
+  const server = http.createServer((request) => {
+    received += 1;
+    request.resume();
+  });
+  const port = await listen(server);
+  t.after(() => close(server));
+  const harness = createHarness({ maxNonStreamRequests: 2, laneLimits: { inline: 2 } });
+  t.after(() => harness.controller.dispose());
+  const inline = harness.handlers.get('ai-inline-request');
+  const first = inline(null, payloadFor(port, 'inline-one'));
+  const second = inline(null, payloadFor(port, 'inline-two'));
+  for (let attempt = 0; attempt < 100 && received < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(received, 2);
+  const rejected = await inline(null, payloadFor(port, 'inline-three'));
+  assert.equal(rejected.success, false);
+  assert.equal(rejected.code, 'AI_REQUEST_BUSY');
+  assert.equal(received, 2);
+  harness.controller.dispose();
+  await Promise.all([first, second]);
 });
 
 test('FIM request to chat/completions always sends a non-empty messages field', async (t) => {

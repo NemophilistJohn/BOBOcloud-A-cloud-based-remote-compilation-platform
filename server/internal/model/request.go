@@ -187,7 +187,7 @@ type UserInfo struct {
 	Name           string    `json:"name"`
 	Role           string    `json:"role"`
 	Disabled       bool      `json:"disabled"`
-	APIKey         string    `json:"api_key,omitempty"` // 仅 whoami（查自己）时返回完整值
+	APIKey         string    `json:"api_key,omitempty"` // 仅显式凭据签发/轮换流程可设置
 	ContainerLimit int       `json:"container_limit"`
 	RateLimit      int       `json:"rate_limit"`
 	DiskQuotaMB    int       `json:"disk_quota_mb"`

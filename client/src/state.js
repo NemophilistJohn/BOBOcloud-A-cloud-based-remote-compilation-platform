@@ -36,7 +36,7 @@
     serverCapabilities: null,
 
 	// Team collaboration. current is null for personal projects and otherwise
-	// {teamId, projectId, projectName, branch, remotePath, localPath}.
+	// {teamId, projectId, projectName, branch, localPath}.
 	collaboration: {
 	  teams: [],
 	  current: null,

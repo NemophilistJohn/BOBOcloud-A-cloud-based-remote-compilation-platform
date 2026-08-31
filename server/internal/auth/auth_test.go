@@ -27,6 +27,59 @@ func testUser(id, username, email, key string) *User {
 	return &User{ID: id, Username: username, Email: email, APIKey: key, Role: RoleMember}
 }
 
+func TestValidateUserIDPreservesUUIDsAndRejectsPathComponents(t *testing.T) {
+	if err := ValidateUserID("550e8400-e29b-41d4-a716-446655440000"); err != nil {
+		t.Fatalf("generated UUID identity was rejected: %v", err)
+	}
+	for _, value := range []string{"../escape", "..", "user/name", `user\name`, "CON", "user.name"} {
+		if err := ValidateUserID(value); err == nil {
+			t.Fatalf("unsafe user ID %q was accepted", value)
+		}
+	}
+}
+
+func TestUserDataRootRejectsTraversalWithoutRenamingValidIdentity(t *testing.T) {
+	dataDir := t.TempDir()
+	root, err := UserDataRoot(dataDir, "user-safe_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dataDir, "users", "user-safe_1")
+	if root != want {
+		t.Fatalf("user root = %q, want unchanged identity path %q", root, want)
+	}
+	if _, err := UserDataRoot(dataDir, "../../outside"); err == nil {
+		t.Fatal("traversal user root was accepted")
+	}
+}
+
+func TestUserStoresRejectUnsafeCreateAndUpdateIdentities(t *testing.T) {
+	forEachUserStore(t, func(t *testing.T, store UserStore) {
+		if err := store.SaveDeletionCleanup("../../outside"); err == nil {
+			t.Fatal("unsafe deletion marker identity was accepted")
+		}
+		if err := store.Create(testUser("../../outside", "Outside", "outside@example.com", "outside-key")); err == nil {
+			t.Fatal("unsafe create identity was accepted")
+		}
+		original := testUser("safe-user", "SafeUser", "safe@example.com", "safe-key")
+		if err := store.Create(original); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Create(testUser("SAFE-USER", "OtherUser", "other@example.com", "other-key")); err == nil {
+			t.Fatal("case-colliding user ID was accepted")
+		}
+		unsafeID := *original
+		unsafeID.ID = "../moved"
+		if err := store.UpdateExisting(&unsafeID); err == nil {
+			t.Fatal("unsafe ID update was accepted")
+		}
+		stored, err := store.Get(original.ID)
+		if err != nil || stored.ID != original.ID {
+			t.Fatalf("rejected update changed stored user: user=%+v err=%v", stored, err)
+		}
+	})
+}
+
 func TestMemoryUserStoreReturnsCopies(t *testing.T) {
 	store := NewMemoryUserStore()
 	if err := store.Create(testUser("one", "One", "one@example.com", "key-one")); err != nil {

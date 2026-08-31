@@ -186,6 +186,29 @@ test('parse diagnostics include line and column and partial JSONC is never execu
   assert.equal(configuration.tasks.every((task) => task.executable === false), true);
 });
 
+test('task configuration reads are bounded and never follow symbolic files', (t) => {
+  const root = workspace(t);
+  write(root, '.vscode/tasks.json', ' '.repeat(1024 * 1024 + 1));
+  let configuration = loadTaskConfiguration(root);
+  assert.equal(configuration.tasks.length, 0);
+  assert.equal(configuration.warnings.some((item) => item.code === 'TASKS_JSON_PARSE_ERROR'), true);
+
+  const taskPath = path.join(root, '.vscode', 'tasks.json');
+  const outside = path.join(root, 'outside-tasks.json');
+  fs.writeFileSync(outside, JSON.stringify({
+    version: '2.0.0', tasks: [{ label: 'Outside', type: 'process', command: 'echo' }]
+  }));
+  fs.rmSync(taskPath);
+  try {
+    fs.symlinkSync(outside, taskPath);
+    configuration = loadTaskConfiguration(root);
+    assert.equal(configuration.tasks.length, 0);
+    assert.equal(configuration.warnings.some((item) => item.code === 'TASKS_JSON_PARSE_ERROR'), true);
+  } catch (error) {
+    if (!error || error.code !== 'EPERM') throw error;
+  }
+});
+
 test('resolver preserves parallel dependencies and adds sequence edges', (t) => {
   const root = workspace(t);
   write(root, '.bobocloud/tasks.json', JSON.stringify({

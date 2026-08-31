@@ -421,7 +421,11 @@
     runPreparationSequence += 1;
     activeRunPreparation = null;
     settleTaskExecution(preparingTask, { success: false, cancelled: true, code: 'workspace-change', message: tr('Project task was cancelled.') });
+    var syncCancelled = BOBO.rclone && typeof BOBO.rclone.cancelAll === 'function'
+      ? BOBO.rclone.cancelAll('workspace-change')
+      : Promise.resolve();
     var cancelled = await cancelActiveRun(options);
+    await syncCancelled;
     if (!cancelled) setRunControlsIdle();
     return cancelled;
   }
@@ -436,7 +440,11 @@
     runPreparationSequence += 1;
     activeRunPreparation = null;
     settleTaskExecution(preparingTask, { success: false, cancelled: true, code: 'identity-change', message: tr('Project task was cancelled.') });
+    var syncCancelled = BOBO.rclone && typeof BOBO.rclone.cancelAll === 'function'
+      ? BOBO.rclone.cancelAll('identity-change')
+      : Promise.resolve();
     var cancelled = await cancelActiveRun(options);
+    await syncCancelled;
     if (!cancelled) setRunControlsIdle();
     return cancelled;
   }
@@ -581,21 +589,13 @@
         try { await window.api.saveProjectName(projectKey, projectName); } catch (e) {}
       }
 
-      // Calculate local workspace size for quota pre-check
-      var totalSize = 0;
-      try {
-        var sizeResult = await window.api.calculateDirSize(syncRoot);
-        totalSize = sizeResult.size || 0;
-      } catch (e) { /* ignore size calculation errors */ }
-
-      var checkResult = await BOBO.sendToServer('checkFolder', {
+      var checkResult = await BOBO.rclone.prepareWorkspace({
         folderName: projectName,
         folderKey: projectKey,
-		totalSize: totalSize,
 		teamId: teamProject ? teamProject.teamId : undefined,
 		projectId: teamProject ? teamProject.projectId : undefined,
 		branch: teamProject ? teamProject.branch : undefined
-      }, { quiet: true });
+      }, { src: syncRoot });
       if (S.workspaceRoot !== syncRoot || (S.workspaceGeneration || 0) !== syncGeneration ||
           (S.runIdentityEpoch || 0) !== syncIdentityEpoch) return false;
       if (!checkResult) {
@@ -616,10 +616,9 @@
         return false;
       }
 
-      var remotePath = checkResult.folderPath || ('/shareOnling/' + projectName);
       var result = await BOBO.rclone.sync({
         src: syncRoot,
-        remotePath: remotePath,
+        remoteGrantId: checkResult.remoteGrantId,
         onProgress: verbose ? function(line) { runOutputDetail('Sync: ' + line, { stage: 'sync' }, runContext); } : undefined
       });
       if (S.workspaceRoot !== syncRoot || (S.workspaceGeneration || 0) !== syncGeneration ||

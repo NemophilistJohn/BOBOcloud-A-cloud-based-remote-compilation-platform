@@ -34,8 +34,9 @@ async function launch(sandbox, firstRun) {
 }
 
 async function stop(app) {
-  try { await app.evaluate(({ app }) => app.exit(0)); } catch {}
-  await new Promise(resolve => setTimeout(resolve, 250));
+  try { await app.close(); } catch {
+    try { await app.evaluate(({ app: electronApp }) => electronApp.exit(0)); } catch {}
+  }
 }
 
 test('first download guides server setup once and keeps legacy credentials out of the primary flow', async () => {

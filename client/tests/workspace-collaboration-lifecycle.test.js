@@ -82,6 +82,7 @@ function createEditor(model) {
   return {
     readOnly: false,
     updateOptions(options) { this.readOnly = options.readOnly === true; },
+    setModel(nextModel) { this.model = nextModel; },
     type(nextValue) {
       if (this.readOnly) return false;
       model.setValue(nextValue);
@@ -277,6 +278,42 @@ test('a renamed tab and a replaced workspace cannot be cleared by an older save'
   }
 });
 
+test('renderer workspace close commits main state before disposing tabs', async () => {
+  const mainClose = deferred();
+  const fixture = loadWorkspace({
+    api: {
+      chooseWorkspaceLeave() { return Promise.resolve('discard'); },
+      closeWorkspace() { return mainClose.promise; }
+    }
+  });
+  const closing = fixture.BOBO.workspace.closeWorkspace({ reason: 'test-close' });
+  await waitFor(() => fixture.state.workspaceTransitionLocked === true);
+  assert.equal(fixture.state.workspaceRoot, 'C:\\workspace');
+  assert.equal(fixture.state.tabs.length, 1);
+  assert.equal(fixture.state.tabs[0].model, fixture.model);
+  mainClose.resolve(true);
+  assert.equal(await closing, true);
+  assert.equal(fixture.state.workspaceRoot, null);
+  assert.equal(fixture.state.tabs.length, 0);
+  assert.equal(fixture.state.workspaceTransitionLocked, false);
+});
+
+test('failed main workspace close preserves renderer state and unlocks editing', async () => {
+  const fixture = loadWorkspace({
+    api: {
+      chooseWorkspaceLeave() { return Promise.resolve('discard'); },
+      closeWorkspace() { return Promise.reject(new Error('main close failed')); }
+    }
+  });
+  assert.equal(await fixture.BOBO.workspace.closeWorkspace({ reason: 'test-close-failure' }), false);
+  assert.equal(fixture.state.workspaceRoot, 'C:\\workspace');
+  assert.equal(fixture.state.tabs.length, 1);
+  assert.equal(fixture.state.tabs[0].model, fixture.model);
+  assert.equal(fixture.state.workspaceTransitionLocked, false);
+  assert.equal(fixture.editor.readOnly, false);
+  assert.equal(fixture.editor.type('editing resumed'), true);
+});
+
 function createMemoryStorage(initialEntries) {
   const entries = new Map(initialEntries || []);
   return {
@@ -372,6 +409,12 @@ function loadCollaboration(options) {
       }
     },
     rclone: {
+      async prepareTeamPull(details, local) {
+        events.push({ type: 'prepareRemote', details, local });
+        return options.prepareTeamPull
+          ? options.prepareTeamPull(details, local)
+          : { success: true, remoteGrantId: 'team-remote-grant' };
+      },
       async pull(details) {
         events.push({ type: 'pull', details });
         return options.pull ? options.pull(details) : { success: true };
@@ -538,9 +581,6 @@ function eventSequence(fixture) {
 }
 
 function prepareProjectResponse(action) {
-  if (action === 'prepareTeamProject') {
-    return Promise.resolve({ success: true, data: { remote_path: 'remote:team/project/main' } });
-  }
   throw new Error('Unexpected API action: ' + action);
 }
 
@@ -575,7 +615,7 @@ test('approved manual pull refreshes and applies the current workspace', async (
 
   assert.deepEqual(eventSequence(fixture), [
     'canLeave',
-    'api:prepareTeamProject',
+    'prepareRemote',
     'pull',
     'refreshWorkspace',
     'getWorkspaceIdentity',
@@ -604,7 +644,7 @@ test('failed manual pull unlocks and preserves the dirty current workspace', asy
 
   assert.deepEqual(eventSequence(fixture), [
     'canLeave',
-    'api:prepareTeamProject',
+    'prepareRemote',
     'pull',
     'abortWorkspaceLeave'
   ]);
@@ -628,7 +668,7 @@ function openProjectServer(action) {
   if (action === 'listTeamBranches') {
     return Promise.resolve({ success: true, data: [{ name: 'main' }] });
   }
-  return prepareProjectResponse(action);
+  throw new Error('Unexpected API action: ' + action);
 }
 
 test('same-path open-project pull cancellation stops before prepare and pull', async () => {
@@ -665,11 +705,11 @@ test('approved same-path open-project pull happens after leave and applies the r
 
   const sequence = eventSequence(fixture);
   const leaveIndex = sequence.indexOf('canLeave');
-  const prepareIndex = sequence.indexOf('api:prepareTeamProject');
+  const prepareIndex = sequence.indexOf('prepareRemote');
   const pullIndex = sequence.indexOf('pull');
   const refreshIndex = sequence.indexOf('refreshWorkspace');
   const applyIndex = sequence.indexOf('applyWorkspace');
-  assert.ok(leaveIndex >= 0 && leaveIndex < prepareIndex, 'leave approval must precede prepareTeamProject');
+  assert.ok(leaveIndex >= 0 && leaveIndex < prepareIndex, 'leave approval must precede remote preparation');
   assert.ok(prepareIndex < pullIndex && pullIndex < refreshIndex && refreshIndex < applyIndex);
   assert.equal(sequence.includes('pickWorkspace'), false, 'same-path pull must refresh the current workspace in place');
   assert.equal(fixture.applyCalls(), 1);
@@ -690,12 +730,12 @@ test('failed same-path open-project pull unlocks and preserves the dirty model',
   await fixture.hooks.runActionConfirm();
 
   const sequence = eventSequence(fixture);
-  assert.ok(sequence.indexOf('canLeave') < sequence.indexOf('api:prepareTeamProject'));
+  assert.ok(sequence.indexOf('canLeave') < sequence.indexOf('prepareRemote'));
   assert.deepEqual(sequence, [
     'api:listTeamBranches',
     'localPathInfo',
     'canLeave',
-    'api:prepareTeamProject',
+    'prepareRemote',
     'pull',
     'abortWorkspaceLeave'
   ]);

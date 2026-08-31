@@ -77,6 +77,7 @@ function loadRunner(overrides) {
     readTree() { return Promise.resolve(null); },
     readServerSettings() { return Promise.resolve(state.serverSettings); }
   }, overrides.api || {});
+  const suppliedRclone = overrides.BOBO && overrides.BOBO.rclone;
   const BOBO = Object.assign({
     state,
     updateRunOutput(message, options) {
@@ -93,6 +94,16 @@ function loadRunner(overrides) {
       getArgs() { return { compileArgs: [], runArgs: [] }; }
     }
   }, overrides.BOBO || {});
+  BOBO.rclone = Object.assign({
+    async prepareWorkspace(request) {
+      const result = BOBO.sendToServer
+        ? await BOBO.sendToServer('checkFolder', request, { quiet: true })
+        : { success: true };
+      return Object.assign({}, result, { remoteGrantId: 'test-remote-grant' });
+    },
+    async sync() { return { success: true }; },
+    async cancelAll() { return { cancelled: 0 }; }
+  }, suppliedRclone || {});
 
   let webSocketConstructions = 0;
   const webSockets = [];

@@ -196,6 +196,9 @@ func TestServerInfoPreservesLegacyFieldsAndAddsSanitizedCapabilities(t *testing.
 	if capabilities.CatalogRevisions.LSP != 1 || capabilities.Limits.LSP.MaxSessions != h.Config.LSPMaxSessions || capabilities.Limits.LSP.MaxPerUser != h.Config.LSPMaxSessionsPerUser {
 		t.Fatalf("unexpected LSP capabilities: %+v", capabilities)
 	}
+	if capabilities.Limits.ExecutionMaxSessionSeconds != h.Config.ExecutionMaxSessionSeconds {
+		t.Fatalf("execution budget capability = %d, want %d", capabilities.Limits.ExecutionMaxSessionSeconds, h.Config.ExecutionMaxSessionSeconds)
+	}
 	if capabilities.CatalogFingerprints.LSP == "" || capabilities.CatalogFingerprints.LSP != h.LSP.CatalogFingerprint() {
 		t.Fatalf("unexpected LSP catalog fingerprint: %+v", capabilities.CatalogFingerprints)
 	}

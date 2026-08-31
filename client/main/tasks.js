@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { parse, printParseErrorCode } = require('jsonc-parser');
 const { loadWorkspaceSettings } = require('./workspace-settings');
+const { readFileBoundedSync } = require('./atomic-file');
 
 const TASK_SOURCES = [
   { id: 'vscode', relativePath: path.join('.vscode', 'tasks.json'), priority: 0 },
@@ -13,6 +14,7 @@ const SUPPORTED_KINDS = new Set(['build', 'test', 'run', 'custom']);
 const INPUT_ID_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
 const RESERVED_INPUT_IDS = new Set(['__proto__', 'prototype', 'constructor']);
 const MAX_INPUT_VALUE_LENGTH = 4096;
+const MAX_TASK_CONFIGURATION_BYTES = 1024 * 1024;
 const PRESENTATION_REVEAL_VALUES = new Set(['always', 'silent', 'never']);
 const SUPPORTED_INPUT_TYPES = new Set(['promptString', 'pickString', 'command']);
 const CONFIG_VARIABLE_KEYS = new Set([
@@ -159,7 +161,21 @@ function normalizeInputDefinitions(rawInputs, source, filePath) {
 function parseTaskFile(workspaceRoot, source) {
   const filePath = path.join(workspaceRoot, source.relativePath);
   if (!fs.existsSync(filePath)) return null;
-  const content = fs.readFileSync(filePath, 'utf8');
+  let content;
+  try {
+    content = readFileBoundedSync(filePath, { maxBytes: MAX_TASK_CONFIGURATION_BYTES, encoding: 'utf8' });
+  } catch (error) {
+    return {
+      source,
+      filePath,
+      raw: null,
+      tasks: [],
+      warnings: [warning('TASKS_JSON_PARSE_ERROR', `${source.relativePath} could not be read`, {
+        source: source.id, path: filePath, offset: 0, length: 0, line: 1, column: 1,
+        reason: error && error.code || 'read-error'
+      })]
+    };
+  }
   const parseErrors = [];
   const raw = parse(content, parseErrors, { allowTrailingComma: true, disallowComments: false });
   const warnings = parseErrors.map((error) => {

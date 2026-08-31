@@ -10,6 +10,8 @@
 const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { writeFileAtomicSync } = require('./main/atomic-file');
+const { DEFAULT_EXCLUDES } = require('./rclone-policy');
 
 // ============================================================
 // 常量
@@ -19,15 +21,63 @@ const isWindows = process.platform === 'win32';
 const EXE_NAME = isWindows ? 'rclone.exe' : 'rclone';
 const REMOTE_NAME = 'cloud-compiler-sftp';
 
-// 与服务端 files.go artifactIgnoredDirs 保持一致
-const DEFAULT_EXCLUDES = [
-  '**/target/**', '**/.git/**', '**/node_modules/**',
-	'**/__pycache__/**', '**/.bobocloud/**', '**/.bobocloud-team.json'
-];
-
 const DEFAULT_TIMEOUT_MS = 300000;     // 5 分钟
 const DEFAULT_RETRIES = 1;
 const STDERR_TAIL_SIZE = 8192;         // 报错时保留的 stderr 尾部
+const CONNECTION_CHECK_TIMEOUT_MS = 15000;
+
+function fixedFailure(message, code) {
+  return { success: false, error: message, code: code || null };
+}
+
+function obscurePassword(executablePath, password, options) {
+  options = options || {};
+  return new Promise(function(resolve) {
+    var child;
+    var executor = typeof options.execFile === 'function' ? options.execFile : execFile;
+    try {
+      child = executor(executablePath, ['obscure', '-'], {
+        windowsHide: true,
+        timeout: 10000,
+        maxBuffer: 16 * 1024,
+        signal: options.signal
+      }, function(error, stdout) {
+        if (error) {
+          resolve(fixedFailure('Could not protect the SFTP password for rclone', error.code));
+          return;
+        }
+        var obscured = String(stdout || '').trim();
+        if (!obscured || obscured.length > 8192 || /\s/.test(obscured)) {
+          resolve(fixedFailure('rclone returned an invalid protected password'));
+          return;
+        }
+        resolve({ success: true, value: obscured });
+      });
+      if (!child || !child.stdin || typeof child.stdin.end !== 'function') {
+        resolve(fixedFailure('Could not send the SFTP password to rclone securely'));
+        return;
+      }
+      if (typeof child.stdin.on === 'function') child.stdin.on('error', function() {});
+      child.stdin.end(String(password) + '\n');
+    } catch (error) {
+      resolve(fixedFailure('Could not protect the SFTP password for rclone', error && error.code));
+    }
+  });
+}
+
+function safeConfigValue(value, name, maximum, trim) {
+  var text = String(value || '');
+  if (trim !== false) text = text.trim();
+  if (!text || Buffer.byteLength(text, 'utf8') > maximum || /[\0\r\n]/.test(text)) {
+    throw new Error('Invalid ' + name + ' in SFTP settings');
+  }
+  return text;
+}
+
+function windowsTaskkillPath() {
+  var windowsRoot = process.env.SystemRoot || process.env.WINDIR || '';
+  return path.isAbsolute(windowsRoot) ? path.join(windowsRoot, 'System32', 'taskkill.exe') : '';
+}
 
 function requireManagedExecutable(executablePath) {
   if (typeof executablePath !== 'string' || !path.isAbsolute(executablePath)) {
@@ -63,7 +113,7 @@ function requireManagedConfig(configPath, createParent) {
 // 配置管理
 // ============================================================
 
-async function ensureConfig(settings, executablePath, configPath) {
+async function ensureConfig(settings, executablePath, configPath, options) {
   if (!settings || !settings.ip || !settings.user) {
     return { success: false, error: 'missing ip or user in settings' };
   }
@@ -74,7 +124,9 @@ async function ensureConfig(settings, executablePath, configPath) {
     return { success: false, error: error.message };
   }
 
-  var detected = await checkVersion(executablePath, 'managed');
+  options = options || {};
+  var versionChecker = typeof options.checkVersion === 'function' ? options.checkVersion : checkVersion;
+  var detected = await versionChecker(executablePath, 'managed');
   if (!detected.available) {
     return {
       success: false,
@@ -84,30 +136,78 @@ async function ensureConfig(settings, executablePath, configPath) {
   }
   var rcloneExecutable = detected.path;
 
-  // 用 execFile + 参数数组执行，避免经 shell 解析带来的命令注入风险
-  var args = [
-    '--config', configPath,
-    'config', 'create', REMOTE_NAME, 'sftp',
-    'host=' + settings.ip,
-    'user=' + settings.user,
-    'port=22'
-  ];
-  if (settings.pass) {
-    args.push('pass=' + settings.pass);
+  try {
+    var host = safeConfigValue(settings.ip, 'host', 1024);
+    var user = safeConfigValue(settings.user, 'user', 1024);
+    var pass = safeConfigValue(settings.pass, 'password', 64 * 1024, false);
+    var protectedPassword = await obscurePassword(rcloneExecutable, pass, options);
+    if (!protectedPassword.success) return protectedPassword;
+    if (options.signal && options.signal.aborted) return fixedFailure('rclone configuration was cancelled', 'CANCELLED');
+    var content = [
+      '[' + REMOTE_NAME + ']',
+      'type = sftp',
+      'host = ' + host,
+      'user = ' + user,
+      'port = 22',
+      'pass = ' + protectedPassword.value,
+      ''
+    ].join('\n');
+    writeFileAtomicSync(configPath, content, { maxBytes: 128 * 1024, mode: 0o600 });
+    return { success: true };
+  } catch (error) {
+    if (!options.signal || !options.signal.aborted) {
+      console.error('[rclone] managed configuration failed:', error && error.code ? error.code : 'invalid configuration');
+    }
+    return fixedFailure('Could not create the managed rclone configuration', error && error.code);
   }
-  args.push('--non-interactive');
+}
 
+function checkConnection(opts) {
+  opts = opts || {};
   return new Promise(function(resolve) {
-    execFile(rcloneExecutable, args, { windowsHide: true, timeout: 30000 }, function(error, stdout, stderr) {
-      if (error) {
-        console.error('[rclone] config create failed:', error.message);
-        console.error('[rclone] stderr:', stderr);
-        resolve({ success: false, error: error.message });
-      } else {
-        console.log('[rclone] config updated successfully');
-        resolve({ success: true });
-      }
-    });
+    if (opts.signal && opts.signal.aborted) {
+      resolve({ success: false, error: { type: 'CANCELLED', message: 'rclone connection check was cancelled' } });
+      return;
+    }
+    var executablePath;
+    var configPath;
+    try {
+      executablePath = requireManagedExecutable(opts.executablePath);
+      configPath = requireManagedConfig(opts.configPath, false);
+    } catch (error) {
+      resolve({ success: false, error: { type: 'CONFIG_UNAVAILABLE', message: 'The managed rclone connection is unavailable' } });
+      return;
+    }
+    var executor = typeof opts.execFile === 'function' ? opts.execFile : execFile;
+    var args = [
+      '--config', configPath,
+      'lsjson', REMOTE_NAME + ':',
+      '--stat', '--no-modtime', '--no-mimetype'
+    ];
+    try {
+      executor(executablePath, args, {
+        windowsHide: true,
+        timeout: Number(opts.timeoutMs || CONNECTION_CHECK_TIMEOUT_MS),
+        maxBuffer: 64 * 1024,
+        signal: opts.signal
+      }, function(error, _stdout, stderr) {
+        if (!error) {
+          resolve({ success: true });
+          return;
+        }
+        if (opts.signal && opts.signal.aborted) {
+          resolve({ success: false, error: { type: 'CANCELLED', message: 'rclone connection check was cancelled' } });
+          return;
+        }
+        var classified = classifyError(error, stderr, error.killed === true);
+        if (!classified || classified.type === 'UNKNOWN') {
+          classified = { type: 'CONNECTION_FAILED', message: 'SFTP connection check failed' };
+        }
+        resolve({ success: false, error: classified });
+      });
+    } catch (_) {
+      resolve({ success: false, error: { type: 'CONNECTION_FAILED', message: 'SFTP connection check failed' } });
+    }
   });
 }
 
@@ -152,6 +252,15 @@ function classifyError(error, stderr, timedOut) {
 // syncOnce 执行一次同步（无重试）
 function syncOnce(opts) {
   return new Promise(function(resolve) {
+    var signal = opts.signal;
+    if (signal && signal.aborted) {
+      resolve({
+        success: false,
+        error: { type: 'CANCELLED', message: 'rclone operation was cancelled' },
+        stats: { durationMs: 0 }
+      });
+      return;
+    }
     var exe;
     try {
       exe = requireManagedExecutable(opts.executablePath);
@@ -163,7 +272,15 @@ function syncOnce(opts) {
       });
       return;
     }
-    var excludes = opts.excludes || DEFAULT_EXCLUDES;
+    // Core exclusions are policy, not a renderer preference. Optional callers
+    // may only add patterns; an empty array can never disable the defaults.
+    var excludes = DEFAULT_EXCLUDES.slice();
+    if (Array.isArray(opts.excludes)) {
+      for (var excludeIndex = 0; excludeIndex < opts.excludes.length; excludeIndex++) {
+        var pattern = String(opts.excludes[excludeIndex] || '');
+        if (pattern && excludes.indexOf(pattern) === -1) excludes.push(pattern);
+      }
+    }
     var timeoutMs = opts.timeoutMs || DEFAULT_TIMEOUT_MS;
     var onProgress = opts.onProgress;
     var configPath;
@@ -189,23 +306,93 @@ function syncOnce(opts) {
     args.push('--stats-one-line', '--stats', '5s',
               '--contimeout', '30s', '--timeout', '120s');
 
-    var child = spawn(exe, args, { windowsHide: true });
+    var child;
+    try {
+      child = (typeof opts.spawn === 'function' ? opts.spawn : spawn)(exe, args, { windowsHide: true });
+    } catch (error) {
+      resolve({
+        success: false,
+        error: classifyError(error, '', false),
+        stats: { durationMs: 0 }
+      });
+      return;
+    }
     var stderrTail = '';
     var timedOut = false;
+    var cancelled = false;
+    var terminationReason = '';
     var resolved = false;
     var startTime = Date.now();
+    var forceKillTimer = null;
+    var killConfirmationTimer = null;
+
+    function cleanup() {
+      clearTimeout(timer);
+      clearTimeout(forceKillTimer);
+      clearTimeout(killConfirmationTimer);
+      if (signal && typeof signal.removeEventListener === 'function') {
+        signal.removeEventListener('abort', abortOperation);
+      }
+    }
 
     function resolveOnce(result) {
       if (!resolved) {
         resolved = true;
+        cleanup();
         resolve(result);
       }
     }
 
+    function forceKill() {
+      if (resolved || child.exitCode !== null || child.signalCode) return;
+      if (isWindows && child.pid) {
+        var taskkillPath = windowsTaskkillPath();
+        if (taskkillPath) {
+          (typeof opts.execFile === 'function' ? opts.execFile : execFile)(
+            taskkillPath, ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true }, function() {
+              if (resolved || child.exitCode !== null || child.signalCode) return;
+              try { child.kill('SIGKILL'); } catch (_) {}
+            }
+          );
+        } else {
+          try { child.kill('SIGKILL'); } catch (_) {}
+        }
+      } else {
+        try { child.kill('SIGKILL'); } catch (_) {}
+      }
+      killConfirmationTimer = setTimeout(function() {
+        resolveOnce({
+          success: false,
+          error: {
+            type: 'TERMINATION_UNCONFIRMED',
+            message: 'rclone did not confirm process termination'
+          },
+          stats: { durationMs: Date.now() - startTime }
+        });
+      }, Number(opts.killConfirmationMs || 5000));
+    }
+
+    function terminate(reason) {
+      if (resolved || child.exitCode !== null || child.signalCode) return;
+      if (terminationReason) return;
+      terminationReason = reason;
+      if (reason === 'timeout') timedOut = true;
+      else cancelled = true;
+      try { child.kill('SIGTERM'); } catch (_) {}
+      forceKillTimer = setTimeout(forceKill, Number(opts.killGraceMs || 1500));
+    }
+
+    function abortOperation() {
+      terminate('cancelled');
+    }
+
     var timer = setTimeout(function() {
-      timedOut = true;
-      try { child.kill('SIGTERM'); } catch (e) {}
+      terminate('timeout');
     }, timeoutMs);
+    if (signal && typeof signal.addEventListener === 'function') {
+      signal.addEventListener('abort', abortOperation, { once: true });
+      if (signal.aborted) abortOperation();
+    }
 
     // stdout：rclone sync 正常无输出，保留以防万一
     child.stdout.on('data', function(data) {
@@ -229,7 +416,7 @@ function syncOnce(opts) {
 
     // spawn 本身失败（如 ENOENT）
     child.on('error', function(error) {
-      clearTimeout(timer);
+      if (cancelled || timedOut) return;
       var classified = classifyError(error, stderrTail, false);
       resolveOnce({
         success: false,
@@ -239,10 +426,15 @@ function syncOnce(opts) {
     });
 
     child.on('close', function(code) {
-      clearTimeout(timer);
       var durationMs = Date.now() - startTime;
 
-      if (code === 0 && !timedOut) {
+      if (cancelled) {
+        resolveOnce({
+          success: false,
+          error: { type: 'CANCELLED', message: 'rclone operation was cancelled' },
+          stats: { durationMs: durationMs }
+        });
+      } else if (code === 0 && !timedOut) {
         resolveOnce({ success: true, error: null, stats: { durationMs: durationMs } });
       } else {
         var fakeError = { message: 'rclone exited with code ' + code, code: code };
@@ -263,6 +455,13 @@ async function sync(opts) {
   var lastResult = null;
 
   for (var attempt = 0; attempt < maxAttempts; attempt++) {
+    if (opts.signal && opts.signal.aborted) {
+      return {
+        success: false,
+        error: { type: 'CANCELLED', message: 'rclone operation was cancelled' },
+        stats: { durationMs: 0 }
+      };
+    }
     lastResult = await syncOnce(opts);
     if (lastResult.success) return lastResult;
 
@@ -272,7 +471,19 @@ async function sync(opts) {
 
     // 指数退避：2s, 4s, ...
     var backoffMs = 2000 * Math.pow(2, attempt);
-    await new Promise(function(r) { setTimeout(r, backoffMs); });
+    await new Promise(function(r) {
+      var timer = setTimeout(done, backoffMs);
+      function done() {
+        clearTimeout(timer);
+        if (opts.signal && typeof opts.signal.removeEventListener === 'function') {
+          opts.signal.removeEventListener('abort', done);
+        }
+        r();
+      }
+      if (opts.signal && typeof opts.signal.addEventListener === 'function') {
+        opts.signal.addEventListener('abort', done, { once: true });
+      }
+    });
   }
 
   return lastResult;
@@ -349,9 +560,12 @@ module.exports = {
   DEFAULT_EXCLUDES: DEFAULT_EXCLUDES,
   DEFAULT_TIMEOUT_MS: DEFAULT_TIMEOUT_MS,
   DEFAULT_RETRIES: DEFAULT_RETRIES,
+  windowsTaskkillPath: windowsTaskkillPath,
   requireManagedExecutable: requireManagedExecutable,
   requireManagedConfig: requireManagedConfig,
   ensureConfig: ensureConfig,
+  checkConnection: checkConnection,
+  syncOnce: syncOnce,
   sync: sync,
   pull: pull,
   checkVersion: checkVersion

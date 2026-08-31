@@ -22,6 +22,8 @@ async function createHarness(t, options = {}) {
   const modelRequests = [];
   const cancellations = [];
   const notifications = [];
+  const notificationContexts = [];
+  const workspaceMutations = [];
   const brokerOptions = {
     app: {
       getPath(name) {
@@ -46,6 +48,21 @@ async function createHarness(t, options = {}) {
       }
     },
     getWorkspaceIdentity: () => ({ ...workspaceState }),
+    runWorkspaceMutation: options.runWorkspaceMutation || (async (scope, operation) => {
+      const context = { rootPath: path.resolve(workspaceState.rootPath), workspaceIdentity: workspaceState.workspaceIdentity };
+      workspaceMutations.push({ scope, context: { ...context } });
+      const assertCurrent = () => {
+        if (path.resolve(workspaceState.rootPath) !== context.rootPath || workspaceState.workspaceIdentity !== context.workspaceIdentity) {
+          const error = new Error('workspace changed');
+          error.code = 'WORKSPACE_CONTEXT_CHANGED';
+          throw error;
+        }
+      };
+      assertCurrent();
+      const result = await operation(Object.freeze({ ...context, assertCurrent }));
+      assertCurrent();
+      return result;
+    }),
     requestModel: async (request) => {
       modelRequests.push(request);
       return {
@@ -69,14 +86,20 @@ async function createHarness(t, options = {}) {
     }
   };
   if (options.notifyWorkspaceFiles === true) {
-    brokerOptions.notifyWorkspaceFiles = (events) => notifications.push(...events);
+    brokerOptions.notifyWorkspaceFiles = (events, context) => {
+      notifications.push(...events);
+      notificationContexts.push(context);
+    };
   }
   const broker = createAgentPlatformBroker(brokerOptions);
   t.after(async () => {
     broker.dispose();
     await fsp.rm(root, { recursive: true, force: true });
   });
-  return { root, workspace, userData, home, workspaceState, modelRequests, cancellations, notifications, broker };
+  return {
+    root, workspace, userData, home, workspaceState, modelRequests, cancellations,
+    notifications, notificationContexts, workspaceMutations, broker
+  };
 }
 
 test('Agent model broker exposes opaque refs, retains credentials, and scopes cancellation', async (t) => {
@@ -142,6 +165,11 @@ test('Agent workspace, Skill, and storage brokers keep paths and state scoped', 
   const harness = await createHarness(t);
   await fsp.mkdir(path.join(harness.workspace, 'src'), { recursive: true });
   await fsp.writeFile(path.join(harness.workspace, 'src', 'app.js'), 'const value = 42;\n', 'utf8');
+  await fsp.writeFile(path.join(harness.workspace, 'src', 'oversized.txt'), Buffer.alloc(2 * 1024 * 1024 + 1, 0x61));
+  await fsp.writeFile(path.join(harness.workspace, 'src', 'search-oversized.txt'), Buffer.concat([
+    Buffer.from('unique-search-marker\n'),
+    Buffer.alloc(512 * 1024, 0x62)
+  ]));
   const skillDirectory = path.join(harness.workspace, '.agents', 'skills', 'review');
   await fsp.mkdir(skillDirectory, { recursive: true });
   await fsp.writeFile(path.join(skillDirectory, 'SKILL.md'), [
@@ -153,6 +181,9 @@ test('Agent workspace, Skill, and storage brokers keep paths and state scoped', 
     '# Review',
     ''
   ].join('\n'), 'utf8');
+  const oversizedSkillDirectory = path.join(harness.workspace, '.agents', 'skills', 'oversized');
+  await fsp.mkdir(oversizedSkillDirectory, { recursive: true });
+  await fsp.writeFile(path.join(oversizedSkillDirectory, 'SKILL.md'), Buffer.alloc(512 * 1024 + 1, 0x63));
 
   const listed = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
     tool: 'workspace_list',
@@ -166,10 +197,26 @@ test('Agent workspace, Skill, and storage brokers keep paths and state scoped', 
   });
   assert.equal(read.content, 'const value = 42;\n');
   assert.match(read.sha256, /^[a-f0-9]{64}$/);
+  await assert.rejects(
+    () => harness.broker.request('acme.agent', 'agent.tools.invoke', {
+      tool: 'workspace_read', input: { path: 'src/oversized.txt' }
+    }),
+    { code: 'AGENT_FILE_TOO_LARGE' }
+  );
+  await assert.rejects(
+    () => harness.broker.request('acme.agent', 'agent.tools.invoke', {
+      tool: 'workspace_write', input: { path: 'src/oversized.txt', content: 'replacement' }
+    }),
+    { code: 'AGENT_FILE_TOO_LARGE' }
+  );
   const searched = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
     tool: 'workspace_search', input: { query: 'value = 42' }
   });
   assert.deepEqual(searched.results.map((entry) => [entry.path, entry.line]), [['src/app.js', 1]]);
+  const skippedOversizedSearch = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
+    tool: 'workspace_search', input: { query: 'unique-search-marker' }
+  });
+  assert.deepEqual(skippedOversizedSearch.results, []);
   await assert.rejects(
     () => harness.broker.request('acme.agent', 'agent.tools.invoke', {
       tool: 'workspace_read', input: { path: '../outside.txt' }
@@ -180,6 +227,7 @@ test('Agent workspace, Skill, and storage brokers keep paths and state scoped', 
   const skills = await harness.broker.request('acme.agent', 'agent.skills.list', {});
   const skill = skills.skills.find((entry) => entry.name === 'Workspace Review');
   assert.ok(skill);
+  assert.equal(skills.skills.some((entry) => entry.name === 'oversized'), false);
   assert.match(skill.id, /^skill-[a-f0-9]{24}$/);
   assert.equal(JSON.stringify(skill).includes('SKILL.md'), false);
   assert.equal(JSON.stringify(skill).includes(harness.workspace), false);
@@ -193,6 +241,14 @@ test('Agent workspace, Skill, and storage brokers keep paths and state scoped', 
   })).saved, true);
   assert.deepEqual((await harness.broker.request('acme.agent', 'agent.storage.read', {})).value.preferences, { effort: 'high' });
   assert.deepEqual(await harness.broker.request('other.agent', 'agent.storage.read', {}), { value: {} });
+  await fsp.writeFile(
+    path.join(harness.userData, 'agent-data', 'acme.agent.json'),
+    Buffer.alloc(8 * 1024 * 1024 + 1, 0x64)
+  );
+  await assert.rejects(
+    () => harness.broker.request('acme.agent', 'agent.storage.read', {}),
+    { code: 'AGENT_STORAGE_TOO_LARGE' }
+  );
 
   const silentWrite = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
     tool: 'workspace_write', input: { path: 'src/generated.txt', content: 'created without an optional notifier\n' }
@@ -355,6 +411,11 @@ test('Agent writes and processes require scoped approvals and structured executi
   assert.equal(written.approved, true);
   assert.equal(await fsp.readFile(path.join(harness.workspace, 'src', 'app.js'), 'utf8'), 'after\n');
   assert.equal(harness.notifications.length, 1);
+  assert.equal(harness.workspaceMutations[0].scope, 'src/app.js');
+  assert.deepEqual(harness.notificationContexts, [{
+    rootPath: path.resolve(harness.workspace),
+    workspaceIdentity: 1
+  }]);
   await assert.rejects(
     () => harness.broker.decideApproval('acme.agent', pending.approval.id, true),
     { code: 'AGENT_APPROVAL_NOT_FOUND' }

@@ -13,11 +13,12 @@ import (
 
 // RateLimiter 基于令牌桶算法的 per-user 限流器，线程安全。
 type RateLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]*tokenBucket
-	rate    float64 // 令牌/秒
-	burst   int     // 桶容量（突发允许量）
-	enabled bool
+	mu         sync.Mutex
+	buckets    map[string]*tokenBucket
+	rate       float64 // 令牌/秒
+	burst      int     // 桶容量（突发允许量）
+	maxBuckets int
+	enabled    bool
 }
 
 type tokenBucket struct {
@@ -29,22 +30,33 @@ type tokenBucket struct {
 // ratePerMinute: 每分钟允许的请求数。
 // burst: 突发容量（瞬间允许的最大并发请求数）。
 func NewRateLimiter(ratePerMinute, burst int) *RateLimiter {
+	return NewRateLimiterWithCapacity(ratePerMinute, burst, 16_384)
+}
+
+func NewRateLimiterWithCapacity(ratePerMinute, burst, maxBuckets int) *RateLimiter {
+	if maxBuckets <= 0 {
+		maxBuckets = 1
+	}
 	return &RateLimiter{
-		buckets: make(map[string]*tokenBucket),
-		rate:    float64(ratePerMinute) / 60.0,
-		burst:   burst,
-		enabled: ratePerMinute > 0,
+		buckets:    make(map[string]*tokenBucket),
+		rate:       float64(ratePerMinute) / 60.0,
+		burst:      burst,
+		maxBuckets: maxBuckets,
+		enabled:    ratePerMinute > 0,
 	}
 }
 
 // DisabledLimiter 返回一个禁用的限流器（不限速）
 func DisabledLimiter() *RateLimiter {
-	return &RateLimiter{enabled: false}
+	return NewRateLimiterWithCapacity(0, 0, 16_384)
 }
 
 // Allow 检查指定 key（通常为 userID）的请求是否允许。
 // 返回 true 表示放行，false 表示被限流。
 func (rl *RateLimiter) Allow(key string) bool {
+	if rl == nil || !rl.enabled {
+		return true
+	}
 	return rl.allowAt(key, rl.rate, rl.burst)
 }
 
@@ -54,15 +66,16 @@ func (rl *RateLimiter) AllowWithRate(key string, ratePerMinute int) bool {
 	if ratePerMinute <= 0 {
 		return rl.Allow(key)
 	}
-	burst := ratePerMinute * 2
-	if burst < 1 {
-		burst = 1
+	maxInt := int(^uint(0) >> 1)
+	burst := maxInt
+	if ratePerMinute <= maxInt/2 {
+		burst = ratePerMinute * 2
 	}
 	return rl.allowAt(key, float64(ratePerMinute)/60.0, burst)
 }
 
 func (rl *RateLimiter) allowAt(key string, rate float64, burst int) bool {
-	if !rl.enabled {
+	if rl == nil || rate <= 0 || burst <= 0 {
 		return true
 	}
 
@@ -71,6 +84,12 @@ func (rl *RateLimiter) allowAt(key string, rate float64, burst int) bool {
 
 	bucket, ok := rl.buckets[key]
 	if !ok {
+		// Unknown keys fail closed at the configured state bound. Existing users
+		// keep their buckets, and periodic expiry reopens capacity without an
+		// attacker forcing O(n) eviction work on every request.
+		if len(rl.buckets) >= rl.maxBuckets {
+			return false
+		}
 		// 新用户：初始给满 burst 容量
 		bucket = &tokenBucket{tokens: float64(burst), lastFill: time.Now()}
 		rl.buckets[key] = bucket
@@ -95,7 +114,7 @@ func (rl *RateLimiter) allowAt(key string, rate float64, burst int) bool {
 
 // CleanupExpired 清理超过 ttl 未使用的桶（后台协程定时调用）
 func (rl *RateLimiter) CleanupExpired(ttl time.Duration) {
-	if !rl.enabled {
+	if rl == nil {
 		return
 	}
 	rl.mu.Lock()

@@ -3,11 +3,13 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readJsonFileSync, writeJsonAtomicSync } = require('./atomic-file');
 
 const STATE_SCHEMA_VERSION = 1;
 const SCAN_TTL_MS = 2 * 60 * 1000;
 const MAX_EXTERNAL_BINARY_BYTES = 256 * 1024 * 1024;
 const PREPARED_RCLONE_VERSION = '1.64.0';
+const MAX_STATE_BYTES = 64 * 1024;
 
 function executableName(platform) {
   return platform === 'win32' ? 'rclone.exe' : 'rclone';
@@ -27,22 +29,25 @@ function stripPathEntry(value) {
 }
 
 function atomicWriteJson(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const temporaryPath = filePath + '.tmp-' + process.pid + '-' + Date.now();
-  try {
-    fs.writeFileSync(temporaryPath, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(temporaryPath, filePath);
-  } finally {
-    try { fs.unlinkSync(temporaryPath); } catch (_) {}
-  }
+  writeJsonAtomicSync(filePath, value, { maxBytes: MAX_STATE_BYTES });
 }
 
 async function sha256File(filePath) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
     const input = fs.createReadStream(filePath);
+    let bytesRead = 0;
     input.on('error', reject);
-    input.on('data', (chunk) => hash.update(chunk));
+    input.on('data', (chunk) => {
+      bytesRead += chunk.length;
+      if (bytesRead > MAX_EXTERNAL_BINARY_BYTES) {
+        const error = new Error('rclone candidate grew beyond the allowed size while hashing');
+        error.code = 'RCLONE_CANDIDATE_TOO_LARGE';
+        input.destroy(error);
+        return;
+      }
+      hash.update(chunk);
+    });
     input.on('end', () => resolve(hash.digest('hex')));
   });
 }
@@ -92,7 +97,7 @@ function createRcloneBinaryManager(options) {
 
   function readState() {
     try {
-      const parsed = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      const parsed = readJsonFileSync(statePath, { maxBytes: MAX_STATE_BYTES });
       if (parsed && parsed.schemaVersion === STATE_SCHEMA_VERSION && parsed.mode === 'external' &&
           typeof parsed.sourcePath === 'string' && /^[a-f0-9]{64}$/.test(parsed.sha256 || '') &&
           typeof parsed.version === 'string') {

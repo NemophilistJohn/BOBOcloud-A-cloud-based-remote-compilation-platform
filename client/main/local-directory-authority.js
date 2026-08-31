@@ -5,18 +5,33 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const DEFAULT_GRANT_TTL_MS = 30 * 60 * 1000;
+const DEFAULT_MAX_GRANTS = 256;
+const DEFAULT_MAX_GRANTS_PER_SENDER = 64;
 
 function createLocalDirectoryAuthority(options) {
   const now = options.now || Date.now;
   const randomId = options.randomId || (() => crypto.randomUUID());
   const assertSafeLocalRoot = options.assertSafeLocalRoot || ((value) => path.resolve(value));
   const grantTtlMs = options.grantTtlMs || DEFAULT_GRANT_TTL_MS;
+  const maxGrants = options.maxGrants || DEFAULT_MAX_GRANTS;
+  const maxGrantsPerSender = options.maxGrantsPerSender || DEFAULT_MAX_GRANTS_PER_SENDER;
   const grants = new Map();
 
   function prune() {
     const current = now();
     for (const [id, grant] of grants) {
       if (grant.expiresAt <= current) grants.delete(id);
+    }
+  }
+
+  function enforceCapacity(senderId) {
+    let senderCount = 0;
+    for (const grant of grants.values()) if (grant.senderId === senderId) senderCount += 1;
+    for (const [id, grant] of grants) {
+      if (grants.size < maxGrants && senderCount < maxGrantsPerSender) break;
+      if (grant.senderId !== senderId && grants.size < maxGrants) continue;
+      grants.delete(id);
+      if (grant.senderId === senderId) senderCount -= 1;
     }
   }
 
@@ -31,6 +46,7 @@ function createLocalDirectoryAuthority(options) {
   function grant(senderId, candidate, purpose) {
     prune();
     const directory = inspectDirectory(candidate);
+    enforceCapacity(senderId);
     const id = randomId();
     grants.set(id, {
       senderId,
@@ -51,6 +67,8 @@ function createLocalDirectoryAuthority(options) {
       throw new Error('The local directory grant does not match this path');
     }
     value.expiresAt = now() + grantTtlMs;
+    grants.delete(grantId);
+    grants.set(grantId, value);
     return directory;
   }
 
@@ -63,4 +81,9 @@ function createLocalDirectoryAuthority(options) {
   return { grant, resolve, revokeSender, inspectDirectory };
 }
 
-module.exports = { DEFAULT_GRANT_TTL_MS, createLocalDirectoryAuthority };
+module.exports = {
+  DEFAULT_GRANT_TTL_MS,
+  DEFAULT_MAX_GRANTS,
+  DEFAULT_MAX_GRANTS_PER_SENDER,
+  createLocalDirectoryAuthority
+};

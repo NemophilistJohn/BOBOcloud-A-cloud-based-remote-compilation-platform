@@ -516,8 +516,18 @@
   async function closeWorkspace(options) {
     options = options || {};
     if (!options.approved && !(await canLeaveWorkspace({ reason: options.reason || 'close' }))) return false;
-    if (BOBO.terminal && BOBO.terminal.beforeWorkspaceLeave) await BOBO.terminal.beforeWorkspaceLeave();
-    if (options.approved && BOBO.dap && BOBO.dap.beforeWorkspaceLeave) await BOBO.dap.beforeWorkspaceLeave();
+    try {
+      if (BOBO.terminal && BOBO.terminal.beforeWorkspaceLeave) await BOBO.terminal.beforeWorkspaceLeave();
+      if (options.approved && BOBO.dap && BOBO.dap.beforeWorkspaceLeave) await BOBO.dap.beforeWorkspaceLeave();
+      if (global.api && typeof global.api.closeWorkspace === 'function') {
+        var closed = await global.api.closeWorkspace();
+        if (closed !== true) throw new Error('The workspace could not be closed.');
+      }
+    } catch (error) {
+      abortWorkspaceLeave(options.leaveToken);
+      console.error('closeWorkspace:', error);
+      return false;
+    }
     closeContextMenu({ restoreFocus: false });
     cancelInlineEditor();
     if (BOBO.runConfig && BOBO.runConfig.close) BOBO.runConfig.close();
@@ -559,11 +569,6 @@
 
     // Stop auto-sync so no stale files are pushed after logout
     if (S.autoSyncInterval) { clearInterval(S.autoSyncInterval); S.autoSyncInterval = null; }
-
-    // Notify main process to drop watchers + workspaceRoot
-    if (global.api && typeof global.api.closeWorkspace === 'function') {
-      try { await global.api.closeWorkspace(); } catch (e) { /* ignore */ }
-    }
 
     updateTitlebar();
     updateEmptyState();

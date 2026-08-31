@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -83,4 +84,47 @@ func TestUserDeletionCoordinatesAuthenticatedRequestsWithoutSelfConflict(t *test
 		t.Fatalf("request stayed blocked after deletion lease release: %v", err)
 	}
 	request.Release()
+}
+
+func TestRevokeUserCancelsOnlyMatchingOperations(t *testing.T) {
+	manager := NewManager()
+	aliceCtx, alice, err := manager.BindOperation(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer alice.Release()
+	bobCtx, bob, err := manager.BindOperation(context.Background(), "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bob.Release()
+
+	if cancelled := manager.RevokeUser("alice", ErrUserRevoked); cancelled != 1 {
+		t.Fatalf("cancelled operations = %d, want 1", cancelled)
+	}
+	if !errors.Is(context.Cause(aliceCtx), ErrUserRevoked) {
+		t.Fatalf("alice context cause = %v", context.Cause(aliceCtx))
+	}
+	select {
+	case <-bobCtx.Done():
+		t.Fatalf("bob context was cancelled: %v", context.Cause(bobCtx))
+	default:
+	}
+}
+
+func TestUserDeletionWaitsForBoundOperation(t *testing.T) {
+	manager := NewManager()
+	_, operation, err := manager.BindOperation(context.Background(), "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.BeginUserDeletion("user"); !errors.Is(err, ErrResourcesInUse) {
+		t.Fatalf("deletion with bound operation error = %v", err)
+	}
+	operation.Release()
+	deletion, err := manager.BeginUserDeletion("user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletion.Release()
 }

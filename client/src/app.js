@@ -299,10 +299,12 @@
       var connectStatus = document.getElementById('server-connect-status');
       var serverSaveButton = document.getElementById('server-save');
       var firstRunConnection = Boolean(BOBO.settings && BOBO.settings.isFirstRunOpen && BOBO.settings.isFirstRunOpen());
+      var previousConfig = S.serverSettings || {};
       var config = {
         ip: document.getElementById('server-ip').value.trim(),
         user: document.getElementById('server-user').value.trim(),
         pass: document.getElementById('server-pass').value,
+        passConfigured: Boolean(S.serverSettings && S.serverSettings.passConfigured),
         apiKey: document.getElementById('server-apikey').value || '',
 		secureTransport: document.getElementById('server-secure-transport').checked,
 		httpPort: Number(document.getElementById('server-http-port').value) || 3100,
@@ -319,18 +321,20 @@
         syncInterval: (parseInt(document.getElementById('sync-interval').value) || 30) * 1000,
         setupCompleted: !firstRunConnection
       };
-      if (!config.ip || !config.user || !config.pass) {
+      var sameSshAccount = previousConfig.ip === config.ip && previousConfig.user === config.user;
+      config.passConfigured = Boolean(!config.pass && previousConfig.passConfigured && sameSshAccount);
+      if (!config.ip || !config.user || (!config.pass && !config.passConfigured)) {
         if (connectStatus) { connectStatus.dataset.state = 'error'; connectStatus.textContent = BOBO.i18n.t('Server address, SSH account, and password are required'); }
         return;
       }
       if (serverSaveButton) serverSaveButton.disabled = true;
       if (connectStatus) { connectStatus.dataset.state = 'checking'; connectStatus.textContent = BOBO.i18n.t('Connecting...'); }
-      var previousConfig = S.serverSettings || {};
-      var serverIdentityChanged = previousConfig.ip !== config.ip || previousConfig.user !== config.user ||
-        previousConfig.pass !== config.pass || previousConfig.apiKey !== config.apiKey ||
+      var serverIdentityChanged = previousConfig.ip !== config.ip || previousConfig.apiKey !== config.apiKey ||
 		previousConfig.secureTransport !== config.secureTransport || previousConfig.httpPort !== config.httpPort ||
 		previousConfig.wsPort !== config.wsPort || previousConfig.dapChildWsPort !== config.dapChildWsPort ||
 		previousConfig.certificateFingerprint !== config.certificateFingerprint;
+      var sshIdentityChanged = !sameSshAccount || Boolean(config.pass);
+      var settingsIdentityChanged = serverIdentityChanged || sshIdentityChanged;
       if (serverIdentityChanged && BOBO.terminal && typeof BOBO.terminal.close === 'function') {
         await BOBO.terminal.close('server-change');
       }
@@ -340,28 +344,50 @@
       if (serverIdentityChanged && BOBO.runner && typeof BOBO.runner.invalidateRunIdentity === 'function') {
         await BOBO.runner.invalidateRunIdentity();
       }
-      var wrote = await window.api.writeServerSettings(config);
-      if (!wrote) throw new Error('Failed to save server settings');
+      var wrote;
+      try {
+        wrote = await window.api.writeServerSettings(config);
+        if (!wrote) throw new Error('Failed to save server settings');
+      } catch (writeError) {
+        try { await window.api.rollbackServerSettings(); } catch (_) {}
+        try { S.serverSettings = await window.api.readServerSettings(); } catch (_) {}
+        throw writeError;
+      }
       S.serverSettings = config;
       if (BOBO.rcloneSettings) BOBO.rcloneSettings.refreshStatus();
       // Only a transport or credential change invalidates cloud sessions.
       // Sync cadence is a client preference and must not tear down an
       // otherwise healthy debug/LSP/auth session.
-      var connectionResult = { success: true };
+      var validationTasks = [];
       if (serverIdentityChanged && BOBO.auth && BOBO.auth.onServerChanged) {
-        try { connectionResult = await BOBO.auth.onServerChanged({ runInvalidated: true }); } catch (e) { connectionResult = { success: false, error: e.message }; }
+        validationTasks.push(Promise.resolve().then(function() {
+          return BOBO.auth.onServerChanged({ runInvalidated: true });
+        }));
       }
+      if (sshIdentityChanged && BOBO.rclone && typeof BOBO.rclone.validateConnection === 'function') {
+        validationTasks.push(Promise.resolve().then(function() { return BOBO.rclone.validateConnection(); }));
+      }
+      var validationResults = await Promise.all(validationTasks.map(function(task) {
+        return task.catch(function(validationError) {
+          return { success: false, error: validationError && validationError.message };
+        });
+      }));
+      var connectionResult = validationResults && validationResults.length
+        ? validationResults.find(function(result) { return !result || !result.success; }) || { success: true }
+        : { success: true };
       if (!connectionResult || !connectionResult.success) {
         // A failed validation must not leave the application pointed at a
         // server that it could not authenticate with. Restore the last
         // known-good persisted settings before keeping the dialog open.
-        if (serverIdentityChanged) {
-          try { await window.api.writeServerSettings(previousConfig); } catch (_) {}
-          S.serverSettings = previousConfig;
-          try {
-            if (BOBO.auth && BOBO.auth.onServerChanged) await BOBO.auth.onServerChanged({ runInvalidated: true });
-          } catch (_) {}
-          if (BOBO.lsp && BOBO.lsp.workspaceChanged) BOBO.lsp.workspaceChanged();
+        if (settingsIdentityChanged) {
+          try { await window.api.rollbackServerSettings(); } catch (_) {}
+          S.serverSettings = await window.api.readServerSettings();
+          if (serverIdentityChanged) {
+            try {
+              if (BOBO.auth && BOBO.auth.onServerChanged) await BOBO.auth.onServerChanged({ runInvalidated: true });
+            } catch (_) {}
+            if (BOBO.lsp && BOBO.lsp.workspaceChanged) BOBO.lsp.workspaceChanged();
+          }
         }
         if (connectStatus) { connectStatus.dataset.state = 'error'; connectStatus.textContent = BOBO.i18n.t('Could not connect to the server. Check the address and try again.'); }
         return;
@@ -369,8 +395,16 @@
       if (serverIdentityChanged && BOBO.lsp && BOBO.lsp.workspaceChanged) BOBO.lsp.workspaceChanged();
       config.setupCompleted = true;
       config.firstRunRequired = false;
-      await window.api.writeServerSettings(config);
-      S.serverSettings = config;
+      try {
+        var finalWrite = await window.api.writeServerSettings(config);
+        if (!finalWrite) throw new Error('Failed to save server settings');
+        await window.api.commitServerSettings();
+      } catch (commitError) {
+        try { await window.api.rollbackServerSettings(); } catch (_) {}
+        try { S.serverSettings = await window.api.readServerSettings(); } catch (_) {}
+        throw commitError;
+      }
+      S.serverSettings = await window.api.readServerSettings();
       if (connectStatus) { connectStatus.dataset.state = 'ready'; connectStatus.textContent = BOBO.i18n.t('Connected to {server}', { server: config.ip }); }
       BOBO.runner.setupAutoSync();
       BOBO.runner.checkRcloneAvailability();
@@ -380,7 +414,7 @@
     } catch (e) {
       console.error('server-save:', e);
       var status = document.getElementById('server-connect-status');
-      if (status) { status.dataset.state = 'error'; status.textContent = e.message; }
+      if (status) { status.dataset.state = 'error'; status.textContent = BOBO.i18n.t(e.message); }
     } finally {
       var button = document.getElementById('server-save');
       if (button) button.disabled = false;

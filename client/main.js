@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu, screen, shell, session: electronSession } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, screen, shell, safeStorage, session: electronSession } = require('electron');
 const path = require('path');
 const rclone = require('./rclone');
 const { createSettingsStore } = require('./main/settings-store');
@@ -22,17 +22,27 @@ const { createNavigationSecurity } = require('./main/navigation-security');
 const { createPluginController } = require('./main/plugins');
 const { createMarketplaceController } = require('./main/marketplace');
 const { createPackageCenterController } = require('./main/package-center');
+const { createLifecycleCoordinator } = require('./main/lifecycle-coordinator');
+const { attachWindowLifecycle } = require('./main/window-lifecycle');
 let window = null, menu = null; const getWindow = () => window;
-const settings = createSettingsStore({ app }), rcloneBinaries = createRcloneBinaryManager({ app, rclone }), localDirectories = createLocalDirectoryAuthority({ assertSafeLocalRoot: rcloneBinaries.assertSafeLocalRoot });
-const rcloneService = createRcloneService({ rclone, binaryManager: rcloneBinaries, settings });
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
+const settings = createSettingsStore({ app, safeStorage }), rcloneBinaries = createRcloneBinaryManager({ app, rclone }), localDirectories = createLocalDirectoryAuthority({ assertSafeLocalRoot: rcloneBinaries.assertSafeLocalRoot });
+const rcloneService = createRcloneService({ rclone, binaryManager: rcloneBinaries, settings,
+  fetch: (...args) => electronSession.defaultSession.fetch(...args) });
 const secureTransport = createSecureTransportGuard();
+const lifecycle = createLifecycleCoordinator({
+  onError: (name, error) => console.error(`[lifecycle] ${name} cleanup failed:`, error && error.message ? error.message : error)
+});
 const navigationSecurity = createNavigationSecurity({ shell, trustedRendererPath: path.join(__dirname, 'index.html') });
 const lsp = createLspController({ ipcMain, getWindow, settings });
 let dap = null, terminal = null, workspaceSettings = null, packageCenter = null, agentBroker = null;
-const disposeRemoteEditorServices = () => {
+const disposeRemoteEditorServices = async (reason) => {
   lsp.dispose();
-  if (dap) void dap.dispose();
-  if (terminal) void terminal.dispose();
+  await Promise.allSettled([
+    dap ? dap.dispose(reason) : Promise.resolve(),
+    terminal ? terminal.dispose(reason) : Promise.resolve()
+  ]);
 };
 const languagePacks = createLanguagePackController({ app, ipcMain, dialog, shell, getWindow,
   builtinRoot: path.join(__dirname, 'language-packs'), onDidChange: () => { if (menu) menu.rebuild(); } });
@@ -45,12 +55,16 @@ const workspace = createWorkspaceController({
   assertSafeLocalRoot: rcloneBinaries.assertSafeLocalRoot, localDirectoryAuthority: localDirectories,
   disposeLsp: disposeRemoteEditorServices,
   stopTerminal: (reason) => terminal ? terminal.stop(reason) : { state: 'idle' },
-  beforeWorkspaceChange: (reason) => packageCenter ? packageCenter.beginWorkspaceTransition(reason) : [],
+  beforeWorkspaceChange: async (reason) => {
+    await rcloneService.cancelAll(reason || 'workspace-transition');
+    return packageCenter ? packageCenter.beginWorkspaceTransition(reason) : [];
+  },
   afterWorkspaceChange: () => packageCenter ? packageCenter.endWorkspaceTransition() : true,
   onWorkspaceChanged: () => { if (workspaceSettings) workspaceSettings.workspaceChanged(); if (agentBroker) agentBroker.workspaceChanged(); },
   onWorkspaceFilesystemEvent: (rootPath, workspaceIdentity, changedPath) => {
     if (workspaceSettings) workspaceSettings.notifyFilesystemEvent(rootPath, workspaceIdentity, changedPath);
-  }
+  },
+  allowDirectWorkspacePaths: !app.isPackaged
 });
 workspaceSettings = createWorkspaceSettingsController({
   ipcMain,
@@ -58,7 +72,9 @@ workspaceSettings = createWorkspaceSettingsController({
   getWorkspaceIdentity: workspace.getIdentity
 });
 const ai = createAiController({ ipcMain, getWindow, settings });
-agentBroker = createAgentPlatformBroker({ app, settings, getWorkspaceIdentity: workspace.getIdentity, notifyWorkspaceFiles: workspace.notifyExternalFileChanges, requestModel: ai.request, cancelModel: ai.cancel });
+agentBroker = createAgentPlatformBroker({ app, settings, getWorkspaceIdentity: workspace.getIdentity,
+  runWorkspaceMutation: workspace.runMutation, notifyWorkspaceFiles: workspace.notifyExternalFileChanges,
+  requestModel: ai.request, cancelModel: ai.cancel });
 const plugins = createPluginController({ app, ipcMain, dialog, shell, getWindow, t: languagePacks.t,
   getWorkspaceIdentity: workspace.getIdentity,
   resolveWorkspaceFile: workspace.resolveWorkspaceFile,
@@ -67,88 +83,55 @@ const plugins = createPluginController({ app, ipcMain, dialog, shell, getWindow,
 });
 const marketplace = createMarketplaceController({ app, ipcMain, getWindow, pluginManager: plugins, hostVersion: app.getVersion() });
 packageCenter = createPackageCenterController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity,
-  onFilesChanged: files => workspace.notifyExternalFileChanges(files), userDataPath: app.getPath('userData') });
+  onFilesChanged: (files, context) => workspace.notifyExternalFileChanges(files, context), userDataPath: app.getPath('userData') });
 const auth = createAuthController({ ipcMain, settings, disposeLsp: disposeRemoteEditorServices,
   onStateChanged: () => { if (menu) menu.rebuild(); },
-  onServerSettingsWritten: (value) => { secureTransport.update(value); rcloneService.configureInBackground(value); } });
+  onServerSettingsWritten: async (value) => {
+    secureTransport.update(value);
+    await rcloneService.reconfigure(value, 'server-settings-changed');
+  },
+  onCredentialChanged: () => rcloneService.cancelAll('credential-changed')
+});
 menu = createMenuController({ Menu, dialog, getWindow, languagePacks, getAuthState: auth.getState,
   pickAndOpenWorkspace: workspace.pickAndOpenWorkspace });
 const tasks = createTasksController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity });
-dap = createDapController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity, settings });
+dap = createDapController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity,
+  runWorkspaceMutation: workspace.runMutation, settings });
 terminal = createTerminalController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity, settings });
+lifecycle.register('remote-editor-services', disposeRemoteEditorServices);
+lifecycle.register('ai', async () => { ai.dispose(); });
+lifecycle.register('agent-platform', async () => { agentBroker.dispose(); });
+lifecycle.register('rclone', (reason) => rcloneService.cancelAll(reason));
+lifecycle.register('server-settings-transaction', async () => { auth.discardServerSettingsRollback(); });
 const windowState = createWindowState({ screen, filePath: settings.paths.windowState, getWindow });
-workspace.registerIpc();
-workspaceSettings.registerIpc();
-lsp.registerIpc();
-auth.registerIpc();
-ai.registerIpc();
-tasks.registerIpc();
-dap.registerIpc();
-terminal.registerIpc();
-languagePacks.registerIpc();
-plugins.registerIpc();
-marketplace.registerIpc();
-packageCenter.registerIpc();
+for (const controller of [workspace, workspaceSettings, lsp, auth, ai, tasks, dap, terminal,
+  languagePacks, plugins, marketplace, packageCenter]) controller.registerIpc();
 registerDiagnosticsIpc({ ipcMain, settings });
 registerRcloneIpc({ ipcMain, BrowserWindow, dialog, getWindow, service: rcloneService, t: languagePacks.t,
-  getWorkspaceIdentity: workspace.getIdentity, localDirectoryAuthority: localDirectories });
+  getWorkspaceIdentity: workspace.getIdentity, localDirectoryAuthority: localDirectories,
+  measureDirectory: workspace.calculateDirectorySize });
 function createWindow() {
   const savedState = windowState.load();
   const browserWindowOptions = { width: savedState ? savedState.width : 1280, height: savedState ? savedState.height : 860,
     minWidth: 760, minHeight: 520, icon: path.join(__dirname, 'ico', 'app-icon.png'),
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false, webviewTag: false } };
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: false } };
   if (savedState && savedState.x !== undefined && savedState.y !== undefined) {
     browserWindowOptions.x = savedState.x;
     browserWindowOptions.y = savedState.y;
   }
-
   window = new BrowserWindow(browserWindowOptions);
   navigationSecurity.protectWindow(window);
   if (savedState && savedState.isMaximized) window.maximize();
   window.loadFile(path.join(__dirname, 'index.html'));
-  let saveTimer = null;
-  const saveSoon = () => {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(windowState.save, 300);
-  };
-  window.on('resize', saveSoon); window.on('move', saveSoon);
-  window.on('maximize', saveSoon);
-  window.on('unmaximize', saveSoon);
-
-  let closeApproved = false, closeDecisionPending = false, packageTransitionHeld = false;
-  window.on('close', (event) => {
-    windowState.save();
-    if (closeApproved) return;
-    event.preventDefault();
-    if (closeDecisionPending) return;
-    closeDecisionPending = true;
-    workspace.requestRendererLeave('window-close', null).then(async (decision) => {
-      closeDecisionPending = false;
-      if (!decision.allowed || !window || window.isDestroyed()) return;
-      await packageCenter.beginWorkspaceTransition('window-close');
-      packageTransitionHeld = true;
-      closeApproved = true;
-      window.close();
-    });
-  });
-  window.on('closed', () => {
-    clearTimeout(saveTimer);
-    workspace.handleWindowClosed();
-    lsp.dispose();
-    void dap.dispose();
-    void terminal.dispose();
-    ai.dispose(); agentBroker.dispose();
-    if (packageTransitionHeld) { packageTransitionHeld = false; void packageCenter.endWorkspaceTransition(); }
-    window = null;
-  });
-  window.webContents.on('render-process-gone', () => {
-    workspace.handleRendererGone();
-    void packageCenter.preserveAll('renderer-gone');
-    if (terminal) void terminal.dispose();
+  attachWindowLifecycle({
+    window, dialog, languagePacks, lifecycle, localDirectories, packageCenter,
+    rcloneService, windowState, workspace,
+    onClosed: (closed) => { if (window === closed) window = null; }
   });
   menu.rebuild();
 }
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return;
   languagePacks.initialize();
   try {
     await plugins.initialize();
@@ -162,18 +145,27 @@ app.whenReady().then(async () => {
   lsp.initializeRetentionPolicy();
   createWindow();
 });
-
 app.on('window-all-closed', () => {
   workspace.clearWatchers();
   if (process.platform !== 'darwin') app.quit();
 });
-
+let quitApproved = false;
+app.on('before-quit', (event) => {
+  if (quitApproved) return;
+  event.preventDefault();
+  void lifecycle.run('app-quit').finally(() => {
+    quitApproved = true;
+    app.quit();
+  });
+});
+app.on('second-instance', () => {
+  if (!window || window.isDestroyed()) return;
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+});
 app.on('will-quit', () => {
   languagePacks.dispose();
-  lsp.dispose();
-  void dap.dispose();
-  void terminal.dispose();
-  ai.dispose(); agentBroker.dispose();
   workspace.clearWatchers();
 });
 

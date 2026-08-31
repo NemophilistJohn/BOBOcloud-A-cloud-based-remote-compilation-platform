@@ -1,33 +1,67 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-
-function normalizeRemotePath(candidate) {
-  if (typeof candidate !== 'string' || !candidate.startsWith('/') || candidate.length > 4096 ||
-      /[\0-\x1f\\:]/.test(candidate)) {
-    throw new Error('Invalid remote workspace path');
-  }
-  const segments = candidate.split('/').filter(Boolean);
-  if (!segments.length || segments.some((segment) => segment === '.' || segment === '..')) {
-    throw new Error('Invalid remote workspace path');
-  }
-  return '/' + segments.join('/');
-}
+const fs = require('node:fs');
+const path = require('node:path');
+const { normalizeRemotePath } = require('./rclone-remote-authority');
+const { readTeamMapping } = require('./team-mapping');
 
 function readMappingMarker(directory) {
-  const markerPath = path.join(directory, '.bobocloud-team.json');
+  return readTeamMapping(directory, { requireLocalPath: true });
+}
+
+async function directoryIsEmptyExceptMarker(directory) {
+  const handle = await fs.promises.opendir(directory);
   try {
-    const stat = fs.lstatSync(markerPath);
-    if (!stat.isFile() || stat.isSymbolicLink()) return null;
-    const mapping = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
-    if (!mapping || path.resolve(mapping.localPath || '') !== path.resolve(directory) ||
-        !mapping.teamId || !mapping.projectId || !mapping.branch || !mapping.remotePath) return null;
-    normalizeRemotePath(mapping.remotePath);
-    return mapping;
-  } catch (_) {
-    return null;
+    for (;;) {
+      const entry = await handle.read();
+      if (!entry) return true;
+      if (entry.name !== '.bobocloud-team.json') return false;
+    }
+  } finally {
+    await handle.close().catch((error) => {
+      if (!error || error.code !== 'ERR_DIR_CLOSED') throw error;
+    });
   }
+}
+
+function operationId(value) {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 180 || !/^[A-Za-z0-9._:-]+$/.test(value)) {
+    throw new Error('A valid rclone operation id is required');
+  }
+  return value;
+}
+
+function workspaceProjectKey(workspaceRoot) {
+  const normalized = String(workspaceRoot || '').replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+  let hash = 0;
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash = ((hash << 5) - hash + normalized.charCodeAt(index)) | 0;
+  }
+  return 'p' + Math.abs(hash).toString(36);
+}
+
+function mainOwnedPreparationRequest(kind, request, localPath) {
+  const supplied = request && typeof request === 'object' ? request : {};
+  const mapping = readMappingMarker(localPath);
+  if (kind === 'workspace') {
+    return {
+      folderName: mapping && mapping.projectName ? String(mapping.projectName) : path.basename(localPath),
+      folderKey: mapping ? '' : workspaceProjectKey(localPath),
+      teamId: mapping ? mapping.teamId : undefined,
+      projectId: mapping ? mapping.projectId : undefined,
+      branch: mapping ? mapping.branch : undefined
+    };
+  }
+  if (mapping) {
+    return {
+      teamId: mapping.teamId,
+      projectId: mapping.projectId,
+      branch: mapping.branch,
+      reset: supplied.reset === true,
+      pull: supplied.pull === true
+    };
+  }
+  return supplied;
 }
 
 function registerRcloneIpc(options) {
@@ -38,9 +72,21 @@ function registerRcloneIpc(options) {
   const getWorkspaceIdentity = options.getWorkspaceIdentity || (() => ({ rootPath: null, workspaceIdentity: 0 }));
   const localDirectoryAuthority = options.localDirectoryAuthority;
   const service = options.service;
+  const measureDirectory = options.measureDirectory;
+  if (typeof measureDirectory !== 'function') throw new TypeError('rclone IPC requires a main-owned directory measurement');
+  const boundSenders = new WeakSet();
   const t = options.t || ((value, replacements) => String(value).replace(/\{([^}]+)\}/g, (match, key) => (
     replacements && replacements[key] !== undefined ? replacements[key] : match
   )));
+
+  function bindSender(sender) {
+    if (!sender || boundSenders.has(sender) || typeof sender.once !== 'function') return;
+    boundSenders.add(sender);
+    sender.once('destroyed', () => {
+      localDirectoryAuthority.revokeSender(sender.id);
+      void service.cancelSender(sender.id, 'renderer-destroyed');
+    });
+  }
 
   function trustedWindow(event) {
     const owner = getWindow();
@@ -50,6 +96,7 @@ function registerRcloneIpc(options) {
     if (event.senderFrame && event.sender.mainFrame && event.senderFrame !== event.sender.mainFrame) {
       throw new Error('rclone IPC is only available to the main frame');
     }
+    bindSender(event.sender);
     return owner;
   }
 
@@ -57,9 +104,9 @@ function registerRcloneIpc(options) {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       throw new Error('Invalid rclone operation payload');
     }
-    for (const forbidden of ['rclonePath', 'src', 'dest']) {
+    for (const forbidden of ['rclonePath', 'src', 'dest', 'remotePath', 'excludes']) {
       if (Object.prototype.hasOwnProperty.call(payload, forbidden)) {
-        throw new Error('Renderer-selected rclone executable and local paths are no longer accepted');
+        throw new Error('Renderer-selected rclone paths and exclusion policy are not accepted');
       }
     }
     return payload;
@@ -76,7 +123,7 @@ function registerRcloneIpc(options) {
     }
   }
 
-  function operationLocalRoot(event, payload, kind) {
+  function localScope(event, payload, kind) {
     const scope = payload.localScope;
     if (!scope || typeof scope !== 'object') throw new Error('A local synchronization scope is required');
     if (scope.type === 'workspace') {
@@ -85,46 +132,95 @@ function registerRcloneIpc(options) {
           path.resolve(scope.rootPath || '') !== path.resolve(current.rootPath)) {
         throw new Error('The workspace synchronization scope is stale');
       }
-      return translatedSafeDirectory(current.rootPath);
+      const localPath = translatedSafeDirectory(current.rootPath);
+      const expectedIdentity = current.workspaceIdentity;
+      return {
+        localPath,
+        bindingKey: JSON.stringify(['workspace', event.sender.id, expectedIdentity, localPath]),
+        isCurrent() {
+          const latest = getWorkspaceIdentity();
+          return latest.workspaceIdentity === expectedIdentity && latest.rootPath &&
+            path.resolve(latest.rootPath) === path.resolve(localPath);
+        }
+      };
     }
     if (kind === 'pull' && scope.type === 'mapping') {
-      return localDirectoryAuthority.resolve(event.sender.id, scope.grantId);
+      const grantId = String(scope.grantId || '');
+      const localPath = localDirectoryAuthority.resolve(event.sender.id, grantId);
+      return {
+        localPath,
+        bindingKey: JSON.stringify(['mapping', event.sender.id, grantId, localPath]),
+        isCurrent() {
+          try {
+            return localDirectoryAuthority.resolve(event.sender.id, grantId, localPath) === localPath;
+          } catch (_) {
+            return false;
+          }
+        }
+      };
     }
     throw new Error('The local synchronization scope is invalid');
   }
 
-  ipcMain.handle('rclone:sync', async (event, rawPayload) => {
+  ipcMain.handle('rclone:prepare-remote', async (event, rawPayload) => {
     trustedWindow(event);
     const payload = operationPayload(rawPayload);
-    const targetWindow = BrowserWindow.fromWebContents(event.sender);
-    const operationId = typeof payload.operationId === 'string' ? payload.operationId : '';
-    return service.sync({
-      src: operationLocalRoot(event, payload, 'sync'),
-      remotePath: normalizeRemotePath(payload.remotePath),
-      excludes: payload.excludes,
-      onProgress(line) {
-        if (targetWindow && !targetWindow.isDestroyed()) {
-          targetWindow.webContents.send('rclone:progress', { operationId, line });
-        }
-      }
+    const kind = payload.kind === 'workspace' ? 'workspace' : payload.kind === 'team-pull' ? 'team-pull' : '';
+    if (!kind) throw new Error('Invalid remote preparation kind');
+    const id = operationId(payload.operationId);
+    const local = localScope(event, payload, kind === 'team-pull' ? 'pull' : 'sync');
+    const request = mainOwnedPreparationRequest(kind, payload.request, local.localPath);
+    return service.prepareRemote({
+      senderId: event.sender.id,
+      operationId: id,
+      kind,
+      request,
+      measure: kind === 'workspace'
+        ? (signal) => measureDirectory(local.localPath, { signal })
+        : null,
+      bindingKey: local.bindingKey,
+      isCurrent: local.isCurrent
     });
   });
 
-  ipcMain.handle('rclone:pull', async (event, rawPayload) => {
-    trustedWindow(event);
-    const payload = operationPayload(rawPayload);
-    const targetWindow = BrowserWindow.fromWebContents(event.sender);
-    const operationId = typeof payload.operationId === 'string' ? payload.operationId : '';
-    return service.pull({
-      dest: operationLocalRoot(event, payload, 'pull'),
-      remotePath: normalizeRemotePath(payload.remotePath),
-      excludes: payload.excludes,
-      onProgress(line) {
-        if (targetWindow && !targetWindow.isDestroyed()) {
-          targetWindow.webContents.send('rclone:progress', { operationId, line });
+  function operationHandler(kind) {
+    return async (event, rawPayload) => {
+      trustedWindow(event);
+      const payload = operationPayload(rawPayload);
+      const id = operationId(payload.operationId);
+      const remoteGrantId = String(payload.remoteGrantId || '');
+      if (!remoteGrantId || remoteGrantId.length > 200) throw new Error('A remote synchronization grant is required');
+      const local = localScope(event, payload, kind);
+      const targetWindow = BrowserWindow.fromWebContents(event.sender);
+      return service[kind]({
+        senderId: event.sender.id,
+        operationId: id,
+        remoteGrantId,
+        localPath: local.localPath,
+        bindingKey: local.bindingKey,
+        isCurrent: local.isCurrent,
+        onProgress(line) {
+          if (local.isCurrent() && targetWindow && !targetWindow.isDestroyed() &&
+              targetWindow.webContents && !targetWindow.webContents.isDestroyed?.()) {
+            targetWindow.webContents.send('rclone:progress', { operationId: id, line });
+          }
         }
-      }
-    });
+      });
+    };
+  }
+
+  ipcMain.handle('rclone:sync', operationHandler('sync'));
+  ipcMain.handle('rclone:pull', operationHandler('pull'));
+
+  ipcMain.handle('rclone:cancel', async (event, payload) => {
+    trustedWindow(event);
+    return service.cancelOperation(event.sender.id, operationId(payload && payload.operationId), 'renderer-cancel');
+  });
+
+  ipcMain.handle('rclone:cancel-all', async (event, payload) => {
+    trustedWindow(event);
+    const reason = String(payload && payload.reason || 'renderer-context-changed').slice(0, 80);
+    return service.cancelSender(event.sender.id, reason);
   });
 
   ipcMain.handle('pick-local-mapping', async (event) => {
@@ -144,8 +240,11 @@ function registerRcloneIpc(options) {
       }
       throw error;
     }
-    const entries = fs.readdirSync(granted.path).filter((name) => name !== '.bobocloud-team.json');
-    return { path: granted.path, grantId: granted.grantId, empty: entries.length === 0 };
+    return {
+      path: granted.path,
+      grantId: granted.grantId,
+      empty: await directoryIsEmptyExceptMarker(granted.path)
+    };
   });
 
   ipcMain.handle('local-path-info', async (event, request) => {
@@ -172,11 +271,10 @@ function registerRcloneIpc(options) {
         grant = localDirectoryAuthority.grant(event.sender.id, resolved, 'team-mapping');
       }
     }
-    const entries = fs.readdirSync(resolved).filter((name) => name !== '.bobocloud-team.json');
     return {
       exists: true,
       directory: true,
-      empty: entries.length === 0,
+      empty: await directoryIsEmptyExceptMarker(resolved),
       path: resolved,
       grantId: grant ? grant.grantId : null
     };
@@ -215,6 +313,16 @@ function registerRcloneIpc(options) {
     trustedWindow(event);
     return service.checkVersion();
   });
+
+  ipcMain.handle('rclone:validate-connection', async (event) => {
+    trustedWindow(event);
+    return service.validateConnection(event.sender.id);
+  });
+
+  return {
+    cancelAll: (reason) => service.cancelAll(reason),
+    cancelSender: (senderId, reason) => service.cancelSender(senderId, reason)
+  };
 }
 
-module.exports = { normalizeRemotePath, registerRcloneIpc };
+module.exports = { directoryIsEmptyExceptMarker, normalizeRemotePath, registerRcloneIpc, workspaceProjectKey };

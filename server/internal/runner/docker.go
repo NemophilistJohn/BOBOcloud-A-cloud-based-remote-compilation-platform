@@ -184,15 +184,21 @@ func (r *DockerRunner) RunPlan(ctx context.Context, plan *Plan, hostWorkDir stri
 	output.WriteStatus("docker", fmt.Sprintf("Container acquired in %d ms", time.Since(acquireStarted).Milliseconds()))
 	defer func() {
 		cleanupStarted := time.Now()
-		copyBackStarted := time.Now()
-		if copyErr := r.copyFromContainer(ctx, containerID, hostWorkDir, containerWorkDir); copyErr != nil {
-			output.WriteStderr(fmt.Sprintf("Warning: failed to copy artifacts from container: %v", copyErr), "setup")
+		if ctx.Err() == nil {
+			copyBackStarted := time.Now()
+			if copyErr := r.copyFromContainer(ctx, containerID, hostWorkDir, containerWorkDir); copyErr != nil {
+				output.WriteStderr(fmt.Sprintf("Warning: failed to copy artifacts from container: %v", copyErr), "setup")
+			}
+			if r.metrics != nil {
+				r.metrics.Observe("workspace.copy.from_container", time.Since(copyBackStarted))
+			}
 		}
-		if r.metrics != nil {
-			r.metrics.Observe("workspace.copy.from_container", time.Since(copyBackStarted))
+		r.finalizeContainer(ctx, containerID, r.discardCached || ctx.Err() != nil || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded))
+		if ctx.Err() != nil {
+			output.WriteStatus("docker", fmt.Sprintf("Cancelled run container discarded in %d ms", time.Since(cleanupStarted).Milliseconds()))
+		} else {
+			output.WriteStatus("docker", fmt.Sprintf("Artifacts collected and container recycled in %d ms", time.Since(cleanupStarted).Milliseconds()))
 		}
-		r.finalizeContainer(ctx, containerID, r.discardCached || errors.Is(context.Cause(ctx), personalcache.ErrQuotaExceeded))
-		output.WriteStatus("docker", fmt.Sprintf("Artifacts collected and container recycled in %d ms", time.Since(cleanupStarted).Milliseconds()))
 	}()
 
 	copyStarted := time.Now()

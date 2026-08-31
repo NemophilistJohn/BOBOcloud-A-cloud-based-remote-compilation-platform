@@ -72,12 +72,89 @@ func (s *deleteFailingSessionStore) Delete(runID string) error {
 func newCancelRunTestHandler(t *testing.T) (*HTTPHandler, *storage.MemorySessionStore, *session.ChannelManager) {
 	t.Helper()
 	runSessionLifecycleMu.Lock()
-	clear(runCancellationTombstones)
+	runCancellationTombstones = newRunCancellationStore(
+		runCancellationTombstoneMaxEntries,
+		runCancellationTombstoneMaxPerUser,
+		runCancellationTombstoneTTL,
+	)
 	runSessionLifecycleMu.Unlock()
 	store := storage.NewMemorySessionStore()
 	channels := session.NewChannelManager()
 	handler := NewHTTPHandler(config.Default(), store, channels, false, nil, nil, nil, nil, nil)
 	return handler, store, channels
+}
+
+func installRunCancellationStoreForTest(t *testing.T, store *runCancellationStore) {
+	t.Helper()
+	runSessionLifecycleMu.Lock()
+	previous := runCancellationTombstones
+	runCancellationTombstones = store
+	runSessionLifecycleMu.Unlock()
+	t.Cleanup(func() {
+		runSessionLifecycleMu.Lock()
+		runCancellationTombstones = previous
+		runSessionLifecycleMu.Unlock()
+	})
+}
+
+func TestRunCancellationStoreGlobalCapacityPreservesExistingEntries(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	store := newRunCancellationStore(2, 2, time.Minute)
+	if err := store.remember("alice", "first", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.remember("bob", "second", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.remember("carol", "rejected", now); !errors.Is(err, errRunCancellationGlobalCapacity) {
+		t.Fatalf("global capacity error = %v", err)
+	}
+	if !store.remembered("alice", "first", now) || !store.remembered("bob", "second", now) {
+		t.Fatal("global capacity rejection removed an accepted tombstone")
+	}
+	if store.remembered("carol", "rejected", now) || len(store.entries) != 2 || store.expiry.Len() != 2 {
+		t.Fatalf("store exceeded its global bound: entries=%d heap=%d", len(store.entries), store.expiry.Len())
+	}
+}
+
+func TestRunCancellationStoreEnforcesPerUserCapacity(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	store := newRunCancellationStore(3, 1, time.Minute)
+	if err := store.remember("alice", "first", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.remember("alice", "rejected", now); !errors.Is(err, errRunCancellationPerUserCapacity) {
+		t.Fatalf("per-user capacity error = %v", err)
+	}
+	if err := store.remember("bob", "allowed", now); err != nil {
+		t.Fatalf("one user's capacity blocked another user: %v", err)
+	}
+	if !store.remembered("alice", "first", now) || store.remembered("alice", "rejected", now) || store.perUser["alice"] != 1 {
+		t.Fatalf("per-user accounting = %#v", store.perUser)
+	}
+}
+
+func TestRunCancellationStoreExpiryReleasesCapacity(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	store := newRunCancellationStore(1, 1, time.Minute)
+	if err := store.remember("alice", "renewed", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.remember("alice", "renewed", now.Add(30*time.Second)); err != nil {
+		t.Fatalf("renewing an existing tombstone at capacity failed: %v", err)
+	}
+	if err := store.remember("bob", "too-early", now.Add(time.Minute)); !errors.Is(err, errRunCancellationGlobalCapacity) {
+		t.Fatalf("renewed tombstone expired too early: %v", err)
+	}
+	if err := store.remember("bob", "after-expiry", now.Add(90*time.Second)); err != nil {
+		t.Fatalf("expired tombstone did not release capacity: %v", err)
+	}
+	if store.remembered("alice", "renewed", now.Add(90*time.Second)) || !store.remembered("bob", "after-expiry", now.Add(90*time.Second)) {
+		t.Fatal("expiry lookup returned stale state")
+	}
+	if len(store.entries) != 1 || store.expiry.Len() != 1 || store.perUser["alice"] != 0 || store.perUser["bob"] != 1 {
+		t.Fatalf("expiry accounting: entries=%d heap=%d users=%#v", len(store.entries), store.expiry.Len(), store.perUser)
+	}
 }
 
 func newRunLifecycleHTTPHandler(t *testing.T) (*HTTPHandler, *storage.MemorySessionStore, *session.ChannelManager) {
@@ -173,6 +250,34 @@ func TestCancelRunBeforeCreateLeavesTombstone(t *testing.T) {
 	}
 	if channel := channels.GetOrCreate("future-run", false); channel != nil {
 		t.Fatal("cancelled-before-create channel was persisted")
+	}
+}
+
+func TestCancelRunCapacityRejectionDoesNotPartiallyCancel(t *testing.T) {
+	handler, store, channels := newRunLifecycleHTTPHandler(t)
+	installRunCancellationStoreForTest(t, newRunCancellationStore(2, 1, time.Minute))
+
+	firstRecorder, first := callCancelRun(t, handler, "accepted-cancellation")
+	if firstRecorder.Code != http.StatusOK || !first.Success {
+		t.Fatalf("initial cancellation failed: status=%d body=%s", firstRecorder.Code, firstRecorder.Body.String())
+	}
+	if _, err := store.Create(&model.RunSession{RunID: "pending-at-capacity", UserID: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	pendingChannel := channels.GetOrCreate("pending-at-capacity", true)
+
+	recorder, response := callCancelRun(t, handler, "pending-at-capacity")
+	if recorder.Code != http.StatusTooManyRequests || response.Success || response.ErrorCode != runCancellationCapacityErrorCode {
+		t.Fatalf("capacity response: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, exists := store.Get("pending-at-capacity"); !exists {
+		t.Fatal("capacity rejection deleted the pending session")
+	}
+	if current := channels.GetOrCreate("pending-at-capacity", false); current != pendingChannel {
+		t.Fatal("capacity rejection closed or replaced the pending channel")
+	}
+	if !runCancellationRemembered("default", "accepted-cancellation") {
+		t.Fatal("capacity rejection removed an existing tombstone")
 	}
 }
 

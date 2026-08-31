@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { parse } = require('jsonc-parser');
 const minimatch = require('minimatch');
+const { readFileBounded } = require('./atomic-file');
 
 const SCHEMA_VERSION = 1;
 const MAX_SETTINGS_BYTES = 256 * 1024;
@@ -290,7 +291,7 @@ async function loadWorkspaceSettings(workspaceRoot, workspaceIdentity) {
     if (pathIsOutside(rootReal, targetReal)) {
       return emptySnapshot(root, workspaceIdentity, [{ code: 'WORKSPACE_SETTINGS_UNSAFE_PATH', count: 1 }]);
     }
-    const source = await fs.promises.readFile(targetReal, 'utf8');
+    const source = await readFileBounded(targetReal, { maxBytes: MAX_SETTINGS_BYTES, encoding: 'utf8' });
     const errors = [];
     const document = parse(source, errors, { allowTrailingComma: true, disallowComments: false });
     if (errors.length) {

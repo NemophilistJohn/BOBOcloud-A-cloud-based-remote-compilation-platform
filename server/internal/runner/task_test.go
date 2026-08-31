@@ -193,7 +193,7 @@ func TestDockerRunnerPassesRuntimeIDToRuntimeAwarePool(t *testing.T) {
 	}
 }
 
-func TestRunTaskCleanupUsesFreshContextPrunesBeforeCopyAndAlwaysReleases(t *testing.T) {
+func TestRunTaskCancellationSkipsArtifactCopyAndDiscardsContainer(t *testing.T) {
 	pool := &taskPoolFake{}
 	runner := NewDockerRunner(model.RuntimeDef{DockerImage: "test-image"}, pool, nil)
 	runner.workspaceCopier = taskCopierFake{pool: pool}
@@ -203,12 +203,26 @@ func TestRunTaskCleanupUsesFreshContextPrunesBeforeCopyAndAlwaysReleases(t *test
 		model.TaskStep{ID: "run", Label: "Run", Kind: "run", Type: "process", Argv: []string{"run"}},
 	), t.TempDir(), taskTestOutput{}, nil)
 
+	wantOrder := []string{"acquire", "mkdir", "copy-to", "step", "discard"}
+	if strings.Join(pool.events, ",") != strings.Join(wantOrder, ",") {
+		t.Fatalf("unexpected task lifecycle order: got %v want %v", pool.events, wantOrder)
+	}
+}
+
+func TestRunTaskSuccessPrunesBeforeArtifactCopyAndReleases(t *testing.T) {
+	pool := &taskPoolFake{}
+	runner := NewDockerRunner(model.RuntimeDef{DockerImage: "test-image"}, pool, nil)
+	runner.workspaceCopier = taskCopierFake{pool: pool}
+	runner.RunTaskExecution(context.Background(), testTask(
+		model.TaskStep{ID: "run", Label: "Run", Kind: "run", Type: "process", Argv: []string{"run"}},
+	), t.TempDir(), taskTestOutput{}, nil)
+
 	wantOrder := []string{"acquire", "mkdir", "copy-to", "step", "prune", "copy-from", "release"}
 	if strings.Join(pool.events, ",") != strings.Join(wantOrder, ",") {
 		t.Fatalf("unexpected task lifecycle order: got %v want %v", pool.events, wantOrder)
 	}
 	if !pool.pruneCtxActive {
-		t.Fatal("task cleanup reused the cancelled run context")
+		t.Fatal("task cleanup did not retain the shared execution budget")
 	}
 }
 

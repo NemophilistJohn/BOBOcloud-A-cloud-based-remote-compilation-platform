@@ -272,3 +272,23 @@ func TestLSPResourceLeaseReleasedWhenProcessStartFails(t *testing.T) {
 		t.Fatalf("failed LSP start leaked a resource lease: %+v", snapshot)
 	}
 }
+
+func TestLSPRequiresDockerMatchesResolvedLaunchMode(t *testing.T) {
+	catalog, err := NewCatalog(Manifest{Version: 1, Servers: []ServerSpec{
+		{LanguageID: "go", Command: []string{"gopls"}},
+		{LanguageID: "python", Command: []string{"pyright"}, Docker: DockerSpec{Image: "lsp-python:test"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{catalog: catalog}
+	if manager.RequiresDocker("go", "local") {
+		t.Fatal("host-local gopls was charged as Docker")
+	}
+	if !manager.RequiresDocker("go", "go:1.25") {
+		t.Fatal("runtime-backed gopls was not charged as Docker")
+	}
+	if !manager.RequiresDocker("python", "local") {
+		t.Fatal("manifest-backed Docker LSP was not charged as Docker")
+	}
+}

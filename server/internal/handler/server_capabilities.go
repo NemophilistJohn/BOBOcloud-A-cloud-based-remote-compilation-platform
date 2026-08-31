@@ -59,6 +59,7 @@ type serverServiceCapability struct {
 
 type serverCapabilityLimits struct {
 	RunMaxConcurrent               int                 `json:"runMaxConcurrent"`
+	ExecutionMaxSessionSeconds     int                 `json:"executionMaxSessionSeconds"`
 	TerminalMaxSessionSeconds      int                 `json:"terminalMaxSessionSeconds"`
 	PackageOperationTimeoutSeconds int                 `json:"packageOperationTimeoutSeconds"`
 	LSP                            serverSessionLimits `json:"lsp"`
@@ -128,6 +129,7 @@ func (h *HTTPHandler) serverCapabilities() serverCapabilityDescriptor {
 	descriptor.Capabilities.CacheV2 = h.PersonalCache != nil
 	descriptor.Capabilities.Collaboration = h.Collaboration != nil
 	descriptor.Limits.RunMaxConcurrent = cfg.DockerMaxContainers
+	descriptor.Limits.ExecutionMaxSessionSeconds = cfg.ExecutionMaxSessionSeconds
 	descriptor.Limits.PackageOperationTimeoutSeconds = cfg.PackageOperationTimeoutSeconds
 	if descriptor.Capabilities.Terminal {
 		descriptor.Limits.TerminalMaxSessionSeconds = cfg.TerminalMaxSessionSeconds

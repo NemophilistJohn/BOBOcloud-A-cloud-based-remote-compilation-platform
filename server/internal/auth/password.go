@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"regexp"
@@ -35,6 +34,7 @@ func CheckPassword(hash, plain string) bool {
 
 var (
 	usernameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{3,32}$`)
+	userIDRe   = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 	emailRe    = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 )
 
@@ -43,7 +43,28 @@ func ValidateUsername(username string) error {
 	if !usernameRe.MatchString(username) {
 		return fmt.Errorf("username must be 3-32 chars of letters, digits, '_' or '-'")
 	}
+	if reservedUserPathSegment(username) {
+		return fmt.Errorf("username is reserved by the operating system")
+	}
 	return nil
+}
+
+// ValidateUserID accepts existing UUID-backed accounts and legacy username IDs
+// while guaranteeing that the value is one portable filesystem component.
+func ValidateUserID(userID string) error {
+	if !userIDRe.MatchString(userID) {
+		return fmt.Errorf("user ID must be 1-128 chars of letters, digits, '_' or '-'")
+	}
+	if reservedUserPathSegment(userID) {
+		return fmt.Errorf("user ID is reserved by the operating system")
+	}
+	return nil
+}
+
+func reservedUserPathSegment(value string) bool {
+	base := strings.ToUpper(value)
+	return base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" ||
+		(len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9')
 }
 
 // ValidateEmail 校验邮箱格式（简单校验，够用即可）
@@ -65,22 +86,26 @@ func ValidatePassword(password string) error {
 	return nil
 }
 
-// GeneratePassword 生成随机初始密码（12 位可读字符，用于 root 种子 / 管理员重置）
-func GeneratePassword() string {
-	b := make([]byte, 9)
-	rand.Read(b)
-	return "Bobo" + hex.EncodeToString(b)[:8]
+// GeneratePassword creates a bootstrap password with 96 bits of entropy.
+func GeneratePassword() (string, error) {
+	b, err := randomBytes(12)
+	if err != nil {
+		return "", err
+	}
+	return "Bobo-" + hex.EncodeToString(b), nil
 }
 
 // GenerateInviteCode 生成邀请码：INV-XXXXXXXX（8 位大写字母数字，便于口头/IM 传递）
-func GenerateInviteCode() string {
+func GenerateInviteCode() (string, error) {
 	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // 去掉易混淆的 0/O/1/I
-	b := make([]byte, 8)
-	rand.Read(b)
+	b, err := randomBytes(8)
+	if err != nil {
+		return "", err
+	}
 	var sb strings.Builder
 	sb.WriteString("INV-")
 	for i := 0; i < 8; i++ {
 		sb.WriteByte(alphabet[int(b[i])%len(alphabet)])
 	}
-	return sb.String()
+	return sb.String(), nil
 }

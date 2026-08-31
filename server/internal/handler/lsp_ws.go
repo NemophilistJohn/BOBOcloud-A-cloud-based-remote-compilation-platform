@@ -452,8 +452,7 @@ func (h *WSHandler) acquireLSPProjectActivity(userID, teamID, projectID string) 
 }
 
 func (h *WSHandler) revalidateLSPWorkspace(remoteRoot, teamID, projectID string) error {
-	info, err := os.Lstat(remoteRoot)
-	if err != nil || !info.IsDir() {
+	if _, err := safefile.RealDirectory(remoteRoot); err != nil {
 		return fmt.Errorf("workspace no longer exists")
 	}
 	if teamID == "" {
@@ -479,6 +478,10 @@ func (h *WSHandler) resolveLSPWorkspace(ctx context.Context, user *auth.User, re
 		if err != nil {
 			return "", "", "", "", "", err
 		}
+		root, err = safefile.RealDirectory(root)
+		if err != nil {
+			return "", "", "", "", "", fmt.Errorf("workspace is redirected or unavailable: %w", err)
+		}
 		project, projectErr := h.Collaboration.Store().GetProject(request.ProjectID)
 		if projectErr != nil || project.TeamID != request.TeamID {
 			return "", "", "", "", "", fmt.Errorf("team project not found")
@@ -498,14 +501,18 @@ func (h *WSHandler) resolveLSPWorkspace(ctx context.Context, user *auth.User, re
 		}
 		base := h.Config.ServerRoot
 		if h.AuthEnabled {
-			base = filepath.Join(h.Config.DataDir, "users", user.ID, "workspaces")
+			userRoot, rootErr := auth.UserDataRoot(h.Config.DataDir, user.ID)
+			if rootErr != nil {
+				return "", "", "", "", "", rootErr
+			}
+			base = filepath.Join(userRoot, "workspaces")
 		}
-		root, err = safePath(base, key)
-		if err != nil {
+		if err = safefile.ValidateChildName(key); err != nil {
 			return "", "", "", "", "", err
 		}
-		if info, statErr := os.Stat(root); statErr != nil || !info.IsDir() {
-			return "", "", "", "", "", fmt.Errorf("workspace does not exist")
+		root, err = safefile.ResolveDirectoryBeneath(base, key)
+		if err != nil {
+			return "", "", "", "", "", fmt.Errorf("workspace does not exist or is redirected: %w", err)
 		}
 		return root, key, "", "", "", nil
 	default:
@@ -739,6 +746,19 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 		writeLSPError(conn, "unavailable", "remote LSP is disabled")
 		return
 	}
+	operationStore := auth.UserStore(nil)
+	if h.AuthEnabled {
+		operationStore = h.UserStore
+	}
+	operationCtx, releaseOperation, err := bindUserOperation(r.Context(), h.Lifecycle, operationStore, user.ID)
+	if err != nil {
+		writeLSPError(conn, "unauthorized", err.Error())
+		return
+	}
+	defer releaseOperation()
+	r = r.WithContext(operationCtx)
+	stopRevocationClose := closeWebSocketOnContext(operationCtx, conn)
+	defer stopRevocationClose()
 	runtimeID := strings.TrimSpace(start.RuntimeID)
 	runtimeImage := ""
 	if runtimeID == "" || runtimeID == "local" {
@@ -763,7 +783,7 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 	lspResourceLease, resourceErr := acquireHandlerRuntimeResource(
 		r.Context(), h.Resources, resourcecontrol.WorkloadLSP, user.ID,
 		projectResourceScope(workspaceActivityKey, start.Workspace.TeamID, start.Workspace.ProjectID),
-		"lsp:"+auth.GenerateToken(), runtimeID, start.LanguageID, runtimeImage, false,
+		"lsp:"+auth.GenerateToken(), runtimeID, start.LanguageID, runtimeImage, h.LSP.RequiresDocker(start.LanguageID, runtimeID),
 	)
 	if resourceErr != nil {
 		writeLSPError(conn, resourcePressureErrorCode, resourcePressureMessage)

@@ -1,4 +1,7 @@
 const fs = require('fs');
+const { readJsonFileSync, writeJsonAtomicSync } = require('./atomic-file');
+
+const MAX_WINDOW_STATE_BYTES = 64 * 1024;
 
 function createWindowState(options) {
   const screen = options.screen;
@@ -10,13 +13,13 @@ function createWindowState(options) {
     if (!window || window.isDestroyed()) return;
     try {
       const bounds = window.isMaximized() ? window.getNormalBounds() : window.getBounds();
-      fs.writeFileSync(filePath, JSON.stringify({
+      writeJsonAtomicSync(filePath, {
         x: bounds.x,
         y: bounds.y,
         width: bounds.width,
         height: bounds.height,
         isMaximized: window.isMaximized()
-      }, null, 2), 'utf-8');
+      }, { maxBytes: MAX_WINDOW_STATE_BYTES });
     } catch (error) {
       console.error('Error saving window state:', error);
     }
@@ -24,7 +27,7 @@ function createWindowState(options) {
 
   function read() {
     try {
-      if (fs.existsSync(filePath)) return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      if (fs.existsSync(filePath)) return readJsonFileSync(filePath, { maxBytes: MAX_WINDOW_STATE_BYTES });
     } catch (error) {
       console.error('Error loading window state:', error);
     }

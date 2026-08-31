@@ -2,7 +2,7 @@
 // user chip + menu, change password, admin panel (users/invites/audit).
 //
 // 设计要点：
-// - 本地凭证存于 userData/auth.json（按服务器 IP 隔离），未过期则启动免登
+// - 本地凭证存于 userData/auth.json（由 main 按规范化端点隔离），未过期则启动免登
 // - 多人模式未登录时：本地编辑完全可用，云功能（同步/运行/终端）被 401 拦截并引导登录
 // - 单机模式（serverInfo authMode=single）：不显示任何账户 UI
 (function(global) {
@@ -29,24 +29,24 @@
   var TOKEN_EXPIRY_MARGIN_MS = 60 * 1000; // 距到期不足 1 分钟视为已过期
 
   // ──── 本地凭证（经 main 进程持久化到 userData/auth.json）────
-  async function loadCredential(serverIp) {
+  async function loadCredential() {
     try {
-      var cred = await global.api.authGet(serverIp);
+      var cred = await global.api.authGet();
       if (cred && cred.token && cred.expiresAt) return cred;
     } catch (e) { console.error('authGet:', e); }
     return null;
   }
-  async function saveCredential(serverIp, token, expiresAt, user) {
+  async function saveCredential(token, expiresAt, user) {
     try {
-      await global.api.authSet(serverIp, {
+      await global.api.authSet({
         token: token,
         expiresAt: expiresAt,
         user: user
       });
     } catch (e) { console.error('authSet:', e); }
   }
-  async function clearCredential(serverIp) {
-    try { await global.api.authClear(serverIp); } catch (e) { console.error('authClear:', e); }
+  async function clearCredential() {
+    try { await global.api.authClear(); } catch (e) { console.error('authClear:', e); }
   }
 
   function applyCredential(cred) {
@@ -183,7 +183,7 @@
     }
     var expiresAt = res.expiresAt ? new Date(res.expiresAt).getTime() : (Date.now() + 30 * 24 * 3600 * 1000);
     applyCredential({ token: res.token, expiresAt: expiresAt, user: res.user });
-    await saveCredential(S.serverSettings.ip, res.token, expiresAt, res.user);
+    await saveCredential(res.token, expiresAt, res.user);
     closeAuthModal();
     renderChip();
     if (BOBO.serverCapabilities && typeof BOBO.serverCapabilities.notify === 'function') {
@@ -210,10 +210,9 @@
       BOBO.runner.invalidateRunIdentity({ skipHttp: true });
     }
     await Promise.all([debugStopped, terminalStopped]);
-    var ip = S.serverSettings.ip;
     dropCredential();
     if (BOBO.lsp && typeof BOBO.lsp.identityChanged === 'function') BOBO.lsp.identityChanged();
-    if (ip) clearCredential(ip);
+    if (S.serverSettings.ip) clearCredential();
     renderChip();
     openAuthModal('Session expired or logged out elsewhere, please log in again');
   }
@@ -309,10 +308,9 @@
     if (S.auth.token) {
       await BOBO.sendToServer('logout', {}, { quiet: true });
     }
-    var ip = S.serverSettings.ip;
     dropCredential();
     if (BOBO.lsp && typeof BOBO.lsp.identityChanged === 'function') BOBO.lsp.identityChanged();
-    if (ip) await clearCredential(ip);
+    if (S.serverSettings.ip) await clearCredential();
     renderChip();
     // Close the open project folder so auto-sync doesn't push files to the
     // server under the wrong account after an account switch.
@@ -914,7 +912,7 @@
       return res;
     }
     // 多人模式：尝试本地计时凭证免登
-    var cred = await loadCredential(S.serverSettings.ip);
+    var cred = await loadCredential();
     if (cred && cred.expiresAt > Date.now() + TOKEN_EXPIRY_MARGIN_MS) {
       applyCredential(cred);
       renderChip();
@@ -922,7 +920,7 @@
       var who = await BOBO.sendToServer('whoami', {}, { quiet: true });
       if (who && who.success) {
         S.auth.user = who.user;
-        saveCredential(S.serverSettings.ip, S.auth.token, S.auth.expiresAt, who.user);
+        saveCredential(S.auth.token, S.auth.expiresAt, who.user);
         renderChip();
         if (BOBO.serverCapabilities && typeof BOBO.serverCapabilities.notify === 'function') {
           BOBO.serverCapabilities.notify('auth-restored');

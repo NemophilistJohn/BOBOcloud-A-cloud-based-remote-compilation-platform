@@ -3,7 +3,78 @@ const https = require('https');
 
 const MAX_AI_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_AI_STREAM_OUTPUT_BYTES = 2 * 1024 * 1024;
+const MAX_AI_REQUEST_INPUT_BYTES = 2 * 1024 * 1024;
+const MAX_AI_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
+const MAX_AI_REQUEST_DEPTH = 32;
+const MAX_AI_REQUEST_NODES = 20_000;
+const MAX_AI_MESSAGES = 96;
+const MAX_AI_TOOLS = 48;
+const DEFAULT_MAX_NON_STREAM_REQUESTS = 8;
+const DEFAULT_LANE_LIMITS = Object.freeze({ chat: 1, inline: 2, test: 1, agent: 4 });
 const AI_CHUNK_FLUSH_MS = 24;
+
+function requestError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function measureStructuredInput(value) {
+  const stack = [{ value, depth: 0 }];
+  const seen = new WeakSet();
+  let bytes = 0;
+  let nodes = 0;
+  while (stack.length) {
+    const current = stack.pop();
+    const item = current.value;
+    nodes += 1;
+    if (nodes > MAX_AI_REQUEST_NODES) throw requestError('AI request structure is too complex', 'AI_REQUEST_TOO_COMPLEX');
+    if (current.depth > MAX_AI_REQUEST_DEPTH) throw requestError('AI request nesting is too deep', 'AI_REQUEST_TOO_COMPLEX');
+    if (typeof item === 'string') {
+      bytes += Buffer.byteLength(item, 'utf8');
+    } else if (item === null || item === undefined || typeof item === 'number' || typeof item === 'boolean') {
+      bytes += 8;
+    } else if (typeof item === 'object') {
+      if (seen.has(item)) throw requestError('AI request contains a cyclic value', 'AI_REQUEST_INVALID');
+      seen.add(item);
+      if (Array.isArray(item) && item.length > MAX_AI_REQUEST_NODES) {
+        throw requestError('AI request structure is too complex', 'AI_REQUEST_TOO_COMPLEX');
+      }
+      for (const key in item) {
+        if (!Object.prototype.hasOwnProperty.call(item, key)) continue;
+        if (nodes + stack.length + 1 > MAX_AI_REQUEST_NODES) {
+          throw requestError('AI request structure is too complex', 'AI_REQUEST_TOO_COMPLEX');
+        }
+        bytes += Buffer.byteLength(key, 'utf8');
+        if (bytes > MAX_AI_REQUEST_INPUT_BYTES) {
+          throw requestError('AI request exceeds the 2 MiB input limit', 'AI_REQUEST_TOO_LARGE');
+        }
+        stack.push({ value: item[key], depth: current.depth + 1 });
+      }
+    } else {
+      throw requestError('AI request contains an unsupported value', 'AI_REQUEST_INVALID');
+    }
+    if (bytes > MAX_AI_REQUEST_INPUT_BYTES) throw requestError('AI request exceeds the 2 MiB input limit', 'AI_REQUEST_TOO_LARGE');
+  }
+  return bytes;
+}
+
+function validateRequestPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw requestError('AI request must be an object', 'AI_REQUEST_INVALID');
+  }
+  if (Array.isArray(payload.messages) && payload.messages.length > MAX_AI_MESSAGES) {
+    throw requestError('AI request has too many messages', 'AI_REQUEST_TOO_LARGE');
+  }
+  if (Array.isArray(payload.tools) && payload.tools.length > MAX_AI_TOOLS) {
+    throw requestError('AI request has too many tools', 'AI_REQUEST_TOO_LARGE');
+  }
+  const requestId = typeof payload.requestId === 'string' ? payload.requestId : '';
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/.test(requestId)) {
+    throw requestError('AI request id is invalid', 'AI_REQUEST_INVALID');
+  }
+  measureStructuredInput(payload);
+}
 
 function clampInteger(value, fallback, min, max) {
   value = Number(value);
@@ -107,6 +178,11 @@ function createAiController(options) {
     : MAX_AI_STREAM_OUTPUT_BYTES;
   let activeChatRequest = null;
   const activeInlineRequests = new Map();
+  const activeNonStreamRequests = new Map();
+  const maxNonStreamRequests = Number.isSafeInteger(options.maxNonStreamRequests) && options.maxNonStreamRequests > 0
+    ? options.maxNonStreamRequests
+    : DEFAULT_MAX_NON_STREAM_REQUESTS;
+  const laneLimits = Object.assign({}, DEFAULT_LANE_LIMITS, options.laneLimits || {});
 
   function send(channel, payload) {
     const window = getWindow();
@@ -116,17 +192,40 @@ function createAiController(options) {
 
   function finishRequest(requestId, request) {
     if (requestId && activeInlineRequests.get(requestId) === request) activeInlineRequests.delete(requestId);
+    activeNonStreamRequests.delete(request);
     if (activeChatRequest === request) activeChatRequest = null;
   }
 
-  function request(payload) {
+  function assertNonStreamCapacity(lane, requestId) {
+    const previous = activeInlineRequests.get(requestId);
+    if (previous) {
+      activeInlineRequests.delete(requestId);
+      activeNonStreamRequests.delete(previous);
+      previous.destroy();
+    }
+    let laneCount = 0;
+    for (const value of activeNonStreamRequests.values()) if (value === lane) laneCount += 1;
+    const laneLimit = Number.isSafeInteger(laneLimits[lane]) && laneLimits[lane] > 0
+      ? laneLimits[lane]
+      : 1;
+    if (activeNonStreamRequests.size >= maxNonStreamRequests || laneCount >= laneLimit) {
+      throw requestError('Too many AI requests are already active', 'AI_REQUEST_BUSY');
+    }
+  }
+
+  function request(payload, requestOptions = {}) {
     return new Promise((resolve, reject) => {
       payload = payload || {};
+      try { validateRequestPayload(payload); }
+      catch (error) { reject(error); return; }
       const { modelConfig } = payload;
       const messages = Array.isArray(payload.messages) ? payload.messages : [];
       const stream = payload.stream === true;
-      const requestId = typeof payload.requestId === 'string' ? payload.requestId.slice(0, 120) : '';
+      const requestId = payload.requestId;
       const mode = payload.mode === 'fim' ? 'fim' : 'chat';
+      const lane = Object.prototype.hasOwnProperty.call(DEFAULT_LANE_LIMITS, requestOptions.lane)
+        ? requestOptions.lane
+        : 'agent';
       if (!modelConfig || !modelConfig.endpoint) {
         reject(new Error('No AI model configured'));
         return;
@@ -227,8 +326,17 @@ function createAiController(options) {
           reasoning_effort: reasoningEffort && modelOptions.enableReasoningEffort === true ? reasoningEffort : undefined
         }));
       }
+      if (Buffer.byteLength(body, 'utf8') > MAX_AI_REQUEST_BODY_BYTES) {
+        reject(requestError('AI request exceeds the 4 MiB provider body limit', 'AI_REQUEST_TOO_LARGE'));
+        return;
+      }
 
-      const requestOptions = {
+      if (!stream) {
+        try { assertNonStreamCapacity(lane, requestId); }
+        catch (error) { reject(error); return; }
+      }
+
+      const transportOptions = {
         hostname: url.hostname,
         port: url.port || (isHttps ? 443 : 80),
         path: url.pathname + url.search,
@@ -238,7 +346,7 @@ function createAiController(options) {
       };
       let settled = false;
 
-      const req = transport.request(requestOptions, (res) => {
+      const req = transport.request(transportOptions, (res) => {
         if (res.statusCode >= 400) {
           let errorData = '';
           res.on('data', (chunk) => {
@@ -414,11 +522,15 @@ function createAiController(options) {
         if (activeChatRequest && activeChatRequest !== req) activeChatRequest.destroy();
         activeChatRequest = req;
       } else if (requestId) {
-        const previous = activeInlineRequests.get(requestId);
-        if (previous && previous !== req) previous.destroy();
         activeInlineRequests.set(requestId, req);
+        activeNonStreamRequests.set(req, lane);
       }
-      req.end(body);
+      try {
+        req.end(body);
+      } catch (error) {
+        finishRequest(requestId, req);
+        reject(error);
+      }
     });
   }
 
@@ -434,9 +546,9 @@ function createAiController(options) {
   function registerIpc() {
     ipcMain.handle('ai-chat-request', async (_event, payload) => {
       try {
-        return await request(payload);
+        return await request(payload, { lane: 'chat' });
       } catch (error) {
-        return { success: false, error: error.message };
+        return { success: false, code: error.code || '', error: error.message };
       }
     });
     ipcMain.handle('ai-cancel-stream', async () => {
@@ -459,24 +571,23 @@ function createAiController(options) {
     });
     ipcMain.handle('ai-inline-request', async (_event, payload) => {
       try {
-        return await request(Object.assign({}, payload, { stream: false }));
+        return await request(Object.assign({}, payload, { stream: false }), { lane: 'inline' });
       } catch (error) {
-        return { success: false, error: error.message };
+        return { success: false, code: error.code || '', error: error.message };
       }
     });
     ipcMain.handle('ai-read-settings', async () => settings.readAiSettings());
     ipcMain.handle('ai-write-settings', async (_event, nextSettings) => settings.writeAiSettings(nextSettings));
     ipcMain.handle('ai-test-connection', async (_event, payload) => {
       try {
-        return await request(Object.assign({}, payload, { stream: false }));
+        return await request(Object.assign({}, payload, { stream: false }), { lane: 'test' });
       } catch (error) {
-        return { success: false, error: error.message };
+        return { success: false, code: error.code || '', error: error.message };
       }
     });
     ipcMain.handle('chat-history-read', async (_event, workspaceRoot) => settings.readChatHistory(workspaceRoot));
     ipcMain.handle('chat-history-write', async (_event, payload) => {
-      settings.writeChatHistory(payload.wsRoot, payload.data);
-      return true;
+      return settings.writeChatHistory(payload.wsRoot, payload.data);
     });
   }
 
@@ -485,9 +596,21 @@ function createAiController(options) {
     activeChatRequest = null;
     for (const activeRequest of activeInlineRequests.values()) activeRequest.destroy();
     activeInlineRequests.clear();
+    activeNonStreamRequests.clear();
   }
 
   return { registerIpc, request, cancel, dispose };
 }
 
-module.exports = { createAiController, anthropicMessages, anthropicToolDefinitions, completionMessages, normalizeToolDefinitions, resolveApiContract };
+module.exports = {
+  MAX_AI_REQUEST_BODY_BYTES,
+  MAX_AI_REQUEST_INPUT_BYTES,
+  createAiController,
+  anthropicMessages,
+  anthropicToolDefinitions,
+  completionMessages,
+  measureStructuredInput,
+  normalizeToolDefinitions,
+  resolveApiContract,
+  validateRequestPayload
+};

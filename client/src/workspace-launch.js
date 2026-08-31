@@ -147,6 +147,9 @@
     var key = pathKey(value);
     var projects = readRecentProjects().filter(function(candidate) { return pathKey(candidate) !== key; });
     writeRecentProjects(projects);
+    if (global.api && typeof global.api.forgetRecentWorkspace === 'function') {
+      Promise.resolve(global.api.forgetRecentWorkspace(value)).catch(function() {});
+    }
     renderRecentProjects();
     return projects;
   }

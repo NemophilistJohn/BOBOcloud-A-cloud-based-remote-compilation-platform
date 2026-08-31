@@ -134,6 +134,18 @@ test('commit rejects bytes that no longer match the save request', async (t) => 
   assert.equal(tracker.classify(filePath, 6), null);
 });
 
+test('commit rejects a file that grows beyond the expected save bytes without buffering it whole', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-workspace-write-growth-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const filePath = path.join(root, 'main.js');
+  fs.writeFileSync(filePath, 'before');
+  const tracker = createWorkspaceWriteTracker({ namespace: 'test' });
+  const write = tracker.begin(filePath, 6, '', 'small', 'utf8');
+  fs.writeFileSync(filePath, Buffer.alloc(2 * 1024 * 1024, 0x61));
+  assert.equal(await tracker.complete(write), false);
+  assert.equal(tracker.classify(filePath, 6), null);
+});
+
 test('workspace mutations are serialized so structural work cannot overtake a save', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-workspace-write-queue-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -166,4 +178,44 @@ test('a failed workspace mutation releases the queue for the next operation', as
     throw new Error('fixture failure');
   }), /fixture failure/);
   assert.equal(await queue.run('second', async () => 'completed'), 'completed');
+});
+
+test('workspace transition blocks new mutations and drains accepted work before switching', async () => {
+  const queue = createWorkspaceWriteQueue();
+  let releaseWrite;
+  let writeStarted;
+  const writeGate = new Promise((resolve) => { releaseWrite = resolve; });
+  const started = new Promise((resolve) => { writeStarted = resolve; });
+  const order = [];
+  const write = queue.run('old-workspace', async () => {
+    order.push('write-start');
+    writeStarted();
+    await writeGate;
+    order.push('write-commit');
+  });
+  await started;
+  const transition = queue.transition('workspace-switch', async () => {
+    order.push('transition');
+    await assert.rejects(queue.run('reentrant', async () => {}), (error) => {
+      assert.equal(error.code, 'WORKSPACE_TRANSITION_IN_PROGRESS');
+      return true;
+    });
+  });
+  await assert.rejects(queue.run('late-write', async () => {}), (error) => {
+    assert.equal(error.code, 'WORKSPACE_TRANSITION_IN_PROGRESS');
+    return true;
+  });
+  assert.deepEqual(order, ['write-start']);
+  releaseWrite();
+  await Promise.all([write, transition]);
+  assert.deepEqual(order, ['write-start', 'write-commit', 'transition']);
+  assert.equal(await queue.run('next-workspace', async () => 'accepted'), 'accepted');
+});
+
+test('a failed workspace transition releases the mutation barrier', async () => {
+  const queue = createWorkspaceWriteQueue();
+  await assert.rejects(queue.transition('failed-switch', async () => {
+    throw new Error('switch failed');
+  }), /switch failed/);
+  assert.equal(await queue.run('after-failure', async () => 'accepted'), 'accepted');
 });

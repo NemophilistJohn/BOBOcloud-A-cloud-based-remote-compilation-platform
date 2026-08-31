@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"bobocloud-server/internal/safefile"
 )
 
 var ErrWorkspaceCopyLimit = errors.New("debug workspace exceeds the copy size limit")
@@ -22,17 +24,13 @@ func CopyWorkspace(ctx context.Context, source, destination string, maxBytes int
 	if maxBytes <= 0 {
 		maxBytes = 512 << 20
 	}
-	source, err := filepath.Abs(source)
+	source, err := safefile.RealDirectory(source)
 	if err != nil {
-		return err
+		return fmt.Errorf("debug workspace source must be a real directory: %w", err)
 	}
 	destination, err = filepath.Abs(destination)
 	if err != nil {
 		return err
-	}
-	info, err := os.Lstat(source)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("debug workspace source must be a real directory")
 	}
 	relativeDestination, err := filepath.Rel(source, destination)
 	if err != nil {
@@ -77,17 +75,18 @@ func CopyWorkspace(ctx context.Context, source, destination string, maxBytes int
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		if info.Size() < 0 || copied+info.Size() > maxBytes {
-			return ErrWorkspaceCopyLimit
-		}
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 			return err
 		}
-		input, err := os.Open(current)
+		input, openedInfo, err := safefile.OpenRegularBeneath(source, relative, 0)
 		if err != nil {
 			return err
 		}
-		output, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
+		if openedInfo.Size() < 0 || copied+openedInfo.Size() > maxBytes {
+			_ = input.Close()
+			return ErrWorkspaceCopyLimit
+		}
+		output, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, openedInfo.Mode().Perm())
 		if err != nil {
 			_ = input.Close()
 			return err

@@ -1,18 +1,9 @@
-// src/rclone-client.js - Layer 3: 渲染进程 rclone 客户端
-//
-// 薄封装 BOBO.rclone.sync / checkVersion，通过 IPC 调用主进程 rclone 模块。
-// 进度行通过 IPC 事件实时转发，在 sync 前注册、sync 后注销。
+// src/rclone-client.js - renderer facade for the main-owned rclone broker.
 
 (function(global) {
   var BOBO = global.BOBO || {};
   global.BOBO = BOBO;
   var S = BOBO.state || {};
-  // 与 rclone.js DEFAULT_EXCLUDES 保持一致（渲染进程无法 require 主进程模块）
-  var DEFAULT_EXCLUDES = [
-    '**/target/**', '**/.git/**', '**/node_modules/**',
-	'**/__pycache__/**', '**/.bobocloud/**', '**/.bobocloud-team.json'
-  ];
-
   var operationSequence = 0;
   var activeOperationIds = new Set();
 
@@ -24,75 +15,115 @@
     return 'rclone-' + kind + '-' + randomPart;
   }
 
-  async function runOperation(kind, opts) {
+  function localScope(opts, kind) {
     opts = opts || {};
     var requestedLocalPath = kind === 'sync' ? opts.src : opts.dest;
     if (!opts.localGrant && requestedLocalPath && requestedLocalPath !== S.workspaceRoot) {
       throw new Error('The requested rclone path is not the active workspace');
     }
-    var operationId = nextOperationId(kind);
-    activeOperationIds.add(operationId);
-    var disposeProgress = function() {};
-    if (typeof opts.onProgress === 'function') {
-      disposeProgress = window.api.onRcloneProgress(operationId, function(line, progress) {
-        if ((!progress || !progress.operationId) &&
-            (activeOperationIds.size !== 1 || !activeOperationIds.has(operationId))) return;
-        opts.onProgress(line);
-      }) || disposeProgress;
-    }
+    return opts.localGrant
+      ? { type: 'mapping', grantId: opts.localGrant }
+      : {
+          type: 'workspace',
+          rootPath: S.workspaceRoot,
+          workspaceIdentity: S.workspaceIdentity
+        };
+  }
 
-    var payload = {
-      operationId: operationId,
-      remotePath: opts.remotePath,
-      excludes: opts.excludes || DEFAULT_EXCLUDES,
-      localScope: opts.localGrant
-        ? { type: 'mapping', grantId: opts.localGrant }
-        : {
-            type: 'workspace',
-            rootPath: S.workspaceRoot,
-            workspaceIdentity: S.workspaceIdentity
-          }
-    };
+  async function invokeTracked(kind, invoke) {
+    var id = nextOperationId(kind);
+    activeOperationIds.add(id);
     try {
-      return kind === 'sync'
-        ? await window.api.rcloneSync(payload)
-        : await window.api.rclonePull(payload);
+      return await invoke(id);
     } finally {
-      activeOperationIds.delete(operationId);
-      disposeProgress();
+      activeOperationIds.delete(id);
     }
   }
 
-  BOBO.rclone = {
-    DEFAULT_EXCLUDES: DEFAULT_EXCLUDES,
+  async function prepareRemote(kind, request, opts) {
+    opts = opts || {};
+    return invokeTracked('prepare', function(id) {
+      return window.api.rclonePrepareRemote({
+        operationId: id,
+        kind: kind,
+        request: request || {},
+        localScope: localScope(opts, kind === 'workspace' ? 'sync' : 'pull')
+      });
+    });
+  }
 
-    // sync：同步本地目录到服务端
-    // opts: { src, remotePath, excludes?, onProgress? }
-    sync: async function(opts) {
+  async function runOperation(kind, opts) {
+    opts = opts || {};
+    if (typeof opts.remoteGrantId !== 'string' || !opts.remoteGrantId) {
+      throw new Error('A prepared remote synchronization grant is required');
+    }
+    return invokeTracked(kind, async function(operationId) {
+      var disposeProgress = function() {};
+      if (typeof opts.onProgress === 'function') {
+        disposeProgress = window.api.onRcloneProgress(operationId, function(line, progress) {
+          if ((!progress || !progress.operationId) &&
+              (activeOperationIds.size !== 1 || !activeOperationIds.has(operationId))) return;
+          opts.onProgress(line);
+        }) || disposeProgress;
+      }
+      try {
+        var payload = {
+          operationId: operationId,
+          remoteGrantId: opts.remoteGrantId,
+          localScope: localScope(opts, kind)
+        };
+        return kind === 'sync'
+          ? await window.api.rcloneSync(payload)
+          : await window.api.rclonePull(payload);
+      } finally {
+        disposeProgress();
+      }
+    });
+  }
+
+  BOBO.rclone = {
+    prepareWorkspace: function(request, opts) {
+      return prepareRemote('workspace', request, opts);
+    },
+
+    prepareTeamPull: function(request, opts) {
+      return prepareRemote('team-pull', request, opts);
+    },
+
+    sync: function(opts) {
       return runOperation('sync', opts);
     },
 
-    // pull：首次或再次打开团队项目时，把云端分支工作树映射到本地。
-    pull: async function(opts) {
+    pull: function(opts) {
       return runOperation('pull', opts);
     },
 
-    listBinaries: async function() {
+    cancel: function(operationId) {
+      return window.api.rcloneCancel(operationId);
+    },
+
+    cancelAll: function(reason) {
+      return window.api.rcloneCancelAll(reason || 'renderer-context-changed');
+    },
+
+    listBinaries: function() {
       return window.api.rcloneListBinaries();
     },
 
-    getSelection: async function() {
+    getSelection: function() {
       return window.api.rcloneGetSelection();
     },
 
-    selectBinary: async function(scanId, candidateId) {
+    selectBinary: function(scanId, candidateId) {
       return window.api.rcloneSelectBinary({ scanId: scanId, candidateId: candidateId });
     },
 
-    // The main process owns the executable path; the renderer can only check
-    // whichever trusted selection is active.
-    checkVersion: async function() {
+    checkVersion: function() {
       return window.api.rcloneCheckVersion();
+    },
+
+    validateConnection: function() {
+      return window.api.rcloneValidateConnection();
     }
   };
 })(window);

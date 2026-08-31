@@ -595,14 +595,23 @@
         if (!leaveApproved) return false;
       }
       try {
-        var prepared = await api('prepareTeamProject', { teamId: project.team_id, projectId: project.id, branch: selectedBranch, reset: mode === 'pull' });
+        var prepared;
         if (isFirst || mode === 'pull') {
           setActionStatusKey('Pulling cloud branch...', null, false);
-          var result = await BOBO.rclone.pull({ dest: localPath, localGrant: pathInfo.grantId, remotePath: prepared.remote_path, onProgress: function(line) { setActionStatus(line, false); } });
+          prepared = await BOBO.rclone.prepareTeamPull({
+            teamId: project.team_id,
+            projectId: project.id,
+            branch: selectedBranch,
+            reset: true
+          }, { dest: localPath, localGrant: pathInfo.grantId });
+          if (!prepared || !prepared.success) throw new Error(prepared && prepared.error || t('Pull failed'));
+          var result = await BOBO.rclone.pull({ dest: localPath, localGrant: pathInfo.grantId, remoteGrantId: prepared.remoteGrantId, onProgress: function(line) { setActionStatus(line, false); } });
           if (!result.success) throw new Error(result.error && result.error.message || t('Pull failed'));
+        } else {
+          await api('prepareTeamProject', { teamId: project.team_id, projectId: project.id, branch: selectedBranch, reset: false });
         }
 	    var teamName = project.team_name || (selectedDetail && selectedDetail.team && selectedDetail.team.name) || (S.collaboration.current && S.collaboration.current.teamName) || 'Team';
-        var nextCurrent = { teamId: project.team_id, teamName: teamName, projectId: project.id, projectName: project.name, branch: selectedBranch, remotePath: prepared.remote_path, localPath: localPath };
+        var nextCurrent = { teamId: project.team_id, teamName: teamName, projectId: project.id, projectName: project.name, branch: selectedBranch, localPath: localPath };
 	    await window.api.writeTeamMapping({ localPath: localPath, localGrant: pathInfo.grantId, mapping: nextCurrent });
         if (replacesCurrentWorkspace) {
           await refreshApprovedWorkspace(localPath);
@@ -688,7 +697,7 @@
 	  S.collaboration.current = {
 		teamId: mapping.teamId, teamName: mapping.teamName || 'Team', projectId: mapping.projectId,
 		projectName: mapping.projectName || 'Cloud project', branch: mapping.branch,
-		remotePath: mapping.remotePath || '', localPath: localPath || mapping.localPath || ''
+		localPath: localPath || mapping.localPath || ''
 	  };
 	  updateTeamChrome();
 	}
@@ -806,8 +815,14 @@
         if (!leaveApproved) return false;
       }
       try {
-        var prepared = await api('prepareTeamProject', { teamId: current.teamId, projectId: current.projectId, branch: current.branch, reset: true });
-        var result = await BOBO.rclone.pull({ dest: current.localPath, remotePath: prepared.remote_path, onProgress: function(line) { setActionStatus(line, false); } });
+        var prepared = await BOBO.rclone.prepareTeamPull({
+          teamId: current.teamId,
+          projectId: current.projectId,
+          branch: current.branch,
+          reset: true
+        }, { dest: current.localPath });
+        if (!prepared || !prepared.success) throw new Error(prepared && prepared.error || t('Pull failed'));
+        var result = await BOBO.rclone.pull({ dest: current.localPath, remoteGrantId: prepared.remoteGrantId, onProgress: function(line) { setActionStatus(line, false); } });
         if (!result.success) throw new Error(result.error && result.error.message || t('Pull failed'));
         await refreshApprovedWorkspace(current.localPath);
         notify('Cloud branch pulled', 'success'); return true;

@@ -23,6 +23,7 @@ import (
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/resourcecontrol"
+	"bobocloud-server/internal/safefile"
 
 	"github.com/gorilla/websocket"
 )
@@ -175,6 +176,10 @@ func (h *DAPHandler) resolveWorkspace(ctx context.Context, user *auth.User, requ
 		if err != nil {
 			return "", "", "", "", "", err
 		}
+		root, err = safefile.RealDirectory(root)
+		if err != nil {
+			return "", "", "", "", "", fmt.Errorf("workspace is redirected or unavailable: %w", err)
+		}
 		project, projectErr := h.Collaboration.Store().GetProject(request.ProjectID)
 		if projectErr != nil || project.TeamID != request.TeamID {
 			return "", "", "", "", "", fmt.Errorf("team project not found")
@@ -191,14 +196,18 @@ func (h *DAPHandler) resolveWorkspace(ctx context.Context, user *auth.User, requ
 		}
 		base := h.Config.ServerRoot
 		if h.AuthEnabled {
-			base = filepath.Join(h.Config.DataDir, "users", user.ID, "workspaces")
+			userRoot, rootErr := auth.UserDataRoot(h.Config.DataDir, user.ID)
+			if rootErr != nil {
+				return "", "", "", "", "", rootErr
+			}
+			base = filepath.Join(userRoot, "workspaces")
 		}
-		root, err = safePath(base, key)
-		if err != nil {
+		if err = safefile.ValidateChildName(key); err != nil {
 			return "", "", "", "", "", err
 		}
-		if info, statErr := os.Stat(root); statErr != nil || !info.IsDir() {
-			return "", "", "", "", "", fmt.Errorf("workspace does not exist")
+		root, err = safefile.ResolveDirectoryBeneath(base, key)
+		if err != nil {
+			return "", "", "", "", "", fmt.Errorf("workspace does not exist or is redirected: %w", err)
 		}
 		return root, key, "", "", "", nil
 	default:
@@ -378,6 +387,19 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		writeDAPControlError(conn, "unauthorized", err.Error())
 		return
 	}
+	operationStore := auth.UserStore(nil)
+	if h.AuthEnabled {
+		operationStore = h.UserStore
+	}
+	operationCtx, releaseOperation, err := bindUserOperation(r.Context(), h.Lifecycle, operationStore, user.ID)
+	if err != nil {
+		writeDAPControlError(conn, "unauthorized", err.Error())
+		return
+	}
+	defer releaseOperation()
+	r = r.WithContext(operationCtx)
+	stopRevocationClose := closeWebSocketOnContext(operationCtx, conn)
+	defer stopRevocationClose()
 	languageID := canonicalDAPLanguage(start.LanguageID)
 	runtime := model.GetRuntimeDef(strings.TrimSpace(start.RuntimeID))
 	if runtime == nil {
@@ -396,7 +418,7 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	dapResourceLease, resourceErr := acquireHandlerRuntimeResource(
 		r.Context(), h.Resources, resourcecontrol.WorkloadDAP, user.ID,
 		projectResourceScope(workspaceKey, start.Workspace.TeamID, start.Workspace.ProjectID),
-		"dap:"+auth.GenerateToken(), runtime.RuntimeID, languageID, runtime.DockerImage, false,
+		"dap:"+auth.GenerateToken(), runtime.RuntimeID, languageID, runtime.DockerImage, true,
 	)
 	if resourceErr != nil {
 		writeDAPControlError(conn, resourcePressureErrorCode, resourcePressureMessage)

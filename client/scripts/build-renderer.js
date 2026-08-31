@@ -33,6 +33,9 @@ async function buildRenderer(options = {}) {
   const outputFile = path.join(outputDirectory, 'bobo-renderer.js');
   const aiUiOutputFile = path.join(outputDirectory, 'bobo-ai-ui.js');
   const terminalUiOutputFile = path.join(outputDirectory, 'bobo-terminal-ui.js');
+  // renderer-dist is a build-owned directory. Recreate it so an artifact from
+  // an older entry graph can never be packaged beside the current bundle.
+  await fs.rm(outputDirectory, { recursive: true, force: true });
   await fs.mkdir(outputDirectory, { recursive: true });
 
   const result = await esbuild.build({
@@ -49,7 +52,7 @@ async function buildRenderer(options = {}) {
     target: ['chrome138'],
     minify: production,
     sourcemap: 'linked',
-    sourcesContent: true,
+    sourcesContent: !production,
     legalComments: 'none',
     treeShaking: true,
     define: {
@@ -91,7 +94,7 @@ async function buildRenderer(options = {}) {
         entry: path.relative(ROOT, TERMINAL_UI_ENTRY).replace(/\\/g, '/'),
         load: 'first-visible-terminal',
         orderedModules: orderedTerminalUiModules,
-        outputs: ['bobo-terminal-ui.js', 'bobo-terminal-ui.js.map', 'bobo-terminal-ui.css']
+        outputs: ['bobo-terminal-ui.js', 'bobo-terminal-ui.js.map', 'bobo-terminal-ui.css', 'bobo-terminal-ui.css.map']
       },
       extensionHost: {
         entry: 'renderer/core/plugin-extension-bootstrap.js',
