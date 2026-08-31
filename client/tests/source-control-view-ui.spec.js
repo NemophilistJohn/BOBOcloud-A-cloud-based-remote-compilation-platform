@@ -180,6 +180,8 @@ test('installed source-control providers receive a host-rendered sidebar with fo
     installSourceControlPackage(userData);
     await page.evaluate(async () => {
       await window.api.plugins.refresh();
+      await window.api.plugins.grant('example.source-control-host', 'commands.register');
+      await window.api.plugins.grant('example.source-control-host', 'sourceControl.register');
       await window.api.plugins.enable('example.source-control-host');
     });
     await page.waitForFunction(() => Boolean(window.BOBO.platform.sourceControl.get('example.source-control-host.view')), null, { timeout: 15000 });
@@ -201,6 +203,8 @@ test('installed source-control providers receive a host-rendered sidebar with fo
     const form = panel.locator('.source-control-form');
     await expect(form).toBeVisible();
     await form.locator('textarea[name="note"]').fill('<b>plain text</b>');
+    await page.evaluate(() => window.BOBO.sourceControlView.refresh());
+    await expect(form.locator('textarea[name="note"]')).toHaveValue('<b>plain text</b>');
     await form.locator('button[type="submit"]').click();
     await expect(panel).toContainText('Note accepted: <b>plain text</b>');
     await expect(panel.locator('b')).toHaveCount(0);

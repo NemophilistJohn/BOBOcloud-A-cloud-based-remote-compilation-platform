@@ -409,6 +409,35 @@ test('a damaged permission file disables plugins instead of restoring revoked gr
   assert.equal(persisted.initialized['acme.sample-plugin'], true);
 });
 
+test('a missing permission file fails closed and explicit grants recover the plugin', async (t) => {
+  const harness = await createHarness(t);
+  const source = path.join(harness.root, 'permission-missing-package');
+  await writePackage(source);
+  await harness.controller.installFromPath(source);
+  await harness.controller.setEnabled('acme.sample-plugin', true);
+
+  const permissionsPath = path.join(harness.root, 'plugins', '.permissions.json');
+  await fsp.rm(permissionsPath);
+  await harness.controller.refresh('permission-file-missing');
+
+  const recovered = harness.controller.get('acme.sample-plugin');
+  assert.equal(recovered.enabled, false);
+  assert.deepEqual(recovered.grantedPermissions, []);
+  assert.deepEqual(harness.controller.runtimeDescriptors(), []);
+
+  await harness.controller.grant('acme.sample-plugin', 'commands.register', true);
+  await harness.controller.setEnabled('acme.sample-plugin', true);
+  assert.deepEqual(harness.controller.get('acme.sample-plugin').grantedPermissions, ['commands.register']);
+  assert.deepEqual(
+    await harness.controller.rpc('acme.sample-plugin', 'commands.register', { id: 'acme.sample-plugin.hello' }),
+    { authorized: true, method: 'commands.register', permission: 'commands.register' }
+  );
+  await assert.rejects(
+    () => harness.controller.rpc('acme.sample-plugin', 'services.get', { id: 'workbench.projectTasks' }),
+    { code: 'plugins.rpc.permission' }
+  );
+});
+
 test('plugin-localization loader returns only a verified selected flat message table', async (t) => {
   const harness = await createHarness(t);
   const sourceRoot = path.join(harness.root, 'localized-package');
