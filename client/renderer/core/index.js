@@ -62,6 +62,10 @@ export {
   ExtensionSandboxMethod,
   cloneExtensionData,
   createExtensionError,
+  deserializeExtensionError,
+  isExtensionMessage,
+  isSerializedExtensionError,
+  serializeExtensionError,
   unwrapPluginRpcResult
 } from './plugin-extension-protocol.js';
 export { DeclarativeContributionPoint, PluginExtensionHost } from './plugin-extension-host.js';

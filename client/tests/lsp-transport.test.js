@@ -632,7 +632,7 @@ test('expired authentication clears renderer completion state without scheduling
   assert.ok(expiredStart >= 0 && expiredEnd > expiredStart);
   const expiredBody = authSource.slice(expiredStart, expiredEnd);
   assert.match(expiredBody, /dropCredential\(\);\s*if \(BOBO\.lsp.*identityChanged/);
-  assert.match(expiredBody, /identityChanged.*\n\s*if \(S\.serverSettings\.ip\) clearCredential/);
+  assert.match(expiredBody, /identityChanged.*\r?\n\s*if \(S\.serverSettings\.ip\) clearCredential/);
 });
 
 test('completion cache crosses context only for its programmatic retrigger', async () => {

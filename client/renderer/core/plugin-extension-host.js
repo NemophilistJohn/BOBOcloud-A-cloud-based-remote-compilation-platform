@@ -95,11 +95,15 @@ function normalizeDescriptor(descriptor) {
       throw createExtensionError(ExtensionErrorCode.DENIED, 'Extension was not granted an undeclared permission.');
     }
   }
+  const revision = descriptor.revision === undefined ? manifest.version : descriptor.revision;
+  if (typeof revision !== 'string' || !revision.trim() || revision.length > 160 || /[\0\r\n]/.test(revision)) {
+    throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Extension descriptor revision is invalid.');
+  }
   return Object.freeze({
     id: manifest.id,
     manifest,
     grantedPermissions: Object.freeze(grantedPermissions),
-    revision: typeof descriptor.revision === 'string' ? descriptor.revision : manifest.version
+    revision
   });
 }
 
@@ -317,6 +321,7 @@ export class PluginExtensionHost {
       incomingRequests: new Set(),
       handles: new Map(),
       ready: createDeferred(),
+      activationSettled: false,
       cancellation,
       cancelled: false,
       cleaned: false,
@@ -414,7 +419,10 @@ export class PluginExtensionHost {
       return { ok: true, id };
     } catch (error) {
       if (record.cancelled || this._disposed || error && error.code === ExtensionErrorCode.CANCELLED) {
-        this._cleanupRecord(record);
+        // Once deactivation starts it owns sandbox shutdown and pending RPC
+        // cleanup. Activation cancellation must not reject the deactivation
+        // request that is currently waiting for the Worker to acknowledge it.
+        if (!record.deactivationPromise) this._cleanupRecord(record);
         return { ok: false, error: createExtensionError(ExtensionErrorCode.CANCELLED, 'Extension activation was cancelled: ' + id) };
       }
       this._cleanupRecord(record);
@@ -470,21 +478,47 @@ export class PluginExtensionHost {
     ]);
   }
 
+  _assertRecordCurrent(record) {
+    if (this._disposed || record.cancelled || record.cleaned ||
+        this._records.get(record.descriptor.id) !== record) {
+      throw createExtensionError(ExtensionErrorCode.CANCELLED, 'Extension operation was cancelled.');
+    }
+  }
+
+  async _awaitRecord(record, promise) {
+    const value = await this._raceCancellation(record, promise);
+    this._assertRecordCurrent(record);
+    return value;
+  }
+
   _requireDescriptorBroker() {
     if (!this._listDescriptors) throw createExtensionError(ExtensionErrorCode.UNAVAILABLE, 'Extension descriptor broker is unavailable.');
     return this._listDescriptors;
   }
 
   _handleSandboxMessage(record, message) {
-    if (record.cleaned || !isExtensionMessage(message)) {
+    if (record.cleaned) return;
+    if (!isExtensionMessage(message)) {
       this._report('extension-protocol', record.descriptor.id, createExtensionError(ExtensionErrorCode.PROTOCOL, 'Malformed extension message was ignored.'));
       return;
     }
     if (message.type === ExtensionMessageType.ACTIVATED) {
+      if (record.cancelled) return;
+      if (record.status !== 'activating' || record.activationSettled) {
+        this._handleSandboxFatal(record, createExtensionError(ExtensionErrorCode.PROTOCOL, 'Extension activation completed out of sequence.'));
+        return;
+      }
+      record.activationSettled = true;
       record.ready.resolve();
       return;
     }
     if (message.type === ExtensionMessageType.ACTIVATION_FAILED) {
+      if (record.cancelled) return;
+      if (record.status !== 'activating' || record.activationSettled) {
+        this._handleSandboxFatal(record, createExtensionError(ExtensionErrorCode.PROTOCOL, 'Extension activation failed out of sequence.'));
+        return;
+      }
+      record.activationSettled = true;
       record.ready.reject(deserializeExtensionError(message.error, ExtensionErrorCode.UNAVAILABLE));
       return;
     }
@@ -510,7 +544,13 @@ export class PluginExtensionHost {
       this._respond(record, message && message.id, false, null, error);
       return;
     }
-    if (record.incomingRequests.has(message.id) || record.incomingRequests.size >= 32) {
+    if (record.incomingRequests.has(message.id)) {
+      const error = createExtensionError(ExtensionErrorCode.PROTOCOL, 'Extension reused an active request id.');
+      this._report('extension-protocol', record.descriptor.id, error);
+      this._handleSandboxFatal(record, error);
+      return;
+    }
+    if (record.incomingRequests.size >= 32) {
       const error = createExtensionError(ExtensionErrorCode.UNAVAILABLE, 'Extension request concurrency limit reached.');
       this._respond(record, message.id, false, null, error);
       return;
@@ -519,7 +559,7 @@ export class PluginExtensionHost {
     try {
       const value = await this._dispatchExtensionRequest(record, message.method, message.args);
       const cloneOptions = message.method === ExtensionHostMethod.AGENT_BROKER_REQUEST
-        ? { maxStringLength: 2 * 1024 * 1024, maxItems: 8192 }
+        ? { maxStringLength: 2 * 1024 * 1024, maxItems: 8192, maxBytes: 8 * 1024 * 1024 }
         : undefined;
       this._respond(record, message.id, true, cloneExtensionData(value, cloneOptions));
     } catch (error) {
@@ -530,9 +570,7 @@ export class PluginExtensionHost {
   }
 
   async _dispatchExtensionRequest(record, method, args) {
-    if (record.cancelled || record.cleaned) {
-      throw createExtensionError(ExtensionErrorCode.CANCELLED, 'Extension is being deactivated.');
-    }
+    this._assertRecordCurrent(record);
     switch (method) {
       case ExtensionHostMethod.COMMAND_REGISTER:
         return this._registerCommand(record, args);
@@ -650,6 +688,7 @@ export class PluginExtensionHost {
     const id = asNonEmptyString(value.id, 'Command');
     const commandArgs = Array.isArray(value.args) ? value.args : [];
     await this._authorize(record, ExtensionHostMethod.COMMAND_EXECUTE, { id }, PluginPermission.COMMANDS_EXECUTE);
+    this._assertRecordCurrent(record);
     return this._commands.execute(id, ...commandArgs);
   }
 
@@ -862,7 +901,12 @@ export class PluginExtensionHost {
     }
     this._requirePermission(record, request.permission);
     if (!this._broker) throw createExtensionError(ExtensionErrorCode.UNAVAILABLE, 'SCM Git broker is unavailable.');
-    return cloneExtensionData(await this._broker(record.descriptor.id, 'scm.git.' + request.operation, request.args));
+    this._assertRecordCurrent(record);
+    const result = await this._awaitRecord(
+      record,
+      this._broker(record.descriptor.id, 'scm.git.' + request.operation, request.args)
+    );
+    return cloneExtensionData(result);
   }
 
   async _registerDocumentView(record, args) {
@@ -994,7 +1038,11 @@ export class PluginExtensionHost {
 
   async _requestAgentBroker(record, args) {
     if (!this._broker) throw createExtensionError(ExtensionErrorCode.UNAVAILABLE, 'Agent broker is unavailable.');
-    const value = cloneExtensionData(args || {});
+    const value = cloneExtensionData(args || {}, {
+      maxStringLength: 2 * 1024 * 1024,
+      maxItems: 8192,
+      maxBytes: 8 * 1024 * 1024
+    });
     const method = asNonEmptyString(value.method, 'Agent broker method');
     const directPermissions = {
       'models.list': PluginPermission.MODELS_GENERATE,
@@ -1014,7 +1062,16 @@ export class PluginExtensionHost {
     }
     if (!permission) throw createExtensionError(ExtensionErrorCode.DENIED, 'Agent broker method is not available.');
     this._requirePermission(record, permission);
-    return cloneExtensionData(await this._broker(record.descriptor.id, method, value.args || {}), { maxStringLength: 2 * 1024 * 1024, maxItems: 8192 });
+    this._assertRecordCurrent(record);
+    const result = await this._awaitRecord(
+      record,
+      this._broker(record.descriptor.id, method, value.args || {})
+    );
+    return cloneExtensionData(result, {
+      maxStringLength: 2 * 1024 * 1024,
+      maxItems: 8192,
+      maxBytes: 8 * 1024 * 1024
+    });
   }
 
   async _brokerRequest(record, args) {
@@ -1024,14 +1081,20 @@ export class PluginExtensionHost {
     if (method !== 'host.getInfo' && method !== 'permissions.get') {
       throw createExtensionError(ExtensionErrorCode.DENIED, 'This extension broker method is not available in API 1.4.');
     }
-    return cloneExtensionData(await this._broker(record.descriptor.id, method, value.args));
+    this._assertRecordCurrent(record);
+    const result = await this._awaitRecord(record, this._broker(record.descriptor.id, method, value.args));
+    return cloneExtensionData(result);
   }
 
   async _authorize(record, method, args, permission) {
     if (!this._broker) {
       throw createExtensionError(ExtensionErrorCode.UNAVAILABLE, 'Extension authorization broker is unavailable.');
     }
-    const result = cloneExtensionData(await this._broker(record.descriptor.id, method, args));
+    this._assertRecordCurrent(record);
+    const result = cloneExtensionData(await this._awaitRecord(
+      record,
+      this._broker(record.descriptor.id, method, args)
+    ));
     if (!result || result.authorized !== true) {
       throw createExtensionError(ExtensionErrorCode.DENIED, 'Extension authorization was denied for: ' + permission);
     }
@@ -1075,7 +1138,12 @@ export class PluginExtensionHost {
       }, timeoutMs);
       record.pending.set(id, { resolve, reject, timeout });
       try {
-        this._post(record, { type: ExtensionMessageType.REQUEST, id, method, args });
+        this._post(record, {
+          type: ExtensionMessageType.REQUEST,
+          id,
+          method,
+          args: cloneExtensionData(args)
+        });
       } catch (error) {
         clearTimeout(timeout);
         record.pending.delete(id);
@@ -1116,6 +1184,8 @@ export class PluginExtensionHost {
 
   _cleanupRecord(record) {
     if (record.cleaned) return;
+    record.cancelled = true;
+    record.cancellation.resolve();
     record.cleaned = true;
     if (this._records.get(record.descriptor.id) === record) this._records.delete(record.descriptor.id);
     for (const pending of record.pending.values()) {

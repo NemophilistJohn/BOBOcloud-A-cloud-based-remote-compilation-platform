@@ -1,5 +1,9 @@
 // Extensions sidebar. Package parsing, storage and permission enforcement stay
 // in the main process; this module receives only sanitized metadata.
+import pluginSemver from '../shared/plugin-semver.js';
+
+var compareSemver = pluginSemver.compareSemver;
+
 (function(global) {
   'use strict';
 
@@ -388,30 +392,14 @@
     setBusy(busy);
   }
 
-  function compareVersions(left, right) {
-    var parse = function(value) {
-      var match = String(value || '').match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
-      return match ? [Number(match[1]), Number(match[2]), Number(match[3]), match[4] || ''] : null;
-    };
-    var leftParts = parse(left);
-    var rightParts = parse(right);
-    if (!leftParts || !rightParts) return 0;
-    for (var index = 0; index < 3; index += 1) {
-      if (leftParts[index] !== rightParts[index]) return leftParts[index] > rightParts[index] ? 1 : -1;
-    }
-    if (leftParts[3] === rightParts[3]) return 0;
-    if (!leftParts[3]) return 1;
-    if (!rightParts[3]) return -1;
-    return leftParts[3] > rightParts[3] ? 1 : -1;
-  }
-
   function marketplaceInstallState(entry) {
     var selected = entry && entry.selected;
     if (!selected) return { kind: 'unavailable', label: t('Unavailable'), tone: 'error', actionable: false };
     var installedPlugin = findPlugin(entry.id);
     var installedVersion = entry.installedVersion || selected.installedVersion || (installedPlugin && installedPlugin.version) || '';
     var isInstalled = Boolean(entry.installed || selected.installed || installedPlugin || installedVersion);
-    if (isInstalled && installedVersion && compareVersions(installedVersion, selected.version) >= 0) {
+    var versionComparison = compareSemver(installedVersion, selected.version);
+    if (isInstalled && versionComparison !== null && versionComparison >= 0) {
       return { kind: 'installed', label: t('Installed'), tone: 'enabled', actionable: false };
     }
     if (!selected.compatible) return { kind: 'incompatible', label: t('Incompatible'), tone: 'error', actionable: false };

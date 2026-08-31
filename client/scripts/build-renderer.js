@@ -55,11 +55,6 @@ async function buildRenderer(options = {}) {
     sourcesContent: !production,
     legalComments: 'none',
     treeShaking: true,
-    define: {
-      // Monaco exposes an AMD `require` global. Without this definition,
-      // bundlers may mistake src/app.js calls for CommonJS imports.
-      require: 'window.require'
-    },
     logLevel: options.logLevel || 'info',
     metafile: true
   });

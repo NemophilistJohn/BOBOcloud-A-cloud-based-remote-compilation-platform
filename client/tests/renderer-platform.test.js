@@ -132,6 +132,131 @@ test('extension protocol accepts cross-realm data records but rejects class inst
     () => core.cloneExtensionData(foreignClass),
     /plain objects only/
   );
+
+  const symbolPayload = { visible: true };
+  symbolPayload[Symbol('hidden')] = 'not data';
+  assert.throws(() => core.cloneExtensionData(symbolPayload), /symbol properties/);
+
+  let accessorReads = 0;
+  const accessorArray = [];
+  Object.defineProperty(accessorArray, '0', {
+    enumerable: true,
+    get() {
+      accessorReads += 1;
+      return 'hidden';
+    }
+  });
+  accessorArray.length = 1;
+  assert.throws(() => core.cloneExtensionData(accessorArray), /accessors/);
+  assert.equal(accessorReads, 0);
+
+  const symbolArray = [];
+  symbolArray[Symbol('hidden')] = true;
+  assert.throws(() => core.cloneExtensionData(symbolArray), /symbol properties/);
+  const customArray = [];
+  customArray.metadata = true;
+  assert.throws(() => core.cloneExtensionData(customArray), /custom properties/);
+
+  const sparseArray = [];
+  sparseArray.length = 3;
+  sparseArray[1] = 'present';
+  const sparseClone = core.cloneExtensionData(sparseArray);
+  assert.equal(sparseClone.length, 3);
+  assert.equal(0 in sparseClone, false);
+  assert.equal(sparseClone[1], 'present');
+
+  const inheritedSetterIndex = '2048';
+  const setterSource = [];
+  setterSource.length = 2049;
+  Object.defineProperty(setterSource, inheritedSetterIndex, {
+    configurable: true,
+    enumerable: true,
+    value: 'safe',
+    writable: true
+  });
+  const previousSetterDescriptor = Object.getOwnPropertyDescriptor(
+    Array.prototype,
+    inheritedSetterIndex
+  );
+  let inheritedSetterCalls = 0;
+  Object.defineProperty(Array.prototype, inheritedSetterIndex, {
+    configurable: true,
+    set() {
+      inheritedSetterCalls += 1;
+    }
+  });
+  let setterClone;
+  try {
+    setterClone = core.cloneExtensionData(setterSource);
+  } finally {
+    if (previousSetterDescriptor) {
+      Object.defineProperty(Array.prototype, inheritedSetterIndex, previousSetterDescriptor);
+    } else {
+      delete Array.prototype[inheritedSetterIndex];
+    }
+  }
+  assert.equal(inheritedSetterCalls, 0);
+  assert.equal(setterClone[inheritedSetterIndex], 'safe');
+  assert.equal(Object.prototype.hasOwnProperty.call(setterClone, inheritedSetterIndex), true);
+
+  const oversizedString = 'x'.repeat(600 * 1024);
+  const nativeNumber = global.Number;
+  let intrinsicError = null;
+  try {
+    global.Number = { isInteger: () => true, isFinite: () => true };
+    try { core.cloneExtensionData(oversizedString); } catch (error) { intrinsicError = error; }
+  } finally {
+    global.Number = nativeNumber;
+  }
+  assert.match(intrinsicError && intrinsicError.message || '', /oversized string/);
+
+  const oversizedByKeys = Object.create(null);
+  for (let index = 0; index < 1800; index += 1) {
+    oversizedByKeys['property-' + index + '-' + 'x'.repeat(640)] = index;
+  }
+  assert.throws(() => core.cloneExtensionData(oversizedByKeys), /total size limit/);
+});
+
+test('extension messages and errors use strict bounded envelopes', () => {
+  const malformedError = core.serializeExtensionError({
+    code: 'invalid code with spaces',
+    message: 'x'.repeat(16 * 1024)
+  });
+  assert.equal(malformedError.code, core.ExtensionErrorCode.UNAVAILABLE);
+  assert.equal(malformedError.message.length, 8 * 1024);
+  assert.equal(core.isSerializedExtensionError(malformedError), true);
+  assert.equal(core.isSerializedExtensionError({ code: 'BAD', message: 'ok', extra: true }), false);
+
+  assert.equal(core.isExtensionMessage({
+    protocolVersion: 1,
+    type: 'response',
+    id: 1,
+    ok: true,
+    value: null
+  }), true);
+  assert.equal(core.isExtensionMessage({
+    protocolVersion: 1,
+    type: 'response',
+    id: 1,
+    ok: true,
+    value: null,
+    error: { code: 'BAD', message: 'ambiguous' }
+  }), false);
+  assert.equal(core.isExtensionMessage({
+    protocolVersion: 1,
+    type: 'request',
+    id: 1,
+    method: 'services.get'
+  }), false);
+  assert.equal(core.isExtensionMessage({
+    protocolVersion: 1,
+    type: 'response',
+    id: 'host-1',
+    ok: true
+  }), false);
+  const restored = core.deserializeExtensionError({ code: 'BAD CODE', message: 'unsafe' }, core.ExtensionErrorCode.PROTOCOL);
+  assert.equal(restored.code, core.ExtensionErrorCode.PROTOCOL);
+  assert.equal(restored.message, 'Extension operation failed.');
 });
 
 test('disposable store tears down in reverse order and isolates cleanup errors', () => {
@@ -360,7 +485,7 @@ test('plugin API ranges are parsed strictly and evaluated against the host versi
   for (const range of ['^1.0.0', '^1', '1.x', '>=1 <2', '>=1.0.0 <2.0.0', '>=2.0.0 || ^1.0.0']) {
     assert.equal(core.validatePluginManifest({ ...base, engines: { pluginApi: range } }).id, base.id);
   }
-  for (const range of ['garbage1', '^2.0.0', '>=2.0.0', '1.0.0 ||']) {
+  for (const range of ['garbage1', '^2.0.0', '>=2.0.0', '>1', '>1.5', '1.0.0 ||']) {
     assert.throws(
       () => core.validatePluginManifest({ ...base, engines: { pluginApi: range } }),
       /incompatible or missing/
@@ -370,6 +495,15 @@ test('plugin API ranges are parsed strictly and evaluated against the host versi
     () => core.validatePluginManifest({ ...base, version: '01.0.0', engines: { pluginApi: '^1.0.0' } }),
     /valid semver/
   );
+  assert.throws(
+    () => core.validatePluginManifest({ ...base, version: '1.0.0-01', engines: { pluginApi: '^1.0.0' } }),
+    /valid semver/
+  );
+  assert.equal(core.validatePluginManifest({
+    ...base,
+    version: '1.0.0+build.7',
+    engines: { pluginApi: '^1.0.0' }
+  }).version, '1.0.0+build.7');
 });
 
 test('installed extension host proxies commands through a sandbox and removes palette entries on disable', async () => {
@@ -556,20 +690,216 @@ test('installed extension host rejects malformed or ungranted requests and cance
   await platform.dispose();
 });
 
+test('deactivation owns cleanup while a sandbox activation is still pending', async () => {
+  const reports = [];
+  const platform = core.createRendererPlatform();
+  let sandboxOptions;
+  let disposed = false;
+  const sandbox = {
+    ready: Promise.resolve(),
+    postMessage(message) {
+      if (message.type === 'request' && message.method === 'extension.deactivate') {
+        setTimeout(() => sandboxOptions.onMessage({
+          protocolVersion: 1,
+          type: 'response',
+          id: message.id,
+          ok: true,
+          value: null
+        }), 10);
+      }
+    },
+    dispose() { disposed = true; }
+  };
+  const host = new core.PluginExtensionHost({
+    services: platform.services,
+    commands: platform.commands,
+    contributions: platform.contributions,
+    loadEntry: async (id) => ({ id, source: 'export async function activate() { await new Promise(() => {}); }' }),
+    broker: async () => ({ authorized: true }),
+    sandboxFactory: (options) => {
+      sandboxOptions = options;
+      return sandbox;
+    },
+    onError: (event) => reports.push(event)
+  });
+  const descriptor = {
+    id: 'acme.activating-disable',
+    manifest: {
+      id: 'acme.activating-disable',
+      version: '1.0.0',
+      engines: { pluginApi: '^1.0.0' },
+      permissions: []
+    },
+    grantedPermissions: []
+  };
+
+  const activation = host.activate(descriptor);
+  await nextTurn();
+  const deactivation = await host.deactivate(descriptor.id);
+  const activationResult = await activation;
+  assert.equal(activationResult.ok, false);
+  assert.equal(activationResult.error.code, core.ExtensionErrorCode.CANCELLED);
+  assert.equal(deactivation.ok, true);
+  assert.equal(disposed, true);
+  assert.equal(reports.some((event) => event.source === 'extension-deactivate'), false);
+  await host.dispose();
+  await platform.dispose();
+});
+
+test('deactivation cancels delayed authorization before command side effects', async () => {
+  const platform = core.createRendererPlatform();
+  const authorization = deferred();
+  let authorizationCalls = 0;
+  let commandCalls = 0;
+  let sandbox;
+  platform.commands.register('core.side-effect', () => {
+    commandCalls += 1;
+    return 'ran';
+  }, { owner: 'core' });
+  const host = new core.PluginExtensionHost({
+    services: platform.services,
+    commands: platform.commands,
+    contributions: platform.contributions,
+    loadEntry: async (id) => ({ id, source: 'export function activate() {}' }),
+    broker: (_id, method) => {
+      if (method === 'commands.execute') {
+        authorizationCalls += 1;
+        return authorization.promise;
+      }
+      return Promise.resolve({ authorized: true });
+    },
+    sandboxFactory: (options) => (sandbox = createExtensionSandboxHarness(options))
+  });
+  const descriptor = {
+    id: 'acme.cancelled-command',
+    manifest: {
+      id: 'acme.cancelled-command',
+      version: '1.0.0',
+      engines: { pluginApi: '^1.0.0' },
+      permissions: [core.PluginPermission.COMMANDS_EXECUTE]
+    },
+    grantedPermissions: [core.PluginPermission.COMMANDS_EXECUTE]
+  };
+
+  assert.equal((await host.activate(descriptor)).ok, true);
+  sandbox.emit({
+    type: 'request',
+    id: 1,
+    method: 'commands.execute',
+    args: { id: 'core.side-effect', args: [] }
+  });
+  await nextTurn();
+  assert.equal(authorizationCalls, 1);
+  assert.equal((await host.deactivate(descriptor.id)).ok, true);
+  authorization.resolve({ authorized: true });
+  await nextTurn();
+  assert.equal(commandCalls, 0);
+  await host.dispose();
+  await platform.dispose();
+});
+
 test('extension sandbox keeps downloaded source out of the renderer document and blocks direct network', () => {
   const documentSource = core.buildExtensionSandboxDocument();
+  const encodedWorker = documentSource.match(/const WORKER_SOURCE = ("(?:\\.|[^"\\])*");/);
+  assert.ok(encodedWorker);
+  assert.doesNotThrow(() => new Function(JSON.parse(encodedWorker[1])));
   assert.match(core.EXTENSION_SANDBOX_CSP, /connect-src 'none'/);
   assert.match(core.EXTENSION_SANDBOX_CSP, /worker-src blob:/);
   assert.match(documentSource, /new Worker\(/);
-  assert.match(documentSource, /Object\.defineProperty\(self, name/);
+  assert.match(documentSource, /safeDefineProperty\(self, name/);
   assert.doesNotMatch(documentSource, /window\.api/);
   assert.doesNotMatch(documentSource, /window\.BOBO/);
   assert.match(documentSource, /registerScm/);
   assert.match(documentSource, /scm\.git\.request/);
   assert.match(documentSource, /function scmRequest\(operation, args\)/);
+  assert.match(documentSource, /nativePortPostMessage/);
+  assert.match(documentSource, /Extension payload exceeds the total size limit/);
+  assert.match(documentSource, /createExtensionDataCloner/);
+  assert.match(documentSource, /initializationPromise/);
+  assert.match(documentSource, /await initializationPromise/);
+  assert.doesNotMatch(documentSource, /hardenProtocolIntrinsics/);
+  assert.doesNotMatch(documentSource, /port\.postMessage\(/);
   assert.match(documentSource, /clone: \(args\) => scmRequest\('clone', args\)/);
   assert.match(documentSource, /deleteBranch: \(args\) => scmRequest\('deleteBranch', args\)/);
   assert.doesNotMatch(documentSource, /operation: 'detect', args: args \|\| \{\}/);
+});
+
+test('extension host silently ignores valid messages that arrive after cleanup', async () => {
+  const platform = core.createRendererPlatform();
+  const reports = [];
+  let sandbox;
+  const host = new core.PluginExtensionHost({
+    services: platform.services,
+    commands: platform.commands,
+    contributions: platform.contributions,
+    loadEntry: async (id) => ({ id, source: 'export function activate() {}' }),
+    broker: async () => ({ authorized: true }),
+    onError: (event) => reports.push(event),
+    sandboxFactory: (options) => (sandbox = createExtensionSandboxHarness(options))
+  });
+  const descriptor = {
+    id: 'acme.late-message',
+    revision: 'first',
+    manifest: {
+      id: 'acme.late-message',
+      version: '1.0.0',
+      engines: { pluginApi: '^1.0.0' },
+      permissions: []
+    },
+    grantedPermissions: []
+  };
+  assert.equal((await host.activate(descriptor)).ok, true);
+  assert.equal((await host.deactivate(descriptor.id)).ok, true);
+  const reportCount = reports.length;
+  sandbox.emit({ type: 'response', id: 'host-late', ok: true, value: null });
+  sandbox.emit({ type: 'activated' });
+  await nextTurn();
+  assert.equal(reports.length, reportCount);
+  await host.dispose();
+  await platform.dispose();
+});
+
+test('extension host reloads same-version packages when their content revision changes', async () => {
+  const platform = core.createRendererPlatform();
+  const sandboxes = [];
+  const manifest = {
+    id: 'acme.revision-refresh',
+    version: '1.0.0',
+    engines: { pluginApi: '^1.0.0' },
+    permissions: []
+  };
+  let descriptor = {
+    id: manifest.id,
+    revision: 'a'.repeat(64),
+    manifest,
+    grantedPermissions: []
+  };
+  const host = new core.PluginExtensionHost({
+    services: platform.services,
+    commands: platform.commands,
+    contributions: platform.contributions,
+    listDescriptors: async () => [descriptor],
+    loadEntry: async (id) => ({ id, source: 'export function activate() {}' }),
+    broker: async () => ({ authorized: true }),
+    sandboxFactory: (options) => {
+      const sandbox = createExtensionSandboxHarness(options);
+      sandboxes.push(sandbox);
+      return sandbox;
+    }
+  });
+
+  const started = await host.start();
+  assert.deepEqual(started.activated, [manifest.id]);
+  descriptor = { ...descriptor, revision: 'b'.repeat(64) };
+  const refreshed = await host.refresh();
+  assert.deepEqual(refreshed.deactivated, [manifest.id]);
+  assert.deepEqual(refreshed.activated, [manifest.id]);
+  assert.equal(sandboxes.length, 2);
+  assert.equal(sandboxes[0].disposed, true);
+  assert.equal(sandboxes[1].disposed, false);
+
+  await host.dispose();
+  await platform.dispose();
 });
 
 test('document views are manifest-authorized, lifecycle-owned, and rendered in a separate networkless sandbox', async () => {

@@ -1,6 +1,6 @@
 # BOBOCloud Local AI Agent Plugin Architecture
 
-Status: API 1.5 implementation contract and construction guide. The minimum desktop host is BOBOCloud 2.8.0.
+Status: API 1.5 implementation contract and construction guide. The minimum API 1.5 desktop host is BOBOCloud 2.8.0; reliable one-shot approval failure delivery requires 2.8.1.
 
 ## Scope and product boundary
 

@@ -15,7 +15,8 @@ const MAX_APPROVAL_RESULT_ITEMS = 8192;
 const MAX_APPROVAL_OUTPUT_BYTES = 128 * 1024;
 const APPROVAL_RESULT_FIELDS = new Set([
   'approved', 'rejected', 'tool', 'path', 'sha256', 'exitCode', 'signal',
-  'stdout', 'stderr', 'truncated', 'timedOut', 'cancelled'
+  'stdout', 'stderr', 'truncated', 'timedOut', 'cancelled', 'failed',
+  'errorCode', 'errorMessage', 'outcome', 'mayHaveExecuted'
 ]);
 const ALLOWED_DESCRIPTOR_FIELDS = new Set(['id', 'title', 'description', 'icon', 'order', 'commands', 'capabilities']);
 const ALLOWED_COMMAND_FIELDS = new Set(['create', 'select', 'delete', 'send', 'cancel', 'approve', 'reject', 'preferences', 'configure']);
@@ -78,10 +79,23 @@ function normalizeApprovalResult(value) {
   });
   if (!isPlainObject(source)) throw new TypeError('Agent approval result must be a plain object.');
   const result = {};
-  for (const key of ['approved', 'rejected', 'truncated', 'timedOut', 'cancelled']) {
+  for (const key of ['approved', 'rejected', 'truncated', 'timedOut', 'cancelled', 'failed', 'mayHaveExecuted']) {
     if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
     if (typeof source[key] !== 'boolean') throw new TypeError('Agent approval result ' + key + ' must be a boolean.');
     result[key] = source[key];
+  }
+  if (Object.prototype.hasOwnProperty.call(source, 'errorCode')) {
+    const errorCode = approvalResultText(source.errorCode, 'errorCode', 96);
+    if (!/^[A-Za-z0-9_.-]+$/.test(errorCode)) throw new TypeError('Agent approval result errorCode is invalid.');
+    result.errorCode = errorCode;
+  }
+  if (Object.prototype.hasOwnProperty.call(source, 'errorMessage')) {
+    result.errorMessage = approvalResultText(source.errorMessage, 'errorMessage', 4000);
+  }
+  if (Object.prototype.hasOwnProperty.call(source, 'outcome')) {
+    const outcome = approvalResultText(source.outcome, 'outcome', 32);
+    if (outcome !== 'not-started' && outcome !== 'unknown') throw new TypeError('Agent approval result outcome is invalid.');
+    result.outcome = outcome;
   }
   if (Object.prototype.hasOwnProperty.call(source, 'tool')) {
     const tool = approvalResultText(source.tool, 'tool', 96);
@@ -111,6 +125,16 @@ function normalizeApprovalResult(value) {
     outputTruncated = outputTruncated || bounded.truncated;
   }
   if (outputTruncated) result.truncated = true;
+  const missingUnavailableTool = !result.tool &&
+    (result.errorCode === 'AGENT_APPROVAL_NOT_FOUND' || result.errorCode === 'AGENT_APPROVAL_EXPIRED');
+  if (result.failed === true && (result.rejected !== true || result.approved === true ||
+      (!result.tool && !missingUnavailableTool) ||
+      !result.errorCode || typeof result.errorMessage !== 'string' ||
+      (result.outcome !== 'not-started' && result.outcome !== 'unknown') ||
+      typeof result.mayHaveExecuted !== 'boolean' ||
+      (result.outcome === 'unknown') !== result.mayHaveExecuted)) {
+    throw new TypeError('Agent approval failure result is invalid.');
+  }
   for (const key of Object.keys(result)) {
     if (!APPROVAL_RESULT_FIELDS.has(key)) delete result[key];
   }

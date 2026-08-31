@@ -116,6 +116,14 @@ test('renderer entry is the single source of truth for legacy module order', () 
   assert.deepEqual(readOrderedImports(terminalUiSource), EXPECTED_TERMINAL_UI_MODULES);
 });
 
+test('Monaco AMD loading stays explicit so CommonJS dependencies remain bundleable', () => {
+  const appSource = fs.readFileSync(path.join(ROOT, 'src', 'app.js'), 'utf8');
+  const buildSource = fs.readFileSync(path.join(ROOT, 'scripts', 'build-renderer.js'), 'utf8');
+  assert.match(appSource, /window\.require\.config\(loaderConfig\)/);
+  assert.match(appSource, /window\.require\(\['vs\/editor\/editor\.main'\]/);
+  assert.doesNotMatch(buildSource, /require\s*:\s*['"]window\.require['"]/);
+});
+
 test('index loads only Monaco AMD loader followed by the renderer bundle', () => {
   const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   const scripts = Array.from(html.matchAll(/<script\s+src="([^"]+)"\s*><\/script>/g), (match) => match[1]);
@@ -147,6 +155,7 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.ok(bundle.length < sourceBytes * 0.75);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/app.js')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-runtime.js')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/shared/plugin-semver.js')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-host.js')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-sandbox.js')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.js')));
@@ -178,6 +187,7 @@ test('production renderer build is minified, source-mapped and records ordered m
 test('package and release audit use bundle artifacts instead of raw renderer scripts', () => {
   const files = packageJson.build.files;
   assert.ok(files.includes('main/'));
+  assert.ok(files.includes('shared/'));
   assert.ok(files.includes('renderer-dist/'));
   assert.ok(files.includes('src/ai-settings-schema.js'));
   assert.ok(!files.includes('src/'));

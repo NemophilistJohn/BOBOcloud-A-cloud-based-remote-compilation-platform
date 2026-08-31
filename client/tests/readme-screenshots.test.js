@@ -37,7 +37,7 @@ function pngMetadata(filePath) {
 }
 
 test('README documents current client/server contracts, language navigation, and deployment assets', () => {
-  assert.match(README, /client as \*\*2\.8\.0\*\* and the server as \*\*2\.5\.0\*\*/);
+  assert.match(README, /client as \*\*2\.8\.1\*\* and the server as \*\*2\.5\.0\*\*/);
   assert.match(README, /README\.zh-CN\.md/);
   assert.match(README, /For desktop users/);
   assert.match(README, /For server operators/);
@@ -79,7 +79,7 @@ test('README documents current client/server contracts, language navigation, and
 
 test('Chinese README mirrors the three audience paths and links back to English', () => {
   assert.match(README_ZH, /README\.md/);
-  assert.match(README_ZH, /客户端版本为 \*\*2\.8\.0\*\*，服务端版本为 \*\*2\.5\.0\*\*/);
+  assert.match(README_ZH, /客户端版本为 \*\*2\.8\.1\*\*，服务端版本为 \*\*2\.5\.0\*\*/);
   assert.match(README_ZH, /用户端使用者/);
   assert.match(README_ZH, /服务器运维者/);
   assert.match(README_ZH, /贡献者/);

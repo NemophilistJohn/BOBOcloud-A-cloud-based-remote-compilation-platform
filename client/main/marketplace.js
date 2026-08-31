@@ -8,7 +8,8 @@ const crypto = require('node:crypto');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { TextDecoder } = require('node:util');
-const { PLUGIN_API_VERSION, PluginPermission, satisfiesVersionRange } = require('./plugins');
+const { PLUGIN_API_VERSION, PluginPermission } = require('./plugins');
+const { compareSemver, isValidSemver, satisfiesVersionRange } = require('../shared/plugin-semver');
 
 const OFFICIAL_OWNER = 'NemophilistJohn';
 const OFFICIAL_REPOSITORY = 'BOBOCloud-Marketplace-Registry';
@@ -34,7 +35,6 @@ const MAX_TOTAL_VERSIONS = 4_096;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const COMMIT_PATTERN = /^[a-f0-9]{40}$/;
 const PLUGIN_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
-const SEMVER_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 const KNOWN_MARKETPLACE_PERMISSIONS = new Set(Object.values(PluginPermission));
 
 function marketplaceError(code, message) {
@@ -96,7 +96,7 @@ function assertPluginId(value, code = 'plugins.marketplace.notFound') {
 }
 
 function assertSemver(value, code = 'plugins.marketplace.version') {
-  if (typeof value !== 'string' || !SEMVER_PATTERN.test(value)) {
+  if (!isValidSemver(value)) {
     throw marketplaceError(code, 'Marketplace plugin version is invalid.');
   }
   return value;
@@ -463,35 +463,6 @@ function normalizeCatalog(value) {
   }
   packages.sort((left, right) => left.id.localeCompare(right.id));
   return { schemaVersion: CACHE_SCHEMA_VERSION, registryId: 'bobocloud.marketplace', updatedAt, revision: value.revision, packages };
-}
-
-function compareSemver(left, right) {
-  const leftMatch = SEMVER_PATTERN.exec(left);
-  const rightMatch = SEMVER_PATTERN.exec(right);
-  if (!leftMatch || !rightMatch) return 0;
-  for (let index = 1; index <= 3; index += 1) {
-    const difference = Number(leftMatch[index]) - Number(rightMatch[index]);
-    if (difference) return difference < 0 ? -1 : 1;
-  }
-  const leftPre = leftMatch[4] || '';
-  const rightPre = rightMatch[4] || '';
-  if (!leftPre || !rightPre) return leftPre === rightPre ? 0 : (leftPre ? -1 : 1);
-  const leftParts = leftPre.split('.');
-  const rightParts = rightPre.split('.');
-  const maximum = Math.max(leftParts.length, rightParts.length);
-  for (let index = 0; index < maximum; index += 1) {
-    const a = leftParts[index];
-    const b = rightParts[index];
-    if (a === b) continue;
-    if (a === undefined) return -1;
-    if (b === undefined) return 1;
-    const aNumeric = /^\d+$/.test(a);
-    const bNumeric = /^\d+$/.test(b);
-    if (aNumeric && bNumeric) return Number(a) < Number(b) ? -1 : 1;
-    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
-    return a < b ? -1 : 1;
-  }
-  return 0;
 }
 
 function compatibleWithHost(version, hostVersion) {

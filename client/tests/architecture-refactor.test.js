@@ -303,6 +303,7 @@ test('release packaging always rebuilds a production renderer and packages only 
   const packageJson = JSON.parse(read('package.json'));
   assert.ok(packageJson.build.files.includes('renderer-dist/'));
   assert.ok(packageJson.build.files.includes('main/'));
+  assert.ok(packageJson.build.files.includes('shared/'));
   assert.equal(packageJson.build.files.includes('src/'), false);
   assert.equal(packageJson.scripts['pretest:ui'], 'npm run build:renderer:dev');
 });

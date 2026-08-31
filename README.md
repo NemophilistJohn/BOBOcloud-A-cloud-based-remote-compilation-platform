@@ -2,7 +2,7 @@
 
 <p align="right"><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a></p>
 
-BOBOCLOUD is a self-hosted cloud development workbench: an Electron desktop editor keeps the project on the developer's computer, while a Go service provides Linux execution, Docker runtimes, dependency environments, tasks, terminals, language intelligence, debugging, collaboration, and resource governance. The current source identifies the client as **2.8.0** and the server as **2.5.0**.
+BOBOCLOUD is a self-hosted cloud development workbench: an Electron desktop editor keeps the project on the developer's computer, while a Go service provides Linux execution, Docker runtimes, dependency environments, tasks, terminals, language intelligence, debugging, collaboration, and resource governance. The current source identifies the client as **2.8.1** and the server as **2.5.0**.
 
 The editor is useful before a server is connected. You can open a folder, edit with Monaco, search, inspect Problems, and configure the workbench locally. Run, Debug, cloud terminals, project dependencies, teams, and server storage become available only after a compatible BOBOCLOUD service is selected.
 

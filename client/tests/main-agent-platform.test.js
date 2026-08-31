@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -56,6 +57,9 @@ async function createHarness(t, options = {}) {
           const error = new Error('workspace changed');
           error.code = 'WORKSPACE_CONTEXT_CHANGED';
           throw error;
+        }
+        if (typeof options.onWorkspaceMutationAssertCurrent === 'function') {
+          options.onWorkspaceMutationAssertCurrent({ scope, context: { ...context } });
         }
       };
       assertCurrent();
@@ -426,9 +430,19 @@ test('Agent writes and processes require scoped approvals and structured executi
     input: { path: 'src/app.js', content: 'agent\n', expectedSha256: written.sha256 }
   });
   await fsp.writeFile(path.join(harness.workspace, 'src', 'app.js'), 'user\n', 'utf8');
-  await assert.rejects(
-    () => harness.broker.decideApproval('acme.agent', conflict.approval.id, true),
-    { code: 'AGENT_FILE_CHANGED' }
+  assert.deepEqual(await harness.broker.decideApproval('acme.agent', conflict.approval.id, true), {
+    approved: false,
+    rejected: true,
+    failed: true,
+    tool: 'workspace_write',
+    errorCode: 'AGENT_FILE_CHANGED',
+    errorMessage: 'The file changed while approval was pending.',
+    outcome: 'not-started',
+    mayHaveExecuted: false
+  });
+  assert.throws(
+    () => harness.broker.describeApproval('acme.agent', conflict.approval.id),
+    { code: 'AGENT_APPROVAL_NOT_FOUND' }
   );
 
   const userVersion = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
@@ -493,4 +507,187 @@ test('Agent writes and processes require scoped approvals and structured executi
     () => harness.broker.decideApproval('acme.agent', staleProcess.approval.id, true),
     { code: 'AGENT_STALE_WORKSPACE' }
   );
+});
+
+test('Agent approval tombstones remain bounded and omit unknown evicted tool identity', async (t) => {
+  const harness = await createHarness(t);
+  let firstApprovalId = '';
+  let lastApprovalId = '';
+  for (let index = 0; index < 129; index += 1) {
+    const pending = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
+      tool: 'workspace_write',
+      input: { path: 'evicted.txt', content: String(index) }
+    });
+    if (index === 0) firstApprovalId = pending.approval.id;
+    lastApprovalId = pending.approval.id;
+    await harness.broker.decideApproval('acme.agent', pending.approval.id, false);
+  }
+
+  let evictedError;
+  try {
+    harness.broker.describeApproval('acme.agent', firstApprovalId);
+  } catch (error) {
+    evictedError = error;
+  }
+  assert.equal(evictedError && evictedError.code, 'AGENT_APPROVAL_NOT_FOUND');
+  assert.equal(Object.prototype.hasOwnProperty.call(evictedError, 'approvalTool'), false);
+
+  let retainedError;
+  try {
+    harness.broker.describeApproval('acme.agent', lastApprovalId);
+  } catch (error) {
+    retainedError = error;
+  }
+  assert.equal(retainedError && retainedError.code, 'AGENT_APPROVAL_NOT_FOUND');
+  assert.equal(retainedError && retainedError.approvalTool, 'workspace_write');
+});
+
+test('Agent approval execution failures hide lower-level paths and become terminal results', async (t) => {
+  const secretPath = path.join(os.tmpdir(), 'private-host-path');
+  const harness = await createHarness(t, {
+    runWorkspaceMutation: async () => {
+      const error = new Error('EACCES: permission denied, open ' + secretPath);
+      error.code = 'EACCES';
+      throw error;
+    }
+  });
+  await fsp.mkdir(path.join(harness.workspace, 'src'), { recursive: true });
+  const pending = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
+    tool: 'workspace_write',
+    input: { path: 'src/new.js', content: 'next\n' }
+  });
+  const result = await harness.broker.decideApproval('acme.agent', pending.approval.id, true);
+
+  assert.deepEqual(result, {
+    approved: false,
+    rejected: true,
+    failed: true,
+    tool: 'workspace_write',
+    errorCode: 'AGENT_OPERATION_FAILED',
+    errorMessage: 'The approved Agent operation could not be completed.',
+    outcome: 'not-started',
+    mayHaveExecuted: false
+  });
+  assert.equal(JSON.stringify(result).includes(secretPath), false);
+
+  const knownFailureHarness = await createHarness(t, {
+    runWorkspaceMutation: async () => {
+      const error = new Error('workspace changed near ' + secretPath);
+      error.code = 'AGENT_WORKSPACE_CHANGED';
+      throw error;
+    }
+  });
+  await fsp.mkdir(path.join(knownFailureHarness.workspace, 'src'), { recursive: true });
+  const knownFailure = await knownFailureHarness.broker.request('acme.agent', 'agent.tools.invoke', {
+    tool: 'workspace_write',
+    input: { path: 'src/new.js', content: 'next\n' }
+  });
+  assert.deepEqual(await knownFailureHarness.broker.decideApproval('acme.agent', knownFailure.approval.id, true), {
+    approved: false,
+    rejected: true,
+    failed: true,
+    tool: 'workspace_write',
+    errorCode: 'AGENT_WORKSPACE_CHANGED',
+    errorMessage: 'The workspace changed before the approved Agent operation started.',
+    outcome: 'not-started',
+    mayHaveExecuted: false
+  });
+});
+
+test('Agent write failures report an unknown outcome after the atomic replacement completed', async (t) => {
+  const relativePath = 'src/committed-before-failure.js';
+  const harness = await createHarness(t, {
+    onWorkspaceMutationAssertCurrent({ context }) {
+      if (!fs.existsSync(path.join(context.rootPath, relativePath))) return;
+      const error = new Error('workspace changed after the atomic replacement');
+      error.code = 'WORKSPACE_CONTEXT_CHANGED';
+      throw error;
+    }
+  });
+  await fsp.mkdir(path.join(harness.workspace, 'src'), { recursive: true });
+  const pending = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
+    tool: 'workspace_write',
+    input: { path: relativePath, content: 'committed\n' }
+  });
+
+  assert.deepEqual(await harness.broker.decideApproval('acme.agent', pending.approval.id, true), {
+    approved: false,
+    rejected: true,
+    failed: true,
+    tool: 'workspace_write',
+    errorCode: 'AGENT_OPERATION_FAILED',
+    errorMessage: 'The approved Agent operation could not be completed.',
+    outcome: 'unknown',
+    mayHaveExecuted: true
+  });
+  assert.equal(await fsp.readFile(path.join(harness.workspace, relativePath), 'utf8'), 'committed\n');
+});
+
+test('Agent automatic writes preserve unknown outcomes after the atomic replacement completed', async (t) => {
+  const relativePath = 'src/automatic-committed-before-failure.js';
+  const harness = await createHarness(t, {
+    onWorkspaceMutationAssertCurrent({ context }) {
+      if (!fs.existsSync(path.join(context.rootPath, relativePath))) return;
+      const error = new Error('workspace changed after the automatic atomic replacement');
+      error.code = 'WORKSPACE_CONTEXT_CHANGED';
+      throw error;
+    }
+  });
+  await fsp.mkdir(path.join(harness.workspace, 'src'), { recursive: true });
+  harness.broker.setAccessMode('acme.agent', {
+    providerId: 'acme.agent.main',
+    sessionId: 'automatic-post-commit-failure',
+    accessMode: 'auto'
+  });
+
+  assert.deepEqual(await harness.broker.request('acme.agent', 'agent.tools.invoke', {
+    tool: 'workspace_write',
+    input: { path: relativePath, content: 'automatic committed\n' }
+  }), {
+    approved: false,
+    rejected: true,
+    failed: true,
+    tool: 'workspace_write',
+    errorCode: 'AGENT_OPERATION_FAILED',
+    errorMessage: 'The approved Agent operation could not be completed.',
+    outcome: 'unknown',
+    mayHaveExecuted: true,
+    autoApproved: true,
+    accessMode: 'auto',
+    riskLevel: 'medium'
+  });
+  assert.equal(await fsp.readFile(path.join(harness.workspace, relativePath), 'utf8'), 'automatic committed\n');
+});
+
+test('Agent process failures report an unknown outcome after the child has started', async (t) => {
+  const harness = await createHarness(t);
+  const marker = path.join(harness.workspace, 'agent-process-started.txt');
+  const pending = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
+    tool: 'process_run',
+    input: {
+      command: 'node',
+      args: ['-e', 'require("fs").writeFileSync("agent-process-started.txt", "started"); setTimeout(() => {}, 10000)'],
+      cwd: '.',
+      timeoutMs: 20_000
+    }
+  });
+  const decision = harness.broker.decideApproval('acme.agent', pending.approval.id, true);
+  const deadline = Date.now() + 5000;
+  while (!fs.existsSync(marker) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(fs.existsSync(marker), true, 'the child must start before the workspace invalidation');
+  harness.workspaceState.workspaceIdentity += 1;
+  harness.broker.workspaceChanged();
+
+  assert.deepEqual(await decision, {
+    approved: false,
+    rejected: true,
+    failed: true,
+    tool: 'process_run',
+    errorCode: 'AGENT_STALE_WORKSPACE',
+    errorMessage: 'The active workspace changed before the approved Agent operation completed.',
+    outcome: 'unknown',
+    mayHaveExecuted: true
+  });
 });

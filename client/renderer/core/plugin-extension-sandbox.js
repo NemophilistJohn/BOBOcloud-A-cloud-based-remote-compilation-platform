@@ -2,6 +2,7 @@ import {
   EXTENSION_PROTOCOL_VERSION,
   ExtensionErrorCode,
   ExtensionMessageType,
+  createExtensionDataCloner,
   createExtensionError
 } from './plugin-extension-protocol.js';
 
@@ -31,10 +32,83 @@ function extensionWorkerBootstrapSource() {
   return `
 (() => {
   'use strict';
+  const SafeBlob = Blob;
+  const SafeError = Error;
+  const SafeMap = Map;
+  const SafePromise = Promise;
+  const SafeSet = Set;
+  const SafeString = String;
+  const SafeTypeError = TypeError;
+  const SafeURL = URL;
+  const safeApply = Reflect.apply;
+  const safeArrayIsArray = Array.isArray;
+  const safeAssign = Object.assign;
+  const safeDefineProperty = Object.defineProperty;
+  const safeFreeze = Object.freeze;
+  const safeHasOwn = Object.prototype.hasOwnProperty;
+  const safeKeys = Object.keys;
+  const safeMapClear = Map.prototype.clear;
+  const safeMapDelete = Map.prototype.delete;
+  const safeMapGet = Map.prototype.get;
+  const safeMapSet = Map.prototype.set;
+  const safeMapSize = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get;
+  const safeNumberIsSafeInteger = Number.isSafeInteger;
+  const safeObjectCreate = Object.create;
+  const safeOwnKeys = Reflect.ownKeys;
+  const safePromiseCatch = Promise.prototype.catch;
+  const safePromiseReject = Promise.reject;
+  const safeRegExpTest = RegExp.prototype.test;
+  const safeSetAdd = Set.prototype.add;
+  const safeSetClear = Set.prototype.clear;
+  const safeSetDelete = Set.prototype.delete;
+  const safeSetForEach = Set.prototype.forEach;
+  const safeSetHas = Set.prototype.has;
+  const safeSetSize = Object.getOwnPropertyDescriptor(Set.prototype, 'size').get;
+  const safeStringIncludes = String.prototype.includes;
+  const safeStringReplace = String.prototype.replace;
+  const safeStringSlice = String.prototype.slice;
+  const safeUrlCreateObjectURL = URL.createObjectURL;
+  const safeUrlRevokeObjectURL = URL.revokeObjectURL;
+  const nativePortPostMessage = self.MessagePort && self.MessagePort.prototype.postMessage;
+  const cloneData = (${createExtensionDataCloner.toString()})();
+
+  function apply(method, receiver, args) {
+    return safeApply(method, receiver, args);
+  }
+
+  function freeze(value) {
+    return safeFreeze(value);
+  }
+
+  function hasOwn(value, key) {
+    return apply(safeHasOwn, value, [key]);
+  }
+
+  function mapClear(value) { apply(safeMapClear, value, []); }
+  function mapDelete(value, key) { return apply(safeMapDelete, value, [key]); }
+  function mapGet(value, key) { return apply(safeMapGet, value, [key]); }
+  function mapSet(value, key, item) { apply(safeMapSet, value, [key, item]); }
+  function mapSize(value) { return apply(safeMapSize, value, []); }
+  function matches(pattern, value) { return apply(safeRegExpTest, pattern, [value]); }
+  function rejectPromise(error) { return apply(safePromiseReject, SafePromise, [error]); }
+  function setAdd(value, item) { apply(safeSetAdd, value, [item]); }
+  function setClear(value) { apply(safeSetClear, value, []); }
+  function setDelete(value, item) { return apply(safeSetDelete, value, [item]); }
+  function setHas(value, item) { return apply(safeSetHas, value, [item]); }
+  function setSize(value) { return apply(safeSetSize, value, []); }
+  function setSnapshot(value) {
+    const result = [];
+    apply(safeSetForEach, value, [(item) => { result[result.length] = item; }]);
+    return result;
+  }
+  function ignoreRejection(promise) {
+    apply(safePromiseCatch, promise, [() => {}]);
+  }
+
   // Defense in depth for direct network/process-like browser APIs. CSP still
   // enforces this boundary for module imports and any future browser API.
-  const blockedError = () => new Error('Direct extension network access is disabled.');
-  const blockedFetch = () => Promise.reject(blockedError());
+  const blockedError = () => new SafeError('Direct extension network access is disabled.');
+  const blockedFetch = () => rejectPromise(blockedError());
   const BlockedConstructor = function() { throw blockedError(); };
   for (const name of [
     'fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'WebTransport',
@@ -42,7 +116,7 @@ function extensionWorkerBootstrapSource() {
     'importScripts', 'Worker', 'SharedWorker'
   ]) {
     try {
-      Object.defineProperty(self, name, {
+      safeDefineProperty(self, name, {
         configurable: false,
         enumerable: false,
         writable: false,
@@ -52,10 +126,11 @@ function extensionWorkerBootstrapSource() {
   }
   try {
     if (self.navigator && typeof self.navigator.sendBeacon === 'function') {
-      Object.defineProperty(self.navigator, 'sendBeacon', { configurable: false, writable: false, value: () => false });
+      safeDefineProperty(self.navigator, 'sendBeacon', { configurable: false, writable: false, value: () => false });
     }
   } catch (_) {}
   const VERSION = ${EXTENSION_PROTOCOL_VERSION};
+  const errorCodePattern = /^[A-Za-z][A-Za-z0-9._-]*$/;
   const TYPE = {
     CONNECT: ${JSON.stringify(ExtensionMessageType.CONNECT)},
     INITIALIZE: ${JSON.stringify(ExtensionMessageType.INITIALIZE)},
@@ -99,39 +174,65 @@ function extensionWorkerBootstrapSource() {
   let sequence = 0;
   let extensionModule = null;
   let activated = false;
+  let initializationPromise = null;
+  let deactivationPromise = null;
   let deactivated = false;
-  const pending = new Map();
-  const commandHandlers = new Map();
-  const subscriptions = new Set();
-  let localization = Object.freeze({ locale: 'en', messages: Object.freeze(Object.create(null)) });
-  const localizationListeners = new Set();
+  const pending = new SafeMap();
+  const incomingRequests = new SafeSet();
+  const commandHandlers = new SafeMap();
+  const subscriptions = new SafeSet();
+  let localization = freeze({ locale: 'en', messages: freeze(safeObjectCreate(null)) });
+  const localizationListeners = new SafeSet();
 
   function errorValue(error, fallbackCode) {
+    const fallback = typeof fallbackCode === 'string' && matches(errorCodePattern, fallbackCode) && fallbackCode.length <= 160
+      ? fallbackCode
+      : 'EXTENSION_UNAVAILABLE';
+    const code = error && typeof error.code === 'string' && matches(errorCodePattern, error.code) && error.code.length <= 160
+      ? error.code
+      : fallback;
     return {
-      code: error && typeof error.code === 'string' && error.code ? error.code : fallbackCode || 'EXTENSION_UNAVAILABLE',
-      message: error && typeof error.message === 'string' && error.message ? error.message.slice(0, 65536) : 'Extension operation failed.'
+      code,
+      message: error && typeof error.message === 'string' && error.message
+        ? apply(safeStringSlice, error.message, [0, 8192])
+        : 'Extension operation failed.'
     };
   }
 
   function fail(code, message) {
-    const error = new Error(message);
+    const error = new SafeError(message);
     error.code = code;
     return error;
   }
 
   function post(message) {
-    if (!port) throw fail('EXTENSION_UNAVAILABLE', 'Extension host channel is unavailable.');
-    port.postMessage(Object.assign({ protocolVersion: VERSION }, message));
+    if (!port || typeof nativePortPostMessage !== 'function') {
+      throw fail('EXTENSION_UNAVAILABLE', 'Extension host channel is unavailable.');
+    }
+    apply(nativePortPostMessage, port, [safeAssign({ protocolVersion: VERSION }, message)]);
+  }
+
+  function cloneOptions(method) {
+    return method === HOST_METHOD.AGENT_BROKER_REQUEST
+      ? { maxStringLength: 2 * 1024 * 1024, maxItems: 8192, maxBytes: 8 * 1024 * 1024 }
+      : undefined;
   }
 
   function request(method, args) {
+    if (deactivated) {
+      return rejectPromise(fail('EXTENSION_CANCELLED', 'Extension is being deactivated.'));
+    }
+    if (mapSize(pending) >= 32) {
+      return rejectPromise(fail('EXTENSION_UNAVAILABLE', 'Extension request concurrency limit reached.'));
+    }
     const id = ++sequence;
-    return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
+    return new SafePromise((resolve, reject) => {
+      mapSet(pending, id, { resolve, reject, method });
       try {
-        post({ type: TYPE.REQUEST, id, method, args: args === undefined ? null : args });
+        const value = cloneData(args === undefined ? null : args, cloneOptions(method));
+        post({ type: TYPE.REQUEST, id, method, args: value });
       } catch (error) {
-        pending.delete(id);
+        mapDelete(pending, id);
         reject(error);
       }
     });
@@ -152,57 +253,60 @@ function extensionWorkerBootstrapSource() {
   }
 
   function normalizeLocalization(value) {
-    if (!value || typeof value !== 'object' || Array.isArray(value) ||
-        !value.messages || typeof value.messages !== 'object' || Array.isArray(value.messages)) {
+    if (!value || typeof value !== 'object' || safeArrayIsArray(value) ||
+        !value.messages || typeof value.messages !== 'object' || safeArrayIsArray(value.messages)) {
       throw fail('EXTENSION_PROTOCOL_ERROR', 'Plugin localization payload is invalid.');
     }
     const locale = value.locale === 'zh-CN' || value.locale === 'ja' || value.locale === 'en' ? value.locale : 'en';
-    const messages = Object.create(null);
-    const keys = Object.keys(value.messages);
+    const messages = safeObjectCreate(null);
+    const keys = safeKeys(value.messages);
     if (keys.length > 1024) throw fail('EXTENSION_PROTOCOL_ERROR', 'Plugin localization payload is too large.');
-    for (const key of keys) {
+    for (let position = 0; position < keys.length; position += 1) {
+      const key = keys[position];
       const message = value.messages[key];
-      if (!key || key.length > 160 || key.includes('\\0') || typeof message !== 'string' || message.length > 8192) {
+      if (!key || key.length > 160 || apply(safeStringIncludes, key, ['\\0']) ||
+          typeof message !== 'string' || message.length > 8192) {
         throw fail('EXTENSION_PROTOCOL_ERROR', 'Plugin localization payload contains an invalid string.');
       }
       messages[key] = message;
     }
-    return Object.freeze({ locale, messages: Object.freeze(messages) });
+    return freeze({ locale, messages: freeze(messages) });
   }
 
   function interpolate(message, values) {
-    if (!values || typeof values !== 'object' || Array.isArray(values)) return message;
-    return message.replace(/\\{([A-Za-z0-9_]+)\\}/g, (match, key) => (
-      Object.prototype.hasOwnProperty.call(values, key) ? String(values[key]) : match
-    ));
+    if (!values || typeof values !== 'object' || safeArrayIsArray(values)) return message;
+    return apply(safeStringReplace, message, [/\\{([A-Za-z0-9_]+)\\}/g, (match, key) => (
+      hasOwn(values, key) ? SafeString(values[key]) : match
+    )]);
   }
 
   function updateLocalization(value) {
     localization = normalizeLocalization(value);
-    for (const listener of Array.from(localizationListeners)) {
-      try { listener(Object.freeze({ locale: localization.locale })); } catch (_) {}
+    const listeners = setSnapshot(localizationListeners);
+    for (let position = 0; position < listeners.length; position += 1) {
+      try { listeners[position](freeze({ locale: localization.locale })); } catch (_) {}
     }
   }
 
   function pluginI18n() {
-    return Object.freeze({
+    return freeze({
       get locale() { return localization.locale; },
       t(key, values) {
-        const source = String(key == null ? '' : key);
-        const message = Object.prototype.hasOwnProperty.call(localization.messages, source)
+        const source = SafeString(key == null ? '' : key);
+        const message = hasOwn(localization.messages, source)
           ? localization.messages[source]
           : source;
         return interpolate(message, values);
       },
       onDidChange(listener) {
-        if (typeof listener !== 'function') throw new TypeError('Plugin i18n listener must be a function.');
+        if (typeof listener !== 'function') throw new SafeTypeError('Plugin i18n listener must be a function.');
         let active = true;
-        localizationListeners.add(listener);
-        return Object.freeze({
+        setAdd(localizationListeners, listener);
+        return freeze({
           dispose() {
             if (!active) return;
             active = false;
-            localizationListeners.delete(listener);
+            setDelete(localizationListeners, listener);
           }
         });
       }
@@ -211,7 +315,7 @@ function extensionWorkerBootstrapSource() {
 
   function makeDisposable(dispose) {
     let active = true;
-    return Object.freeze({
+    return freeze({
       dispose() {
         if (!active) return;
         active = false;
@@ -222,32 +326,32 @@ function extensionWorkerBootstrapSource() {
 
   function addSubscription(value) {
     if (!value || typeof value.dispose !== 'function') {
-      throw new TypeError('Extension subscriptions accept disposables only.');
+      throw new SafeTypeError('Extension subscriptions accept disposables only.');
     }
-    subscriptions.add(value);
+    setAdd(subscriptions, value);
     return value;
   }
 
   function disposeSubscriptions() {
-    const values = Array.from(subscriptions).reverse();
-    subscriptions.clear();
-    for (const value of values) {
-      try { value.dispose(); } catch (_) {}
+    const values = setSnapshot(subscriptions);
+    setClear(subscriptions);
+    for (let position = values.length - 1; position >= 0; position -= 1) {
+      try { values[position].dispose(); } catch (_) {}
     }
   }
 
   function createContext(init) {
-    const extension = Object.freeze({ id: init.extension.id, version: init.extension.version });
+    const extension = freeze({ id: init.extension.id, version: init.extension.version });
     const context = {
       apiVersion: init.apiVersion,
       extension,
-      subscriptions: Object.freeze({ add: addSubscription }),
+      subscriptions: freeze({ add: addSubscription }),
       i18n: pluginI18n(),
-      commands: Object.freeze({
+      commands: freeze({
         async register(id, handler, metadata) {
-          if (typeof handler !== 'function') throw new TypeError('Command handler must be a function.');
+          if (typeof handler !== 'function') throw new SafeTypeError('Command handler must be a function.');
           const handlerId = 'handler-' + (++sequence);
-          commandHandlers.set(handlerId, handler);
+          mapSet(commandHandlers, handlerId, handler);
           try {
             const result = await request(HOST_METHOD.COMMAND_REGISTER, {
               id,
@@ -255,13 +359,13 @@ function extensionWorkerBootstrapSource() {
               metadata: metadata || {}
             });
             const disposable = makeDisposable(() => {
-              commandHandlers.delete(handlerId);
-              request(HOST_METHOD.COMMAND_DISPOSE, { handle: result.handle }).catch(() => {});
+              mapDelete(commandHandlers, handlerId);
+              ignoreRejection(request(HOST_METHOD.COMMAND_DISPOSE, { handle: result.handle }));
             });
             addSubscription(disposable);
             return disposable;
           } catch (error) {
-            commandHandlers.delete(handlerId);
+            mapDelete(commandHandlers, handlerId);
             throw error;
           }
         },
@@ -269,7 +373,7 @@ function extensionWorkerBootstrapSource() {
           return request(HOST_METHOD.COMMAND_EXECUTE, { id, args });
         }
       }),
-      contributions: Object.freeze({
+      contributions: freeze({
         async register(point, contribution, options) {
           const result = await request(HOST_METHOD.CONTRIBUTION_REGISTER, {
             point,
@@ -277,20 +381,20 @@ function extensionWorkerBootstrapSource() {
             options: options || {}
           });
           const disposable = makeDisposable(() => {
-            request(HOST_METHOD.CONTRIBUTION_DISPOSE, { handle: result.handle }).catch(() => {});
+            ignoreRejection(request(HOST_METHOD.CONTRIBUTION_DISPOSE, { handle: result.handle }));
           });
           addSubscription(disposable);
           return disposable;
         }
       }),
-      sourceControl: Object.freeze({
+      sourceControl: freeze({
         async register(descriptor) {
           const result = await request(HOST_METHOD.SOURCE_CONTROL_REGISTER, descriptor);
           let active = true;
           const requireActive = () => {
             if (!active) throw fail('EXTENSION_CANCELLED', 'Source-control state provider has been disposed.');
           };
-          const provider = Object.freeze({
+          const provider = freeze({
             id: typeof result.id === 'string' ? result.id : descriptor && descriptor.id,
             setState(state) {
               requireActive();
@@ -303,21 +407,21 @@ function extensionWorkerBootstrapSource() {
             dispose() {
               if (!active) return;
               active = false;
-              request(HOST_METHOD.SOURCE_CONTROL_DISPOSE, { handle: result.handle }).catch(() => {});
+              ignoreRejection(request(HOST_METHOD.SOURCE_CONTROL_DISPOSE, { handle: result.handle }));
             }
           });
           addSubscription(provider);
           return provider;
         }
       }),
-      fileDecorations: Object.freeze({
+      fileDecorations: freeze({
         async registerScm(options) {
           const result = await request(HOST_METHOD.FILE_DECORATIONS_SCM_REGISTER, options);
           let active = true;
           const requireActive = () => {
             if (!active) throw fail('EXTENSION_CANCELLED', 'SCM decoration provider has been disposed.');
           };
-          const provider = Object.freeze({
+          const provider = freeze({
             set(entries) {
               requireActive();
               return request(HOST_METHOD.FILE_DECORATIONS_SCM_SET, { handle: result.handle, entries });
@@ -329,31 +433,31 @@ function extensionWorkerBootstrapSource() {
             dispose() {
               if (!active) return;
               active = false;
-              request(HOST_METHOD.FILE_DECORATIONS_SCM_DISPOSE, { handle: result.handle }).catch(() => {});
+              ignoreRejection(request(HOST_METHOD.FILE_DECORATIONS_SCM_DISPOSE, { handle: result.handle }));
             }
           });
           addSubscription(provider);
           return provider;
         }
       }),
-      documentViews: Object.freeze({
+      documentViews: freeze({
         async register(descriptor) {
           const result = await request(HOST_METHOD.DOCUMENT_VIEW_REGISTER, descriptor);
           const disposable = makeDisposable(() => {
-            request(HOST_METHOD.DOCUMENT_VIEW_DISPOSE, { handle: result.handle }).catch(() => {});
+            ignoreRejection(request(HOST_METHOD.DOCUMENT_VIEW_DISPOSE, { handle: result.handle }));
           });
           addSubscription(disposable);
           return disposable;
         }
       }),
-      agents: Object.freeze({
+      agents: freeze({
         async register(descriptor) {
           const result = await request(HOST_METHOD.AGENT_REGISTER, descriptor);
           let active = true;
           const requireActive = () => {
             if (!active) throw fail('EXTENSION_CANCELLED', 'Agent provider has been disposed.');
           };
-          const provider = Object.freeze({
+          const provider = freeze({
             id: typeof result.id === 'string' ? result.id : descriptor && descriptor.id,
             setState(state) {
               requireActive();
@@ -366,31 +470,31 @@ function extensionWorkerBootstrapSource() {
             dispose() {
               if (!active) return;
               active = false;
-              request(HOST_METHOD.AGENT_DISPOSE, { handle: result.handle }).catch(() => {});
+              ignoreRejection(request(HOST_METHOD.AGENT_DISPOSE, { handle: result.handle }));
             }
           });
           addSubscription(provider);
           return provider;
         }
       }),
-      models: Object.freeze({
+      models: freeze({
         list: () => agentBrokerRequest('models.list'),
         generate: (args) => agentBrokerRequest('models.generate', args),
         cancel: (requestId) => agentBrokerRequest('models.cancel', { requestId })
       }),
-      tools: Object.freeze({
+      tools: freeze({
         invoke: (tool, input) => agentBrokerRequest('agent.tools.invoke', { tool, input: input || {} })
       }),
-      skills: Object.freeze({
+      skills: freeze({
         list: () => agentBrokerRequest('agent.skills.list'),
         read: (skillId) => agentBrokerRequest('agent.skills.read', { skillId })
       }),
-      storage: Object.freeze({
+      storage: freeze({
         read: () => agentBrokerRequest('agent.storage.read'),
         write: (value) => agentBrokerRequest('agent.storage.write', { value })
       }),
-      scm: Object.freeze({
-        git: Object.freeze({
+      scm: freeze({
+        git: freeze({
           detect: (args) => scmRequest('detect', args),
           status: (args) => scmRequest('status', args),
           history: (args) => scmRequest('history', args),
@@ -412,18 +516,18 @@ function extensionWorkerBootstrapSource() {
           push: (args) => scmRequest('push', args)
         })
       }),
-      services: Object.freeze({
+      services: freeze({
         get(id) {
           return request(HOST_METHOD.SERVICE_GET, { id });
         }
       }),
-      host: Object.freeze({
+      host: freeze({
         request(method, args) {
           return request(HOST_METHOD.BROKER_REQUEST, { method, args: args === undefined ? null : args });
         }
       })
     };
-    return Object.freeze(context);
+    return freeze(context);
   }
 
   async function initialize(message) {
@@ -435,18 +539,20 @@ function extensionWorkerBootstrapSource() {
       throw fail('EXTENSION_INVALID_REQUEST', 'Extension entry exceeds the 5 MiB host limit.');
     }
     updateLocalization(message.localization || { locale: 'en', messages: {} });
-    const sourceUrl = URL.createObjectURL(new Blob([message.source], { type: 'text/javascript' }));
+    const sourceUrl = apply(safeUrlCreateObjectURL, SafeURL, [new SafeBlob([message.source], { type: 'text/javascript' })]);
     try {
       extensionModule = await import(sourceUrl);
     } finally {
-      URL.revokeObjectURL(sourceUrl);
+      apply(safeUrlRevokeObjectURL, SafeURL, [sourceUrl]);
     }
+    if (deactivated) throw fail('EXTENSION_CANCELLED', 'Extension activation was cancelled.');
     if (!extensionModule || typeof extensionModule.activate !== 'function') {
       throw fail('EXTENSION_PROTOCOL_ERROR', 'Extension entry must export activate(context).');
     }
-    const result = await extensionModule.activate(createContext(message));
+    const result = await apply(extensionModule.activate, undefined, [createContext(message)]);
     if (typeof result === 'function') addSubscription(makeDisposable(result));
     else if (result && typeof result.dispose === 'function') addSubscription(result);
+    if (deactivated) throw fail('EXTENSION_CANCELLED', 'Extension activation was cancelled.');
     activated = true;
     post({ type: TYPE.ACTIVATED });
   }
@@ -455,27 +561,37 @@ function extensionWorkerBootstrapSource() {
     if (!args || typeof args.handlerId !== 'string') {
       throw fail('EXTENSION_PROTOCOL_ERROR', 'Command invocation payload is invalid.');
     }
-    const handler = commandHandlers.get(args.handlerId);
+    const handler = mapGet(commandHandlers, args.handlerId);
     if (!handler) throw fail('EXTENSION_NOT_FOUND', 'Extension command handler is no longer available.');
-    return handler.apply(undefined, Array.isArray(args.args) ? args.args : []);
+    return apply(handler, undefined, safeArrayIsArray(args.args) ? args.args : []);
   }
 
-  async function deactivate() {
-    if (deactivated) return null;
+  function deactivate() {
+    if (deactivationPromise) return deactivationPromise;
     deactivated = true;
-    try {
-      if (extensionModule && typeof extensionModule.deactivate === 'function') {
-        await extensionModule.deactivate();
+    deactivationPromise = (async () => {
+      try {
+        if (initializationPromise) {
+          try { await initializationPromise; } catch (_) {}
+        }
+        if (extensionModule && typeof extensionModule.deactivate === 'function') {
+          await apply(extensionModule.deactivate, undefined, []);
+        }
+      } finally {
+        disposeSubscriptions();
+        mapClear(commandHandlers);
+        setClear(localizationListeners);
+        activated = false;
       }
-    } finally {
-      disposeSubscriptions();
-      commandHandlers.clear();
-      localizationListeners.clear();
-    }
-    return null;
+      return null;
+    })();
+    return deactivationPromise;
   }
 
   async function handleHostRequest(message) {
+    if (deactivated && message.method !== SANDBOX_METHOD.DEACTIVATE) {
+      throw fail('EXTENSION_CANCELLED', 'Extension is being deactivated.');
+    }
     if (message.method === SANDBOX_METHOD.COMMAND_INVOKE) return invokeCommand(message.args);
     if (message.method === SANDBOX_METHOD.I18N_CHANGED) {
       updateLocalization(message.args);
@@ -486,33 +602,124 @@ function extensionWorkerBootstrapSource() {
   }
 
   function handleResponse(message) {
-    const pendingRequest = pending.get(message.id);
+    const pendingRequest = mapGet(pending, message.id);
     if (!pendingRequest) return;
-    pending.delete(message.id);
-    if (message.ok === true) pendingRequest.resolve(message.value);
-    else pendingRequest.reject(fail(
-      message.error && message.error.code || 'EXTENSION_UNAVAILABLE',
-      message.error && message.error.message || 'Extension operation failed.'
-    ));
+    mapDelete(pending, message.id);
+    if (message.ok === true) {
+      try {
+        pendingRequest.resolve(cloneData(message.value, cloneOptions(pendingRequest.method)));
+      } catch (error) {
+        pendingRequest.reject(error);
+      }
+      return;
+    }
+    pendingRequest.reject(fail(message.error.code, message.error.message));
+  }
+
+  function hasExactKeys(value, allowed) {
+    const keys = safeOwnKeys(value);
+    if (keys.length !== allowed.length) return false;
+    for (let position = 0; position < keys.length; position += 1) {
+      const key = keys[position];
+      if (typeof key !== 'string') return false;
+      let found = false;
+      for (let candidate = 0; candidate < allowed.length; candidate += 1) {
+        if (allowed[candidate] === key) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) return false;
+    }
+    return true;
+  }
+
+  function validError(value) {
+    return value && typeof value === 'object' && !safeArrayIsArray(value) &&
+      hasExactKeys(value, ['code', 'message']) && typeof value.code === 'string' &&
+      matches(errorCodePattern, value.code) && value.code.length <= 160 &&
+      typeof value.message === 'string' && value.message.length > 0 && value.message.length <= 8192;
+  }
+
+  function validRequestId(value) {
+    return (safeNumberIsSafeInteger(value) && value >= 1) ||
+      (typeof value === 'string' && matches(/^[A-Za-z0-9_-]{1,96}$/, value));
+  }
+
+  function validHostMessage(message) {
+    if (!message || typeof message !== 'object' || safeArrayIsArray(message) ||
+        message.protocolVersion !== VERSION || typeof message.type !== 'string') return false;
+    if (message.type === TYPE.INITIALIZE) {
+      return hasExactKeys(message, ['protocolVersion', 'type', 'extension', 'apiVersion', 'source', 'localization']) &&
+        message.extension && typeof message.extension === 'object' && !safeArrayIsArray(message.extension) &&
+        hasExactKeys(message.extension, ['id', 'version']) && typeof message.extension.id === 'string' &&
+        typeof message.extension.version === 'string' && typeof message.apiVersion === 'string' &&
+        typeof message.source === 'string';
+    }
+    if (message.type === TYPE.RESPONSE) {
+      if (!validRequestId(message.id) || typeof message.ok !== 'boolean') return false;
+      return message.ok === true
+        ? hasExactKeys(message, ['protocolVersion', 'type', 'id', 'ok', 'value'])
+        : hasExactKeys(message, ['protocolVersion', 'type', 'id', 'ok', 'error']) && validError(message.error);
+    }
+    if (message.type === TYPE.REQUEST) {
+      return hasExactKeys(message, ['protocolVersion', 'type', 'id', 'method', 'args']) &&
+        validRequestId(message.id) && typeof message.method === 'string' &&
+        message.method.length > 0 && message.method.length <= 160;
+    }
+    return false;
+  }
+
+  async function respondToHostRequest(message) {
+    if (setHas(incomingRequests, message.id) || setSize(incomingRequests) >= 32) {
+      post({
+        type: TYPE.RESPONSE,
+        id: message.id,
+        ok: false,
+        error: errorValue(fail('EXTENSION_UNAVAILABLE', 'Extension request concurrency limit reached.'))
+      });
+      return;
+    }
+    setAdd(incomingRequests, message.id);
+    try {
+      const args = cloneData(message.args);
+      const value = await handleHostRequest({ method: message.method, args });
+      post({ type: TYPE.RESPONSE, id: message.id, ok: true, value: cloneData(value) });
+    } catch (error) {
+      post({ type: TYPE.RESPONSE, id: message.id, ok: false, error: errorValue(error) });
+    } finally {
+      setDelete(incomingRequests, message.id);
+    }
+  }
+
+  function protocolFatal(message) {
+    try {
+      post({ type: TYPE.FATAL, error: errorValue(fail('EXTENSION_PROTOCOL_ERROR', message)) });
+    } catch (_) {}
   }
 
   function handleMessage(message) {
-    if (!message || message.protocolVersion !== VERSION || typeof message.type !== 'string') return;
+    if (!validHostMessage(message)) {
+      protocolFatal('Malformed extension host message.');
+      return;
+    }
     if (message.type === TYPE.INITIALIZE) {
-      initialize(message).catch((error) => {
+      if (initializationPromise || activated || extensionModule) {
+        protocolFatal('Extension was initialized more than once.');
+        return;
+      }
+      initializationPromise = initialize(message);
+      apply(safePromiseCatch, initializationPromise, [(error) => {
         post({ type: TYPE.ACTIVATION_FAILED, error: errorValue(error) });
-      });
+      }]);
       return;
     }
     if (message.type === TYPE.RESPONSE) {
       handleResponse(message);
       return;
     }
-    if (message.type === TYPE.REQUEST && typeof message.id !== 'undefined') {
-      Promise.resolve().then(() => handleHostRequest(message)).then(
-        (value) => post({ type: TYPE.RESPONSE, id: message.id, ok: true, value }),
-        (error) => post({ type: TYPE.RESPONSE, id: message.id, ok: false, error: errorValue(error) })
-      );
+    if (message.type === TYPE.REQUEST) {
+      void respondToHostRequest(message);
     }
   }
 

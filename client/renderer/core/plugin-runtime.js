@@ -3,6 +3,9 @@ import { ContributionPoint } from './contribution-registry.js';
 import { SourceControlStateStore, validateSourceControlDescriptor } from './source-control.js';
 import { validateDocumentViewDescriptor } from './document-view.js';
 import { validateAgentDescriptor } from './agent.js';
+import pluginSemver from '../../shared/plugin-semver.js';
+
+const { isValidSemver, satisfiesVersionRange } = pluginSemver;
 
 export const PLUGIN_API_VERSION = '1.5.0';
 
@@ -43,112 +46,8 @@ function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
-function parseVersion(value) {
-  const match = String(value || '').match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
-  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
-}
-
-function isValidSemver(value) {
-  const match = String(value || '').match(
-    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/
-  );
-  if (!match) return false;
-  return !match[4] || match[4].split('.').every((identifier) => !/^\d+$/.test(identifier) || identifier === '0' || !identifier.startsWith('0'));
-}
-
-function compareVersion(left, right) {
-  for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index] < right[index] ? -1 : 1;
-  }
-  return 0;
-}
-
-function parsePartialVersion(value) {
-  const parts = String(value || '').split('.');
-  if (parts.length > 3 || parts.some((part) => !/^(?:0|[1-9]\d*|x|X|\*)$/.test(part))) return null;
-  const numbers = [];
-  let wildcard = false;
-  for (const part of parts) {
-    if (part === 'x' || part === 'X' || part === '*') {
-      wildcard = true;
-      numbers.push(null);
-    } else {
-      if (wildcard) return null;
-      numbers.push(Number(part));
-    }
-  }
-  while (numbers.length < 3) numbers.push(null);
-  return { numbers, specified: parts.length };
-}
-
-function partialBounds(partial) {
-  const firstMissing = partial.numbers.indexOf(null);
-  if (firstMissing === 0) return { any: true };
-  const lower = partial.numbers.map((value) => value == null ? 0 : value);
-  if (firstMissing < 0) return { lower, upper: null, exact: true };
-  const upper = [...lower];
-  const bumpIndex = firstMissing - 1;
-  upper[bumpIndex] += 1;
-  for (let index = bumpIndex + 1; index < 3; index += 1) upper[index] = 0;
-  return { lower, upper, exact: false };
-}
-
-function satisfiesToken(version, token) {
-  if (token === '*' || token === 'x' || token === 'X') return true;
-  const special = token.match(/^([\^~])(.+)$/);
-  if (special) {
-    const partial = parsePartialVersion(special[2]);
-    if (!partial || partial.numbers[0] == null) return false;
-    const lower = partial.numbers.map((value) => value == null ? 0 : value);
-    let upper;
-    if (special[1] === '~') {
-      const bumpIndex = partial.specified <= 1 ? 0 : 1;
-      upper = [...lower];
-      upper[bumpIndex] += 1;
-      for (let index = bumpIndex + 1; index < 3; index += 1) upper[index] = 0;
-    } else if (lower[0] > 0) {
-      upper = [lower[0] + 1, 0, 0];
-    } else if (lower[1] > 0) {
-      upper = [0, lower[1] + 1, 0];
-    } else {
-      upper = [0, 0, lower[2] + 1];
-    }
-    return compareVersion(version, lower) >= 0 && compareVersion(version, upper) < 0;
-  }
-
-  const comparator = token.match(/^(<=|>=|<|>|=)?(.+)$/);
-  if (!comparator) return false;
-  const operator = comparator[1] || '';
-  const partial = parsePartialVersion(comparator[2]);
-  if (!partial) return false;
-  const bounds = partialBounds(partial);
-  if (bounds.any) return operator === '' || operator === '=';
-  if (operator) {
-    const comparison = compareVersion(version, bounds.lower);
-    if (operator === '=') {
-      return bounds.exact
-        ? comparison === 0
-        : comparison >= 0 && compareVersion(version, bounds.upper) < 0;
-    }
-    if (operator === '>') return bounds.exact ? comparison > 0 : compareVersion(version, bounds.upper) >= 0;
-    if (operator === '>=') return comparison >= 0;
-    if (operator === '<') return comparison < 0;
-    if (operator === '<=') return bounds.exact ? comparison <= 0 : compareVersion(version, bounds.upper) < 0;
-    return false;
-  }
-  if (bounds.exact) return compareVersion(version, bounds.lower) === 0;
-  return compareVersion(version, bounds.lower) >= 0 && compareVersion(version, bounds.upper) < 0;
-}
-
 function isCompatibleApiRange(range) {
-  if (!isNonEmptyString(range)) return false;
-  const current = parseVersion(PLUGIN_API_VERSION);
-  const clauses = range.trim().split(/\s*\|\|\s*/);
-  if (clauses.some((clause) => !clause)) return false;
-  return clauses.some((clause) => {
-    const tokens = clause.trim().split(/\s+/);
-    return tokens.length > 0 && tokens.every((token) => satisfiesToken(current, token));
-  });
+  return satisfiesVersionRange(PLUGIN_API_VERSION, range);
 }
 
 export function validatePluginManifest(manifest) {
