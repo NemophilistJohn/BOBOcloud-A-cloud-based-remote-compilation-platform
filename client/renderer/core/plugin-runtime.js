@@ -7,7 +7,7 @@ import pluginSemver from '../../shared/plugin-semver.js';
 
 const { isValidSemver, satisfiesVersionRange } = pluginSemver;
 
-export const PLUGIN_API_VERSION = '1.5.0';
+export const PLUGIN_API_VERSION = '1.6.0';
 
 export const PluginPermission = Object.freeze({
   COMMANDS_REGISTER: 'commands.register',

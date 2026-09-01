@@ -1,6 +1,6 @@
 # BOBOCloud Local AI Agent Plugin Architecture
 
-Status: API 1.5 implementation contract and construction guide. The minimum API 1.5 desktop host is BOBOCloud 2.8.0; reliable one-shot approval failure delivery requires 2.8.1.
+Status: API 1.6 implementation contract and Agent 1.4 construction guide. The minimum API 1.6 desktop host is BOBOCloud 2.8.1.
 
 ## Scope and product boundary
 
@@ -40,9 +40,9 @@ Trusted Agent workbench          OS / local workspace / AI provider
 | Module | Responsibility |
 | --- | --- |
 | `client/main/plugins.js` | Package validation, permission grants, broker method authorization, install/disable/uninstall lifecycle, and sanitized plugin records. |
-| `client/main/agent-platform.js` | Opaque model refs, structured local tools, host-authoritative risk/access policy, pending-operation decisions, Skill discovery, and isolated JSON persistence. |
-| `client/main/ai.js` | Provider-specific HTTP request normalization and cancellation while retaining secret model profiles in the main process. |
-| `client/renderer/core/agent.js` | Agent descriptor/state validation, immutable snapshots, bounds, events, and owner cleanup. |
+| `client/main/agent-platform.js` | Opaque model refs and declared capabilities, normalized stream events, structured local tools/descriptors, host-authoritative risk/access policy, revisioned Skill discovery, and isolated JSON persistence. |
+| `client/main/ai.js` | Provider-specific request, reasoning, SSE normalization, usage accounting, and cancellation while retaining secret model profiles in the main process. |
+| `client/renderer/core/agent.js` | Agent descriptor/state validation, complete snapshots, compare-and-swap state patches, bounds, events, and owner cleanup. |
 | `client/renderer/core/plugin-extension-protocol.js` | Data-only cross-realm protocol and bounded cloning/error envelopes. |
 | `client/renderer/core/plugin-extension-host.js` | Permission enforcement, contribution handles, command routing, broker delegation, and deterministic teardown. |
 | `client/renderer/core/plugin-extension-sandbox.js` | Frozen public plugin context inside the network-disabled Worker. |
@@ -59,9 +59,10 @@ The official package should keep a small internal split before bundling:
 | activation | Register commands and Agent provider; hydrate persisted state; publish the initial snapshot. |
 | sessions | Create, select, delete, title, bound history, and serialize sessions. |
 | orchestrator | Build system/user/tool messages, run model turns, parse tool calls, and enforce turn/tool limits. |
-| goals | Translate a user goal into bounded steps and publish step transitions. |
+| goals | Create and revise bounded goal steps from current evidence, while preserving stable step identities and publishing transitions. |
 | tools | Validate model-generated JSON arguments, invoke only named host tools, and pause on approval. |
-| skills | Select opaque Skill ids, read selected documents, and inject bounded instruction text into model context. |
+| skills | Select opaque Skill ids, progressively load revision-pinned documents, and inject only currently relevant bounded instruction text. |
+| checkpoints | Estimate the live context budget, roll older turns into semantic checkpoints, and preserve decisions, goal state, tool evidence, and unresolved work. |
 | presentation | Convert domain state into the host `AgentState`; localize every visible title and status. |
 
 The release artifact remains one self-contained ES module. Source modules, build tools, tests, and `node_modules` are repository inputs, not package runtime dependencies.
@@ -93,17 +94,24 @@ This requires a frontend API, but it is a data API rather than a webview API: `a
 ### User turn
 
 1. The workbench invokes the plugin's `send` command with one bounded payload.
-2. The plugin appends the user message, marks the session running, creates a unique request id, starts a tracked asynchronous turn, republishes state, and returns from the command without waiting for the full turn.
-3. The plugin calls `models.generate()` using an opaque model ref and bounded tool schemas.
-4. The main broker resolves the secret host profile and returns normalized text, reasoning text, and tool calls.
-5. The plugin either publishes the assistant result or validates and dispatches a named tool.
-6. The loop ends on a final response, cancellation, approval wait, bounded iteration limit, or error.
+2. The plugin appends the user message, marks the session running, creates a unique request id, starts a tracked asynchronous turn, publishes a versioned patch, and returns from the command without waiting for the full turn.
+3. The plugin calls `models.generateStream()` using an opaque model ref and bounded tool schemas. A feature-detected `generate()` fallback preserves API 1.5 compatibility for the official package.
+4. The main broker resolves the secret host profile, translates only declared reasoning controls, and emits normalized request-scoped events. Provider SSE framing and credentials never cross into the Worker.
+5. The plugin incrementally upserts the assistant message and timeline, then either finalizes the assistant result or validates and dispatches named tools.
+6. Independent host descriptors marked both `readOnly` and `parallelSafe` may execute in a bounded parallel batch. Unknown or mutating tools remain serial.
+7. The loop ends on a final response, cancellation, approval wait, bounded iteration limit, or error.
 
 `models.cancel(requestId)` maps only to the calling plugin's host-prefixed request. Cancellation is a real transport operation, not merely a UI state change.
 
 ### Goal mode
 
-Goal mode is an orchestration policy, not a more privileged capability. The plugin creates a bounded plan, publishes step statuses, and iterates the same model/tool loop. Each step is `pending`, `in-progress`, `completed`, or `blocked`. A blocked or failed step does not silently widen permissions. Resuming continues from persisted semantic state but must re-read workspace facts and request fresh approvals.
+Goal mode is an orchestration policy, not a more privileged capability. The initial plan is provisional: the plugin exposes a `goal_update` model tool that can add, reorder, split, block, or complete bounded steps as evidence changes. Existing step ids remain stable whenever their intent is unchanged, at most one step is in progress, and every revision is published as ordinary validated Agent state. A blocked or failed step does not silently widen permissions. Resuming continues from persisted semantic state but must re-read workspace facts and request fresh approvals.
+
+### Progressive Skills and rolling context
+
+Skill selection is metadata-first. `skills.list()` supplies opaque id, revision, byte size, and estimated tokens; the plugin exposes those descriptions to the model without immediately loading every document. A `skill_load` orchestration tool reads one selected Skill with its listed revision only when needed. Revision mismatch aborts that load and refreshes the catalog, preventing instructions from changing between selection and use.
+
+The model capability snapshot is the only source for `contextWindowTokens` and the provider's exact `maxOutputTokens`; unknown values remain `null` and use a conservative plugin fallback. The host separately derives `requestOutputLimitTokens = min(maxOutputTokens, 262144)` (or the host ceiling when provider output is unknown), allowing orchestration to retain truthful provider metadata while respecting the local safety boundary. Before each model call, the plugin estimates system, checkpoint, active Skill, recent message, and expected-output cost. When the rolling threshold is crossed, older turns are replaced by a semantic checkpoint that preserves constraints, decisions, goal revisions, file/tool evidence, failures, approvals, and unresolved work. The original user request and recent verbatim turns remain available. Checkpoint creation and replacement are timeline-visible and persisted, so compaction is a resumable state transition rather than silent transcript deletion.
 
 ### Trusted access and approval
 
@@ -134,8 +142,8 @@ The Worker context has no approval, rejection, decision, or process-cancel metho
 | Plugin self-approves a mutation | When policy requires approval, the Worker can only create a pending operation. Describe, decide, and cancel exist solely on the sender-bound trusted renderer/preload/main path. |
 | Unexpected automatic mutation | `auto` uses only the host risk matrix, `full` retains all capability/sandbox validation, and mode is re-read at the last execution boundary. |
 | Orphaned local process | Running processes stay keyed by plugin and approval id; trusted workbench cancel and every plugin/host teardown path terminate them. |
-| Cross-plugin request cancellation | Model request ids are host-prefixed by plugin id. |
-| Skill-based privilege escalation | Skill content is instruction data only; it grants no permission and cannot bypass tool approval. |
+| Cross-plugin request cancellation or stream injection | Model request ids are host-prefixed by plugin id; events are bound to plugin revision, request id, monotonic sequence, and one terminal state. |
+| Skill-based privilege escalation or stale Skill read | Skill content is instruction data only; it grants no permission, cannot bypass tool approval, and is read against a listed content revision. |
 | Stale state after workspace switch | Brokers capture and revalidate a monotonic workspace identity; pending approvals are invalidated by mismatch. |
 | UI injection | The host accepts bounded state fields and semantic icon/status tokens only; no HTML, CSS, URLs, or callbacks cross the boundary. |
 | Resource exhaustion | Entry, RPC, model input, file, output, state-list, session, message, timeline, Skill, storage, timeout, and result counts are bounded. |
@@ -178,9 +186,9 @@ The marketplace or host chooses the artifact URL. A plugin cannot supply an inst
 
 ## Construction sequence
 
-1. Land the generic API 1.5 capability, state, trusted access, and host risk-policy contracts with unit tests.
-2. Land the trusted Agent workbench and remove obsolete Agent/Skill/MCP placeholders from native AI settings while leaving Chat and inline completion intact.
-3. Build the official plugin against the declaration, including session storage/cleanup, Chat/Goal modes, effort levels, model cancellation, Skills, compaction, tool iteration, and approvals.
+1. Land the generic API 1.6 model capability, stream event, incremental state, tool descriptor, revisioned Skill, trusted access, and host risk-policy contracts with unit tests.
+2. Land the trusted Agent workbench with keyed patch rendering and provider-aware model connection forms while leaving Chat and inline completion intact.
+3. Build the official plugin against the declaration, including session storage/cleanup, dynamic Goal mode, requested/effective effort levels, model cancellation, progressive Skills, rolling checkpoints, bounded parallel reads, serial mutations, and approvals.
 4. Run Node contract tests, renderer build checks, and real Electron UI flows at desktop and compact viewports.
 5. Package and install the real archive, verify three locales and lifecycle cleanup, then publish the plugin release.
 6. Register the immutable artifact in the marketplace and verify the complete remote hash chain.

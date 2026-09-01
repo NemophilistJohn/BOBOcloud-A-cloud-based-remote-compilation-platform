@@ -1,5 +1,5 @@
 /**
- * BOBOCloud Plugin API 1.5.0 declarations.
+ * BOBOCloud Plugin API 1.6.0 declarations.
  *
  * Copy or reference this file from a plugin's TypeScript project. The runtime
  * is a sandboxed ES module; Node.js, Electron, DOM, and window APIs are not
@@ -459,6 +459,7 @@ export type AgentMode = 'chat' | 'goal';
 export type AgentAccessMode = 'ask' | 'auto' | 'full';
 export type AgentToolRiskLevel = 'low' | 'medium' | 'high';
 export type AgentReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type AgentEffectiveReasoningEffort = AgentReasoningEffort | 'none';
 export type AgentSessionStatus = 'idle' | 'running' | 'waiting-approval' | 'completed' | 'failed' | 'cancelled';
 export type AgentTimelineKind = 'thought' | 'tool' | 'status' | 'skill' | 'compaction' | 'error';
 export type AgentTimelineStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'rejected';
@@ -510,6 +511,18 @@ export interface AgentModelChoice {
   readonly modelId?: string;
   readonly purpose?: 'chat' | 'inline';
   readonly configured?: boolean;
+  readonly capabilities?: Readonly<{
+    readonly contextWindowTokens: number | null;
+    readonly maxOutputTokens: number | null;
+    /** Effective per-request ceiling after the host safety limit is applied. */
+    readonly requestOutputLimitTokens: number;
+    readonly tools: boolean | null;
+    readonly streaming: boolean | null;
+    readonly parallelToolCalls: boolean | null;
+    readonly reasoningEfforts: readonly AgentReasoningEffort[];
+    readonly effectiveEffortMap: Readonly<Partial<Record<AgentReasoningEffort, AgentEffectiveReasoningEffort>>>;
+    readonly source: 'provider-api' | 'official-catalog' | 'user-override' | 'unknown';
+  }> | null;
 }
 
 export interface AgentSkillChoice {
@@ -518,6 +531,9 @@ export interface AgentSkillChoice {
   readonly description?: string;
   readonly source?: 'workspace' | 'user';
   readonly enabled?: boolean;
+  readonly revision?: string;
+  readonly sizeBytes?: number | null;
+  readonly estimatedTokens?: number | null;
 }
 
 export interface AgentMessage {
@@ -569,6 +585,7 @@ export interface AgentActiveSession {
   /** Plugin/session semantics only. Host tool authority comes from trusted main-process state. */
   readonly accessMode?: AgentAccessMode;
   readonly reasoningEffort?: AgentReasoningEffort;
+  readonly effectiveReasoningEffort?: AgentEffectiveReasoningEffort;
   readonly modelRef?: string;
   readonly messages?: readonly AgentMessage[];
   readonly timeline?: readonly AgentTimelineItem[];
@@ -609,7 +626,19 @@ export interface AgentCommandPayload {
 export interface AgentStateProvider extends Disposable {
   readonly id: string;
   setState(state: AgentState): Promise<Readonly<{ version: number }>>;
+  updateState(patch: AgentStatePatch): Promise<Readonly<{ applied: boolean; version: number }>>;
   clearState(): Promise<Readonly<{ version: number }>>;
+}
+
+export type AgentStatePatchOperation =
+  | Readonly<{ type: 'state.merge'; value: Partial<Omit<AgentState, 'activeSession'>> }>
+  | Readonly<{ type: 'session.merge'; value: Partial<Omit<AgentActiveSession, 'messages' | 'timeline'>> }>
+  | Readonly<{ type: 'message.upsert'; value: AgentMessage }>
+  | Readonly<{ type: 'timeline.upsert'; value: AgentTimelineItem }>;
+
+export interface AgentStatePatch {
+  readonly baseVersion: number;
+  readonly operations: readonly AgentStatePatchOperation[];
 }
 
 export interface PluginAgents {
@@ -636,7 +665,7 @@ export interface AgentModelToolDefinition {
 
 export interface AgentModelGenerateRequest {
   readonly modelRef: string;
-  readonly requestId?: string;
+  readonly requestId: string;
   readonly messages: readonly AgentModelMessage[];
   readonly tools?: readonly AgentModelToolDefinition[];
   readonly reasoningEffort?: AgentReasoningEffort;
@@ -656,13 +685,32 @@ export interface AgentModelGenerateResult {
   readonly reasoning: string;
   readonly toolCalls: readonly AgentModelToolCall[];
   readonly finishReason: string;
-  readonly usage: JsonObject | null;
+  readonly usage: AgentModelUsage | null;
+  readonly requestedReasoningEffort: AgentReasoningEffort;
+  readonly effectiveReasoningEffort: AgentEffectiveReasoningEffort;
 }
+
+export interface AgentModelUsage {
+  readonly inputTokens: number | null;
+  readonly outputTokens: number | null;
+  readonly totalTokens: number | null;
+  readonly reasoningTokens?: number;
+  readonly cachedInputTokens?: number;
+}
+
+export type AgentModelStreamEvent =
+  | Readonly<{ type: 'response.started'; requestId: string; sequence: number; requestedReasoningEffort: AgentReasoningEffort; effectiveReasoningEffort: AgentEffectiveReasoningEffort }>
+  | Readonly<{ type: 'content.delta' | 'reasoning.delta'; requestId: string; sequence: number; delta: string }>
+  | Readonly<{ type: 'tool_call.delta'; requestId: string; sequence: number; index: number; id?: string; name?: string; argumentsDelta?: string }>
+  | Readonly<{ type: 'usage'; requestId: string; sequence: number; usage: AgentModelUsage }>
+  | Readonly<{ type: 'response.completed'; requestId: string; sequence: number; requestedReasoningEffort: AgentReasoningEffort; effectiveReasoningEffort: AgentEffectiveReasoningEffort; result: AgentModelGenerateResult }>
+  | Readonly<{ type: 'response.error'; requestId: string; sequence: number; error: Readonly<{ code: string; message: string }> }>;
 
 export interface PluginModels {
   /** All methods require `models.generate`; returned refs never contain a secret. */
   list(): Promise<Readonly<{ models: readonly AgentModelChoice[] }>>;
   generate(args: AgentModelGenerateRequest): Promise<AgentModelGenerateResult>;
+  generateStream(args: AgentModelGenerateRequest, onEvent: (event: AgentModelStreamEvent) => void | Promise<void>): Promise<AgentModelGenerateResult>;
   /** Cancels only this plugin's host-prefixed request id. */
   cancel(requestId: string): Promise<Readonly<{ success: boolean; cancelled: boolean }>>;
 }
@@ -746,6 +794,7 @@ export type AgentApprovalResult =
   | AgentToolExecutionFailedResult;
 
 export interface PluginTools {
+  list(): Promise<Readonly<{ tools: readonly AgentToolDescriptor[] }>>;
   /** `workspace_list`, `workspace_read`, and `workspace_search` require `workspace.read`. */
   invoke(tool: 'workspace_list', input?: AgentWorkspaceListInput): Promise<AgentWorkspaceListResult>;
   invoke(tool: 'workspace_read', input: AgentWorkspaceReadInput): Promise<AgentWorkspaceReadResult>;
@@ -756,24 +805,40 @@ export interface PluginTools {
   invoke(tool: string, input?: JsonObject): Promise<JsonValue>;
 }
 
+export interface AgentToolDescriptor {
+  readonly name: string;
+  readonly description: string;
+  readonly inputSchema: JsonObject;
+  readonly risk: AgentToolRiskLevel;
+  readonly readOnly: boolean;
+  readonly parallelSafe: boolean;
+  readonly requiresWorkspace: boolean;
+}
+
 export interface AgentSkillSummary {
   readonly id: string;
   readonly source: 'workspace' | 'user';
   readonly name: string;
   readonly description: string;
   readonly size: number;
+  readonly sizeBytes: number;
+  readonly estimatedTokens: number;
+  readonly revision: string;
 }
 export interface AgentSkillDocument {
   readonly id: string;
   readonly source: 'workspace' | 'user';
   readonly name: string;
   readonly description: string;
+  readonly sizeBytes: number;
+  readonly estimatedTokens: number;
+  readonly revision: string;
   readonly content: string;
 }
 export interface PluginSkills {
   /** Requires `skills.read`; no filesystem path is returned. */
   list(): Promise<Readonly<{ skills: readonly AgentSkillSummary[] }>>;
-  read(skillId: string): Promise<AgentSkillDocument>;
+  read(skillId: string, revision?: string): Promise<AgentSkillDocument>;
 }
 
 export interface PluginStorage {
@@ -850,6 +915,7 @@ export type AgentErrorCode =
   | 'AGENT_INVALID_MODEL_REQUEST'
   | 'AGENT_MODEL_FAILED'
   | 'AGENT_MODEL_UNCONFIGURED'
+  | 'AGENT_MODEL_CAPABILITY'
   | 'AGENT_MODEL_PROTOCOL'
   | 'AGENT_STORAGE_TOO_LARGE'
   | 'AGENT_STORAGE_INVALID'
@@ -864,6 +930,7 @@ export type AgentErrorCode =
   | 'AGENT_APPROVAL_NOT_FOUND'
   | 'AGENT_APPROVAL_EXPIRED'
   | 'AGENT_SKILL_NOT_FOUND'
+  | 'AGENT_SKILL_CHANGED'
   | 'AGENT_METHOD_DENIED';
 
 export interface PluginApiError extends Error {

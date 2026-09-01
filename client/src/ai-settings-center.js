@@ -22,6 +22,9 @@
   var editingPurpose = 'chat';
   var profileEditorDraft = null;
   var profileEditorRaw = null;
+  var profileEditorProviderDrafts = Object.create(null);
+  var profileEditorAdvancedOpen = false;
+  var profileEditorRenderGeneration = 0;
   var unsubscribeLocale = null;
 
   function t(key, params) {
@@ -141,9 +144,9 @@
         var option = element('option');
         option.value = item.value;
         option.textContent = item.rawLabel || t(item.labelKey);
-        option.selected = String(item.value) === String(value == null ? '' : value);
         input.append(option);
       });
+      input.value = String(value == null ? '' : value);
     } else if (options.multiline) {
       input = element('textarea', 'ai-control-textarea');
       input.value = value == null ? '' : String(value);
@@ -297,6 +300,88 @@
     return parsed;
   }
 
+  function schemaApi() {
+    return BOBO.aiSettingsSchema || {};
+  }
+
+  function providerDefinition(provider) {
+    var schema = schemaApi();
+    var id = schema.normalizeProviderId ? schema.normalizeProviderId(provider) : String(provider || 'openai-compatible');
+    return {
+      id: id,
+      definition: schema.PROVIDER_CATALOG && schema.PROVIDER_CATALOG[id] || {
+        labelKey: 'ai.control.provider.compatible',
+        protocols: ['chat-completions'],
+        defaultProtocol: 'chat-completions',
+        authTypes: ['bearer'],
+        defaultAuthType: 'bearer'
+      }
+    };
+  }
+
+  function providerSelectItems() {
+    var schema = schemaApi();
+    var order = Array.isArray(schema.PROVIDER_ORDER) ? schema.PROVIDER_ORDER : ['openai', 'anthropic', 'deepseek', 'glm', 'kimi', 'qwen', 'openai-compatible'];
+    return order.map(function(provider) {
+      var resolved = providerDefinition(provider);
+      return { value: resolved.id, labelKey: resolved.definition.labelKey };
+    });
+  }
+
+  function protocolSelectItems(definition) {
+    return definition.protocols.map(function(protocol) {
+      return { value: protocol, labelKey: 'ai.control.protocol.' + protocol };
+    });
+  }
+
+  function authSelectItems(definition) {
+    return definition.authTypes.map(function(authType) {
+      return { value: authType, labelKey: 'ai.control.auth.' + authType };
+    });
+  }
+
+  function rawOrProfile(raw, profile, key, fallback) {
+    if (raw[key] !== undefined) return raw[key];
+    if (profile[key] !== undefined && profile[key] !== null) return profile[key];
+    return fallback === undefined ? '' : fallback;
+  }
+
+  function parseCapabilityInteger(value, maximum) {
+    var candidate = String(value == null ? '' : value).trim();
+    if (!candidate) return null;
+    var parsed = Number(candidate);
+    var upperBound = Number.isInteger(maximum) ? maximum : 100000000;
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > upperBound) throw new Error('capabilities');
+    return parsed;
+  }
+
+  function parseCapabilityBoolean(value) {
+    if (value === 'true' || value === true) return true;
+    if (value === 'false' || value === false) return false;
+    return null;
+  }
+
+  function parseReasoningEfforts(value) {
+    var schema = schemaApi();
+    var allowed = Array.isArray(schema.REASONING_EFFORTS) ? schema.REASONING_EFFORTS : ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+    var result = [];
+    String(value || '').split(',').forEach(function(item) {
+      var effort = item.trim().toLowerCase();
+      if (!effort || result.indexOf(effort) >= 0) return;
+      if (allowed.indexOf(effort) < 0) throw new Error('efforts');
+      result.push(effort);
+    });
+    return result;
+  }
+
+  function collectProfileValues(form) {
+    var values = Object.assign({}, profileEditorRaw || {});
+    Array.prototype.forEach.call(form.querySelectorAll('[data-profile-field]'), function(input) {
+      values[input.dataset.profileField] = input.value;
+    });
+    return values;
+  }
+
   function validEndpoint(value) {
     if (!String(value || '').trim()) return true;
     try {
@@ -306,32 +391,57 @@
   }
 
   function collectProfileForm(form) {
-    var values = {};
-    Array.prototype.forEach.call(form.querySelectorAll('[data-profile-field]'), function(input) {
-      values[input.dataset.profileField] = input.value;
-    });
+    var values = collectProfileValues(form);
+    var provider = providerDefinition(values.provider);
+    var capabilities = {
+      contextWindowTokens: parseCapabilityInteger(values.capabilityContextWindowTokens),
+      maxOutputTokens: parseCapabilityInteger(values.capabilityMaxOutputTokens),
+      tools: parseCapabilityBoolean(values.capabilityTools),
+      streaming: parseCapabilityBoolean(values.capabilityStreaming),
+      parallelToolCalls: parseCapabilityBoolean(values.capabilityParallelToolCalls),
+      reasoningEfforts: parseReasoningEfforts(values.capabilityReasoningEfforts),
+      effectiveEffortMap: parseOptions(values.capabilityEffectiveEffortMap),
+      source: values.capabilitySource || 'unknown'
+    };
+    if (capabilities.source === 'unknown' && (
+      capabilities.contextWindowTokens !== null || capabilities.maxOutputTokens !== null ||
+      capabilities.tools !== null || capabilities.streaming !== null || capabilities.parallelToolCalls !== null ||
+      capabilities.reasoningEfforts.length || Object.keys(capabilities.effectiveEffortMap).length
+    )) capabilities.source = 'user-override';
     var profile = {
       id: editingProfileId || ('profile-' + Date.now()),
       name: values.name.trim(),
-      provider: values.provider,
+      provider: provider.id,
+      protocol: provider.definition.protocols.indexOf(values.protocol) >= 0 ? values.protocol : provider.definition.defaultProtocol,
+      authType: provider.definition.authTypes.indexOf(values.authType) >= 0 ? values.authType : provider.definition.defaultAuthType,
       apiKey: values.apiKey,
       endpoint: values.endpoint.trim(),
       modelId: values.modelId.trim(),
       mode: editingPurpose === 'inline' && values.mode === 'fim' ? 'fim' : 'chat',
+      apiVersion: provider.definition.apiVersion ? String(values.apiVersion || provider.definition.apiVersion).trim() : '',
+      organizationId: provider.definition.organization ? String(values.organizationId || '').trim() : '',
+      projectId: provider.definition.project ? String(values.projectId || '').trim() : '',
+      workspaceId: provider.definition.workspace ? String(values.workspaceId || '').trim() : '',
+      region: provider.definition.region ? values.region : '',
+      billingPlan: provider.definition.billingPlan ? values.billingPlan : '',
+      capabilities: capabilities,
       options: parseOptions(values.options)
     };
     if (!profile.name) throw new Error('name');
+    if (profile.provider === 'qwen' && profile.billingPlan === 'workspace' &&
+        (!schemaApi().validQwenWorkspaceId || !schemaApi().validQwenWorkspaceId(profile.workspaceId))) throw new Error('workspace');
     if (!profile.endpoint || !profile.modelId) throw new Error('pair');
     if (!validEndpoint(profile.endpoint)) throw new Error('endpoint');
     return profile;
   }
 
-  function captureProfileForm(form) {
-    var values = {};
-    Array.prototype.forEach.call(form.querySelectorAll('[data-profile-field]'), function(input) {
-      values[input.dataset.profileField] = input.value;
-    });
+  function captureProfileForm(form, changedInput) {
+    if (!form || !form.isConnected || !modal || form !== modal.querySelector('.ai-profile-editor form')) return;
+    var values = profileEditorRaw ? Object.assign({}, profileEditorRaw) : collectProfileValues(form);
+    var changedField = changedInput && changedInput.dataset.profileField;
+    if (changedField) values[changedField] = changedInput.value;
     profileEditorRaw = values;
+    if (changedField === 'endpoint') profileEditorRaw.endpointTouched = true;
     markDirty();
   }
 
@@ -341,7 +451,10 @@
     if (code === 'empty') return 'ai.control.profile.errorEmpty';
     if (code === 'pair') return 'ai.control.profile.errorPair';
     if (code === 'endpoint') return 'ai.control.profile.errorEndpoint';
+    if (code === 'workspace') return 'ai.control.profile.errorWorkspace';
     if (code === 'options') return 'ai.control.profile.errorOptions';
+    if (code === 'capabilities') return 'ai.control.profile.errorCapabilities';
+    if (code === 'efforts') return 'ai.control.profile.errorEfforts';
     return 'ai.control.profile.errorInvalid';
   }
 
@@ -361,16 +474,172 @@
     editingProfileId = '';
     profileEditorDraft = null;
     profileEditorRaw = null;
+    profileEditorProviderDrafts = Object.create(null);
+    profileEditorAdvancedOpen = false;
     markDirty();
     updateHeaderStatus();
     return next;
   }
 
+  function triStateItems() {
+    return [
+      { value: '', labelKey: 'ai.control.capability.unknown' },
+      { value: 'true', labelKey: 'ai.control.capability.supported' },
+      { value: 'false', labelKey: 'ai.control.capability.unsupported' }
+    ];
+  }
+
+  function capabilityFieldValue(raw, capabilities, key) {
+    var rawKey = 'capability' + key.charAt(0).toUpperCase() + key.slice(1);
+    if (raw[rawKey] !== undefined) return raw[rawKey];
+    var value = capabilities[key];
+    return value === undefined || value === null ? '' : value;
+  }
+
+  function currentProfileShape(profile, raw) {
+    var provider = providerDefinition(rawOrProfile(raw, profile, 'provider', 'openai-compatible'));
+    var protocol = rawOrProfile(raw, profile, 'protocol', provider.definition.defaultProtocol);
+    if (provider.definition.protocols.indexOf(protocol) < 0) protocol = provider.definition.defaultProtocol;
+    var authType = rawOrProfile(raw, profile, 'authType', provider.definition.defaultAuthType);
+    if (provider.definition.authTypes.indexOf(authType) < 0) authType = provider.definition.defaultAuthType;
+    return {
+      provider: provider,
+      protocol: protocol,
+      authType: authType,
+      region: rawOrProfile(raw, profile, 'region', provider.definition.region ? 'cn-beijing' : ''),
+      billingPlan: rawOrProfile(raw, profile, 'billingPlan', provider.definition.billingPlan ? 'standard' : ''),
+      workspaceId: rawOrProfile(raw, profile, 'workspaceId', '')
+    };
+  }
+
+  function endpointForShape(shape) {
+    var schema = schemaApi();
+    return schema.defaultEndpointFor ? schema.defaultEndpointFor(shape.provider.id, {
+      protocol: shape.protocol,
+      region: shape.region,
+      billingPlan: shape.billingPlan,
+      workspaceId: shape.workspaceId
+    }) : '';
+  }
+
+  function qwenRegionsForBillingPlan(billingPlan) {
+    var schema = schemaApi();
+    if (schema.qwenRegionsForBillingPlan) return schema.qwenRegionsForBillingPlan(billingPlan);
+    if (billingPlan === 'workspace') return ['cn-beijing', 'ap-southeast-1', 'ap-northeast-1', 'eu-central-1', 'us-east-1'];
+    if (billingPlan === 'trial') return ['cn-beijing', 'ap-southeast-1'];
+    if (billingPlan === 'standard') return ['cn-beijing', 'ap-southeast-1', 'us-east-1'];
+    return [];
+  }
+
+  function qwenRegionSelectItems(billingPlan) {
+    return qwenRegionsForBillingPlan(billingPlan).map(function(region) {
+      var keys = {
+        'cn-beijing': 'cnBeijing',
+        'ap-southeast-1': 'apSoutheast1',
+        'ap-northeast-1': 'apNortheast1',
+        'eu-central-1': 'euCentral1',
+        'us-east-1': 'usEast1'
+      };
+      return { value: region, labelKey: 'ai.control.region.' + keys[region] };
+    });
+  }
+
+  function emptyRawForProvider(provider, common) {
+    var definition = provider.definition;
+    var raw = {
+      name: common.name || '',
+      provider: provider.id,
+      protocol: definition.defaultProtocol,
+      authType: definition.defaultAuthType,
+      apiKey: '',
+      endpoint: '',
+      modelId: '',
+      mode: common.mode || (editingPurpose === 'inline' ? 'fim' : 'chat'),
+      apiVersion: definition.apiVersion || '',
+      organizationId: '',
+      projectId: '',
+      workspaceId: '',
+      region: definition.region ? 'cn-beijing' : '',
+      billingPlan: definition.billingPlan ? 'standard' : '',
+      capabilityContextWindowTokens: '',
+      capabilityMaxOutputTokens: '',
+      capabilityTools: '',
+      capabilityStreaming: '',
+      capabilityParallelToolCalls: '',
+      capabilityReasoningEfforts: '',
+      capabilityEffectiveEffortMap: '{}',
+      capabilitySource: 'unknown',
+      options: '{}'
+    };
+    raw.endpoint = endpointForShape({
+      provider: provider,
+      protocol: raw.protocol,
+      authType: raw.authType,
+      region: raw.region,
+      billingPlan: raw.billingPlan,
+      workspaceId: raw.workspaceId
+    });
+    return raw;
+  }
+
+  function updateDynamicProfileShape(form, previousShape) {
+    var endpointInput = form.querySelector('[data-profile-field="endpoint"]');
+    var previousDefault = endpointForShape(previousShape);
+    var endpointValue = endpointInput ? endpointInput.value.trim() : '';
+    var managedEndpoint = !endpointValue || endpointValue === previousDefault;
+    var captured = collectProfileValues(form);
+    var nextProvider = providerDefinition(captured.provider);
+    var providerChanged = nextProvider.id !== previousShape.provider.id;
+    if (providerChanged) {
+      captured.provider = previousShape.provider.id;
+      captured.protocol = previousShape.protocol;
+      captured.authType = previousShape.authType;
+      profileEditorProviderDrafts[previousShape.provider.id] = Object.assign({}, captured);
+      var restored = profileEditorProviderDrafts[nextProvider.id];
+      profileEditorRaw = restored
+        ? Object.assign({}, restored, { name: captured.name || '', mode: captured.mode || restored.mode, provider: nextProvider.id })
+        : emptyRawForProvider(nextProvider, { name: captured.name, mode: captured.mode });
+      markDirty();
+      renderActivePane();
+      return;
+    }
+
+    profileEditorRaw = captured;
+    profileEditorRaw.provider = nextProvider.id;
+    if (nextProvider.definition.protocols.indexOf(profileEditorRaw.protocol) < 0) profileEditorRaw.protocol = nextProvider.definition.defaultProtocol;
+    if (nextProvider.definition.authTypes.indexOf(profileEditorRaw.authType) < 0) profileEditorRaw.authType = nextProvider.definition.defaultAuthType;
+    if (nextProvider.definition.apiVersion && !String(profileEditorRaw.apiVersion || '').trim()) profileEditorRaw.apiVersion = nextProvider.definition.apiVersion;
+    if (nextProvider.definition.billingPlan && ['standard', 'workspace', 'trial', 'token-plan', 'coding-plan'].indexOf(profileEditorRaw.billingPlan) < 0) profileEditorRaw.billingPlan = 'standard';
+    if (nextProvider.definition.region) {
+      var allowedRegions = qwenRegionsForBillingPlan(profileEditorRaw.billingPlan);
+      if (allowedRegions.indexOf(profileEditorRaw.region) < 0) profileEditorRaw.region = allowedRegions[0] || '';
+    }
+    if (managedEndpoint) profileEditorRaw.endpoint = endpointForShape(currentProfileShape(profileEditorDraft, profileEditorRaw));
+    markDirty();
+    renderActivePane();
+  }
+
+  function updateManagedEndpoint(form, previousShape) {
+    var endpointInput = form.querySelector('[data-profile-field="endpoint"]');
+    if (!endpointInput || !profileEditorRaw || profileEditorRaw.endpointTouched === true) return;
+    var endpointValue = endpointInput.value.trim();
+    var previousDefault = endpointForShape(previousShape);
+    if (endpointValue && endpointValue !== previousDefault) return;
+    var nextDefault = endpointForShape(currentProfileShape(profileEditorDraft, profileEditorRaw));
+    endpointInput.value = nextDefault;
+    profileEditorRaw.endpoint = nextDefault;
+  }
+
   function renderProfileEditor(parent) {
+    var renderGeneration = ++profileEditorRenderGeneration;
     var editor = element('div', 'ai-profile-editor' + (profileEditorDraft ? ' open' : ''));
     if (!profileEditorDraft) { parent.append(editor); return; }
+    var shouldFocusName = !profileEditorRaw;
     var profile = profileEditorDraft;
     var raw = profileEditorRaw || {};
+    var shape = currentProfileShape(profile, raw);
+    var definition = shape.provider.definition;
+    var capabilities = profile.capabilities || {};
     var head = element('div', 'ai-profile-editor-header');
     head.append(element('h3', '', editingPurpose === 'inline'
       ? (editingProfileId ? 'ai.control.profile.editInlineTitle' : 'ai.control.profile.addInlineTitle')
@@ -379,27 +648,78 @@
       editingProfileId = '';
       profileEditorDraft = null;
       profileEditorRaw = null;
+      profileEditorProviderDrafts = Object.create(null);
+      profileEditorAdvancedOpen = false;
       renderActivePane();
     }));
     editor.append(head);
     var form = element('form', 'ai-control-field-grid');
     var name = profileField(form, 'ai.control.profile.name', raw.name !== undefined ? raw.name : profile.name, 'name', { full: true, placeholderKey: 'ai.control.profile.namePlaceholder' });
-    var provider = profileField(form, 'ai.control.profile.protocol', raw.provider !== undefined ? raw.provider : profile.provider, 'provider', { select: [
-      { value: 'openai-compatible', labelKey: 'ai.control.protocol.openaiCompatible' },
-      { value: 'openai', labelKey: 'ai.control.protocol.openai' },
-      { value: 'anthropic', labelKey: 'ai.control.protocol.anthropic' }
-    ] });
-    var key = profileField(form, 'ai.control.profile.apiKey', raw.apiKey !== undefined ? raw.apiKey : profile.apiKey, 'apiKey', { type: 'password', autocomplete: 'off', helpKey: 'ai.control.profile.apiKeyHelp' });
+    var provider = profileField(form, 'ai.control.profile.provider', shape.provider.id, 'provider', { select: providerSelectItems() });
+    provider.dataset.profileDynamic = 'shape';
+    var protocol = profileField(form, 'ai.control.profile.protocol', shape.protocol, 'protocol', { select: protocolSelectItems(definition) });
+    protocol.dataset.profileDynamic = 'shape';
+    var authType = profileField(form, 'ai.control.profile.authType', shape.authType, 'authType', { select: authSelectItems(definition), helpKey: 'ai.control.profile.authTypeHelp' });
+    authType.dataset.profileDynamic = 'shape';
+    var key = profileField(form, 'ai.control.profile.apiKey', rawOrProfile(raw, profile, 'apiKey', ''), 'apiKey', { type: 'password', autocomplete: 'off', helpKey: 'ai.control.profile.apiKeyHelp' });
     name.maxLength = 160;
     provider.maxLength = 80;
     key.maxLength = 12000;
-    profileField(form, 'ai.control.profile.endpoint', raw.endpoint !== undefined ? raw.endpoint : profile.endpoint, 'endpoint', { full: true, placeholderKey: 'ai.control.profile.endpointPlaceholder' });
-    profileField(form, 'ai.control.profile.modelId', raw.modelId !== undefined ? raw.modelId : profile.modelId, 'modelId', { placeholderKey: 'ai.control.profile.modelPlaceholder' });
+
+    if (definition.billingPlan) {
+      var billingPlan = profileField(form, 'ai.control.profile.billingPlan', shape.billingPlan, 'billingPlan', { select: [
+        { value: 'standard', labelKey: 'ai.control.billing.standard' },
+        { value: 'workspace', labelKey: 'ai.control.billing.workspace' },
+        { value: 'trial', labelKey: 'ai.control.billing.trial' },
+        { value: 'token-plan', labelKey: 'ai.control.billing.tokenPlan' },
+        { value: 'coding-plan', labelKey: 'ai.control.billing.codingPlan' }
+      ], helpKey: 'ai.control.profile.billingPlanHelp' });
+      billingPlan.dataset.profileDynamic = 'shape';
+    }
+    var regionItems = definition.region ? qwenRegionSelectItems(shape.billingPlan) : [];
+    if (regionItems.length) {
+      var region = profileField(form, 'ai.control.profile.region', shape.region, 'region', { select: regionItems, helpKey: 'ai.control.profile.regionHelp' });
+      region.dataset.profileDynamic = 'shape';
+    }
+    if (definition.apiVersion) profileField(form, 'ai.control.profile.apiVersion', rawOrProfile(raw, profile, 'apiVersion', definition.apiVersion), 'apiVersion', { helpKey: 'ai.control.profile.apiVersionHelp' });
+    if (definition.organization) profileField(form, 'ai.control.profile.organizationId', rawOrProfile(raw, profile, 'organizationId', ''), 'organizationId', { helpKey: 'ai.control.profile.organizationIdHelp' });
+    if (definition.project) profileField(form, 'ai.control.profile.projectId', rawOrProfile(raw, profile, 'projectId', ''), 'projectId', { helpKey: 'ai.control.profile.projectIdHelp' });
+    if (definition.workspace && shape.billingPlan === 'workspace') {
+      var workspace = profileField(form, 'ai.control.profile.workspaceId', shape.workspaceId, 'workspaceId', { helpKey: 'ai.control.profile.qwenWorkspaceHelp' });
+      workspace.dataset.profileDynamic = 'endpoint';
+    }
+
+    var endpointDefault = endpointForShape(shape);
+    var endpointValue = rawOrProfile(raw, profile, 'endpoint', endpointDefault);
+    if (!String(endpointValue || '').trim() && endpointDefault && raw.endpointTouched !== true) endpointValue = endpointDefault;
+    profileField(form, 'ai.control.profile.endpoint', endpointValue, 'endpoint', { full: true, placeholderKey: 'ai.control.profile.endpointPlaceholder', helpKey: 'ai.control.profile.endpointHelp' });
+    profileField(form, 'ai.control.profile.modelId', rawOrProfile(raw, profile, 'modelId', ''), 'modelId', { placeholderKey: 'ai.control.profile.modelPlaceholder', helpKey: 'ai.control.profile.modelHelp' });
     if (editingPurpose === 'inline') profileField(form, 'ai.control.profile.apiMode', raw.mode !== undefined ? raw.mode : profile.mode, 'mode', { select: [
       { value: 'chat', labelKey: 'ai.inlineMode.chat' },
       { value: 'fim', labelKey: 'ai.inlineMode.fim' }
     ] });
-    profileField(form, 'ai.control.profile.options', raw.options !== undefined ? raw.options : JSON.stringify(profile.options || {}, null, 2), 'options', { full: true, multiline: true, rows: 3, helpKey: 'ai.control.profile.optionsHelp' });
+
+    var advanced = element('details', 'ai-control-section full');
+    advanced.open = profileEditorAdvancedOpen;
+    advanced.append(element('summary', '', 'ai.control.profile.advanced'));
+    var advancedGrid = element('div', 'ai-control-field-grid');
+    profileField(advancedGrid, 'ai.control.capability.contextWindowTokens', capabilityFieldValue(raw, capabilities, 'contextWindowTokens'), 'capabilityContextWindowTokens', { type: 'number', min: 1, max: 100000000, step: 1, helpKey: 'ai.control.capability.contextWindowHelp' });
+    profileField(advancedGrid, 'ai.control.capability.maxOutputTokens', capabilityFieldValue(raw, capabilities, 'maxOutputTokens'), 'capabilityMaxOutputTokens', { type: 'number', min: 1, max: 100000000, step: 1, helpKey: 'ai.control.capability.maxOutputHelp' });
+    profileField(advancedGrid, 'ai.control.capability.tools', capabilityFieldValue(raw, capabilities, 'tools'), 'capabilityTools', { select: triStateItems() });
+    profileField(advancedGrid, 'ai.control.capability.streaming', capabilityFieldValue(raw, capabilities, 'streaming'), 'capabilityStreaming', { select: triStateItems() });
+    profileField(advancedGrid, 'ai.control.capability.parallelToolCalls', capabilityFieldValue(raw, capabilities, 'parallelToolCalls'), 'capabilityParallelToolCalls', { select: triStateItems() });
+    profileField(advancedGrid, 'ai.control.capability.reasoningEfforts', raw.capabilityReasoningEfforts !== undefined ? raw.capabilityReasoningEfforts : (capabilities.reasoningEfforts || []).join(', '), 'capabilityReasoningEfforts', { placeholderKey: 'ai.control.capability.reasoningPlaceholder', helpKey: 'ai.control.capability.reasoningHelp' });
+    profileField(advancedGrid, 'ai.control.capability.source', raw.capabilitySource !== undefined ? raw.capabilitySource : (capabilities.source || 'unknown'), 'capabilitySource', { select: [
+      { value: 'unknown', labelKey: 'ai.control.capability.sourceUnknown' },
+      { value: 'provider-api', labelKey: 'ai.control.capability.sourceProviderApi' },
+      { value: 'official-catalog', labelKey: 'ai.control.capability.sourceOfficialCatalog' },
+      { value: 'user-override', labelKey: 'ai.control.capability.sourceUserOverride' }
+    ], helpKey: 'ai.control.capability.sourceHelp' });
+    profileField(advancedGrid, 'ai.control.capability.effectiveEffortMap', raw.capabilityEffectiveEffortMap !== undefined ? raw.capabilityEffectiveEffortMap : JSON.stringify(capabilities.effectiveEffortMap || {}, null, 2), 'capabilityEffectiveEffortMap', { full: true, multiline: true, rows: 3, helpKey: 'ai.control.capability.effectiveEffortMapHelp' });
+    profileField(advancedGrid, 'ai.control.profile.options', raw.options !== undefined ? raw.options : JSON.stringify(profile.options || {}, null, 2), 'options', { full: true, multiline: true, rows: 3, helpKey: 'ai.control.profile.optionsHelp' });
+    advanced.append(advancedGrid);
+    advanced.addEventListener('toggle', function() { profileEditorAdvancedOpen = advanced.open; });
+    form.append(advanced);
     var error = element('div', 'ai-control-field-error');
     error.setAttribute('role', 'status');
     var actions = element('div', 'ai-control-button-row full');
@@ -412,11 +732,23 @@
       }
     }));
     form.append(error, actions);
-    form.addEventListener('input', function() { captureProfileForm(form); });
-    form.addEventListener('change', function() { captureProfileForm(form); });
+    form.addEventListener('input', function(event) {
+      if (renderGeneration !== profileEditorRenderGeneration) return;
+      if (event.target && event.target.dataset.profileDynamic === 'shape' && event.target.tagName === 'SELECT') return;
+      captureProfileForm(form, event.target);
+      if (event.target && event.target.dataset.profileDynamic === 'endpoint') updateManagedEndpoint(form, shape);
+    });
+    form.addEventListener('change', function(event) {
+      if (renderGeneration !== profileEditorRenderGeneration) return;
+      if (event.target && event.target.dataset.profileDynamic === 'shape') updateDynamicProfileShape(form, shape);
+      else {
+        captureProfileForm(form, event.target);
+        if (event.target && event.target.dataset.profileDynamic === 'endpoint') updateManagedEndpoint(form, shape);
+      }
+    });
     editor.append(form);
     parent.append(editor);
-    setTimeout(function() { name.focus(); }, 0);
+    if (shouldFocusName) setTimeout(function() { name.focus(); }, 0);
   }
 
   function startProfileEditor(profile, purpose) {
@@ -424,9 +756,14 @@
     editingProfileId = profile ? profile.id : '';
     profileEditorDraft = clone(profile || {
       id: '', name: '', provider: 'openai-compatible', apiKey: '',
-      endpoint: '', modelId: '', mode: editingPurpose === 'inline' ? 'fim' : 'chat', options: {}
+      protocol: 'chat-completions', authType: 'bearer', endpoint: '', modelId: '',
+      mode: editingPurpose === 'inline' ? 'fim' : 'chat', apiVersion: '', organizationId: '',
+      projectId: '', workspaceId: '', region: '', billingPlan: '',
+      capabilities: schemaApi().normalizeCapabilities ? schemaApi().normalizeCapabilities({}) : {}, options: {}
     });
     profileEditorRaw = null;
+    profileEditorProviderDrafts = Object.create(null);
+    profileEditorAdvancedOpen = false;
     renderActivePane();
   }
 
@@ -465,7 +802,8 @@
         var name = element('div', 'ai-control-profile-name');
         name.append(element('strong'), element('span', 'ai-control-profile-provider'));
         name.firstChild.textContent = profile.name;
-        name.lastChild.textContent = profile.provider;
+        var cardProvider = providerDefinition(profile.provider);
+        name.lastChild.textContent = t(cardProvider.definition.labelKey);
         var detail = element('div', 'ai-control-profile-detail');
         detail.textContent = t(purpose === 'chat' ? 'ai.control.profile.chatDetail {model} {endpoint}' : 'ai.control.profile.inlineDetail {model} {endpoint}', { model: profile.modelId, endpoint: profile.endpoint });
         var liveStatus = element('span', 'ai-control-row-state');
@@ -517,7 +855,7 @@
     modelGrid.append(selectField('ai.control.chat.profile', draft.chatProfileId, function(value) { draft.chatProfileId = value; }, true, 'chat').root);
     modelGrid.append(
       numberField('ai.control.parameter.temperature', draft.chat.parameters.temperature, 0, 2, 0.05, function(value) { draft.chat.parameters.temperature = value; }).root,
-      numberField('ai.control.parameter.maxTokens', draft.chat.parameters.maxTokens, 16, 32768, 16, function(value) { draft.chat.parameters.maxTokens = value; }).root,
+      numberField('ai.control.parameter.maxTokens', draft.chat.parameters.maxTokens, 16, schemaApi().MAX_MODEL_REQUEST_OUTPUT_TOKENS || 262144, 16, function(value) { draft.chat.parameters.maxTokens = value; }).root,
       numberField('ai.control.parameter.topP', draft.chat.parameters.topP, 0, 1, 0.05, function(value) { draft.chat.parameters.topP = value; }).root
     );
     var stops = field('ai.control.parameter.stop', stopValues(draft.chat.parameters.stop), { multiline: true, rows: 3, helpKey: 'ai.control.parameter.stopHelp' });
@@ -597,6 +935,9 @@
     if (!content || !draft) return;
     var pane = content.querySelector('[data-ai-pane="' + activeTab + '"]');
     if (!pane) return;
+    // Removing a focused input can synchronously emit change. Invalidate the
+    // old editor before detaching it so that event cannot alter the next draft.
+    profileEditorRenderGeneration++;
     pane.innerHTML = '';
     if (activeTab === 'overview') renderOverview(pane);
     else if (activeTab === 'connections') renderConnections(pane);
@@ -742,6 +1083,8 @@
     editingProfileId = '';
     profileEditorDraft = null;
     profileEditorRaw = null;
+    profileEditorProviderDrafts = Object.create(null);
+    profileEditorAdvancedOpen = false;
     setSaveStatus('', '');
     var saveButton = document.getElementById('ai-control-save');
     if (saveButton) saveButton.disabled = false;
@@ -767,6 +1110,8 @@
       editingProfileId = '';
       profileEditorDraft = null;
       profileEditorRaw = null;
+      profileEditorProviderDrafts = Object.create(null);
+      profileEditorAdvancedOpen = false;
     }
     if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
     if (dirty) await save();
@@ -792,6 +1137,8 @@
     editingProfileId = '';
     profileEditorDraft = null;
     profileEditorRaw = null;
+    profileEditorProviderDrafts = Object.create(null);
+    profileEditorAdvancedOpen = false;
     modal.classList.add('open');
     modal.setAttribute('aria-hidden', 'false');
     setSaveStatus('ai.control.autosaveReady', '');

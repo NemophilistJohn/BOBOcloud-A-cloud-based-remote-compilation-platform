@@ -27,6 +27,11 @@ const INVOCATION_TIMEOUT_MS = 10_000;
 const DEACTIVATION_TIMEOUT_MS = 1_500;
 const MAX_ENTRY_SOURCE_BYTES = 5 * 1024 * 1024;
 const LOCALIZATION_TIMEOUT_MS = 5_000;
+const MAX_PENDING_MODEL_EVENTS = 2048;
+const MODEL_EVENT_TYPES = new Set([
+  'response.started', 'content.delta', 'reasoning.delta', 'tool_call.delta',
+  'usage', 'response.completed', 'response.error'
+]);
 
 // Debug configuration providers accept executable callbacks and remain
 // unavailable to installed extensions. SCM file decorations use the dedicated
@@ -175,6 +180,46 @@ function normalizeLocalizationPayload(value, fallbackLocale) {
   });
 }
 
+function normalizeAgentModelEventPayload(payload) {
+  const value = cloneExtensionData(payload, {
+    maxStringLength: 2 * 1024 * 1024,
+    maxItems: 8192,
+    maxBytes: 8 * 1024 * 1024
+  });
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).some((key) => !['pluginId', 'revision', 'requestId', 'sequence', 'event'].includes(key)) ||
+      typeof value.pluginId !== 'string' || typeof value.revision !== 'string' ||
+      typeof value.requestId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(value.requestId) ||
+      !Number.isSafeInteger(value.sequence) || value.sequence < 1 || value.sequence > 1_000_000_000 ||
+      !value.event || typeof value.event !== 'object' || Array.isArray(value.event) ||
+      !MODEL_EVENT_TYPES.has(value.event.type)) {
+    throw createExtensionError(ExtensionErrorCode.PROTOCOL, 'Streaming model event is invalid.');
+  }
+  const eventKeys = new Set([
+    'type', 'requestedReasoningEffort', 'effectiveReasoningEffort', 'delta',
+    'index', 'id', 'name', 'argumentsDelta', 'usage', 'result', 'error'
+  ]);
+  if (Object.keys(value.event).some((key) => !eventKeys.has(key))) {
+    throw createExtensionError(ExtensionErrorCode.PROTOCOL, 'Streaming model event includes an unsupported field.');
+  }
+  if ((value.event.type === 'content.delta' || value.event.type === 'reasoning.delta') &&
+      typeof value.event.delta !== 'string') {
+    throw createExtensionError(ExtensionErrorCode.PROTOCOL, 'Streaming model text delta is invalid.');
+  }
+  if (value.event.type === 'tool_call.delta' &&
+      (!Number.isSafeInteger(value.event.index) || value.event.index < 0 || value.event.index > 31 ||
+       (value.event.argumentsDelta !== undefined && typeof value.event.argumentsDelta !== 'string'))) {
+    throw createExtensionError(ExtensionErrorCode.PROTOCOL, 'Streaming model tool delta is invalid.');
+  }
+  return Object.freeze({
+    pluginId: value.pluginId,
+    revision: value.revision,
+    requestId: value.requestId,
+    sequence: value.sequence,
+    event: Object.freeze({ ...value.event, requestId: value.requestId, sequence: value.sequence })
+  });
+}
+
 export class PluginExtensionHost {
   constructor(options = {}) {
     if (!options.services || !options.commands || !options.contributions) {
@@ -232,6 +277,58 @@ export class PluginExtensionHost {
     if (typeof listener !== 'function') throw new TypeError('Extension status listener must be a function.');
     this._listeners.add(listener);
     return toDisposable(() => this._listeners.delete(listener));
+  }
+
+  handleAgentModelEvent(payload) {
+    let normalized;
+    try {
+      normalized = normalizeAgentModelEventPayload(payload);
+    } catch (error) {
+      this._report('agent-model-event', payload && payload.pluginId, error);
+      return false;
+    }
+    const record = this._records.get(normalized.pluginId);
+    if (!record || record.cleaned || record.cancelled || record.status !== 'active' ||
+        record.descriptor.revision !== normalized.revision) return false;
+    const stream = record.modelStreams.get(normalized.requestId);
+    if (!stream || stream.terminal || normalized.sequence <= stream.lastSequence ||
+        (stream.lastSequence === 0 && normalized.event.type !== 'response.started')) return false;
+    stream.lastSequence = normalized.sequence;
+    stream.terminal = normalized.event.type === 'response.completed' || normalized.event.type === 'response.error';
+    stream.queued += 1;
+    if (stream.queued > MAX_PENDING_MODEL_EVENTS) {
+      stream.terminal = true;
+      stream.queued -= 1;
+      record.modelStreams.delete(normalized.requestId);
+      stream.deliveryError = createExtensionError(
+        ExtensionErrorCode.UNAVAILABLE,
+        'Streaming model event backlog exceeded the host limit.'
+      );
+      stream.terminalDelivery.resolve();
+      void Promise.resolve(this._broker && this._broker(record.descriptor.id, 'models.cancel', {
+        requestId: normalized.requestId
+      })).catch(() => {});
+      this._report('agent-model-event', normalized.pluginId, stream.deliveryError);
+      return false;
+    }
+    stream.delivery = stream.delivery.catch(() => {}).then(() => this._callSandbox(
+      record,
+      ExtensionSandboxMethod.AGENT_MODEL_EVENT,
+      { requestId: normalized.requestId, sequence: normalized.sequence, event: normalized.event },
+      this._invocationTimeoutMs
+    )).catch((error) => {
+      if (!stream.deliveryError) stream.deliveryError = error;
+      this._report('agent-model-event', normalized.pluginId, error);
+    }).finally(() => {
+      stream.queued = Math.max(0, stream.queued - 1);
+      if (stream.terminal && stream.queued === 0) {
+        stream.terminalDelivery.resolve();
+        if (stream.settled && record.modelStreams.get(normalized.requestId) === stream) {
+          record.modelStreams.delete(normalized.requestId);
+        }
+      }
+    });
+    return true;
   }
 
   list() {
@@ -328,6 +425,7 @@ export class PluginExtensionHost {
       activationPromise: null,
       deactivationPromise: null,
       nextRequestId: 0,
+      modelStreams: new Map(),
       localization: null,
       localizationRevision: 0
     };
@@ -606,6 +704,8 @@ export class PluginExtensionHost {
         return this._registerAgent(record, args);
       case ExtensionHostMethod.AGENT_SET_STATE:
         return this._setAgentState(record, args);
+      case ExtensionHostMethod.AGENT_UPDATE_STATE:
+        return this._updateAgentState(record, args);
       case ExtensionHostMethod.AGENT_CLEAR_STATE:
         return this._clearAgentState(record, args);
       case ExtensionHostMethod.AGENT_DISPOSE:
@@ -1025,6 +1125,19 @@ export class PluginExtensionHost {
     }
   }
 
+  _updateAgentState(record, args) {
+    try {
+      const current = this._agentHandle(record, args);
+      if (Object.keys(current.value).some((key) => key !== 'handle' && key !== 'patch')) {
+        throw new TypeError('Agent state update request includes an unsupported field.');
+      }
+      return current.resource.stateProvider.updateState(current.value.patch);
+    } catch (error) {
+      if (error && error.code) throw error;
+      throw extensionInvalidRequest(error, 'Agent state patch is invalid.');
+    }
+  }
+
   _clearAgentState(record, args) {
     try {
       const current = this._agentHandle(record, args);
@@ -1047,11 +1160,13 @@ export class PluginExtensionHost {
     const directPermissions = {
       'models.list': PluginPermission.MODELS_GENERATE,
       'models.generate': PluginPermission.MODELS_GENERATE,
+      'models.generateStream': PluginPermission.MODELS_GENERATE,
       'models.cancel': PluginPermission.MODELS_GENERATE,
       'agent.storage.read': PluginPermission.STORAGE_LOCAL,
       'agent.storage.write': PluginPermission.STORAGE_LOCAL,
       'agent.skills.list': PluginPermission.SKILLS_READ,
-      'agent.skills.read': PluginPermission.SKILLS_READ
+      'agent.skills.read': PluginPermission.SKILLS_READ,
+      'agent.tools.list': PluginPermission.AGENTS_REGISTER
     };
     let permission = directPermissions[method];
     if (method === 'agent.tools.invoke') {
@@ -1063,15 +1178,54 @@ export class PluginExtensionHost {
     if (!permission) throw createExtensionError(ExtensionErrorCode.DENIED, 'Agent broker method is not available.');
     this._requirePermission(record, permission);
     this._assertRecordCurrent(record);
-    const result = await this._awaitRecord(
-      record,
-      this._broker(record.descriptor.id, method, value.args || {})
-    );
-    return cloneExtensionData(result, {
-      maxStringLength: 2 * 1024 * 1024,
-      maxItems: 8192,
-      maxBytes: 8 * 1024 * 1024
-    });
+    let stream = null;
+    let requestId = '';
+    if (method === 'models.generateStream') {
+      requestId = boundedString(value.args && value.args.requestId, '', 80);
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(requestId) || record.modelStreams.has(requestId)) {
+        throw createExtensionError(ExtensionErrorCode.INVALID_REQUEST, 'Streaming model request id is invalid or already active.');
+      }
+      stream = {
+        lastSequence: 0,
+        terminal: false,
+        settled: false,
+        queued: 0,
+        delivery: Promise.resolve(),
+        deliveryError: null,
+        terminalDelivery: createDeferred()
+      };
+      record.modelStreams.set(requestId, stream);
+    }
+    try {
+      const result = await this._awaitRecord(
+        record,
+        this._broker(record.descriptor.id, method, value.args || {})
+      );
+      if (stream) {
+        await this._awaitRecord(record, raceWithTimeout(
+          stream.terminalDelivery.promise,
+          this._invocationTimeoutMs,
+          'Streaming model terminal event delivery timed out.'
+        ));
+        if (stream.deliveryError) throw stream.deliveryError;
+      }
+      return cloneExtensionData(result, {
+        maxStringLength: 2 * 1024 * 1024,
+        maxItems: 8192,
+        maxBytes: 8 * 1024 * 1024
+      });
+    } catch (error) {
+      if (stream && record.modelStreams.get(requestId) === stream) {
+        record.modelStreams.delete(requestId);
+      }
+      throw error;
+    } finally {
+      if (stream) {
+        stream.settled = true;
+        if ((stream.terminal || stream.lastSequence === 0) && stream.queued === 0 &&
+            record.modelStreams.get(requestId) === stream) record.modelStreams.delete(requestId);
+      }
+    }
   }
 
   async _brokerRequest(record, args) {
@@ -1194,6 +1348,7 @@ export class PluginExtensionHost {
     }
     record.pending.clear();
     record.incomingRequests.clear();
+    record.modelStreams.clear();
     record.handles.clear();
     record.subscriptions.dispose();
     this._commands.disposeOwner(record.descriptor.id);

@@ -74,7 +74,11 @@ workspaceSettings = createWorkspaceSettingsController({
 const ai = createAiController({ ipcMain, getWindow, settings });
 agentBroker = createAgentPlatformBroker({ app, settings, getWorkspaceIdentity: workspace.getIdentity,
   runWorkspaceMutation: workspace.runMutation, notifyWorkspaceFiles: workspace.notifyExternalFileChanges,
-  requestModel: ai.request, cancelModel: ai.cancel });
+  requestModel: ai.request, cancelModel: ai.cancel,
+  emitModelEvent: (payload) => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) win.webContents.send('plugins:agent-model-event', payload);
+  } });
 const plugins = createPluginController({ app, ipcMain, dialog, shell, getWindow, t: languagePacks.t,
   getWorkspaceIdentity: workspace.getIdentity,
   resolveWorkspaceFile: workspace.resolveWorkspaceFile,

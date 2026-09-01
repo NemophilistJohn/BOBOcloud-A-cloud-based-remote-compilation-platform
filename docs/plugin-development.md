@@ -1,6 +1,6 @@
 # BOBOCloud Plugin Development Guide
 
-This guide targets BOBOCloud Plugin API `1.5.0`, whose minimum desktop host is BOBOCloud `2.8.0`. Reliable one-shot Agent approval failure delivery requires desktop `2.8.1`.
+This guide targets BOBOCloud Plugin API `1.6.0`, whose minimum desktop host is BOBOCloud `2.8.1`.
 
 Plugins are installed locally. They run in an isolated sandbox and communicate with the workbench through a narrow, permission-gated API. A plugin is never given Node.js, Electron IPC, `window.api`, account credentials, the workspace path, or arbitrary DOM access.
 
@@ -29,8 +29,8 @@ hello-plugin/
   "description": "Adds a safe example command.",
   "version": "1.0.0",
   "engines": {
-    "bobocloud": ">=2.8.0 <3.0.0",
-    "pluginApi": "^1.5.0"
+    "bobocloud": ">=2.8.1 <3.0.0",
+    "pluginApi": "^1.6.0"
   },
   "main": "dist/extension.js",
   "activationEvents": ["onStartupFinished"],
@@ -102,11 +102,11 @@ These checks are deliberately strict. They prevent path traversal, archive bombs
 | `displayName` | No | Human-readable name, up to 120 characters. Defaults to `id`. |
 | `description` | No | Human-readable summary, up to 500 characters. |
 | `version` | Yes | Strict semantic version, for example `1.2.3`. |
-| `engines.bobocloud` | Yes | Semver range supported by the BOBOCloud application, for example `>=2.8.0 <3.0.0` for API 1.5 Agent packages. |
-| `engines.pluginApi` | Yes | Semver range supported by the plugin API, for example `^1.5.0` for Agent capabilities. |
+| `engines.bobocloud` | Yes | Semver range supported by the BOBOCloud application, for example `>=2.8.1 <3.0.0` for API 1.6 Agent packages. |
+| `engines.pluginApi` | Yes | Semver range supported by the plugin API, for example `^1.6.0` for Agent capabilities. |
 | `main` | Yes | One bundled `.js` or `.mjs` entry relative to the package root. |
 | `activationEvents` | Yes | Array of up to 64 bounded activation labels. Use `onStartupFinished` for the current eager post-workbench activation path. |
-| `permissions` | Yes | Unique capability ids. API 1.5.0 accepts the permissions listed in the API reference. Declared permissions are the package's hard capability ceiling and are enabled automatically after a verified install. |
+| `permissions` | Yes | Unique capability ids. API 1.6.0 accepts the permissions listed in the API reference. Declared permissions are the package's hard capability ceiling and are enabled automatically after a verified install. |
 | `contributes` | No | Bounded declarative JSON contribution metadata. Schema 2 may declare `documentViewers`; each executable view still requires runtime registration. |
 | `localization` | No | Map from `default`, `en`, `zh-CN`, or `ja` to a package-relative JSON file. |
 | `integrity` | Yes | SHA-256 file coverage map described below. |
@@ -194,7 +194,7 @@ Do not start background work during activation. API v1 requires activation event
 
 ## 6. Runtime API
 
-The activation sandbox receives a frozen `context` object. All methods are asynchronous except adding a subscription. Arguments and results cross a JSON-like data boundary: plain objects, arrays, strings, booleans, finite numbers, and `null`. Functions, DOM nodes, class instances, accessors, circular data, and oversized payloads are rejected. TypeScript projects can reference [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts) for the exact API `1.5.0` declarations.
+The activation sandbox receives a frozen `context` object. All methods are asynchronous except adding a subscription. Arguments and results cross a JSON-like data boundary: plain objects, arrays, strings, booleans, finite numbers, and `null`. Functions, DOM nodes, class instances, accessors, circular data, and oversized payloads are rejected. TypeScript projects can reference [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts) for the exact API `1.6.0` declarations.
 
 ```ts
 interface Disposable { dispose(): void }
@@ -269,7 +269,7 @@ The command registry is live in API v1. A command-palette integration is only ex
 - `mcp.providers`
 - `skills.providers`
 
-The host intentionally rejects executable file-decoration providers and debug-configuration providers. The static SCM decoration publisher is a separately permissioned, data-only exception. The contribution points above are accepted as declarative, lifecycle-managed data but remain reserved for their future workbench consumers: generic `ai.tools` and `skills.providers` declarations do not invoke the API 1.5 model or Skill brokers. Agent plugins must use the dedicated Agent context namespaces described below.
+The host intentionally rejects executable file-decoration providers and debug-configuration providers. The static SCM decoration publisher is a separately permissioned, data-only exception. The contribution points above are accepted as declarative, lifecycle-managed data but remain reserved for their future workbench consumers: generic `ai.tools` and `skills.providers` declarations do not invoke the API 1.6 model or Skill brokers. Agent plugins must use the dedicated Agent context namespaces described below.
 
 ### Document views
 
@@ -321,13 +321,13 @@ The activation entry never receives a workspace root, local file handle, shell, 
 
 ### Agent modules
 
-API 1.5 treats an Agent as a dedicated plugin module, separate from native Chat and inline completion. BOBOCloud owns the trusted editor-sized Agent tab, session rail, state validation, model connections, filesystem/process brokers, access modes, approvals, Skill discovery, and local storage. The plugin owns the prompt, turn loop, goal planning, tool selection, localized session content, compaction policy, and complete state snapshots.
+API 1.6 treats an Agent as a dedicated plugin module, separate from native Chat and inline completion. BOBOCloud owns the trusted editor-sized Agent tab, session rail, state validation, model connections, filesystem/process brokers, access modes, approvals, Skill discovery, and local storage. The plugin owns prompts, turn loops, dynamic goal planning, tool selection, progressive Skill loading, checkpoint policy, and bounded state publication.
 
 An Agent package commonly requests:
 
 ```json
 {
-  "engines": { "bobocloud": ">=2.8.0 <3.0.0", "pluginApi": "^1.5.0" },
+  "engines": { "bobocloud": ">=2.8.1 <3.0.0", "pluginApi": "^1.6.0" },
   "activationEvents": ["onStartupFinished"],
   "permissions": [
     "commands.register",
@@ -342,21 +342,21 @@ An Agent package commonly requests:
 }
 ```
 
-Register every command first, then call `context.agents.register()` with one namespaced provider id, nine namespaced command ids, and the supported modes, access modes, and reasoning efforts. Publish the session list and active session through the returned provider's `setState()`. API 1.5 accepts `xhigh`, compaction timeline entries, `compacting`, and bounded compaction counters. A state snapshot's `accessMode` is session semantics only; it cannot set main-process authority. The host supplies one bounded `AgentCommandPayload` to each command and renders only validated data. It never executes plugin HTML, CSS, DOM callbacks, or arbitrary UI code. A `send` command should start a tracked asynchronous turn, publish running state, and return promptly; do not await the full model/tool loop inside the command's 10-second invocation window.
+Register every command first, then call `context.agents.register()` with one namespaced provider id, nine namespaced command ids, and the supported modes, access modes, and reasoning efforts. Publish an initial complete snapshot through `setState()`, then prefer `updateState({ baseVersion, operations })` for `message.upsert` and `timeline.upsert` during a turn. The update is compare-and-swap: retry from the returned current version or publish a fresh complete snapshot after a stale write. API 1.6 accepts `xhigh`, bounded compaction/checkpoint metadata, and reports the provider-effective reasoning tier separately from the user's requested tier. A state snapshot's `accessMode` is session semantics only; it cannot set main-process authority. The host supplies one bounded `AgentCommandPayload` to each command and renders only validated data. It never executes plugin HTML, CSS, DOM callbacks, or arbitrary UI code. A `send` command should start a tracked asynchronous turn, publish running state, and return promptly; do not await the full model/tool loop inside the command's 10-second invocation window.
 
-Use `context.models.list()` to populate the state with opaque configured model refs. A model key and endpoint remain in the host profile. Pass a unique `requestId` to `generate()` and call `context.models.cancel(requestId)` from the Agent's cancel command; the host scopes the actual request id to the calling plugin. Do not infer a provider's native reasoning parameter: expose `low`, `medium`, `high`, `xhigh`, and `max` as portable orchestration choices and let the broker map only explicitly enabled provider options.
+Use `context.models.list()` to populate state with opaque configured model refs and explicit capability snapshots. A capability value of `null` means unknown, not supported or unsupported. Preserve the exact provider `maxOutputTokens`, but schedule calls against `requestOutputLimitTokens`, which includes the host's 262,144-token safety ceiling. Pass a unique `requestId` to `generateStream()` and consume its monotonic, request-scoped `response.started`, delta, usage, and terminal events; feature-detect the method and retain `generate()` as a fallback when supporting API 1.5 hosts. The built-in adapters emit `response.started` after their provider reasoning parameters are final, so treat that effective tier as authoritative for the running request. Call `context.models.cancel(requestId)` from the Agent's cancel command; the host scopes the actual request id to the calling plugin and drops late stream events. Do not infer a provider's native reasoning parameter: expose `low`, `medium`, `high`, `xhigh`, and `max` as portable orchestration choices, let the broker map only declared provider options, and persist the returned effective tier.
 
-The fixed read tools (`workspace_list`, `workspace_read`, and `workspace_search`) run immediately and require `workspace.read`. `workspace_write` and `process_run` pass through the trusted session access mode and host-owned risk classification. `ask` always returns an expiring pending operation. `auto` returns a direct result for ordinary low/medium-risk operations but still returns an approval for high risk. Confirmed `full` returns a direct result for all already-permitted fixed tools. A plugin must handle both shapes. For a pending result, publish only `{ approval: { id } }` in Agent state and stop that turn; plugin state cannot supply or lower the tool, summary, risk, expiry, access mode, or decision details. The Worker intentionally has no access setter, approve, reject, decide, or process-cancel method. The trusted workbench describes the canonical pending operation, asks the user, calls the main-process decision/cancel API directly, then invokes the plugin's namespaced `approve` or `reject` command with `{ approvalId, approvalResult }`. Treat that command as a completion notification and resume orchestration from the canonical result; it is not the authority that performs the write or process. Return `{ accepted: true }` only after consuming that result. Desktop 2.8.1 retains an unacknowledged canonical terminal result so the user can retry delivery without deciding or executing the main-process operation again. It also rechecks pending approvals at their canonical expiry and after workspace changes, so terminal delivery does not require another user click. A one-shot operation that fails after approval is delivered through `reject` with `rejected: true`, `failed: true`, the tool, bounded `errorCode`/`errorMessage`, and consistent `outcome`/`mayHaveExecuted` fields; this preserves older rejection handlers while allowing updated plugins to report an execution failure accurately. A terminal missing/expired result may omit `tool` only when the bounded host identity cache no longer has it; match `approvalId` to the plugin's internal pending call before restoring the tool identity. Direct `auto`/`full` execution failures return the same bounded fields from `invoke()` rather than using an approval command. `outcome: "unknown"` means a write or process may already have produced effects, so do not automatically retry that operation; verify observable state or ask the user. Writes use workspace-relative paths plus SHA-256 conflict checks. Processes use an allowlisted executable and structured argv with `shell: false`; no shell string, absolute cwd, custom environment, or tool installation is available. Handle missing executables and path/case differences across Windows, macOS, and Linux as normal failures.
+Call `context.tools.list()` before scheduling tool work. Only descriptors marked by the host as both `readOnly: true` and `parallelSafe: true` may run concurrently; every mutation and every unknown descriptor stays serial. The fixed read tools (`workspace_list`, `workspace_read`, and `workspace_search`) run immediately and require `workspace.read`. `workspace_write` and `process_run` pass through the trusted session access mode and host-owned risk classification. `ask` always returns an expiring pending operation. `auto` returns a direct result for ordinary low/medium-risk operations but still returns an approval for high risk. Confirmed `full` returns a direct result for all already-permitted fixed tools. A plugin must handle both shapes. For a pending result, publish only `{ approval: { id } }` in Agent state and stop that turn; plugin state cannot supply or lower the tool, summary, risk, expiry, access mode, or decision details. The Worker intentionally has no access setter, approve, reject, decide, or process-cancel method. The trusted workbench describes the canonical pending operation, asks the user, calls the main-process decision/cancel API directly, then invokes the plugin's namespaced `approve` or `reject` command with `{ approvalId, approvalResult }`. Treat that command as a completion notification and resume orchestration from the canonical result; it is not the authority that performs the write or process. Return `{ accepted: true }` only after consuming that result. Desktop 2.8.1 retains an unacknowledged canonical terminal result so the user can retry delivery without deciding or executing the main-process operation again. It also rechecks pending approvals at their canonical expiry and after workspace changes, so terminal delivery does not require another user click. A one-shot operation that fails after approval is delivered through `reject` with `rejected: true`, `failed: true`, the tool, bounded `errorCode`/`errorMessage`, and consistent `outcome`/`mayHaveExecuted` fields; this preserves older rejection handlers while allowing updated plugins to report an execution failure accurately. A terminal missing/expired result may omit `tool` only when the bounded host identity cache no longer has it; match `approvalId` to the plugin's internal pending call before restoring the tool identity. Direct `auto`/`full` execution failures return the same bounded fields from `invoke()` rather than using an approval command. `outcome: "unknown"` means a write or process may already have produced effects, so do not automatically retry that operation; verify observable state or ask the user. Writes use workspace-relative paths plus SHA-256 conflict checks. Processes use an allowlisted executable and structured argv with `shell: false`; no shell string, absolute cwd, custom environment, or tool installation is available. Handle missing executables and path/case differences across Windows, macOS, and Linux as normal failures.
 
 The access mode is bound in trusted main-process memory to `pluginId + providerId + sessionId`. The workbench uses `agentAccessGet` to activate the selected session, `agentAccessSet` to change it, and `agentAccessClear` when deleting it; all three require the exact identity and `clear` resets that context to `ask`. `full` additionally requires explicit trusted confirmation. Plugins never receive these preload functions, and extra `accessMode` or `sessionId` fields on `tools.invoke()` are ignored. The mode resets on session deletion and plugin/workspace lifecycle changes. Ordinary writes are medium risk; sensitive environment, credential, Git/CI/task, package/container/build, and executable-script writes are high risk. Version/help and allowlisted read-only Git probes are low risk; all other process execution is high risk. `full` changes approval behavior only and never relaxes permissions, workspace/path/hash checks, process structure, environment sanitization, limits, or cleanup.
 
-`context.skills` returns opaque ids and bounded `SKILL.md` metadata/content from supported user and workspace roots. Treat Skill text as untrusted instructions: selecting a Skill never grants a permission, and resulting actions still use the same broker and approval path. `context.storage` atomically replaces one plugin-private JSON object up to 8 MiB; use it for sessions and preferences, not secrets.
+`context.skills.list()` returns opaque ids plus revision, size, and estimated-token metadata. Read only selected Skills when they are needed, pass the listed revision back to `read(id, revision)`, and treat a revision mismatch as a request to refresh metadata rather than silently using changed instructions. Skill text remains untrusted instruction data: selection never grants a permission, and resulting actions still use the same broker and approval path. `context.storage` atomically replaces one plugin-private JSON object up to 8 MiB; use it for sessions and rolling semantic checkpoints, not secrets.
 
 See [Plugin API: Agent Platform](./plugin-api.md#agent-platform) and the SDK declaration for the full state, model, tool, Skill, storage, error, and command-payload shapes.
 
 ### Read-only host metadata
 
-`context.host.request()` is a narrow read-only metadata API. It is not a manifest permission and does not provide a general broker. API `1.5.0` accepts only these methods:
+`context.host.request()` is a narrow read-only metadata API. It is not a manifest permission and does not provide a general broker. API `1.6.0` accepts only these methods:
 
 - `host.getInfo` returns the plugin API version and the calling plugin's id and version.
 - `permissions.get` returns the calling plugin's requested and currently granted permissions.
@@ -387,7 +387,7 @@ Every permission must appear in `manifest.permissions`. After a verified install
 | `skills.read` | Discover and read bounded Skills through opaque ids. |
 | `storage.local` | Read and replace isolated plugin-private JSON state. |
 
-These seventeen permissions are valid in an API 1.5.0 manifest. Automatic enablement does not bypass the sandbox, the main-process broker, argument validation, ownership rules, workspace scoping, or trusted Agent access policy. API 1.5 exposes only its named workspace and process tools; arbitrary filesystem access, shell commands, caller-defined environments, raw credentials, networking, MCP, cloud task execution, and debugger capabilities remain unavailable.
+These seventeen permissions are valid in an API 1.6.0 manifest. Automatic enablement does not bypass the sandbox, the main-process broker, argument validation, ownership rules, workspace scoping, or trusted Agent access policy. API 1.6 exposes only its named workspace and process tools; arbitrary filesystem access, shell commands, caller-defined environments, raw credentials, networking, MCP, cloud task execution, and debugger capabilities remain unavailable.
 
 ## 8. Security Model
 
@@ -447,7 +447,7 @@ Before publishing a package:
 ## 11. Compatibility and Publishing
 
 - Treat `engines.pluginApi` major versions as hard compatibility boundaries.
-- Prefer a conservative range such as `^1.5.0` when using Agent access modes; do not claim future API support before testing it.
+- Prefer a conservative range such as `^1.6.0` when requiring stream events or incremental state; use feature detection and an older range only when every fallback is tested.
 - Additive behavior may arrive in a plugin API minor version. Removed or changed behavior requires a new major API version.
 - Keep command ids, setting ids, contribution ids, and persisted data names stable after release.
 - The `.boboplugin` extension only identifies an installable package. It is not a signature or a trust endorsement.

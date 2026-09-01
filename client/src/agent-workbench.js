@@ -34,6 +34,7 @@ import { marked } from 'marked';
   var accessRequests = new Map();
   var documentClickHandler = null;
   var workspaceChangeHandler = null;
+  var renderedWorkspace = null;
 
   function t(key, values) {
     var i18n = BOBO.i18n;
@@ -1447,6 +1448,104 @@ import { marked } from 'marked';
     return messages.concat(timeline, last ? [last] : []);
   }
 
+  function feedItemKey(item) {
+    return item.type + ':' + item.value.id;
+  }
+
+  function feedItemNode(item) {
+    var node = item.type === 'message' ? messageNode(item) : timelineNode(item);
+    node.dataset.feedKey = feedItemKey(item);
+    node.dataset.feedType = item.type;
+    node.dataset.feedId = item.value.id;
+    return node;
+  }
+
+  function feedViewportOffset(node, scroll) {
+    if (node && typeof node.getBoundingClientRect === 'function' && typeof scroll.getBoundingClientRect === 'function') {
+      var nodeRect = node.getBoundingClientRect();
+      var scrollRect = scroll.getBoundingClientRect();
+      if (Number.isFinite(nodeRect.top) && Number.isFinite(scrollRect.top)) return nodeRect.top - scrollRect.top;
+    }
+    return (Number(node && node.offsetTop) || 0) - scroll.scrollTop;
+  }
+
+  function captureFeedScroll(view) {
+    var scroll = view.scroll;
+    var scrollTop = scroll.scrollTop;
+    var nearBottom = scroll.scrollHeight - scrollTop - scroll.clientHeight < 72;
+    var anchor = Array.from(view.feed.children).find(function(node) {
+      return node.dataset && node.dataset.feedKey && feedViewportOffset(node, scroll) + node.offsetHeight >= 0;
+    });
+    return {
+      nearBottom: nearBottom,
+      scrollTop: scrollTop,
+      anchorKey: anchor && anchor.dataset.feedKey || '',
+      anchorOffset: anchor ? feedViewportOffset(anchor, scroll) : 0
+    };
+  }
+
+  function restoreFeedScroll(view, snapshot) {
+    if (snapshot.nearBottom) {
+      view.scroll.scrollTop = view.scroll.scrollHeight;
+      return;
+    }
+    var anchor = snapshot.anchorKey && view.nodes.get(snapshot.anchorKey);
+    view.scroll.scrollTop = anchor
+      ? Math.max(0, snapshot.scrollTop + feedViewportOffset(anchor, view.scroll) - snapshot.anchorOffset)
+      : snapshot.scrollTop;
+  }
+
+  function reconcileFeed(view, session, operations) {
+    var items = feedItems(session);
+    var changed = new Set(operations.map(function(operation) {
+      return (operation.type === 'message.upsert' ? 'message:' : 'timeline:') + operation.value.id;
+    }));
+    var snapshot = captureFeedScroll(view);
+    var nextNodes = new Map();
+
+    items.forEach(function(item, index) {
+      var key = feedItemKey(item);
+      var node = view.nodes.get(key);
+      if (!node || node.parentNode !== view.feed || changed.has(key)) {
+        var replacement = feedItemNode(item);
+        if (node && node.parentNode === view.feed) view.feed.replaceChild(replacement, node);
+        node = replacement;
+      }
+      var current = view.feed.childNodes[index] || null;
+      if (current !== node) view.feed.insertBefore(node, current);
+      nextNodes.set(key, node);
+    });
+    while (view.feed.childNodes.length > items.length) {
+      view.feed.removeChild(view.feed.lastChild);
+    }
+    if (!items.length) view.feed.appendChild(element('div', 'agent-feed-empty', t('Send a message to begin.')));
+    view.nodes = nextNodes;
+    restoreFeedScroll(view, snapshot);
+  }
+
+  function renderStatePatch(change) {
+    var patch = change && change.type === 'state' ? change.patch : null;
+    var record = change && change.record;
+    var operations = patch && Array.isArray(patch.operations) ? patch.operations : null;
+    if (!record || !operations || !operations.length || !operations.every(function(operation) {
+      return operation && (operation.type === 'message.upsert' || operation.type === 'timeline.upsert') && operation.value && operation.value.id;
+    })) return false;
+
+    // Inactive providers need no DOM work; their current snapshot is rendered on activation.
+    if (S.activeTabPath !== tabKey(record.id)) return true;
+    var session = record.state && record.state.activeSession;
+    var root = document.getElementById(PAGE_ID);
+    var view = renderedWorkspace;
+    if (!session || !view || view.providerId !== record.id || view.sessionId !== session.id ||
+        view.root !== root || view.feed.parentNode !== view.content || view.scroll.parentNode == null) return false;
+    if (Number.isSafeInteger(view.version) && Number.isSafeInteger(patch.baseVersion) && view.version !== patch.baseVersion) return false;
+    if (Number.isSafeInteger(record.version) && Number.isSafeInteger(patch.baseVersion) && record.version !== patch.baseVersion + 1) return false;
+
+    reconcileFeed(view, session, operations);
+    view.version = record.version;
+    return true;
+  }
+
   function approvalDetailRow(label, value, monospace) {
     var row = element('div', 'agent-approval-detail-row');
     row.append(element('dt', '', label), element('dd', monospace ? 'agent-approval-mono' : '', value));
@@ -1874,6 +1973,7 @@ import { marked } from 'marked';
   function renderWorkspace(record) {
     var root = page();
     if (!root || !record || S.activeTabPath !== tabKey(record.id)) return;
+    renderedWorkspace = null;
     var oldScroll = root.querySelector('.agent-scroll');
     var oldInput = root.querySelector('.agent-composer-input');
     var nearBottom = !oldScroll || oldScroll.scrollHeight - oldScroll.scrollTop - oldScroll.clientHeight < 72;
@@ -1907,7 +2007,12 @@ import { marked } from 'marked';
       if (state.message) content.appendChild(element('div', 'agent-state-message', state.message));
       if (session.goal) content.appendChild(goalNode(session.goal));
       var feed = element('div', 'agent-feed');
-      feedItems(session).forEach(function(item) { feed.appendChild(item.type === 'message' ? messageNode(item) : timelineNode(item)); });
+      var feedNodes = new Map();
+      feedItems(session).forEach(function(item) {
+        var node = feedItemNode(item);
+        feedNodes.set(feedItemKey(item), node);
+        feed.appendChild(node);
+      });
       if (!feed.childNodes.length) feed.appendChild(element('div', 'agent-feed-empty', t('Send a message to begin.')));
       content.appendChild(feed);
       if (session.approval) content.appendChild(approvalNode(record, session.approval));
@@ -1915,6 +2020,18 @@ import { marked } from 'marked';
     scroll.appendChild(content);
     shell.append(scroll, composerNode(record, state && state.activeSession));
     root.appendChild(shell);
+    if (state && state.activeSession && feed) {
+      renderedWorkspace = {
+        providerId: record.id,
+        sessionId: state.activeSession.id,
+        version: record.version,
+        root: root,
+        scroll: scroll,
+        content: content,
+        feed: feed,
+        nodes: feedNodes
+      };
+    }
 
     if (nearBottom) scroll.scrollTop = scroll.scrollHeight;
     else scroll.scrollTop = scrollTop;
@@ -1938,7 +2055,8 @@ import { marked } from 'marked';
     if (BOBO.workbench && BOBO.workbench.refreshControls) BOBO.workbench.refreshControls();
   }
 
-  function sync() {
+  function sync(change) {
+    if (renderStatePatch(change)) return;
     var available = records();
     var known = new Set(available.map(function(record) { return record.id; }));
     var activeApprovalKeys = new Set();
@@ -2041,6 +2159,7 @@ import { marked } from 'marked';
     approvalDetails.clear();
     approvalDecisions.clear();
     accessRequests.clear();
+    renderedWorkspace = null;
     destroyChrome();
     var root = document.getElementById(PAGE_ID);
     if (root) root.remove();

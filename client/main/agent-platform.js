@@ -21,10 +21,12 @@ const MAX_PENDING_APPROVALS_PER_PLUGIN = 8;
 const MAX_APPROVAL_TOMBSTONES = 128;
 const MAX_ACTIVE_MODELS = 8;
 const MAX_ACTIVE_MODELS_PER_PLUGIN = 2;
-const MAX_ACTIVE_SEARCHES = 2;
+const MAX_ACTIVE_SEARCHES = 4;
 const MAX_ACTIVE_OPERATIONS = 8;
 const MAX_ACTIVE_OPERATIONS_PER_PLUGIN = 2;
+const MAX_MODEL_REQUEST_OUTPUT_TOKENS = 262_144;
 const ACCESS_MODES = new Set(['ask', 'auto', 'full']);
+const REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const ACCESS_MODE_RANK = Object.freeze({ ask: 0, auto: 1, full: 2 });
 const APPROVAL_FAILURE_MESSAGES = Object.freeze({
   AGENT_CANCELLED: 'The approved Agent operation was cancelled.',
@@ -227,6 +229,7 @@ function createAgentPlatformBroker(options) {
   const runWorkspaceMutation = options.runWorkspaceMutation;
   const requestModel = options.requestModel;
   const cancelModel = typeof options.cancelModel === 'function' ? options.cancelModel : () => ({ success: true, cancelled: false });
+  const emitModelEvent = typeof options.emitModelEvent === 'function' ? options.emitModelEvent : () => {};
   const notifyWorkspaceFiles = typeof options.notifyWorkspaceFiles === 'function' ? options.notifyWorkspaceFiles : () => {};
   if (typeof runWorkspaceMutation !== 'function') throw new TypeError('Agent workspace writes require the workspace mutation coordinator.');
   const storageRoot = path.join(app.getPath('userData'), 'agent-data');
@@ -392,6 +395,46 @@ function createAgentPlatformBroker(options) {
     return { snapshot, normalized, absolute: path.join(parent, path.basename(candidate)) };
   }
 
+  function modelCapabilities(profile) {
+    const source = isPlainObject(profile && profile.capabilities) ? profile.capabilities : {};
+    const tokenLimit = (value) => Number.isSafeInteger(value) && value > 0 && value <= 100_000_000 ? value : null;
+    const nullableBoolean = (value) => typeof value === 'boolean' ? value : null;
+    const reasoningEfforts = Array.isArray(source.reasoningEfforts)
+      ? [...new Set(source.reasoningEfforts.filter((effort) => REASONING_EFFORTS.has(effort)))]
+      : [];
+    const effectiveEffortMap = {};
+    if (isPlainObject(source.effectiveEffortMap)) {
+      for (const requested of REASONING_EFFORTS) {
+        const effective = boundedText(source.effectiveEffortMap[requested], 16).trim().toLowerCase();
+        if (REASONING_EFFORTS.has(effective)) effectiveEffortMap[requested] = effective;
+        else if (effective === 'none' || effective === 'minimal') effectiveEffortMap[requested] = 'none';
+      }
+    }
+    return Object.freeze({
+      contextWindowTokens: tokenLimit(source.contextWindowTokens),
+      maxOutputTokens: tokenLimit(source.maxOutputTokens),
+      requestOutputLimitTokens: Math.min(tokenLimit(source.maxOutputTokens) || MAX_MODEL_REQUEST_OUTPUT_TOKENS, MAX_MODEL_REQUEST_OUTPUT_TOKENS),
+      tools: nullableBoolean(source.tools),
+      streaming: nullableBoolean(source.streaming),
+      parallelToolCalls: nullableBoolean(source.parallelToolCalls),
+      reasoningEfforts: Object.freeze(reasoningEfforts),
+      effectiveEffortMap: Object.freeze(effectiveEffortMap),
+      source: ['provider-api', 'official-catalog', 'user-override'].includes(source.source) ? source.source : 'unknown'
+    });
+  }
+
+  function resolveReasoningEffort(profile, requested) {
+    const effort = REASONING_EFFORTS.has(requested) ? requested : 'medium';
+    const capabilities = modelCapabilities(profile);
+    const effortMap = capabilities.effectiveEffortMap;
+    const mapped = boundedText(effortMap[effort], 16).trim().toLowerCase();
+    let effective = 'none';
+    if (mapped === 'none' || mapped === 'minimal') effective = 'none';
+    else if (REASONING_EFFORTS.has(mapped)) effective = mapped;
+    else if (capabilities.reasoningEfforts.includes(effort)) effective = effort;
+    return { requested: effort, effective, capabilities };
+  }
+
   async function modelRecords() {
     const raw = await settings.readAiSettings();
     const values = [];
@@ -411,6 +454,7 @@ function createAgentPlatformBroker(options) {
           provider: boundedText(profile.provider || 'openai-compatible', 80),
           modelId: boundedText(profile.modelId, 200),
           configured: Boolean(profile.endpoint && profile.apiKey && profile.modelId),
+          capabilities: modelCapabilities(profile),
           profile
         });
       }
@@ -461,6 +505,39 @@ function createAgentPlatformBroker(options) {
     });
   }
 
+  function normalizeUsage(value) {
+    if (!isPlainObject(value)) return null;
+    const count = (...candidates) => {
+      for (const candidate of candidates) {
+        if (Number.isSafeInteger(candidate) && candidate >= 0) return candidate;
+      }
+      return null;
+    };
+    const cacheCreationTokens = count(value.cache_creation_input_tokens);
+    const cacheReadTokens = count(value.cache_read_input_tokens);
+    const anthropicInputTokens = Number.isSafeInteger(value.input_tokens) && value.input_tokens >= 0
+      ? value.input_tokens + (cacheCreationTokens || 0) + (cacheReadTokens || 0)
+      : null;
+    const inputTokens = count(value.inputTokens, value.prompt_tokens, anthropicInputTokens);
+    const outputTokens = count(value.outputTokens, value.output_tokens, value.completion_tokens);
+    const reasoningTokens = count(
+      value.reasoningTokens,
+      value.reasoning_tokens,
+      value.completion_tokens_details && value.completion_tokens_details.reasoning_tokens
+    );
+    const cachedInputTokens = count(
+      value.cachedInputTokens,
+      cacheReadTokens,
+      value.prompt_tokens_details && value.prompt_tokens_details.cached_tokens
+    );
+    const totalTokens = count(value.totalTokens, value.total_tokens,
+      inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null);
+    const normalized = { inputTokens, outputTokens, totalTokens };
+    if (reasoningTokens !== null) normalized.reasoningTokens = reasoningTokens;
+    if (cachedInputTokens !== null) normalized.cachedInputTokens = cachedInputTokens;
+    return normalized;
+  }
+
   function normalizeModelResponse(result) {
     if (!result || result.success !== true || !result.data) {
       throw agentError('AGENT_MODEL_FAILED', boundedText(result && (result.error || result.code), 1000, 'The model request failed.'));
@@ -478,7 +555,7 @@ function createAgentPlatformBroker(options) {
           arguments: boundedText(call.function && call.function.arguments, 256 * 1024, '{}')
         })) : [],
         finishReason: boundedText(choice.finish_reason, 80),
-        usage: isPlainObject(data.usage) ? cloneJson(data.usage) : null
+        usage: normalizeUsage(data.usage)
       };
     }
     if (Array.isArray(data.content)) {
@@ -494,7 +571,7 @@ function createAgentPlatformBroker(options) {
           arguments: JSON.stringify(isPlainObject(block.input) ? block.input : {})
         })),
         finishReason: boundedText(data.stop_reason, 80),
-        usage: isPlainObject(data.usage) ? cloneJson(data.usage) : null
+        usage: normalizeUsage(data.usage)
       };
     }
     throw agentError('AGENT_MODEL_PROTOCOL', 'The model returned an unsupported response shape.');
@@ -504,7 +581,7 @@ function createAgentPlatformBroker(options) {
     return 'agent-' + sha256(pluginId).slice(0, 16) + '-' + boundedText(requestId, 80, crypto.randomUUID());
   }
 
-  async function generate(pluginId, args) {
+  async function generate(pluginId, args, metadata = {}, streaming = false) {
     if (!isPlainObject(args)) throw agentError('AGENT_INVALID_MODEL_REQUEST', 'Agent model request must be an object.');
     const requestId = boundedText(args.requestId, 80).trim();
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(requestId)) {
@@ -515,13 +592,57 @@ function createAgentPlatformBroker(options) {
     }
     const hostRequestId = modelRequestId(pluginId, requestId);
     if (activeModelRequests.has(hostRequestId)) throw agentError('AGENT_MODEL_BUSY', 'The Agent model request id is already active.');
-    activeModelRequests.set(hostRequestId, { pluginId, epoch: pluginEpoch(pluginId) });
+    const revision = boundedText(metadata && metadata.revision, 160).trim();
+    activeModelRequests.set(hostRequestId, { pluginId, epoch: pluginEpoch(pluginId), requestId, revision });
+    let sequence = 0;
+    let terminal = false;
+    let sawUsage = false;
+    let sawStarted = false;
+    const emit = (event) => {
+      const active = activeModelRequests.get(hostRequestId);
+      if (!streaming || terminal || !active || active.epoch !== pluginEpoch(pluginId)) return false;
+      if (!event || typeof event !== 'object') return false;
+      if (event.type === 'usage') sawUsage = true;
+      const isTerminal = event.type === 'response.completed' || event.type === 'response.error';
+      if (isTerminal) terminal = true;
+      sequence += 1;
+      try {
+        emitModelEvent({ pluginId, revision, requestId, sequence, event: cloneJson(event) });
+        return true;
+      } catch (_) {
+        return false;
+      }
+    };
     try {
       const models = await modelRecords();
       const record = models.find((model) => model.ref === args.modelRef);
       if (!record || !record.configured) throw agentError('AGENT_MODEL_UNCONFIGURED', 'The selected local model profile is unavailable or incomplete.');
-      const effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(args.reasoningEffort) ? args.reasoningEffort : 'medium';
-      const defaultMaxTokens = effort === 'max' ? 16384 : effort === 'xhigh' ? 12288 : 8192;
+      const effort = resolveReasoningEffort(record.profile, args.reasoningEffort);
+      const ensureStarted = (requested = effort.requested, effective = effort.effective) => {
+        if (!streaming || sawStarted) return;
+        const normalizedRequested = REASONING_EFFORTS.has(requested) ? requested : effort.requested;
+        const normalizedEffective = REASONING_EFFORTS.has(effective) || effective === 'none'
+          ? effective
+          : effort.effective;
+        sawStarted = true;
+        emit({
+          type: 'response.started',
+          requestedReasoningEffort: normalizedRequested,
+          effectiveReasoningEffort: normalizedEffective
+        });
+      };
+      const tools = normalizeTools(args.tools);
+      if (tools.length && record.capabilities.tools === false) {
+        throw agentError('AGENT_MODEL_CAPABILITY', 'The selected model profile does not declare tool support.');
+      }
+      if (streaming && record.capabilities.streaming === false) {
+        throw agentError('AGENT_MODEL_CAPABILITY', 'The selected model profile does not declare streaming support.');
+      }
+      const defaultMaxTokens = effort.requested === 'max' ? 16384 : effort.requested === 'xhigh' ? 12288 : 8192;
+      const maximumOutputTokens = record.capabilities.requestOutputLimitTokens;
+      const requestedMaxTokens = Number.isFinite(Number(args.maxTokens))
+        ? Math.max(1, Math.round(Number(args.maxTokens)))
+        : defaultMaxTokens;
       if (activeModelRequests.get(hostRequestId)?.epoch !== pluginEpoch(pluginId)) {
         throw agentError('AGENT_CANCELLED', 'The Agent model request was cancelled.');
       }
@@ -529,17 +650,76 @@ function createAgentPlatformBroker(options) {
         requestId: hostRequestId,
         modelConfig: cloneJson(record.profile),
         messages: normalizeMessages(args.messages),
-        tools: normalizeTools(args.tools),
-        reasoningEffort: effort,
-        maxTokens: Math.max(256, Math.min(32768, Number(args.maxTokens) || defaultMaxTokens)),
+        tools,
+        reasoningEffort: effort.requested,
+        maxTokens: Math.min(maximumOutputTokens, requestedMaxTokens),
         temperature: Number.isFinite(Number(args.temperature)) ? Number(args.temperature) : 0.2,
-        stream: false,
+        stream: streaming,
+        onEvent: streaming ? (event) => {
+          if (!event || typeof event !== 'object') return;
+          if (event.type === 'response.started') {
+            ensureStarted(event.requestedReasoningEffort, event.effectiveReasoningEffort);
+          } else if (event.type === 'content.delta' || event.type === 'reasoning.delta') {
+            ensureStarted();
+            emit({ type: event.type, delta: boundedText(event.delta || event.text, 256 * 1024) });
+          } else if (event.type === 'tool_call.delta') {
+            ensureStarted();
+            emit({
+              type: event.type,
+              index: Number.isSafeInteger(event.index) ? event.index : 0,
+              id: boundedText(event.id, 160),
+              name: boundedText(event.name, 96),
+              argumentsDelta: boundedText(event.argumentsDelta || event.arguments, 256 * 1024)
+            });
+          } else if (event.type === 'usage') {
+            ensureStarted();
+            const usage = normalizeUsage(event.usage);
+            if (usage) emit({ type: 'usage', usage });
+          }
+        } : undefined,
         mode: 'chat'
       });
       if (pluginEpoch(pluginId) !== activeModelRequests.get(hostRequestId)?.epoch) {
         throw agentError('AGENT_CANCELLED', 'The Agent model request was cancelled.');
       }
-      return normalizeModelResponse(result);
+      const normalized = normalizeModelResponse(result);
+      const resultEffective = result && REASONING_EFFORTS.has(result.effectiveReasoningEffort)
+        ? result.effectiveReasoningEffort
+        : (result && result.effectiveReasoningEffort === 'none' ? 'none' : effort.effective);
+      const response = Object.assign({}, normalized, {
+        requestedReasoningEffort: effort.requested,
+        effectiveReasoningEffort: resultEffective
+      });
+      if (streaming) {
+        ensureStarted(effort.requested, resultEffective);
+        if (!sawUsage && normalized.usage) emit({ type: 'usage', usage: normalized.usage });
+        emit({
+          type: 'response.completed',
+          requestedReasoningEffort: effort.requested,
+          effectiveReasoningEffort: resultEffective,
+          result: response
+        });
+      }
+      return response;
+    } catch (error) {
+      if (streaming && !terminal) {
+        if (!sawStarted) {
+          sawStarted = true;
+          emit({
+            type: 'response.started',
+            requestedReasoningEffort: REASONING_EFFORTS.has(args.reasoningEffort) ? args.reasoningEffort : 'medium',
+            effectiveReasoningEffort: 'none'
+          });
+        }
+        emit({
+          type: 'response.error',
+          error: {
+            code: boundedText(error && error.code, 160, 'AGENT_MODEL_FAILED'),
+            message: boundedText(error && error.message, 8192, 'The model request failed.')
+          }
+        });
+      }
+      throw error;
     } finally {
       activeModelRequests.delete(hostRequestId);
     }
@@ -627,7 +807,7 @@ function createAgentPlatformBroker(options) {
     const caseSensitive = args && args.caseSensitive === true;
     const needle = caseSensitive ? query : query.toLowerCase();
     const maximumResults = Math.max(1, Math.min(500, Number(args && args.limit) || 100));
-    if (activeSearches.size >= MAX_ACTIVE_SEARCHES || countOwned(activeSearches, pluginId) >= 1) {
+    if (activeSearches.size >= MAX_ACTIVE_SEARCHES || countOwned(activeSearches, pluginId) >= 4) {
       throw agentError('AGENT_SEARCH_BUSY', 'This Agent already has an active workspace search.');
     }
     const searchId = crypto.randomUUID();
@@ -789,6 +969,38 @@ function createAgentPlatformBroker(options) {
     };
     const shown = [command].concat(commandArgs.map((value) => JSON.stringify(value))).join(' ');
     return authorizeOperation(pluginId, snapshot, 'process_run', operation, shown, 'execute', classifyProcessRisk(operation));
+  }
+
+  function listTools() {
+    return {
+      tools: [
+        {
+          name: 'workspace_list', description: 'List files and directories inside the active workspace.',
+          inputSchema: { type: 'object', properties: { path: { type: 'string' }, depth: { type: 'integer' }, limit: { type: 'integer' } } },
+          risk: 'low', readOnly: true, parallelSafe: true, requiresWorkspace: true
+        },
+        {
+          name: 'workspace_read', description: 'Read one bounded UTF-8 text file inside the active workspace.',
+          inputSchema: { type: 'object', required: ['path'], properties: { path: { type: 'string' } } },
+          risk: 'low', readOnly: true, parallelSafe: true, requiresWorkspace: true
+        },
+        {
+          name: 'workspace_search', description: 'Search bounded text files inside the active workspace.',
+          inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, caseSensitive: { type: 'boolean' }, limit: { type: 'integer' } } },
+          risk: 'low', readOnly: true, parallelSafe: true, requiresWorkspace: true
+        },
+        {
+          name: 'workspace_write', description: 'Create or replace one text file after host access checks.',
+          inputSchema: { type: 'object', required: ['path', 'content'], properties: { path: { type: 'string' }, content: { type: 'string' }, expectedSha256: { type: 'string' } } },
+          risk: 'medium', readOnly: false, parallelSafe: false, requiresWorkspace: true
+        },
+        {
+          name: 'process_run', description: 'Run an allowlisted local tool after host access checks.',
+          inputSchema: { type: 'object', required: ['command'], properties: { command: { type: 'string' }, args: { type: 'array', items: { type: 'string' } }, cwd: { type: 'string' }, timeoutMs: { type: 'integer' } } },
+          risk: 'high', readOnly: false, parallelSafe: false, requiresWorkspace: true
+        }
+      ]
+    };
   }
 
   async function invokeTool(pluginId, args) {
@@ -1112,9 +1324,11 @@ function createAgentPlatformBroker(options) {
           seen.add(id);
           const content = await readFileBounded(real, { maxBytes: 512 * 1024, encoding: 'utf8' });
           const metadata = skillMetadata(content, entry.name);
+          const sizeBytes = Buffer.byteLength(content, 'utf8');
           result.push({
             id, source: candidate.source, name: metadata.name, description: metadata.description,
-            filePath: real, size: Buffer.byteLength(content, 'utf8')
+            revision: 'sha256-' + sha256(content),
+            filePath: real, size: sizeBytes, sizeBytes, estimatedTokens: Math.ceil(sizeBytes / 4)
           });
         } catch (_) {}
       }
@@ -1128,8 +1342,12 @@ function createAgentPlatformBroker(options) {
 
   async function readSkill(args) {
     const id = boundedText(args && args.skillId, 64);
+    const expectedRevision = boundedText(args && args.revision, 160).trim();
     const record = (await discoverSkills()).find((skill) => skill.id === id);
     if (!record) throw agentError('AGENT_SKILL_NOT_FOUND', 'The selected Skill is no longer available.');
+    if (expectedRevision && expectedRevision !== record.revision) {
+      throw agentError('AGENT_SKILL_CHANGED', 'The selected Skill changed after it was listed. Refresh Skills before reading it.');
+    }
     const stat = await fsp.lstat(record.filePath).catch(() => null);
     const real = stat && stat.isFile() && !stat.isSymbolicLink()
       ? await fsp.realpath(record.filePath).catch(() => '')
@@ -1143,16 +1361,22 @@ function createAgentPlatformBroker(options) {
     } catch (_) {
       throw agentError('AGENT_SKILL_NOT_FOUND', 'The selected Skill changed before it could be read.');
     }
+    if ('sha256-' + sha256(content) !== record.revision) {
+      throw agentError('AGENT_SKILL_CHANGED', 'The selected Skill changed while it was being read.');
+    }
     return {
       id: record.id,
       source: record.source,
       name: record.name,
       description: record.description,
+      revision: record.revision,
+      sizeBytes: record.sizeBytes,
+      estimatedTokens: record.estimatedTokens,
       content
     };
   }
 
-  async function request(pluginId, method, args) {
+  async function request(pluginId, method, args, metadata = {}) {
     const id = safePluginId(pluginId);
     for (const [approvalId, operation] of approvals) {
       if (operation.expiresAt < Date.now()) {
@@ -1161,12 +1385,14 @@ function createAgentPlatformBroker(options) {
       }
     }
     if (method === 'models.list') return listModels();
-    if (method === 'models.generate') return generate(id, args);
+    if (method === 'models.generate') return generate(id, args, metadata, false);
+    if (method === 'models.generateStream') return generate(id, args, metadata, true);
     if (method === 'models.cancel') return cancelGeneration(id, args);
     if (method === 'agent.storage.read') return readStorage(id);
     if (method === 'agent.storage.write') return writeStorage(id, args);
     if (method === 'agent.skills.list') return listSkills();
     if (method === 'agent.skills.read') return readSkill(args);
+    if (method === 'agent.tools.list') return listTools();
     if (method === 'agent.tools.invoke') return invokeTool(id, args);
     throw agentError('AGENT_METHOD_DENIED', 'Unknown Agent broker method: ' + method);
   }

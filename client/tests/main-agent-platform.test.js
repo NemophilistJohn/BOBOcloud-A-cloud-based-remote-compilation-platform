@@ -25,6 +25,7 @@ async function createHarness(t, options = {}) {
   const notifications = [];
   const notificationContexts = [];
   const workspaceMutations = [];
+  const modelEvents = [];
   const brokerOptions = {
     app: {
       getPath(name) {
@@ -42,7 +43,17 @@ async function createHarness(t, options = {}) {
             provider: 'openai-compatible',
             endpoint: 'https://example.invalid/v1/chat/completions',
             apiKey: 'host-secret-key',
-            modelId: 'model-local'
+            modelId: 'model-local',
+            capabilities: options.modelCapabilities || {
+              contextWindowTokens: 131072,
+              maxOutputTokens: 32768,
+              tools: true,
+              streaming: true,
+              parallelToolCalls: true,
+              reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+              effectiveEffortMap: { max: 'xhigh' },
+              source: 'user-override'
+            }
           }],
           inlineProfiles: []
         };
@@ -67,7 +78,7 @@ async function createHarness(t, options = {}) {
       assertCurrent();
       return result;
     }),
-    requestModel: async (request) => {
+    requestModel: options.requestModel || (async (request) => {
       modelRequests.push(request);
       return {
         success: true,
@@ -83,7 +94,8 @@ async function createHarness(t, options = {}) {
           usage: { total_tokens: 12 }
         }
       };
-    },
+    }),
+    emitModelEvent: (event) => modelEvents.push(event),
     cancelModel: (requestId) => {
       cancellations.push(requestId);
       return { success: true, cancelled: true };
@@ -102,7 +114,7 @@ async function createHarness(t, options = {}) {
   });
   return {
     root, workspace, userData, home, workspaceState, modelRequests, cancellations,
-    notifications, notificationContexts, workspaceMutations, broker
+    notifications, notificationContexts, workspaceMutations, modelEvents, broker
   };
 }
 
@@ -116,7 +128,18 @@ test('Agent model broker exposes opaque refs, retains credentials, and scopes ca
       name: 'Local Chat',
       provider: 'openai-compatible',
       modelId: 'model-local',
-      configured: true
+      configured: true,
+      capabilities: {
+        contextWindowTokens: 131072,
+        maxOutputTokens: 32768,
+        requestOutputLimitTokens: 32768,
+        tools: true,
+        streaming: true,
+        parallelToolCalls: true,
+        reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+        effectiveEffortMap: { max: 'xhigh' },
+        source: 'user-override'
+      }
     }]
   });
   assert.equal(JSON.stringify(listed).includes('host-secret-key'), false);
@@ -138,6 +161,9 @@ test('Agent model broker exposes opaque refs, retains credentials, and scopes ca
   });
   assert.equal(generated.content, 'Done');
   assert.equal(generated.reasoning, 'Checked the workspace.');
+  assert.equal(generated.requestedReasoningEffort, 'high');
+  assert.equal(generated.effectiveReasoningEffort, 'high');
+  assert.deepEqual(generated.usage, { inputTokens: null, outputTokens: null, totalTokens: 12 });
   assert.deepEqual(generated.toolCalls, [{
     id: 'call-1',
     name: 'workspace_read',
@@ -163,6 +189,95 @@ test('Agent model broker exposes opaque refs, retains credentials, and scopes ca
   assert.equal(harness.cancellations[0], harness.modelRequests[0].requestId);
   await harness.broker.request('other.agent', 'models.cancel', { requestId: 'turn-1' });
   assert.notEqual(harness.cancellations[1], harness.cancellations[0]);
+});
+
+test('Agent model broker streams normalized ordered events with real capabilities and effective effort', async (t) => {
+  const harness = await createHarness(t, {
+    requestModel: async (request) => {
+      request.onEvent({ type: 'content.delta', delta: 'Hello ' });
+      request.onEvent({ type: 'reasoning.delta', delta: 'Check.' });
+      request.onEvent({ type: 'tool_call.delta', index: 0, id: 'call-1', name: 'workspace_read', argumentsDelta: '{"path":' });
+      request.onEvent({ type: 'usage', usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 } });
+      return {
+        success: true,
+        effectiveReasoningEffort: 'xhigh',
+        data: {
+          choices: [{ message: { content: 'Hello world', reasoning_content: 'Check.' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 }
+        }
+      };
+    }
+  });
+
+  const result = await harness.broker.request('acme.agent', 'models.generateStream', {
+    modelRef: 'chat:chat-local',
+    requestId: 'stream-1',
+    reasoningEffort: 'max',
+    messages: [{ role: 'user', content: 'Stream.' }]
+  }, { revision: 'rev-1' });
+
+  assert.equal(result.requestedReasoningEffort, 'max');
+  assert.equal(result.effectiveReasoningEffort, 'xhigh');
+  assert.deepEqual(harness.modelEvents.map((entry) => entry.event.type), [
+    'response.started', 'content.delta', 'reasoning.delta', 'tool_call.delta', 'usage', 'response.completed'
+  ]);
+  assert.deepEqual(harness.modelEvents.map((entry) => entry.sequence), [1, 2, 3, 4, 5, 6]);
+  assert.ok(harness.modelEvents.every((entry) => entry.pluginId === 'acme.agent' &&
+    entry.revision === 'rev-1' && entry.requestId === 'stream-1'));
+  assert.equal(harness.modelEvents.at(-1).event.result.usage.inputTokens, 20);
+});
+
+test('Agent model broker never raises a request above a declared small output limit', async (t) => {
+  const harness = await createHarness(t, {
+    modelCapabilities: {
+      contextWindowTokens: 512,
+      maxOutputTokens: 96,
+      tools: null,
+      streaming: null,
+      parallelToolCalls: null,
+      reasoningEfforts: [],
+      effectiveEffortMap: {},
+      source: 'user-override'
+    }
+  });
+
+  await harness.broker.request('acme.agent', 'models.generate', {
+    modelRef: 'chat:chat-local',
+    requestId: 'small-output',
+    reasoningEffort: 'low',
+    maxTokens: 4096,
+    messages: [{ role: 'user', content: 'Keep this short.' }]
+  });
+
+  assert.equal(harness.modelRequests[0].maxTokens, 96);
+});
+
+test('Agent model broker preserves provider output metadata while enforcing the host request ceiling', async (t) => {
+  const harness = await createHarness(t, {
+    modelCapabilities: {
+      contextWindowTokens: 2_000_000,
+      maxOutputTokens: 1_048_576,
+      tools: true,
+      streaming: true,
+      parallelToolCalls: true,
+      reasoningEfforts: ['low'],
+      effectiveEffortMap: {},
+      source: 'official-catalog'
+    }
+  });
+
+  const listed = await harness.broker.request('acme.agent', 'models.list', {});
+  assert.equal(listed.models[0].capabilities.maxOutputTokens, 1_048_576);
+  assert.equal(listed.models[0].capabilities.requestOutputLimitTokens, 262_144);
+
+  await harness.broker.request('acme.agent', 'models.generate', {
+    modelRef: 'chat:chat-local',
+    requestId: 'host-output-ceiling',
+    reasoningEffort: 'low',
+    maxTokens: 1_048_576,
+    messages: [{ role: 'user', content: 'Use the effective host limit.' }]
+  });
+  assert.equal(harness.modelRequests[0].maxTokens, 262_144);
 });
 
 test('Agent workspace, Skill, and storage brokers keep paths and state scoped', async (t) => {
@@ -195,6 +310,11 @@ test('Agent workspace, Skill, and storage brokers keep paths and state scoped', 
   });
   assert.ok(listed.entries.some((entry) => entry.path === 'src/app.js'));
   assert.equal(JSON.stringify(listed).includes(harness.workspace), false);
+  const toolCatalog = await harness.broker.request('acme.agent', 'agent.tools.list', {});
+  assert.deepEqual(toolCatalog.tools.filter((tool) => tool.readOnly && tool.parallelSafe).map((tool) => tool.name), [
+    'workspace_list', 'workspace_read', 'workspace_search'
+  ]);
+  assert.equal(toolCatalog.tools.find((tool) => tool.name === 'workspace_write').parallelSafe, false);
 
   const read = await harness.broker.request('acme.agent', 'agent.tools.invoke', {
     tool: 'workspace_read', input: { path: 'src/app.js' }
@@ -233,11 +353,23 @@ test('Agent workspace, Skill, and storage brokers keep paths and state scoped', 
   assert.ok(skill);
   assert.equal(skills.skills.some((entry) => entry.name === 'oversized'), false);
   assert.match(skill.id, /^skill-[a-f0-9]{24}$/);
+  assert.match(skill.revision, /^sha256-[a-f0-9]{64}$/);
+  assert.equal(skill.sizeBytes, skill.size);
+  assert.ok(skill.estimatedTokens > 0);
   assert.equal(JSON.stringify(skill).includes('SKILL.md'), false);
   assert.equal(JSON.stringify(skill).includes(harness.workspace), false);
-  const document = await harness.broker.request('acme.agent', 'agent.skills.read', { skillId: skill.id });
+  const document = await harness.broker.request('acme.agent', 'agent.skills.read', {
+    skillId: skill.id,
+    revision: skill.revision
+  });
   assert.match(document.content, /# Review/);
+  assert.equal(document.revision, skill.revision);
   assert.equal(JSON.stringify(document).includes(harness.workspace), false);
+  await fsp.appendFile(path.join(skillDirectory, 'SKILL.md'), '\nChanged.\n', 'utf8');
+  await assert.rejects(
+    () => harness.broker.request('acme.agent', 'agent.skills.read', { skillId: skill.id, revision: skill.revision }),
+    { code: 'AGENT_SKILL_CHANGED' }
+  );
 
   assert.deepEqual(await harness.broker.request('acme.agent', 'agent.storage.read', {}), { value: {} });
   assert.equal((await harness.broker.request('acme.agent', 'agent.storage.write', {

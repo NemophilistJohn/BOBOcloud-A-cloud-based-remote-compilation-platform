@@ -218,6 +218,7 @@ contextBridge.exposeInMainWorld('api', {
       install: (id) => ipcRenderer.invoke('plugins:marketplace-install', { id })
     }),
     rpc: (pluginId, method, args) => ipcRenderer.invoke('plugins:rpc', { pluginId, method, args }),
+    onAgentModelEvent: (cb) => subscribePayload('plugins:agent-model-event', cb),
     onChanged: (cb) => subscribePayload('plugins:changed', cb)
   }),
   onOpenPluginManager: (cb) => subscribe('open-plugin-manager', cb),
