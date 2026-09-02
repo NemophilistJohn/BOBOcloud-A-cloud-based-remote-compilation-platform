@@ -1,5 +1,5 @@
 import type { NativeHost, RcloneNativeHost, RcloneProgressListener } from '../../types/native-host';
-import { rendererPlatform } from './bootstrap.js';
+import { rendererPlatform } from './typed-platform';
 
 export const RCLONE_HOST_SERVICE_ID = 'host.rclone';
 

@@ -26,6 +26,14 @@ facade is the first TypeScript vertical slice using this boundary, while
 The direct-access contract test ratchets the remaining JavaScript callers down
 and rejects bridge access from any other TypeScript module.
 
+`types/renderer-platform.ts` is the compile-time service map over that existing
+runtime registry; `types/lifecycle.ts` supplies the shared disposable contract.
+The server runtime slice now keeps transport construction, capability DTO
+normalization/refresh, and cloud feature policy in injectable TypeScript
+services. Their three adapters in `compat/` register one host-only instance
+each and retain the legacy `BOBO` projections while older consumers are
+migrated.
+
 The future third-party contract is specified in `../../docs/plugin-api.md`. The
 current runtime activates only already-loaded trusted modules and is not a
 plugin package loader or security sandbox.

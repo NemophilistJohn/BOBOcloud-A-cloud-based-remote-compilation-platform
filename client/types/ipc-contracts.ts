@@ -6,6 +6,10 @@
  * bridge change cannot silently bypass the renderer contract gate.
  */
 
+import type { Dispose } from './lifecycle';
+
+export type { Dispose } from './lifecycle';
+
 export interface IpcInvokeContract<Args extends unknown[] = [], Result = unknown> {
   readonly args: Args;
   readonly result: Result;
@@ -200,8 +204,6 @@ export type Invoke<Channel extends IpcInvokeChannel> = (
 export type Send<Channel extends IpcSendChannel> = (
   ...args: IpcSendArgs<Channel>
 ) => void;
-
-export type Dispose = () => void;
 
 export type Subscribe<Channel extends IpcEventChannel> = (
   listener: (...args: IpcEventArgs<Channel>) => void

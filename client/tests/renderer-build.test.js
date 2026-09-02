@@ -43,11 +43,11 @@ const EXPECTED_MODULES = [
   '../src/plugin-manager-ui.js',
   '../src/language-packs-panel.js',
   '../src/utils.js',
-  '../src/server-transport.js',
+  './compat/server-transport-adapter.ts',
   '../src/server-comm.js',
   '../src/run-output.js',
-  '../src/server-capabilities.js',
-  '../src/cloud-feature-policy.js',
+  './compat/server-capabilities-adapter.ts',
+  './compat/cloud-feature-policy-adapter.ts',
   '../src/lsp-client.js',
   '../src/output-panel.js',
   '../src/terminal.js',
@@ -161,6 +161,9 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-sandbox.js')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.js')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/file-icons.js')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/server-transport.ts')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/server-capabilities.ts')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/cloud-feature-policy.ts')));
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/src/ai-chat-panel.js')));
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/node_modules/temml/dist/temml.mjs')));
   assert.ok(terminalUiSourceMap.sources.some((source) => source.endsWith('/renderer/terminal-ui-entry.js')));

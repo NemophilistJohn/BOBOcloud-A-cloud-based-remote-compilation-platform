@@ -4,23 +4,37 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const vm = require('node:vm');
+const esbuild = require('esbuild');
 
 const ROOT = path.resolve(__dirname, '..');
-const SOURCE = fs.readFileSync(path.join(ROOT, 'src', 'server-capabilities.js'), 'utf8');
+
+function loadTypeScriptModule(relativePath) {
+  const source = fs.readFileSync(path.join(ROOT, relativePath), 'utf8');
+  const transformed = esbuild.transformSync(source, {
+    loader: 'ts',
+    format: 'cjs',
+    target: 'node20',
+    sourcefile: relativePath
+  });
+  const module = { exports: {} };
+  Function('module', 'exports', 'require', transformed.code)(module, module.exports, require);
+  return module.exports;
+}
+
+const { createServerCapabilities } = loadTypeScriptModule('src/server-capabilities.ts');
 
 function loadCapabilities(options = {}) {
   const BOBO = { state: options.state || {} };
   if (options.sendToServer) BOBO.sendToServer = options.sendToServer;
   const events = [];
-  function CustomEvent(type, options) {
-    this.type = type;
-    this.detail = options && options.detail;
-  }
-  const window = { BOBO, CustomEvent, dispatchEvent: event => events.push(event) };
   BOBO._capabilityEvents = events;
-  vm.runInNewContext(SOURCE, { window, Array, Number, Object, String }, {
-    filename: 'src/server-capabilities.js'
+  BOBO.serverCapabilities = createServerCapabilities({
+    getState: () => BOBO.state,
+    getSendToServer: () => BOBO.sendToServer,
+    emitChange: detail => events.push({
+      type: 'bobo:server-capabilities-changed',
+      detail
+    })
   });
   return BOBO;
 }
@@ -179,6 +193,32 @@ test('capability refresh is single-flight and briefly cached for one server iden
   assert.equal(changes[0].reason, 'lsp-reconnect');
 });
 
+test('capability refresh resolves the current server sender when the probe starts', async () => {
+  const calls = [];
+  const state = {
+    serverSettings: { ip: 'server-a', httpPort: 3100, wsPort: 3101, secureTransport: true },
+    auth: { mode: 'single', user: null },
+    runIdentityEpoch: 2
+  };
+  const BOBO = loadCapabilities({
+    state,
+    sendToServer: async () => {
+      calls.push('old');
+      return serverInfo(descriptor());
+    }
+  });
+
+  const pending = BOBO.serverCapabilities.refresh({ reason: 'sender-change' });
+  BOBO.sendToServer = async () => {
+    calls.push('current');
+    return serverInfo(descriptor());
+  };
+  const result = await pending;
+
+  assert.equal(result.success, true);
+  assert.deepEqual(calls, ['current']);
+});
+
 test('a late capability refresh cannot overwrite a newer server identity', async () => {
   const oldProbe = deferred();
   const newProbe = deferred();
@@ -212,4 +252,46 @@ test('a late capability refresh cannot overwrite a newer server identity', async
   assert.equal(newResult.success, true);
   assert.equal(oldResult.stale, true);
   assert.equal(BOBO.state.serverCapabilities.catalogFingerprints.lsp, 'new-identity');
+});
+
+test('capability refresh fails closed when the negotiated transport requires TLS', async () => {
+  const state = {
+    serverSettings: { ip: 'server-a', httpPort: 3100, wsPort: 3101, secureTransport: false },
+    auth: { mode: 'single', user: null },
+    runIdentityEpoch: 1
+  };
+  const BOBO = loadCapabilities({
+    state,
+    sendToServer: async () => serverInfo(descriptor())
+  });
+
+  const result = await BOBO.serverCapabilities.refresh({ reason: 'transport-check' });
+
+  assert.equal(result.success, true);
+  assert.equal(result.snapshot.state, 'incompatible');
+  assert.equal(result.snapshot.reason, 'secure_transport_required');
+  assert.equal(BOBO.serverCapabilities.supports('run'), false);
+});
+
+test('disposing capability service prevents a late probe from publishing', async () => {
+  const probe = deferred();
+  const state = {
+    serverSettings: { ip: 'server-a', httpPort: 3100, wsPort: 3101, secureTransport: true },
+    auth: { mode: 'single', user: null },
+    runIdentityEpoch: 1
+  };
+  const BOBO = loadCapabilities({ state, sendToServer: () => probe.promise });
+  const changes = [];
+  BOBO.serverCapabilities.subscribe(change => changes.push(change));
+
+  const pending = BOBO.serverCapabilities.refresh({ reason: 'dispose-test' });
+  await Promise.resolve();
+  BOBO.serverCapabilities.dispose();
+  probe.resolve(serverInfo(descriptor()));
+  const result = await pending;
+
+  assert.deepEqual(result, { success: false, stale: true, reason: 'disposed' });
+  assert.equal(state.serverCapabilities, undefined);
+  assert.deepEqual(changes, []);
+  assert.deepEqual(BOBO._capabilityEvents, []);
 });

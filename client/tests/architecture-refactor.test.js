@@ -140,7 +140,7 @@ const EXPECTED_IPC = new Map([
   ['package-center:resolve-pending-recovery', 'handle']
 ]);
 
-const LEGACY_RENDERER_MODULES = [
+const REQUIRED_RENDERER_INPUTS = [
   'theme-manager.js',
   'editor-rules/completion-engine.js',
   'completion-rules.js',
@@ -163,7 +163,13 @@ const LEGACY_RENDERER_MODULES = [
   'src/settings.js',
   'src/language-packs-panel.js',
   'src/utils.js',
+  'src/server-transport.ts',
+  'renderer/compat/server-transport-adapter.ts',
   'src/server-comm.js',
+  'src/server-capabilities.ts',
+  'renderer/compat/server-capabilities-adapter.ts',
+  'src/cloud-feature-policy.ts',
+  'renderer/compat/cloud-feature-policy-adapter.ts',
   'src/lsp-client.js',
   'src/output-panel.js',
   'src/terminal.js',
@@ -253,7 +259,7 @@ test('HTML has at most two startup scripts and the renderer build covers every f
       // repository parent. The bundle still contains the same dependency.
       .replace(/^(?:\.\.\/)+node_modules\//, 'node_modules/')),
   );
-  for (const moduleName of LEGACY_RENDERER_MODULES) {
+  for (const moduleName of REQUIRED_RENDERER_INPUTS) {
     assert.ok(inputs.has(moduleName), 'renderer build omitted ' + moduleName);
   }
 

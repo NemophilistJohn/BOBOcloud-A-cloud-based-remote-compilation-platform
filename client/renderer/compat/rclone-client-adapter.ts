@@ -1,6 +1,5 @@
-import type { RcloneNativeHost } from '../../types/native-host';
 import { RCLONE_HOST_SERVICE_ID } from '../core/native-host-adapter';
-import { rendererPlatform } from '../core/bootstrap.js';
+import { rendererPlatform } from '../core/typed-platform';
 import {
   createRcloneClient,
   type RcloneClient,
@@ -14,7 +13,7 @@ interface LegacyBobo {
 
 const legacyWindow = window as Window & { BOBO?: LegacyBobo };
 const BOBO = legacyWindow.BOBO = legacyWindow.BOBO || {};
-const host = rendererPlatform.services.require(RCLONE_HOST_SERVICE_ID) as RcloneNativeHost;
+const host = rendererPlatform.services.require(RCLONE_HOST_SERVICE_ID);
 const rcloneClient = createRcloneClient({
   host,
   state: BOBO.state || {}

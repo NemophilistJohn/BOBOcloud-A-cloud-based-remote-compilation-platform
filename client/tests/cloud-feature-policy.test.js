@@ -5,13 +5,28 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const esbuild = require('esbuild');
 
 const ROOT = path.resolve(__dirname, '..');
-const CAPABILITIES_SOURCE = fs.readFileSync(path.join(ROOT, 'src', 'server-capabilities.js'), 'utf8');
-const POLICY_SOURCE = fs.readFileSync(path.join(ROOT, 'src', 'cloud-feature-policy.js'), 'utf8');
 const LSP_SOURCE = fs.readFileSync(path.join(ROOT, 'src', 'lsp-client.js'), 'utf8');
 const TERMINAL_SOURCE = fs.readFileSync(path.join(ROOT, 'src', 'terminal.js'), 'utf8')
   .replace(/import\s*\{[\s\S]*?\}\s*from\s*'\.\.\/renderer\/terminal-input-policy\.js';\s*/, '');
+
+function loadTypeScriptModule(relativePath) {
+  const source = fs.readFileSync(path.join(ROOT, relativePath), 'utf8');
+  const transformed = esbuild.transformSync(source, {
+    loader: 'ts',
+    format: 'cjs',
+    target: 'node20',
+    sourcefile: relativePath
+  });
+  const module = { exports: {} };
+  Function('module', 'exports', 'require', transformed.code)(module, module.exports, require);
+  return module.exports;
+}
+
+const { createServerCapabilities } = loadTypeScriptModule('src/server-capabilities.ts');
+const { createCloudFeaturePolicy } = loadTypeScriptModule('src/cloud-feature-policy.ts');
 
 function descriptor(capabilities) {
   return {
@@ -39,9 +54,21 @@ function descriptor(capabilities) {
 
 function loadPolicy(snapshot) {
   const BOBO = { state: { serverCapabilities: snapshot === undefined ? null : snapshot } };
-  const window = { BOBO };
-  vm.runInNewContext(POLICY_SOURCE, { window, Array, Object, String }, { filename: 'src/cloud-feature-policy.js' });
+  installPolicy(BOBO);
   return BOBO;
+}
+
+function installCapabilities(BOBO) {
+  BOBO.serverCapabilities = createServerCapabilities({
+    getState: () => BOBO.state,
+    getSendToServer: () => BOBO.sendToServer
+  });
+}
+
+function installPolicy(BOBO) {
+  BOBO.cloudFeaturePolicy = createCloudFeaturePolicy({
+    getSnapshot: () => BOBO.state && BOBO.state.serverCapabilities
+  });
 }
 
 test('runtime policy distinguishes unnegotiated, legacy and incompatible servers', () => {
@@ -61,8 +88,7 @@ test('runtime policy distinguishes unnegotiated, legacy and incompatible servers
 
 test('compatible servers can disable individual features and constrain LSP languages', () => {
   const BOBO = loadPolicy();
-  const context = { window: { BOBO }, Array, Number, Object, String };
-  vm.runInNewContext(CAPABILITIES_SOURCE, context, { filename: 'src/server-capabilities.js' });
+  installCapabilities(BOBO);
   BOBO.serverCapabilities.applyServerInfo({
     success: true,
     data: { serverCapabilities: descriptor({ terminal: false }) }
@@ -138,8 +164,8 @@ test('compatible LSP handshake languages avoid legacy catalog probing', async ()
   };
   const window = { BOBO };
   const context = { window, globalThis: window, Array, Map, Number, Object, Promise, Set, String, Uint8Array, setTimeout, clearTimeout };
-  vm.runInNewContext(CAPABILITIES_SOURCE, context, { filename: 'src/server-capabilities.js' });
-  vm.runInNewContext(POLICY_SOURCE, context, { filename: 'src/cloud-feature-policy.js' });
+  installCapabilities(BOBO);
+  installPolicy(BOBO);
   vm.runInNewContext(LSP_SOURCE, context, { filename: 'src/lsp-client.js' });
 
   BOBO.serverCapabilities.applyServerInfo({ success: true, data: { serverCapabilities: descriptor() } });
@@ -221,8 +247,8 @@ test('disabled LSP preference does not open a fresh transport IPC session', asyn
     setTimeout,
     clearTimeout
   };
-  vm.runInNewContext(CAPABILITIES_SOURCE, context, { filename: 'src/server-capabilities.js' });
-  vm.runInNewContext(POLICY_SOURCE, context, { filename: 'src/cloud-feature-policy.js' });
+  installCapabilities(BOBO);
+  installPolicy(BOBO);
   vm.runInNewContext(LSP_SOURCE, context, { filename: 'src/lsp-client.js' });
   BOBO.serverCapabilities.applyServerInfo({
     success: true,
