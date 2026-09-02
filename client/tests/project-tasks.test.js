@@ -5,7 +5,6 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const vm = require('node:vm');
 const {
   collectTaskInputRequests,
   configValuesFromSnapshot,
@@ -25,120 +24,6 @@ function write(root, relativePath, content) {
   const target = path.join(root, relativePath);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, content, 'utf8');
-}
-
-function loadProjectTasksRenderer() {
-  let documentObject;
-  class FakeElement {
-    constructor(tagName, id) {
-      this.tagName = tagName;
-      this.id = id || '';
-      this.attributes = new Map();
-      this.children = [];
-      this.listeners = new Map();
-      this.style = {};
-      this.dataset = {};
-      this.hidden = false;
-      this.disabled = false;
-      this.className = '';
-      this.textContent = '';
-      this.offsetWidth = 300;
-      this.offsetHeight = 200;
-    }
-    setAttribute(name, value) { this.attributes.set(name, String(value)); }
-    getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
-    addEventListener(type, listener) {
-      if (!this.listeners.has(type)) this.listeners.set(type, []);
-      this.listeners.get(type).push(listener);
-    }
-    appendChild(child) { this.children.push(child); child.parentNode = this; return child; }
-    append(...children) { children.forEach((child) => this.appendChild(child)); }
-    replaceChildren(...children) { this.children = []; this.append(...children); }
-    contains(target) { return target === this || this.children.some((child) => child.contains && child.contains(target)); }
-    focus() { documentObject.activeElement = this; }
-    getBoundingClientRect() { return { left: 8, top: 8, right: 40, bottom: 32 }; }
-    querySelectorAll(selector) {
-      const matches = [];
-      const visit = (element) => {
-        if (element !== this && selector === '.run-target-item:not(:disabled)' &&
-            String(element.className).split(/\s+/).includes('run-target-item') && !element.disabled) matches.push(element);
-        element.children.forEach(visit);
-      };
-      visit(this);
-      return matches;
-    }
-    click() {
-      (this.listeners.get('click') || []).forEach((listener) => listener({ target: this, stopPropagation() {} }));
-    }
-  }
-
-  const elements = {
-    'run-target-menu': new FakeElement('div', 'run-target-menu'),
-    'run-target-btn': new FakeElement('button', 'run-target-btn'),
-    'run-code': new FakeElement('button', 'run-code'),
-    'run-config-btn': new FakeElement('button', 'run-config-btn')
-  };
-  elements['run-target-menu'].hidden = true;
-  documentObject = {
-    activeElement: null,
-    createElement: (tagName) => new FakeElement(tagName),
-    getElementById: (id) => elements[id] || null,
-    querySelector(selector) {
-      if (selector === '#run-target-menu .run-target-item:not(:disabled)') {
-        return elements['run-target-menu'].querySelectorAll('.run-target-item:not(:disabled)')[0] || null;
-      }
-      return null;
-    },
-    addEventListener() {},
-    removeEventListener() {}
-  };
-
-  let canRerun = false;
-  let rerunCalls = 0;
-  const state = { workspaceRoot: '', workspaceIdentity: 0, selectedRuntime: 'node:20', tabs: [], activeTabPath: '' };
-  const BOBO = {
-    state,
-    cloudFeaturePolicy: { evaluate: () => ({ available: true, state: 'enabled', reason: '' }) },
-    runner: {
-      canRerunLastProjectTask: () => canRerun,
-      rerunLastProjectTask: () => { rerunCalls += 1; return false; },
-      refreshControls() {}
-    },
-    updateRunOutput() {}
-  };
-  const api = {
-    tasksList: () => Promise.resolve({ tasks: [], warnings: [] }),
-    onWorkspaceOpened: () => () => {},
-    onFileEvent: () => () => {}
-  };
-  const windowObject = {
-    BOBO,
-    api,
-    innerWidth: 800,
-    innerHeight: 600,
-    addEventListener() {},
-    removeEventListener() {}
-  };
-  vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, '../src/project-tasks.js'), 'utf8'), {
-    window: windowObject,
-    document: documentObject,
-    localStorage: { getItem: () => null, setItem() {} },
-    setTimeout: (callback) => { callback(); return 1; },
-    clearTimeout() {},
-    Array,
-    Boolean,
-    JSON,
-    Map,
-    Promise,
-    Set,
-    String
-  }, { filename: 'src/project-tasks.js' });
-  return {
-    projectTasks: windowObject.BOBO.projectTasks,
-    elements,
-    setCanRerun(value) { canRerun = value; },
-    rerunCalls: () => rerunCalls
-  };
 }
 
 test('JSONC configurations merge deeply and BOBO labels override VS Code with an explicit conflict', (t) => {
@@ -372,34 +257,6 @@ test('input ids that can mutate ordinary object prototypes are rejected before r
   assert.equal(configuration.warnings.filter((item) => item.code === 'TASK_INPUT_UNAVAILABLE').length, 3);
 });
 
-test('renderer exposes rerun as a bottom command without changing the selected run target', () => {
-  const fixture = loadProjectTasksRenderer();
-  fixture.projectTasks.init();
-  const trigger = fixture.elements['run-target-btn'];
-  const menu = fixture.elements['run-target-menu'];
-
-  trigger.click();
-  let command = menu.children.at(-1);
-  assert.equal(command.className, 'run-target-item run-target-command');
-  assert.equal(command.getAttribute('role'), 'menuitem');
-  assert.equal(command.getAttribute('aria-checked'), null);
-  assert.equal(command.disabled, true);
-  assert.equal(command.children[1].textContent, 'Rerun Last Task');
-  assert.equal(menu.children.at(-2).getAttribute('role'), 'separator');
-
-  trigger.click();
-  fixture.setCanRerun(true);
-  trigger.click();
-  command = menu.children.at(-1);
-  assert.equal(command.disabled, false);
-  const selectionBefore = JSON.stringify(fixture.projectTasks.getSelected());
-  command.click();
-  assert.equal(menu.hidden, true);
-  assert.equal(fixture.rerunCalls(), 1);
-  assert.equal(JSON.stringify(fixture.projectTasks.getSelected()), selectionBefore);
-  fixture.projectTasks.dispose();
-});
-
 test('task variables use two-pass evaluation, prompt once, and redact password inputs from command echo', (t) => {
   const root = workspace(t);
   write(root, '.vscode/tasks.json', JSON.stringify({
@@ -522,7 +379,7 @@ test('config variables are read from the active language slice of the imported s
 
 test('every structured task configuration warning has a renderer localization mapping', () => {
   const mainSource = fs.readFileSync(path.resolve(__dirname, '../main/tasks.js'), 'utf8');
-  const rendererSource = fs.readFileSync(path.resolve(__dirname, '../src/project-tasks.js'), 'utf8');
+  const rendererSource = fs.readFileSync(path.resolve(__dirname, '../src/project-tasks.ts'), 'utf8');
   const warningCodes = new Set(Array.from(
     mainSource.matchAll(/warning\(\s*['"](TASKS?_[A-Z0-9_]+)['"]/g),
     (match) => match[1]

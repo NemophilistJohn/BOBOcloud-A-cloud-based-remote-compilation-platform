@@ -514,16 +514,18 @@ test('a dirty tasks file is saved and re-resolved before the current project run
       workspaceChangeVersion: 1,
       lastSyncedVersion: 1
     },
-    api: {
-      tasksResolve(label, context) {
-        events.push('resolve');
-        assert.equal(saved, true, 'task resolution must observe the saved tasks file');
-        assert.equal(label, 'Build current');
-        assert.deepEqual(context, { activeFile: '' });
-        return Promise.resolve({ success: true, execution: freshExecution });
-      }
-    },
     BOBO: {
+      projectTasks: {
+        resolveTask(request) {
+          events.push('resolve');
+          assert.equal(saved, true, 'task resolution must observe the saved tasks file');
+          assert.equal(request.label, 'Build current');
+          assert.equal(request.context.activeFile, '');
+          assert.deepEqual(Object.keys(request.context), ['activeFile']);
+          assert.equal(request.inputs, undefined);
+          return Promise.resolve({ success: true, execution: freshExecution });
+        }
+      },
       workspace: {
         saveAllTabs() {
           events.push('save');
@@ -1012,18 +1014,21 @@ test('cancelling an interactive task input settles preparation without syncing o
   const serverCalls = [];
   let resolveCalls = 0;
   const fixture = loadRunner({
-    api: {
-      tasksResolve() {
-        resolveCalls += 1;
-        return Promise.resolve({
-          success: false,
-          inputRequired: true,
-          inputRequests: [{ id: 'name', type: 'promptString', description: 'Name', default: '', password: false, options: [] }]
-        });
-      }
-    },
     BOBO: {
-      projectTasks: { resolveInputRequests: () => Promise.resolve(null) },
+      projectTasks: {
+        resolveTask(request) {
+          resolveCalls += 1;
+          assert.equal(request.label, 'Interactive');
+          assert.deepEqual(Object.keys(request.context), []);
+          assert.equal(request.inputs, undefined);
+          return Promise.resolve({
+            success: false,
+            inputRequired: true,
+            inputRequests: [{ id: 'name', type: 'promptString', description: 'Name', default: '', password: false, options: [] }]
+          });
+        },
+        resolveInputRequests: () => Promise.resolve(null)
+      },
       rclone: { sync: () => { throw new Error('sync must not start before task inputs are accepted'); } },
       sendToServer(action, payload) {
         serverCalls.push({ action, payload });
@@ -1051,17 +1056,21 @@ test('accepted task inputs are resolved before synchronization and the server re
   };
   let resolveCalls = 0;
   const fixture = loadRunner({
-    api: {
-      tasksResolve(_label, _context, inputs) {
-        resolveCalls += 1;
-        events.push(resolveCalls === 1 ? 'resolve:inputs' : 'resolve:plan');
-        if (resolveCalls === 1) return Promise.resolve({ success: false, inputRequired: true, inputRequests: [{ id: 'name', type: 'promptString' }] });
-        assert.deepEqual(inputs, { name: 'accepted' });
-        return Promise.resolve({ success: true, execution });
-      }
-    },
     BOBO: {
       projectTasks: {
+        resolveTask(request) {
+          resolveCalls += 1;
+          events.push(resolveCalls === 1 ? 'resolve:inputs' : 'resolve:plan');
+          assert.equal(request.label, 'Interactive');
+          assert.deepEqual(Object.keys(request.context), []);
+          if (resolveCalls === 1) {
+            assert.equal(request.inputs, undefined);
+            return Promise.resolve({ success: false, inputRequired: true, inputRequests: [{ id: 'name', type: 'promptString' }] });
+          }
+          assert.equal(request.inputs.name, 'accepted');
+          assert.deepEqual(Object.keys(request.inputs), ['name']);
+          return Promise.resolve({ success: true, execution });
+        },
         resolveInputRequests() { events.push('input'); return Promise.resolve({ name: 'accepted' }); }
       },
       sendToServer(action, payload) {
@@ -1154,13 +1163,13 @@ test('reevaluateOnRerun false reuses the resolved plan inside the same workspace
     steps: [{ id: 'test', label: 'Test', kind: 'test', type: 'process', argv: ['test', 'first-value'], cwd: '', env: {}, dependsOn: [], echo: false, displayCommand: 'test first-value' }]
   };
   const fixture = loadRunner({
-    api: {
-      tasksResolve() {
-        resolveCalls += 1;
-        return Promise.resolve({ success: true, execution });
-      }
-    },
     BOBO: {
+      projectTasks: {
+        resolveTask() {
+          resolveCalls += 1;
+          return Promise.resolve({ success: true, execution });
+        }
+      },
       sendToServer(action, payload) {
         if (action === 'runTask') {
           runPayloads.push(payload.task);
@@ -1193,24 +1202,24 @@ test('reevaluateOnRerun true resolves again with the current editor context', as
   const resolvedContexts = [];
   const runArguments = [];
   const fixture = loadRunner({
-    api: {
-      tasksResolve(_label, context) {
-        const activeFile = String(context.activeFile || '');
-        resolvedContexts.push(activeFile);
-        return Promise.resolve({
-          success: true,
-          execution: {
-            schemaVersion: 1,
-            label: 'Dynamic rerun',
-            kind: 'test',
-            presentation: { reveal: 'never', echo: false, focus: false, clear: false },
-            runOptions: { reevaluateOnRerun: true, runOn: 'default' },
-            steps: [{ id: 'test', label: 'Test', kind: 'test', type: 'process', argv: ['test', activeFile], cwd: '', env: {}, dependsOn: [], echo: false, displayCommand: 'test' }]
-          }
-        });
-      }
-    },
     BOBO: {
+      projectTasks: {
+        resolveTask(request) {
+          const activeFile = String(request.context.activeFile || '');
+          resolvedContexts.push(activeFile);
+          return Promise.resolve({
+            success: true,
+            execution: {
+              schemaVersion: 1,
+              label: 'Dynamic rerun',
+              kind: 'test',
+              presentation: { reveal: 'never', echo: false, focus: false, clear: false },
+              runOptions: { reevaluateOnRerun: true, runOn: 'default' },
+              steps: [{ id: 'test', label: 'Test', kind: 'test', type: 'process', argv: ['test', activeFile], cwd: '', env: {}, dependsOn: [], echo: false, displayCommand: 'test' }]
+            }
+          });
+        }
+      },
       sendToServer(action, payload) {
         if (action === 'runTask') {
           runArguments.push(payload.task.steps[0].argv.slice());

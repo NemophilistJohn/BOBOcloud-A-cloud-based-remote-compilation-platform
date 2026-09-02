@@ -184,6 +184,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'src/plugin-details.js',
   'src/run-config.js',
   'src/runner.js',
+  'src/project-tasks.ts',
+  'renderer/compat/project-tasks-adapter.ts',
   'src/dap-client.js',
   'renderer/compat/dap-adapter.js',
   'src/environment-activity.js',

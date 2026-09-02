@@ -8,6 +8,13 @@
 
 import type { Dispose } from './lifecycle';
 import type { DiagnosticsSettingsDto, DiagnosticsSettingsWriteDto } from './diagnostics';
+import type {
+  ProjectTaskConfigurationDto,
+  ProjectTaskResolveRequestDto,
+  ProjectTaskResolveResultDto,
+  ProjectTasksFileEvent,
+  ProjectTasksWorkspaceOpenedEvent
+} from './project-tasks';
 
 export type { Dispose } from './lifecycle';
 
@@ -31,8 +38,8 @@ export interface IpcInvokeContracts {
   'workspace-switch-applied': IpcInvokeContract<[details: unknown]>;
   'workspace-switch-reject': IpcInvokeContract<[details: unknown]>;
   'artifact-run-context': IpcInvokeContract<[context: unknown]>;
-  'tasks:list': IpcInvokeContract;
-  'tasks:resolve': IpcInvokeContract<[request: unknown]>;
+  'tasks:list': IpcInvokeContract<[], ProjectTaskConfigurationDto>;
+  'tasks:resolve': IpcInvokeContract<[request: ProjectTaskResolveRequestDto], ProjectTaskResolveResultDto>;
   'dap:configurations': IpcInvokeContract;
   'dap:resolve': IpcInvokeContract<[request: unknown]>;
   'dap:ensure-configuration': IpcInvokeContract;
@@ -152,7 +159,7 @@ export interface IpcSendContracts {
 }
 
 export interface IpcEventContracts {
-  'workspace-opened': IpcEventContract<[payload: unknown]>;
+  'workspace-opened': IpcEventContract<[payload: ProjectTasksWorkspaceOpenedEvent]>;
   'workspace-refresh': IpcEventContract<[payload: unknown]>;
   'workspace-leave-request': IpcEventContract<[payload: unknown]>;
   'workspace-leave-aborted': IpcEventContract<[payload: unknown]>;
@@ -163,7 +170,7 @@ export interface IpcEventContracts {
   'terminal:status': IpcEventContract<[payload: unknown]>;
   'terminal:package-intent': IpcEventContract<[payload: unknown]>;
   'terminal:package-intent-rejected': IpcEventContract<[payload: unknown]>;
-  'file-event': IpcEventContract<[payload: unknown]>;
+  'file-event': IpcEventContract<[payload: ProjectTasksFileEvent]>;
   'package-center:local-transaction': IpcEventContract<[payload: unknown]>;
   'open-server-settings': IpcEventContract;
   'lsp:status': IpcEventContract<[payload: unknown]>;

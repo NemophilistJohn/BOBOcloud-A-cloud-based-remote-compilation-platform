@@ -66,8 +66,7 @@ const EXPECTED_MODULES = [
   '../src/run-config.js',
   '../src/task-problem-matcher.js',
   '../src/runner.js',
-  '../src/project-tasks.js',
-  './compat/project-tasks-adapter.js',
+  './compat/project-tasks-adapter.ts',
   '../src/dap-client.js',
   './compat/dap-adapter.js',
   '../src/environment-activity.js',
@@ -166,6 +165,8 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/cloud-feature-policy.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/diagnostics-settings.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/diagnostics-settings-adapter.ts')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/project-tasks.ts')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/project-tasks-adapter.ts')));
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/src/ai-chat-panel.js')));
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/node_modules/temml/dist/temml.mjs')));
   assert.ok(terminalUiSourceMap.sources.some((source) => source.endsWith('/renderer/terminal-ui-entry.js')));

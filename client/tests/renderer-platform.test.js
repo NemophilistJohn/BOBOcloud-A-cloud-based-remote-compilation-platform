@@ -68,6 +68,40 @@ async function bundleModule(entry, outputName) {
   return require(output);
 }
 
+function createCompatibilityContext(consoleObject = console) {
+  const emptyTasks = () => ({
+    version: '2.0.0', workspaceRoot: '', tasks: [], inputs: [], warnings: [], sources: []
+  });
+  return {
+    console: consoleObject,
+    document: {},
+    window: {
+      BOBO: { state: {} },
+      api: {
+        readDiagnosticsSettings: async () => ({}),
+        writeDiagnosticsSettings: async () => true,
+        onOpenDiagnosticsSettings: () => () => {},
+        tasksList: async () => emptyTasks(),
+        tasksResolve: async () => ({ success: false, error: { code: 'TEST', message: 'test' } }),
+        onWorkspaceOpened: () => () => {},
+        onFileEvent: () => () => {},
+        rclonePrepareRemote: async () => ({}),
+        rcloneSync: async () => ({}),
+        rclonePull: async () => ({}),
+        rcloneCancel: async () => false,
+        rcloneCancelAll: async () => ({}),
+        rcloneListBinaries: async () => [],
+        rcloneGetSelection: async () => null,
+        rcloneSelectBinary: async () => false,
+        rcloneCheckVersion: async () => ({}),
+        rcloneValidateConnection: async () => ({}),
+        onRcloneProgress: () => () => {}
+      },
+      localStorage: { getItem: () => null, setItem() {} }
+    }
+  };
+}
+
 test.before(async () => {
   temporaryDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'bobocloud-renderer-platform-'));
   core = await bundleModule('renderer/core/index.js', 'core');
@@ -75,7 +109,7 @@ test.before(async () => {
   const compatibilityBuild = await esbuild.build({
     absWorkingDir: ROOT,
     stdin: {
-      contents: "import { rendererPlatform } from './renderer/core/bootstrap.js'; import './renderer/compat/platform-adapter.js'; import './renderer/compat/file-icons-adapter.js'; import './src/project-tasks.js'; import './renderer/compat/project-tasks-adapter.js'; window.__tasksPluginView = rendererPlatform.services.getForPlugin('workbench.projectTasks');",
+      contents: "import { rendererPlatform } from './renderer/core/bootstrap.js'; import './renderer/core/native-host-adapter.ts'; import './renderer/compat/platform-adapter.js'; import './renderer/compat/file-icons-adapter.js'; import './renderer/compat/project-tasks-adapter.ts'; window.__tasksPluginView = rendererPlatform.services.getForPlugin('workbench.projectTasks');",
       resolveDir: ROOT,
       sourcefile: 'compatibility-test-entry.js'
     },
@@ -1115,7 +1149,7 @@ test('SCM data contracts reject path escape and keep presentation host-controlle
 });
 
 test('static SCM decoration provider reaches the generic SCM tree lane without touching sync or diagnostics', () => {
-  const context = { console, window: {}, document: {} };
+  const context = createCompatibilityContext();
   vm.runInNewContext(compatibilityBundle, context);
   const BOBO = context.window.BOBO;
   const provider = core.createScmFileDecorationProvider({
@@ -1501,7 +1535,7 @@ test('file icon service is an injected ESM service with legacy-compatible maps',
 });
 
 test('thin BOBO adapter projects the same registered file icon service', () => {
-  const context = { console, window: {}, document: {} };
+  const context = createCompatibilityContext();
   vm.runInNewContext(compatibilityBundle, context);
 
   const BOBO = context.window.BOBO;
@@ -1527,15 +1561,11 @@ test('thin BOBO adapter projects the same registered file icon service', () => {
 
 test('BOBO file decoration facade selects by priority, isolates failures, and forwards lifecycle changes', () => {
   const logged = [];
-  const context = {
-    window: {},
-    document: {},
-    console: {
-      log: console.log,
-      warn: console.warn,
-      error: (...args) => logged.push(args)
-    }
-  };
+  const context = createCompatibilityContext({
+    log: console.log,
+    warn: console.warn,
+    error: (...args) => logged.push(args)
+  });
   vm.runInNewContext(compatibilityBundle, context);
   const BOBO = context.window.BOBO;
   const changes = [];

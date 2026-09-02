@@ -3,11 +3,18 @@ import type {
   DiagnosticsOpenListener,
   DiagnosticsSettingsWriteDto
 } from '../../types/diagnostics';
+import type {
+  ProjectTaskResolveRequestDto,
+  ProjectTasksFileEvent,
+  ProjectTasksHost,
+  ProjectTasksWorkspaceOpenedListener
+} from '../../types/project-tasks';
 import type { NativeHost, RcloneNativeHost, RcloneProgressListener } from '../../types/native-host';
 import { toDisposable } from './disposable.js';
 import { rendererPlatform } from './typed-platform';
 
 export const DIAGNOSTICS_HOST_SERVICE_ID = 'host.diagnostics';
+export const PROJECT_TASKS_HOST_SERVICE_ID = 'host.projectTasks';
 export const RCLONE_HOST_SERVICE_ID = 'host.rclone';
 
 function createDiagnosticsHost(host: NativeHost): Readonly<DiagnosticsHost> {
@@ -38,6 +45,28 @@ function createRcloneNativeHost(host: NativeHost): Readonly<RcloneNativeHost> {
   });
 }
 
+function isProjectTasksConfigurationEvent(event: ProjectTasksFileEvent): boolean {
+  const filePath = String(event?.path || '').replace(/\\/g, '/').toLowerCase();
+  return filePath.endsWith('/.vscode/tasks.json') || filePath.endsWith('/.bobocloud/tasks.json');
+}
+
+function createProjectTasksHost(host: NativeHost): Readonly<ProjectTasksHost> {
+  return Object.freeze({
+    list: () => host.tasksList(),
+    resolve: (request: ProjectTaskResolveRequestDto) => (
+      host.tasksResolve(request.label, request.context, request.inputs)
+    ),
+    onWorkspaceOpened: (listener: ProjectTasksWorkspaceOpenedListener) => toDisposable(
+      host.onWorkspaceOpened((event) => listener(event))
+    ),
+    onConfigurationChanged: (listener: () => void) => toDisposable(
+      host.onFileEvent((event) => {
+        if (isProjectTasksConfigurationEvent(event)) listener();
+      })
+    )
+  });
+}
+
 // This is the only new renderer module allowed to read the preload global.
 // Domain services below it expose narrower capabilities and remain host-only.
 const nativeHost = window.api;
@@ -51,6 +80,13 @@ const diagnosticsRegistration = rendererPlatform.services.register(
   { owner: 'core', exposeToPlugins: false }
 );
 rendererPlatform.lifecycle.add(diagnosticsRegistration);
+
+const projectTasksRegistration = rendererPlatform.services.register(
+  PROJECT_TASKS_HOST_SERVICE_ID,
+  createProjectTasksHost(nativeHost),
+  { owner: 'core', exposeToPlugins: false }
+);
+rendererPlatform.lifecycle.add(projectTasksRegistration);
 
 const rcloneRegistration = rendererPlatform.services.register(
   RCLONE_HOST_SERVICE_ID,

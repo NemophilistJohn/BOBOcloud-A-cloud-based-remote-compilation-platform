@@ -4,6 +4,11 @@ import type {
   DiagnosticsSettingsDto,
   DiagnosticsSettingsWriteDto
 } from './diagnostics';
+import type {
+  ProjectTaskEditorContext,
+  ProjectTaskInputValues,
+  ProjectTaskResolveResultDto
+} from './project-tasks';
 
 export interface WorkspaceTextFileWrite {
   readonly content: string;
@@ -91,7 +96,11 @@ export interface NativeHost {
   rejectWorkspaceSwitch: Invoke<'workspace-switch-reject'>;
   setArtifactRunContext: Invoke<'artifact-run-context'>;
   tasksList: Invoke<'tasks:list'>;
-  tasksResolve(label: string, context: unknown, inputs: unknown): Promise<unknown>;
+  tasksResolve(
+    label: string,
+    context: ProjectTaskEditorContext,
+    inputs?: ProjectTaskInputValues
+  ): Promise<ProjectTaskResolveResultDto>;
 
   dapConfigurations: Invoke<'dap:configurations'>;
   dapResolve(id: string, context: unknown): Promise<unknown>;

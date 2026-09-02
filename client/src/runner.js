@@ -943,7 +943,11 @@
 
     if (taskRequest) {
       try {
-        var resolvedTask = await global.api.tasksResolve(taskRequest.label, taskRequest.context || {}, undefined);
+        var resolvedTask = await BOBO.projectTasks.resolveTask({
+          label: taskRequest.label,
+          context: taskRequest.context || {},
+          inputs: undefined
+        });
         if (!isRunPreparationCurrent(runContext)) {
           finishRunOutput({ success: false, cancelled: true }, runContext);
           settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.') });
@@ -965,7 +969,11 @@
             settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'input-cancelled', message: tr('Project task was cancelled.') });
             return false;
           }
-          resolvedTask = await global.api.tasksResolve(taskRequest.label, taskRequest.context || {}, inputValues);
+          resolvedTask = await BOBO.projectTasks.resolveTask({
+            label: taskRequest.label,
+            context: taskRequest.context || {},
+            inputs: inputValues
+          });
           if (!isRunPreparationCurrent(runContext)) {
             finishRunOutput({ success: false, cancelled: true }, runContext);
             settleTaskExecution(executionHandle, { success: false, cancelled: true, code: 'context-changed', message: tr('Project task was cancelled.') });

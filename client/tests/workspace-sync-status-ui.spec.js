@@ -90,7 +90,7 @@ test('workspace tree cloud rail tracks local, queued, syncing, success, error an
       }
       return {
         monaco: cancellation('Canceled: Canceled\n at /node_modules/monaco-editor/min/vs/editor.api-test.js'),
-        unrelated: cancellation('Canceled: Canceled\n at /src/project-tasks.js')
+        unrelated: cancellation('Canceled: Canceled\n at /src/project-tasks.ts')
       };
     })).toEqual({ monaco: true, unrelated: false });
     // The production layout intentionally hides the sidebar at 680px. This
