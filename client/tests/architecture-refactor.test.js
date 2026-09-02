@@ -141,6 +141,7 @@ const EXPECTED_IPC = new Map([
 ]);
 
 const REQUIRED_RENDERER_INPUTS = [
+  'renderer/core/service-registry.ts',
   'theme-manager.js',
   'editor-rules/completion-engine.js',
   'completion-rules.js',
@@ -253,6 +254,11 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     './node_modules/monaco-editor/min/vs/loader.js',
     './renderer-dist/bobo-renderer.js'
   ]);
+  assert.equal(
+    fs.existsSync(path.join(ROOT, 'renderer', 'core', 'service-registry.js')),
+    false,
+    'legacy service-registry.js must not coexist with the TypeScript implementation'
+  );
 
   const metadata = JSON.parse(read('renderer-dist/bobo-renderer.meta.json'));
   const inputs = new Set(

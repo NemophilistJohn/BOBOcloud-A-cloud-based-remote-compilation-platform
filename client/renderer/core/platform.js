@@ -1,5 +1,5 @@
 import { DisposableStore } from './disposable.js';
-import { ServiceRegistry } from './service-registry.js';
+import { ServiceRegistry } from './service-registry.ts';
 import { CommandRegistry } from './command-registry.js';
 import { ContributionRegistry } from './contribution-registry.js';
 import { SourceControlStateStore } from './source-control.js';

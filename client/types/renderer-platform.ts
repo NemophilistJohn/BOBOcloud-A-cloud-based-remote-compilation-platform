@@ -1,13 +1,18 @@
 import type { RcloneClient } from '../src/rclone-client';
 import type { DiagnosticsHost, DiagnosticsSettingsService } from './diagnostics';
-import type { ProjectTasksHost, ProjectTasksService } from './project-tasks';
+import type {
+  ProjectTasksHost,
+  ProjectTasksPluginView,
+  ProjectTasksService
+} from './project-tasks';
 import type {
   CloudFeaturePolicyService,
   ServerCapabilityService,
   ServerTransportService
 } from './server-runtime';
-import type { Disposable, DisposableStore } from './lifecycle';
+import type { DisposableStore } from './lifecycle';
 import type { RcloneNativeHost } from './native-host';
+import type { ServiceRegistry } from '../renderer/core/service-registry';
 
 export interface RendererServiceMap {
   readonly 'host.diagnostics': Readonly<DiagnosticsHost>;
@@ -21,35 +26,20 @@ export interface RendererServiceMap {
   readonly 'workbench.cloudFeaturePolicy': Readonly<CloudFeaturePolicyService>;
 }
 
+export interface RendererPluginServiceMap {
+  readonly 'workbench.projectTasks': ProjectTasksPluginView;
+}
+
 export type { Disposable, DisposableStore } from './lifecycle';
-
-export interface ServiceRegistrationOptions<Service> {
-  readonly owner?: string;
-  readonly exposeToPlugins?: boolean;
-  readonly pluginView?: unknown;
-  readonly dispose?: (service: Service) => void;
-}
-
-export interface ServiceDescription {
-  readonly id: string;
-  readonly owner: string;
-  readonly exposeToPlugins: boolean;
-}
-
-export interface ServiceRegistry<Services extends object> extends Disposable {
-  register<ServiceId extends keyof Services & string>(
-    id: ServiceId,
-    service: Services[ServiceId],
-    options?: ServiceRegistrationOptions<Services[ServiceId]>
-  ): Disposable;
-  has<ServiceId extends keyof Services & string>(id: ServiceId): boolean;
-  get<ServiceId extends keyof Services & string>(id: ServiceId): Services[ServiceId] | undefined;
-  require<ServiceId extends keyof Services & string>(id: ServiceId): Services[ServiceId];
-  describe(): readonly ServiceDescription[];
-  disposeOwner(owner: string): void;
-}
+export type {
+  ServiceDescription,
+  ServiceRegistrationOptions,
+  ServiceRegistry,
+  ServiceRegistryErrorEvent,
+  ServiceRegistryOptions
+} from '../renderer/core/service-registry';
 
 export interface RendererPlatform {
   readonly lifecycle: DisposableStore;
-  readonly services: ServiceRegistry<RendererServiceMap>;
+  readonly services: ServiceRegistry<RendererServiceMap, RendererPluginServiceMap>;
 }
