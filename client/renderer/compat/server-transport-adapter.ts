@@ -1,6 +1,6 @@
 import { createServerTransport } from '../../src/server-transport';
 import type { ServerTransportService } from '../../types/server-runtime';
-import { rendererPlatform } from '../core/typed-platform';
+import { rendererPlatform } from '../core/bootstrap';
 
 export const SERVER_TRANSPORT_SERVICE_ID = 'workbench.serverTransport';
 

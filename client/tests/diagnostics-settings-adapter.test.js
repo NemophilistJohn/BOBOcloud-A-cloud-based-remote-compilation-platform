@@ -11,7 +11,6 @@ const { directBridgeAccessCount } = require('./support/renderer-bridge-access');
 const ROOT = path.resolve(__dirname, '..');
 const NATIVE_HOST_ADAPTER = 'renderer/core/native-host-adapter.ts';
 const DIAGNOSTICS_SLICE = Object.freeze([
-  'renderer/core/typed-platform.ts',
   'renderer/compat/diagnostics-settings-adapter.ts',
   'src/diagnostics-settings.ts',
   'src/editor-core.js',
@@ -23,7 +22,7 @@ test('diagnostics adapters share one host-only platform service and dispose prel
     absWorkingDir: ROOT,
     stdin: {
       contents: [
-        "import { rendererPlatform } from './renderer/core/bootstrap.js';",
+        "import { rendererPlatform } from './renderer/core/bootstrap.ts';",
         "import './renderer/core/native-host-adapter.ts';",
         "import './renderer/compat/diagnostics-settings-adapter.ts';",
         'window.__diagnosticsAdapterPlatform = rendererPlatform;'
@@ -118,6 +117,8 @@ test('diagnostics adapters reuse the bootstrap registry and only the native adap
   const nativeSource = fs.readFileSync(path.join(ROOT, NATIVE_HOST_ADAPTER), 'utf8');
   assert.equal(directBridgeAccessCount(NATIVE_HOST_ADAPTER, nativeSource), 1);
   assert.doesNotMatch(nativeSource, /\bglobal\s*(?:\.|\[)\s*['"]?api/);
+  assert.match(nativeSource, /from\s+['"]\.\/bootstrap['"]/);
+  assert.equal(fs.existsSync(path.join(ROOT, 'renderer/core/typed-platform.ts')), false);
 
   for (const file of DIAGNOSTICS_SLICE) {
     const source = fs.readFileSync(path.join(ROOT, file), 'utf8');

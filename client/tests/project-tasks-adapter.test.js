@@ -11,7 +11,6 @@ const { directBridgeAccessCount } = require('./support/renderer-bridge-access');
 const ROOT = path.resolve(__dirname, '..');
 const NATIVE_HOST_ADAPTER = 'renderer/core/native-host-adapter.ts';
 const PROJECT_TASKS_SLICE = Object.freeze([
-  'renderer/core/typed-platform.ts',
   'renderer/compat/project-tasks-adapter.ts',
   'src/project-tasks.ts'
 ]);
@@ -62,7 +61,7 @@ test('Project Tasks adapters own one service, keep the host private, and dispose
     absWorkingDir: ROOT,
     stdin: {
       contents: [
-        "import { rendererPlatform } from './renderer/core/bootstrap.js';",
+        "import { rendererPlatform } from './renderer/core/bootstrap.ts';",
         "import './renderer/core/native-host-adapter.ts';",
         "import './renderer/compat/project-tasks-adapter.ts';",
         'window.__projectTasksAdapterPlatform = rendererPlatform;'
@@ -261,6 +260,8 @@ test('Project Tasks adapters own one service, keep the host private, and dispose
 test('Project Tasks reuses the bootstrap registry and only the native adapter reads the bridge', () => {
   const nativeSource = fs.readFileSync(path.join(ROOT, NATIVE_HOST_ADAPTER), 'utf8');
   assert.equal(directBridgeAccessCount(NATIVE_HOST_ADAPTER, nativeSource), 1);
+  assert.match(nativeSource, /from\s+['"]\.\/bootstrap['"]/);
+  assert.equal(fs.existsSync(path.join(ROOT, 'renderer/core/typed-platform.ts')), false);
 
   for (const file of PROJECT_TASKS_SLICE) {
     const source = fs.readFileSync(path.join(ROOT, file), 'utf8');

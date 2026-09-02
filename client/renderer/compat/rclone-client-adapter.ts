@@ -1,5 +1,5 @@
 import { RCLONE_HOST_SERVICE_ID } from '../core/native-host-adapter';
-import { rendererPlatform } from '../core/typed-platform';
+import { rendererPlatform } from '../core/bootstrap';
 import {
   createRcloneClient,
   type RcloneClient,

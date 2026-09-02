@@ -8,7 +8,7 @@ import {
 } from '../../src/diagnostics-settings';
 import type { DiagnosticsSettingsService } from '../../types/diagnostics';
 import { DIAGNOSTICS_HOST_SERVICE_ID } from '../core/native-host-adapter';
-import { rendererPlatform } from '../core/typed-platform';
+import { rendererPlatform } from '../core/bootstrap';
 
 export const DIAGNOSTICS_SETTINGS_SERVICE_ID = 'workbench.diagnosticsSettings';
 

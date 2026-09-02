@@ -1,4 +1,4 @@
-import { rendererPlatform } from '../core/bootstrap.js';
+import { rendererPlatform } from '../core/bootstrap.ts';
 import { createFileIconService, FILE_ICONS_SERVICE_ID } from '../../src/file-icons.js';
 
 const fileIcons = createFileIconService({ iconDirectory: 'ico' });

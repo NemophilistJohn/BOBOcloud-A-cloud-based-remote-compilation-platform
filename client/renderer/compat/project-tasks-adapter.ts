@@ -10,7 +10,7 @@ import type {
   ProjectTasksService
 } from '../../types/project-tasks';
 import { PROJECT_TASKS_HOST_SERVICE_ID } from '../core/native-host-adapter';
-import { rendererPlatform } from '../core/typed-platform';
+import { rendererPlatform } from '../core/bootstrap';
 
 export const PROJECT_TASKS_SERVICE_ID = 'workbench.projectTasks';
 

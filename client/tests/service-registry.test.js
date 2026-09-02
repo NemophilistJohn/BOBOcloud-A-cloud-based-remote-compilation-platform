@@ -173,3 +173,23 @@ test('service registry disposes in reverse order, isolates errors, and ignores s
   assert.match(errors[0].error.message, /dispose failed/);
   assert.throws(() => services.register('late.service', {}), /has been disposed/);
 });
+
+test('throwing service error observers cannot interrupt remaining cleanup', () => {
+  const calls = [];
+  const services = new ServiceRegistry({
+    onError() {
+      throw new Error('observer failed');
+    }
+  });
+  services.register('first', {}, { dispose: () => calls.push('first') });
+  services.register('failing', {}, {
+    dispose: () => {
+      calls.push('failing');
+      throw new Error('service cleanup failed');
+    }
+  });
+  services.register('last', {}, { dispose: () => calls.push('last') });
+
+  assert.doesNotThrow(() => services.dispose());
+  assert.deepEqual(calls, ['last', 'failing', 'first']);
+});

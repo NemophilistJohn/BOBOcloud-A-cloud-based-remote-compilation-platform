@@ -11,7 +11,7 @@ import type {
 } from '../../types/project-tasks';
 import type { NativeHost, RcloneNativeHost, RcloneProgressListener } from '../../types/native-host';
 import { toDisposable } from './disposable.js';
-import { rendererPlatform } from './typed-platform';
+import { rendererPlatform } from './bootstrap';
 
 export const DIAGNOSTICS_HOST_SERVICE_ID = 'host.diagnostics';
 export const PROJECT_TASKS_HOST_SERVICE_ID = 'host.projectTasks';

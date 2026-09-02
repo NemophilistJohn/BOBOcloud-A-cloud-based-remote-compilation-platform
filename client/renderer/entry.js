@@ -5,7 +5,7 @@
 // loader outside this bundle: src/app.js configures and invokes it at runtime.
 
 // Theme and editor-rule foundations.
-import './core/bootstrap.js';
+import './core/bootstrap.ts';
 import './core/native-host-adapter.ts';
 import './compat/platform-adapter.js';
 import '../theme-manager.js';

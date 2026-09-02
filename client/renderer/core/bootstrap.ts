@@ -1,3 +1,3 @@
-import { createRendererPlatform } from './platform.js';
+import { createRendererPlatform } from './platform';
 
 export const rendererPlatform = createRendererPlatform();

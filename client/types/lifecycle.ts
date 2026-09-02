@@ -4,9 +4,15 @@ export interface Disposable {
   dispose(): void;
 }
 
+export interface MaybeAsyncDisposable {
+  dispose(): void | PromiseLike<void>;
+}
+
 export interface DisposableStore extends Disposable {
   readonly disposed: boolean;
   add<Value extends Disposable>(disposable: Value): Value;
-  delete(disposable: Disposable): boolean;
+  addAsync<Value extends MaybeAsyncDisposable>(disposable: Value): Value;
+  delete(disposable: MaybeAsyncDisposable): boolean;
   clear(): void;
+  disposeAsync(): Promise<void>;
 }

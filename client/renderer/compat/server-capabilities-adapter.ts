@@ -4,7 +4,7 @@ import type {
   ServerCapabilityState,
   ServerInfoSender
 } from '../../types/server-runtime';
-import { rendererPlatform } from '../core/typed-platform';
+import { rendererPlatform } from '../core/bootstrap';
 
 export const SERVER_CAPABILITIES_SERVICE_ID = 'workbench.serverCapabilities';
 

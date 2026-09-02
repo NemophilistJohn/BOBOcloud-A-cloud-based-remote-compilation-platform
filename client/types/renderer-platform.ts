@@ -18,6 +18,9 @@ import type {
   ContributionRegistry
 } from '../renderer/core/contribution-registry';
 import type { ServiceRegistry } from '../renderer/core/service-registry';
+import type { AgentStateStore } from '../renderer/core/agent.js';
+import type { PluginRuntime } from '../renderer/core/plugin-runtime.js';
+import type { SourceControlStateStore } from '../renderer/core/source-control.js';
 import type {
   AgentDescriptorDto,
   DocumentViewDescriptorDto,
@@ -67,7 +70,7 @@ export interface RendererContributionMap {
 export type RendererContributionRegistrationMap =
   ContributionRegistrationMapFor<RendererContributionMap>;
 
-export type { Disposable, DisposableStore } from './lifecycle';
+export type { Disposable, DisposableStore, MaybeAsyncDisposable } from './lifecycle';
 export type {
   CommandDescription,
   CommandExecutionFailure,
@@ -123,8 +126,30 @@ export type {
 } from './contributions';
 
 export interface RendererPlatform {
+  readonly apiVersion: string;
   readonly lifecycle: DisposableStore;
   readonly services: ServiceRegistry<RendererServiceMap, RendererPluginServiceMap>;
   readonly commands: CommandRegistry<RendererCommandMap>;
   readonly contributions: ContributionRegistry<RendererContributionMap>;
+  readonly sourceControls: SourceControlStateStore;
+  readonly agents: AgentStateStore;
+  readonly plugins: PluginRuntime;
+  readonly disposed: boolean;
+  dispose(): Promise<void>;
+}
+
+export interface RendererPlatformErrorEvent {
+  readonly source: string;
+  readonly id?: string;
+  readonly owner?: string;
+  readonly error: unknown;
+}
+
+export interface RendererPlatformLogger {
+  error(message?: unknown, ...values: unknown[]): void;
+}
+
+export interface RendererPlatformOptions {
+  readonly logger?: RendererPlatformLogger;
+  readonly onError?: (event: RendererPlatformErrorEvent) => void;
 }

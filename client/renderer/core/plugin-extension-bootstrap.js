@@ -1,4 +1,4 @@
-import { rendererPlatform } from './bootstrap.js';
+import { rendererPlatform } from './bootstrap.ts';
 import { PluginExtensionHost } from './plugin-extension-host.js';
 import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
 
@@ -9,6 +9,10 @@ function resolvePluginApi() {
 }
 
 const pluginApi = resolvePluginApi();
+
+function reportExtensionError(event) {
+  try { console.error('[plugin-extension:' + event.source + ']', event.id || '', event.error); } catch (_) {}
+}
 
 // Kept module-local on purpose. Installed extension code never receives this
 // host, window.BOBO, window.api, Electron IPC, or a DOM reference.
@@ -43,17 +47,17 @@ export const rendererExtensionHost = pluginApi
         const commands = window.BOBO && window.BOBO.commands;
         return commands && commands.supportsDisposables === true ? commands : null;
       },
-      onError: (event) => {
-        try { console.error('[plugin-extension:' + event.source + ']', event.id || '', event.error); } catch (_) {}
-      }
+      onError: reportExtensionError
     })
   : null;
 
 if (rendererExtensionHost) {
-  rendererPlatform.lifecycle.add(rendererExtensionHost);
   let started = false;
   let refreshRunning = false;
   let refreshDirty = false;
+  let readyListenerAttached = false;
+  let disposeChange = null;
+  let disposeModelEvent = null;
   const refresh = () => {
     if (!started || rendererPlatform.disposed) return;
     refreshDirty = true;
@@ -71,23 +75,59 @@ if (rendererExtensionHost) {
   };
   const start = () => {
     if (started || rendererPlatform.disposed) return;
+    readyListenerAttached = false;
     started = true;
     refresh();
   };
 
+  // Own the host before subscribing to preload events so partial setup can
+  // never leave a listener or extension worker outside platform teardown.
+  rendererPlatform.lifecycle.addAsync({
+    async dispose() {
+      if (readyListenerAttached && typeof window.removeEventListener === 'function') {
+        try { window.removeEventListener('bobo:ready', start); } catch (error) {
+          reportExtensionError({ source: 'extension-bootstrap-dispose', error });
+        }
+        readyListenerAttached = false;
+      }
+      for (const dispose of [disposeModelEvent, disposeChange]) {
+        if (typeof dispose !== 'function') continue;
+        try { await dispose(); } catch (error) {
+          reportExtensionError({ source: 'extension-bootstrap-dispose', error });
+        }
+      }
+      await rendererExtensionHost.dispose();
+    }
+  });
+
   // src/app.js dispatches this only after Monaco and the legacy command
   // palette are ready. Do not let extension activation compete with startup.
   if (document.documentElement && document.documentElement.getAttribute('data-bobo-ready') === 'true') start();
-  else window.addEventListener('bobo:ready', start, { once: true });
+  else {
+    try {
+      window.addEventListener('bobo:ready', start, { once: true });
+      readyListenerAttached = true;
+    } catch (error) {
+      reportExtensionError({ source: 'extension-bootstrap-subscribe', error });
+    }
+  }
 
   if (typeof pluginApi.onChanged === 'function') {
-    const disposeChange = pluginApi.onChanged(refresh);
-    if (typeof disposeChange === 'function') rendererPlatform.lifecycle.add({ dispose: disposeChange });
+    try {
+      const candidate = pluginApi.onChanged(refresh);
+      if (typeof candidate === 'function') disposeChange = candidate;
+    } catch (error) {
+      reportExtensionError({ source: 'extension-bootstrap-subscribe', error });
+    }
   }
   if (typeof pluginApi.onAgentModelEvent === 'function') {
-    const disposeModelEvent = pluginApi.onAgentModelEvent((payload) => {
-      rendererExtensionHost.handleAgentModelEvent(payload);
-    });
-    if (typeof disposeModelEvent === 'function') rendererPlatform.lifecycle.add({ dispose: disposeModelEvent });
+    try {
+      const candidate = pluginApi.onAgentModelEvent((payload) => {
+        rendererExtensionHost.handleAgentModelEvent(payload);
+      });
+      if (typeof candidate === 'function') disposeModelEvent = candidate;
+    } catch (error) {
+      reportExtensionError({ source: 'extension-bootstrap-subscribe', error });
+    }
   }
 }

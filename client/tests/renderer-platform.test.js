@@ -9,6 +9,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 const esbuild = require('esbuild');
 const pluginRpcTransport = require('../main/plugin-rpc-transport');
+const { assertTypeScriptContract } = require('./support/typescript-contract');
 
 const ROOT = path.resolve(__dirname, '..');
 let temporaryDirectory;
@@ -109,7 +110,7 @@ test.before(async () => {
   const compatibilityBuild = await esbuild.build({
     absWorkingDir: ROOT,
     stdin: {
-      contents: "import { rendererPlatform } from './renderer/core/bootstrap.js'; import './renderer/core/native-host-adapter.ts'; import './renderer/compat/platform-adapter.js'; import './renderer/compat/file-icons-adapter.js'; import './renderer/compat/project-tasks-adapter.ts'; window.__tasksPluginView = rendererPlatform.services.getForPlugin('workbench.projectTasks');",
+      contents: "import { rendererPlatform } from './renderer/core/bootstrap.ts'; import './renderer/core/native-host-adapter.ts'; import './renderer/compat/platform-adapter.js'; import './renderer/compat/file-icons-adapter.js'; import './renderer/compat/project-tasks-adapter.ts'; window.__tasksPluginView = rendererPlatform.services.getForPlugin('workbench.projectTasks');",
       resolveDir: ROOT,
       sourcefile: 'compatibility-test-entry.js'
     },
@@ -313,6 +314,224 @@ test('disposable store tears down in reverse order and isolates cleanup errors',
   assert.deepEqual(calls, ['third', 'second', 'first', 'late']);
 });
 
+test('disposable store awaits priority async cleanup before ordinary teardown', async () => {
+  const gate = deferred();
+  const lateGate = deferred();
+  const calls = [];
+  const errors = [];
+  let reentrantDisposePromise = null;
+  let deleteDuringDispose = null;
+  const store = new core.DisposableStore({ onError: (event) => errors.push(event) });
+  const ordinaryFirst = core.toDisposable(() => calls.push('ordinary-first'));
+  store.add(ordinaryFirst);
+  store.add(core.toDisposable(() => calls.push('ordinary-last')));
+  store.addAsync({
+    async dispose() {
+      calls.push('priority-first');
+    }
+  });
+  store.addAsync({
+    async dispose() {
+      calls.push('priority-last:start');
+      reentrantDisposePromise = store.disposeAsync();
+      deleteDuringDispose = store.delete(ordinaryFirst);
+      await gate.promise;
+      calls.push('priority-last:end');
+      throw new Error('priority cleanup failed');
+    }
+  });
+
+  const disposePromise = store.disposeAsync();
+  let settled = false;
+  disposePromise.then(() => { settled = true; });
+  assert.equal(store.disposeAsync(), disposePromise);
+  await nextTurn();
+  assert.deepEqual(calls, ['priority-last:start']);
+  assert.equal(reentrantDisposePromise, disposePromise);
+  assert.equal(deleteDuringDispose, false);
+
+  store.addAsync({
+    async dispose() {
+      calls.push('priority-late:start');
+      await lateGate.promise;
+      calls.push('priority-late:end');
+    }
+  });
+
+  gate.resolve();
+  await nextTurn();
+  assert.equal(settled, false);
+  assert.deepEqual(calls, [
+    'priority-last:start',
+    'priority-last:end',
+    'priority-late:start'
+  ]);
+
+  lateGate.resolve();
+  await disposePromise;
+  assert.deepEqual(calls, [
+    'priority-last:start',
+    'priority-last:end',
+    'priority-late:start',
+    'priority-late:end',
+    'priority-first',
+    'ordinary-last',
+    'ordinary-first'
+  ]);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].error.message, /priority cleanup failed/);
+});
+
+test('disposeAsync waits for asynchronous cleanup already started by clear', async () => {
+  const gate = deferred();
+  const calls = [];
+  const store = new core.DisposableStore();
+  store.addAsync({
+    async dispose() {
+      calls.push('clear:start');
+      await gate.promise;
+      calls.push('clear:end');
+    }
+  });
+
+  store.clear();
+  const disposePromise = store.disposeAsync();
+  let settled = false;
+  disposePromise.then(() => { settled = true; });
+  await nextTurn();
+  assert.deepEqual(calls, ['clear:start']);
+  assert.equal(settled, false);
+
+  gate.resolve();
+  await disposePromise;
+  assert.deepEqual(calls, ['clear:start', 'clear:end']);
+});
+
+test('throwing disposable observers cannot interrupt cleanup', () => {
+  const calls = [];
+  const store = new core.DisposableStore({
+    onError() {
+      throw new Error('observer failed');
+    }
+  });
+  store.add(core.toDisposable(() => calls.push('first')));
+  store.add(core.toDisposable(() => {
+    calls.push('second');
+    throw new Error('cleanup failed');
+  }));
+  store.add(core.toDisposable(() => calls.push('third')));
+
+  assert.doesNotThrow(() => store.dispose());
+  assert.deepEqual(calls, ['third', 'second', 'first']);
+});
+
+test('renderer platform bootstrap exposes the precise runtime contract without a cast adapter', () => {
+  const source = [
+    "import { rendererPlatform } from '../renderer/core/bootstrap';",
+    "import { createRendererPlatform } from '../renderer/core/platform';",
+    "import type { RendererPlatform } from '../types/renderer-platform';",
+    'const bootstrapped: RendererPlatform = rendererPlatform;',
+    'const created: RendererPlatform = createRendererPlatform();',
+    'const apiVersion: string = created.apiVersion;',
+    'const disposed: boolean = created.disposed;',
+    'const disposal: Promise<void> = created.dispose();',
+    "created.services.require('workbench.projectTasks').refresh();",
+    "created.commands.execute('bobocloud.tasks.refresh');",
+    "created.contributions.list('agents')[0]?.capabilities.modes;",
+    'created.sourceControls.list();',
+    'created.agents.list();',
+    'created.plugins.list();',
+    '// @ts-expect-error Unknown host services remain outside the typed service map.',
+    "created.services.get('plugin.dynamic');",
+    '// @ts-expect-error Unknown host commands remain outside the typed command map.',
+    "created.commands.execute('plugin.dynamic');",
+    '// @ts-expect-error Unknown contribution points remain outside the typed point map.',
+    "created.contributions.list('plugin.dynamic');",
+    'void bootstrapped;',
+    'void apiVersion;',
+    'void disposed;',
+    'void disposal;'
+  ].join('\n');
+
+  assertTypeScriptContract({
+    root: ROOT,
+    fileName: '__renderer-platform-contract.ts',
+    source
+  });
+});
+
+test('extension bootstrap owns partial subscriptions before later adapter teardown', async () => {
+  const build = await esbuild.build({
+    absWorkingDir: ROOT,
+    stdin: {
+      contents: [
+        "import { rendererPlatform } from './renderer/core/bootstrap.ts';",
+        "import { rendererExtensionHost } from './renderer/core/plugin-extension-bootstrap.js';",
+        "rendererPlatform.lifecycle.add({ dispose() { window.__events.push('adapter:dispose'); } });",
+        'window.__extensionBootstrapPlatform = rendererPlatform;',
+        'window.__rendererExtensionHost = rendererExtensionHost;'
+      ].join('\n'),
+      resolveDir: ROOT,
+      sourcefile: 'extension-bootstrap-lifecycle-test-entry.js'
+    },
+    bundle: true,
+    platform: 'browser',
+    format: 'iife',
+    write: false,
+    logLevel: 'silent'
+  });
+  const events = [];
+  let readyListener = null;
+  const context = {
+    console: { error: () => events.push('subscribe:error') },
+    document: {
+      documentElement: { getAttribute: () => 'false' }
+    },
+    window: {
+      __events: events,
+      api: {
+        plugins: {
+          runtimeDescriptors: async () => [],
+          loadEntry: async () => ({ source: '' }),
+          onChanged() {
+            events.push('changed:subscribe');
+            return () => events.push('changed:dispose');
+          },
+          onAgentModelEvent() {
+            events.push('model:subscribe');
+            throw new Error('model subscription failed');
+          }
+        }
+      },
+      addEventListener(type, listener) {
+        assert.equal(type, 'bobo:ready');
+        readyListener = listener;
+        events.push('ready:subscribe');
+      },
+      removeEventListener(type, listener) {
+        assert.equal(type, 'bobo:ready');
+        assert.equal(listener, readyListener);
+        events.push('ready:dispose');
+        readyListener = null;
+      }
+    }
+  };
+  vm.runInNewContext(build.outputFiles[0].text, context);
+
+  await context.window.__extensionBootstrapPlatform.dispose();
+  assert.deepEqual(events, [
+    'ready:subscribe',
+    'changed:subscribe',
+    'model:subscribe',
+    'subscribe:error',
+    'ready:dispose',
+    'changed:dispose',
+    'adapter:dispose'
+  ]);
+  assert.equal(readyListener, null);
+  assert.equal((await context.window.__rendererExtensionHost.refresh([])).ok, false);
+});
+
 test('service registry owns visibility, duplicate protection, and disposal', () => {
   const disposed = [];
   const services = new core.ServiceRegistry();
@@ -507,6 +726,43 @@ test('plugin runtime enforces permissions and cleans partial activation', async 
   assert.equal(platform.commands.has('acme.good-plugin.partial'), false);
   assert.equal(platform.plugins.list().length, 0);
   assert.equal(reported.filter((event) => event.source === 'plugin-activate').length, 3);
+  await platform.dispose();
+});
+
+test('legacy plugin runtime registers and owns source-control state', async () => {
+  const platform = core.createRendererPlatform();
+  const pluginId = 'acme.legacy-scm';
+  const providerId = pluginId + '.provider';
+  const activation = await platform.plugins.activate({
+    id: pluginId,
+    version: '1.0.0',
+    engines: { pluginApi: '^1.0.0' },
+    permissions: [core.PluginPermission.SOURCE_CONTROL_REGISTER]
+  }, {
+    async activate(context) {
+      const provider = await context.sourceControl.register({
+        id: providerId,
+        title: 'Legacy repository',
+        icon: 'git-branch',
+        order: 7
+      });
+      await provider.setState({ phase: 'ready', title: 'Legacy repository' });
+    }
+  });
+
+  assert.equal(activation.ok, true);
+  const contribution = platform.contributions
+    .listEntries(core.ContributionPoint.SOURCE_CONTROL)
+    .find((entry) => entry.id === providerId);
+  assert.equal(contribution.owner, pluginId);
+  const state = platform.sourceControls.get(providerId);
+  assert.equal(state.owner, pluginId);
+  assert.equal(state.state.phase, 'ready');
+  assert.equal(state.state.title, 'Legacy repository');
+
+  assert.equal((await platform.plugins.deactivate(pluginId)).ok, true);
+  assert.equal(platform.contributions.list(core.ContributionPoint.SOURCE_CONTROL).length, 0);
+  assert.equal(platform.sourceControls.get(providerId), null);
   await platform.dispose();
 });
 
@@ -1491,6 +1747,13 @@ test('platform disposal waits for in-flight activation and tears it down once', 
   });
   await activationStarted.promise;
   const disposePromise = platform.dispose();
+  const concurrentDisposePromise = platform.dispose();
+  let disposalSettled = false;
+  disposePromise.then(() => { disposalSettled = true; });
+  assert.equal(concurrentDisposePromise, disposePromise);
+  assert.equal(platform.disposed, true);
+  await nextTurn();
+  assert.equal(disposalSettled, false);
   finishActivation.resolve();
   const activation = await activationPromise;
   await disposePromise;
@@ -1500,6 +1763,115 @@ test('platform disposal waits for in-flight activation and tears it down once', 
   assert.equal(disposeCount, 1);
   assert.deepEqual(platform.plugins.list(), []);
   assert.equal(platform.disposed, true);
+});
+
+test('platform disposal awaits an asynchronous legacy plugin disposable', async () => {
+  const platform = core.createRendererPlatform();
+  const gate = deferred();
+  const calls = [];
+  const activation = await platform.plugins.activate({
+    id: 'acme.async-disposable',
+    version: '1.0.0',
+    engines: { pluginApi: '^1.0.0' },
+    permissions: []
+  }, {
+    activate() {
+      return {
+        async dispose() {
+          calls.push('plugin:start');
+          await gate.promise;
+          calls.push('plugin:end');
+        }
+      };
+    }
+  });
+  assert.equal(activation.ok, true);
+
+  const disposePromise = platform.dispose();
+  let settled = false;
+  disposePromise.then(() => { settled = true; });
+  await nextTurn();
+  assert.deepEqual(calls, ['plugin:start']);
+  assert.equal(settled, false);
+
+  gate.resolve();
+  await disposePromise;
+  assert.deepEqual(calls, ['plugin:start', 'plugin:end']);
+  assert.equal(platform.plugins.list().length, 0);
+});
+
+test('plugin cleanup keeps its owner id reserved until asynchronous teardown completes', async () => {
+  const platform = core.createRendererPlatform({ onError() {} });
+  const cleanupStarted = deferred();
+  const finishCleanup = deferred();
+  const manifest = {
+    id: 'acme.cleanup-owner',
+    version: '1.0.0',
+    engines: { pluginApi: '^1.0.0' },
+    permissions: [core.PluginPermission.COMMANDS_REGISTER]
+  };
+  const replacementModule = {
+    activate(context) {
+      context.commands.register('acme.cleanup-owner.new-command', () => 'new');
+    }
+  };
+  assert.equal((await platform.plugins.activate(manifest, {
+    activate(context) {
+      context.commands.register('acme.cleanup-owner.old-command', () => 'old');
+      return {
+        async dispose() {
+          cleanupStarted.resolve();
+          await finishCleanup.promise;
+        }
+      };
+    }
+  })).ok, true);
+
+  const deactivationPromise = platform.plugins.deactivate(manifest.id);
+  await cleanupStarted.promise;
+  const overlappingReplacement = await platform.plugins.activate(manifest, replacementModule);
+  assert.equal(overlappingReplacement.ok, false);
+  assert.match(overlappingReplacement.error.message, /already active/);
+  assert.equal(platform.commands.has('acme.cleanup-owner.old-command'), true);
+
+  finishCleanup.resolve();
+  assert.equal((await deactivationPromise).ok, true);
+  assert.equal(platform.commands.has('acme.cleanup-owner.old-command'), false);
+  assert.deepEqual(platform.plugins.list(), []);
+
+  assert.equal((await platform.plugins.activate(manifest, replacementModule)).ok, true);
+  assert.equal(await platform.commands.execute('acme.cleanup-owner.new-command'), 'new');
+  await platform.dispose();
+});
+
+test('platform disposal waits for priority lifecycle work before later adapters and registries', async () => {
+  const platform = core.createRendererPlatform();
+  const gate = deferred();
+  const calls = [];
+  platform.lifecycle.addAsync({
+    async dispose() {
+      calls.push('extension:start');
+      await gate.promise;
+      calls.push('extension:end');
+    }
+  });
+  platform.lifecycle.add(core.toDisposable(() => calls.push('adapter')));
+  platform.services.register('late.service', {}, {
+    dispose: () => calls.push('service')
+  });
+
+  const disposePromise = platform.dispose();
+  let settled = false;
+  disposePromise.then(() => { settled = true; });
+  await nextTurn();
+  assert.equal(settled, false);
+  assert.deepEqual(calls, ['extension:start']);
+  assert.equal(platform.services.has('late.service'), true);
+
+  gate.resolve();
+  await disposePromise;
+  assert.deepEqual(calls, ['extension:start', 'extension:end', 'adapter', 'service']);
+  assert.equal(platform.services.has('late.service'), false);
 });
 
 test('disposed platform rejects late plugin activation and registry registration', async () => {

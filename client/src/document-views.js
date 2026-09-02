@@ -1,4 +1,4 @@
-import { rendererPlatform } from '../renderer/core/bootstrap.js';
+import { rendererPlatform } from '../renderer/core/bootstrap.ts';
 import { ContributionPoint } from '../renderer/core/contribution-registry.ts';
 import { selectDocumentView } from '../renderer/core/document-view.js';
 import { createSandboxedDocumentView } from '../renderer/core/document-view-sandbox.js';

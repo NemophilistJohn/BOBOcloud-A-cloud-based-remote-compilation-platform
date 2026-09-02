@@ -134,6 +134,7 @@ export class PluginRuntime {
       activationError: null,
       deactivateRequested: false,
       deactivationPromise: null,
+      cleanupPromise: null,
       cleaned: false
     };
     this._plugins.set(normalized.id, record);
@@ -162,7 +163,7 @@ export class PluginRuntime {
         record.status = 'active';
         return { ok: true, id: normalized.id };
       } catch (error) {
-        this._cleanupRecord(record);
+        await this._cleanupRecord(record);
         this._report('plugin-activate', normalized.id, error);
         return { ok: false, error };
       }
@@ -242,7 +243,7 @@ export class PluginRuntime {
         }
       }),
       sourceControl: Object.freeze({
-        async register(descriptor) {
+        register: async (descriptor) => {
           requirePermission(PluginPermission.SOURCE_CONTROL_REGISTER);
           const normalizedDescriptor = validateSourceControlDescriptor(descriptor);
           this._requireOwnedId(manifest.id, normalizedDescriptor.id, 'Source-control descriptor');
@@ -391,7 +392,7 @@ export class PluginRuntime {
           this._report('plugin-deactivate', record.manifest.id, error);
         }
       }
-      this._cleanupRecord(record);
+      await this._cleanupRecord(record);
       return deactivateError
         ? { ok: false, error: deactivateError }
         : { ok: true, id: record.manifest.id };
@@ -400,15 +401,21 @@ export class PluginRuntime {
   }
 
   _cleanupRecord(record) {
-    if (record.cleaned) return;
+    if (record.cleanupPromise) return record.cleanupPromise;
     record.cleaned = true;
-    if (this._plugins.get(record.manifest.id) === record) this._plugins.delete(record.manifest.id);
-    record.subscriptions.dispose();
-    this._commands.disposeOwner(record.manifest.id);
-    this._contributions.disposeOwner(record.manifest.id);
-    this._sourceControls.disposeOwner(record.manifest.id);
-    if (this._agents) this._agents.disposeOwner(record.manifest.id);
-    this._services.disposeOwner(record.manifest.id);
+    record.cleanupPromise = Promise.resolve().then(async () => {
+      try {
+        await record.subscriptions.disposeAsync();
+      } finally {
+        this._commands.disposeOwner(record.manifest.id);
+        this._contributions.disposeOwner(record.manifest.id);
+        this._sourceControls.disposeOwner(record.manifest.id);
+        if (this._agents) this._agents.disposeOwner(record.manifest.id);
+        this._services.disposeOwner(record.manifest.id);
+        if (this._plugins.get(record.manifest.id) === record) this._plugins.delete(record.manifest.id);
+      }
+    });
+    return record.cleanupPromise;
   }
 
   _requireOwnedId(pluginId, id, label) {

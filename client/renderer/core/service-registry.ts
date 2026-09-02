@@ -180,7 +180,11 @@ export class ServiceRegistry<
     try {
       record.disposeService();
     } catch (error) {
-      this._onError({ source: 'service-dispose', id: record.id, owner: record.owner, error });
+      try {
+        this._onError({ source: 'service-dispose', id: record.id, owner: record.owner, error });
+      } catch (_) {
+        // Error observers cannot interrupt registry cleanup.
+      }
     }
   }
 }

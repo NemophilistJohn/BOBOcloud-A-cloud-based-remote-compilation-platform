@@ -141,6 +141,9 @@ const EXPECTED_IPC = new Map([
 ]);
 
 const REQUIRED_RENDERER_INPUTS = [
+  'renderer/core/disposable.ts',
+  'renderer/core/platform.ts',
+  'renderer/core/bootstrap.ts',
   'renderer/core/service-registry.ts',
   'renderer/core/command-registry.ts',
   'renderer/core/contribution-registry.ts',
@@ -271,6 +274,13 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     false,
     'legacy contribution-registry.js must not coexist with the TypeScript implementation'
   );
+  for (const legacyModule of ['disposable.js', 'platform.js', 'bootstrap.js', 'typed-platform.ts']) {
+    assert.equal(
+      fs.existsSync(path.join(ROOT, 'renderer', 'core', legacyModule)),
+      false,
+      'legacy renderer core module must not coexist with the typed platform: ' + legacyModule
+    );
+  }
 
   const metadata = JSON.parse(read('renderer-dist/bobo-renderer.meta.json'));
   const inputs = new Set(

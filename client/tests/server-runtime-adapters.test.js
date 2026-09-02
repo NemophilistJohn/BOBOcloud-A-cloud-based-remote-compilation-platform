@@ -13,7 +13,7 @@ test('server runtime adapters register one host-only service instance and preser
     absWorkingDir: ROOT,
     stdin: {
       contents: [
-        "import { rendererPlatform } from './renderer/core/bootstrap.js';",
+        "import { rendererPlatform } from './renderer/core/bootstrap.ts';",
         "import './renderer/compat/server-transport-adapter.ts';",
         "import './renderer/compat/server-capabilities-adapter.ts';",
         "import './renderer/compat/cloud-feature-policy-adapter.ts';",

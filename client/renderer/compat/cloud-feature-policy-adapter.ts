@@ -3,7 +3,7 @@ import type {
   CloudFeaturePolicyService,
   ServerCapabilityState
 } from '../../types/server-runtime';
-import { rendererPlatform } from '../core/typed-platform';
+import { rendererPlatform } from '../core/bootstrap';
 
 export const CLOUD_FEATURE_POLICY_SERVICE_ID = 'workbench.cloudFeaturePolicy';
 

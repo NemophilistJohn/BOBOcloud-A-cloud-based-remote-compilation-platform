@@ -1,4 +1,4 @@
-import { rendererPlatform } from '../core/bootstrap.js';
+import { rendererPlatform } from '../core/bootstrap.ts';
 import { ContributionPoint } from '../core/contribution-registry.ts';
 import {
   FileDecorationLane,

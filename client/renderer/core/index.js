@@ -1,4 +1,4 @@
-export { toDisposable, DisposableStore } from './disposable.js';
+export { toDisposable, DisposableStore } from './disposable.ts';
 export { ServiceRegistry } from './service-registry.ts';
 export { CommandRegistry } from './command-registry.ts';
 export { ContributionPoint, ContributionRegistry } from './contribution-registry.ts';
@@ -74,4 +74,4 @@ export {
   buildExtensionSandboxDocument,
   createSandboxedExtensionSandbox
 } from './plugin-extension-sandbox.js';
-export { createRendererPlatform } from './platform.js';
+export { createRendererPlatform } from './platform.ts';
