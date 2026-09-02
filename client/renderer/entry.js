@@ -6,6 +6,7 @@
 
 // Theme and editor-rule foundations.
 import './core/bootstrap.js';
+import './core/native-host-adapter.ts';
 import './compat/platform-adapter.js';
 import '../theme-manager.js';
 import '../editor-rules/completion-engine.js';
@@ -53,7 +54,7 @@ import '../src/document-views.js';
 import '../src/workspace.js';
 import '../src/agent-workbench.js';
 import '../src/plugin-details.js';
-import '../src/rclone-client.js';
+import './compat/rclone-client-adapter.ts';
 import '../src/rclone-settings.js';
 import '../src/run-config.js';
 import '../src/task-problem-matcher.js';

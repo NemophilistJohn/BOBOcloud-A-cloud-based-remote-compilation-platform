@@ -16,6 +16,7 @@ const require = createRequire(import.meta.url);
 // route here and a matching BOBOCLOUD_TEST_ROUTES entry in ci.yml.
 const WORKFLOW_ROUTE_OWNERS = Object.freeze({
   'client-node': 'client-contracts',
+  'client-typecheck': 'client-contracts',
   'client-ui-core': 'client-ui-core',
   'client-ui-packages': 'client-ui-packages',
   'client-ui-plugin-compat': 'client-ui-plugin-compat',
@@ -287,6 +288,7 @@ function commandWords(command) {
 function assertNpmRoutingContracts(uiGroups) {
   const rootPackage = readJson('package.json');
   const clientPackage = readJson('client/package.json');
+  const rendererTsconfig = readJson('client/tsconfig.renderer.json');
   const lspPackage = readJson('server/deploy/lsp-toolkit/package.json');
   const rootTest = commandWords(rootPackage.scripts && rootPackage.scripts.test);
   if (rootTest.join(' ') !== 'npm --prefix client run test') {
@@ -296,6 +298,31 @@ function assertNpmRoutingContracts(uiGroups) {
   const clientTest = commandWords(clientPackage.scripts && clientPackage.scripts.test);
   if (clientTest[0] !== 'node' || !clientTest.includes('--test') || !clientTest.includes('tests/*.test.js')) {
     fail('client npm test must keep the automatic tests/*.test.js Node test glob');
+  }
+
+  const rootTypecheck = commandWords(rootPackage.scripts && rootPackage.scripts.typecheck);
+  if (rootTypecheck.join(' ') !== 'npm --prefix client run typecheck') {
+    fail('root npm typecheck must remain the stable delegate to the client type gate');
+  }
+  const clientTypecheck = commandWords(clientPackage.scripts && clientPackage.scripts.typecheck);
+  if (clientTypecheck.join(' ') !== 'npm run typecheck:renderer') {
+    fail('client npm typecheck must delegate to every owned TypeScript project');
+  }
+  const rendererTypecheck = commandWords(clientPackage.scripts && clientPackage.scripts['typecheck:renderer']);
+  if (rendererTypecheck.join(' ') !== 'tsc --project tsconfig.renderer.json') {
+    fail('client renderer typecheck must use the checked-in renderer tsconfig');
+  }
+  if (!clientPackage.devDependencies || typeof clientPackage.devDependencies.typescript !== 'string') {
+    fail('client must declare TypeScript directly as a devDependency');
+  }
+  const compilerOptions = rendererTsconfig.compilerOptions || {};
+  if (compilerOptions.strict !== true || compilerOptions.noEmit !== true
+      || compilerOptions.allowJs !== true || compilerOptions.checkJs !== false
+      || compilerOptions.moduleResolution !== 'Bundler') {
+    fail('renderer tsconfig must retain strict no-emit gradual migration settings');
+  }
+  if (!Array.isArray(compilerOptions.types) || compilerOptions.types.length !== 0) {
+    fail('renderer tsconfig must not leak Node or Electron ambient types into the sandboxed renderer');
   }
 
   for (const group of uiGroups) {
@@ -411,6 +438,15 @@ function discoverRouting() {
     }
   }
 
+  const clientTypeSources = files.filter((file) => (
+    /^client\/(?:renderer|src|types)\/.+\.(?:ts|tsx)$/.test(file)
+    && !/\.(?:test|spec)\.(?:ts|tsx)$/.test(file)
+  ));
+  for (const file of clientTypeSources) coverage.set(file, 'client-typecheck');
+  if (clientTypeSources.length === 0) {
+    errors.push('client TypeScript route has no renderer sources or contract declarations');
+  }
+
   const ui = classifyUiSpecs(files, coverage);
   assertNpmRoutingContracts([...ui.counts.keys()]);
 
@@ -461,6 +497,7 @@ function discoverRouting() {
     ui,
     counts: {
       clientUnit: clientUnitTests.length,
+      clientTypeSources: clientTypeSources.length,
       goTests: files.filter((file) => file.endsWith('_test.go')).length,
       privilegedGoTests: privilegedTests.length,
       smokeScripts: smokeScripts.length,
@@ -528,6 +565,7 @@ function main() {
     .join(', ');
   console.log(
     '[ci-routing] OK: ' + discovery.counts.clientUnit + ' client Node tests, '
+    + discovery.counts.clientTypeSources + ' client TypeScript sources, '
     + discovery.counts.uiSpecs + ' UI specs (' + uiCounts + '), '
     + discovery.counts.goTests + ' Go tests, '
     + discovery.counts.privilegedGoTests + ' privileged Go tests, '

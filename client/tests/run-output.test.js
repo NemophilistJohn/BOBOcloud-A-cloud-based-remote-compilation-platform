@@ -40,6 +40,7 @@ function createElement(tagName) {
     innerHTML: '',
     textContent: '',
     hidden: false,
+    isConnected: true,
     title: '',
     scrollHeight: 0,
     scrollTop: 0,
@@ -74,8 +75,9 @@ function createElement(tagName) {
   return element;
 }
 
-function createFixture() {
-  const elements = {
+function createFixture(options = {}) {
+  let elementLookupCount = 0;
+  const createdElements = {
     'run-summary': createElement('div'),
     'run-summary-title': createElement('span'),
     'run-summary-phase': createElement('span'),
@@ -85,10 +87,14 @@ function createFixture() {
     'run-log': createElement('div'),
     'panel-output': createElement('div')
   };
-  elements['run-summary'].hidden = true;
-  elements['run-details-toggle'].hidden = true;
+  createdElements['run-summary'].hidden = true;
+  createdElements['run-details-toggle'].hidden = true;
+  const elements = options.initiallyMissing === true ? {} : createdElements;
   const document = {
-    getElementById(id) { return elements[id] || null; },
+    getElementById(id) {
+      elementLookupCount += 1;
+      return elements[id] || null;
+    },
     querySelector() { return { textContent: 'Python 3.10' }; },
     createElement,
     createTextNode(text) { return { nodeType: 3, textContent: String(text) }; },
@@ -137,7 +143,16 @@ function createFixture() {
   windowObject.BOBO.runOutput.init();
   return {
     windowObject,
-    elements,
+    elements: createdElements,
+    getElementLookupCount() { return elementLookupCount; },
+    mountElements() { Object.assign(elements, createdElements); },
+    replaceElement(id) {
+      if (elements[id]) elements[id].isConnected = false;
+      const replacement = createElement(createdElements[id] && createdElements[id].tagName || 'div');
+      createdElements[id] = replacement;
+      elements[id] = replacement;
+      return replacement;
+    },
     setLocale(nextLocale) {
       locale = nextLocale;
       subscribers.slice().forEach(callback => callback({ id: nextLocale }));
@@ -228,6 +243,48 @@ test('setup fragment continuations do not inflate the detail count', () => {
     stage: 'setup', streamFragment: true, streamKey: 'stdout:setup', append: true, newline: true
   });
   assert.equal(fixture.elements['run-details-count'].textContent, '2');
+});
+
+test('stream continuations reuse output DOM references without summary lookups', () => {
+  const fixture = createFixture();
+  const BOBO = fixture.windowObject.BOBO;
+  BOBO.runOutput.begin({ target: 'main.py' });
+  BOBO.runOutput.detail('install 1%', {
+    stage: 'setup', streamFragment: true, streamKey: 'stdout:setup'
+  });
+  const lookupsBeforeContinuations = fixture.getElementLookupCount();
+
+  for (let index = 2; index <= 101; index += 1) {
+    BOBO.runOutput.detail('install ' + index + '%', {
+      stage: 'setup', streamFragment: true, streamKey: 'stdout:setup', replace: true
+    });
+  }
+
+  assert.equal(fixture.getElementLookupCount(), lookupsBeforeContinuations);
+  assert.equal(fixture.elements['run-details-count'].textContent, '2');
+});
+
+test('output DOM caches recover from initial absence and node replacement', () => {
+  const fixture = createFixture({ initiallyMissing: true });
+  const BOBO = fixture.windowObject.BOBO;
+
+  BOBO.updateRunOutput('before mount');
+  BOBO.runOutput.begin({ target: 'before-mount.py' });
+  fixture.mountElements();
+  BOBO.clearRunOutput();
+  BOBO.runOutput.begin({ target: 'mounted.py' });
+  assert.equal(fixture.elements['run-summary'].hidden, false);
+  assert.equal(fixture.elements['run-summary-title'].textContent, 'mounted.py');
+
+  fixture.replaceElement('run-summary');
+  fixture.replaceElement('run-summary-title');
+  const replacementLog = fixture.replaceElement('run-log');
+  BOBO.runOutput.phase('running');
+  BOBO.updateRunOutput('after replacement');
+
+  assert.equal(fixture.elements['run-summary'].hidden, false);
+  assert.equal(fixture.elements['run-summary-title'].textContent, 'mounted.py');
+  assert.match(replacementLog.childNodes[0].innerHTML, /after replacement/);
 });
 
 test('locale refresh changes the summary controls without rewriting program output', async () => {

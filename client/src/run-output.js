@@ -9,6 +9,8 @@
   var panelActive = true;
   var detailsVisible = false;
   var MAX_DETAIL_BADGE = 300;
+  var cachedElements = null;
+  var CACHED_ELEMENT_KEYS = ['summary', 'title', 'phase', 'meta', 'toggle', 'count', 'log'];
 
   var PHASE_LABELS = {
     preparing: 'Preparing',
@@ -34,15 +36,23 @@
   }
 
   function elements() {
-    return {
-      summary: document.getElementById('run-summary'),
-      title: document.getElementById('run-summary-title'),
-      phase: document.getElementById('run-summary-phase'),
-      meta: document.getElementById('run-summary-meta'),
-      toggle: document.getElementById('run-details-toggle'),
-      count: document.getElementById('run-details-count'),
-      log: document.getElementById('run-log')
-    };
+    var needsRefresh = !cachedElements;
+    for (var index = 0; !needsRefresh && index < CACHED_ELEMENT_KEYS.length; index += 1) {
+      var current = cachedElements[CACHED_ELEMENT_KEYS[index]];
+      needsRefresh = !current || current.isConnected === false;
+    }
+    if (needsRefresh) {
+      cachedElements = {
+        summary: document.getElementById('run-summary'),
+        title: document.getElementById('run-summary-title'),
+        phase: document.getElementById('run-summary-phase'),
+        meta: document.getElementById('run-summary-meta'),
+        toggle: document.getElementById('run-details-toggle'),
+        count: document.getElementById('run-details-count'),
+        log: document.getElementById('run-log')
+      };
+    }
+    return cachedElements;
   }
 
   function selectedRuntimeLabel() {
@@ -151,7 +161,8 @@
     if (!sessionMatches(options.sessionId)) return false;
     if (!activeRun) return false;
     if (activeRun.finishedAt) return false;
-    if (!(options.streamFragment === true && (options.append === true || options.replace === true))) {
+    var updatesDetailCount = !(options.streamFragment === true && (options.append === true || options.replace === true));
+    if (updatesDetailCount) {
       activeRun.detailCount += 1;
     }
     BOBO.updateRunOutput(message, Object.assign({}, options, {
@@ -159,7 +170,7 @@
       stage: options.stage || '',
       raw: options.raw || ''
     }));
-    updateToggle(elements());
+    if (updatesDetailCount) updateToggle(elements());
     return true;
   }
 

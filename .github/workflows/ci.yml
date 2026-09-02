@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
-      BOBOCLOUD_TEST_ROUTES: "client-node"
+      BOBOCLOUD_TEST_ROUTES: "client-node,client-typecheck"
     steps:
       - name: Check out source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -38,10 +38,12 @@ jobs:
           cache-dependency-path: client/package-lock.json
       - name: Install client dependencies
         run: npm ci --prefix client
+      - name: Type-check renderer contracts
+        run: npm run typecheck
       - name: Prepare managed rclone
         run: npm --prefix client run prepare:rclone
       - name: Verify automatic test routing
-        run: node scripts/ci/verify-test-routing.mjs --route client-node
+        run: node scripts/ci/verify-test-routing.mjs --route client-node --route client-typecheck
       - name: Run client Node tests
         run: |
           mkdir -p ci-artifacts

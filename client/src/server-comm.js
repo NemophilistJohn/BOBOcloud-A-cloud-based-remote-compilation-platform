@@ -19,6 +19,23 @@
   var omittedProgramCount = 0;
   var openOutputRecords = Object.create(null);
   var dirtyOutputRecords = new Set();
+  var cachedRunLogElement = null;
+  var cachedOutputPanelElement = null;
+
+  function cachedElement(current, id) {
+    if (current && current.isConnected !== false) return current;
+    return document.getElementById(id);
+  }
+
+  function runLogElement() {
+    cachedRunLogElement = cachedElement(cachedRunLogElement, 'run-log');
+    return cachedRunLogElement;
+  }
+
+  function outputPanelElement() {
+    cachedOutputPanelElement = cachedElement(cachedOutputPanelElement, 'panel-output');
+    return cachedOutputPanelElement;
+  }
 
   function localizeServerError(message) {
     if (!message) return message;
@@ -257,8 +274,8 @@
   }
 
   function flushOutputLines() {
-    var outputEl = document.getElementById('run-log');
-    var containerEl = document.getElementById('panel-output');
+    var outputEl = runLogElement();
+    var containerEl = outputPanelElement();
     outputFlushTimer = null;
     if (outputEl && renderedOutputCount > 0 && outputEl.childNodes.length === 0) {
       pendingOutputLines = [];
@@ -367,7 +384,7 @@
   }
 
   BOBO.updateRunOutput = function(message, options) {
-    var outputEl = document.getElementById('run-log');
+    var outputEl = runLogElement();
     if (outputEl && renderedOutputCount > 0 && outputEl.childNodes.length === 0) {
       pendingOutputLines = [];
       renderedOutputCount = 0;
@@ -380,7 +397,7 @@
     }
     if (!S.runLogInitialized) {
       pendingOutputLines = [];
-      var initialOutput = document.getElementById('run-log');
+      var initialOutput = runLogElement();
       if (initialOutput) initialOutput.textContent = '';
       renderedOutputCount = 0;
       resetOpenOutputRecords();
@@ -468,7 +485,7 @@
   BOBO.clearRunOutput = function() {
     pendingOutputLines = [];
     if (outputFlushTimer) { clearTimeout(outputFlushTimer); outputFlushTimer = null; }
-    var outputEl = document.getElementById('run-log');
+    var outputEl = runLogElement();
     if (outputEl) outputEl.textContent = '';
     renderedOutputCount = 0;
     renderedProgramCount = 0;
@@ -489,7 +506,7 @@
       forgetOpenOutputRecord(record);
       return false;
     });
-    var outputEl = document.getElementById('run-log');
+    var outputEl = runLogElement();
     if (outputEl) {
       for (var i = outputEl.childNodes.length - 1; i >= 0; i--) {
         var child = outputEl.childNodes[i];
@@ -504,7 +521,7 @@
   };
 
   BOBO.refreshRunOutputOmission = function() {
-    updateOmissionMarker(document.getElementById('run-log'));
+    updateOmissionMarker(runLogElement());
   };
 
   // ──── HTTP communication ────

@@ -296,13 +296,17 @@
     applyTimer = null;
     if (!pendingRoots.size) return;
 
-    var roots = Array.from(pendingRoots);
+    var pendingRootsSnapshot = new Set(pendingRoots);
+    var roots = Array.from(pendingRootsSnapshot);
     pendingRoots.clear();
-    roots = roots.filter(function(candidate, index) {
-      return !roots.some(function(other, otherIndex) {
-        if (index === otherIndex || !other || typeof other.contains !== 'function') return false;
-        return other.contains(candidate);
-      });
+    roots = roots.filter(function(candidate) {
+      if (!candidate) return false;
+      var ancestor = candidate.parentNode;
+      while (ancestor) {
+        if (pendingRootsSnapshot.has(ancestor)) return false;
+        ancestor = ancestor.parentNode;
+      }
+      return true;
     });
 
     if (observer) observer.disconnect();

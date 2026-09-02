@@ -173,6 +173,30 @@ test('DOM mutations translate only added or changed roots while locale changes s
   assert.ok(runtime.traversalRoots.includes(runtime.body));
 });
 
+test('large sibling mutation batches avoid quadratic containment scans', async () => {
+  const runtime = createRuntime();
+  await runtime.sandbox.BOBO.i18n.init();
+  runtime.traversalRoots.length = 0;
+
+  let containsCalls = 0;
+  const siblings = Array.from({ length: 500 }, (_value, index) => {
+    const element = runtime.body.appendChild(new FakeElement('span'));
+    element.appendChild(new FakeText(index === 499 ? 'Added' : ''));
+    element.contains = function(candidate) {
+      containsCalls += 1;
+      return FakeNode.prototype.contains.call(this, candidate);
+    };
+    return element;
+  });
+
+  runtime.getObserver().callback([{ type: 'childList', addedNodes: siblings }]);
+  await waitForMutationFlush();
+
+  assert.equal(containsCalls, 0);
+  assert.equal(runtime.traversalRoots.length, siblings.length);
+  assert.equal(siblings.at(-1).textContent, '新增');
+});
+
 test('skipped elements prune their complete subtree from full translation walks', async () => {
   const runtime = createRuntime();
   const skipped = runtime.body.appendChild(new FakeElement('div'));

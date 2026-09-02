@@ -8,6 +8,10 @@
   var HISTORY_LIMIT = 12;
   var SUGGESTION_LIMIT = 8;
   var RESULT_LIMIT = 50;
+  var IMPORTANT_FILES = [
+    'readme.md', 'package.json', 'pyproject.toml', 'requirements.txt', 'cargo.toml',
+    'go.mod', 'pom.xml', 'build.gradle', 'makefile'
+  ];
   var input = null;
   var results = null;
   var status = null;
@@ -47,11 +51,21 @@
       if (node.type === 'file') {
         var relative = relativePath(node.path, tree.path);
         var parts = relative.split('/');
+        var name = node.name || parts[parts.length - 1];
+        var lowerName = String(name || '').toLowerCase();
+        var importantIndex = IMPORTANT_FILES.indexOf(lowerName);
+        var suggestionBase = importantIndex >= 0 ? 400 - importantIndex : 0;
+        if (/^(?:main|index|app|application|program)\.[a-z0-9]+$/.test(lowerName)) suggestionBase += 260;
+        suggestionBase += Math.max(0, 80 - (parts.length - 1) * 20);
         flattened.push({
           path: node.path,
-          name: node.name || parts[parts.length - 1],
+          normalizedPath: normalizedPath(node.path),
+          name: name,
           dir: parts.slice(0, -1).join('/'),
-          relativePath: relative
+          relativePath: relative,
+          searchName: lowerName,
+          searchPath: relative.toLowerCase(),
+          suggestionBase: suggestionBase
         });
       }
       (node.children || []).forEach(walk);
@@ -86,7 +100,7 @@
 
   function currentFileMap() {
     var files = new Map();
-    cachedFiles.forEach(function(file) { files.set(normalizedPath(file.path), file); });
+    cachedFiles.forEach(function(file) { files.set(file.normalizedPath, file); });
     return files;
   }
 
@@ -120,10 +134,10 @@
   }
 
   function recordHistory(item) {
-    var target = normalizedPath(item && item.path);
+    var target = item && item.normalizedPath || normalizedPath(item && item.path);
     if (!target) return;
     var next = [item].concat(readHistory().filter(function(entry) {
-      return normalizedPath(entry.path) !== target;
+      return entry.normalizedPath !== target;
     }));
     writeHistory(next);
   }
@@ -138,8 +152,6 @@
   }
 
   function fuzzyMatch(query, text) {
-    query = query.toLowerCase();
-    text = String(text || '').toLowerCase();
     if (!query) return 0;
     var score = 0;
     var queryIndex = 0;
@@ -157,39 +169,54 @@
     return queryIndex === query.length ? score : -1;
   }
 
-  function searchFiles(query) {
-    return cachedFiles.map(function(file) {
-      var nameScore = fuzzyMatch(query, file.name);
-      var pathScore = fuzzyMatch(query, file.relativePath);
-      return { file: file, score: Math.max(nameScore >= 0 ? nameScore + 4 : -1, pathScore) };
-    }).filter(function(match) {
-      return match.score >= 0;
-    }).sort(function(left, right) {
-      return right.score - left.score || left.file.relativePath.localeCompare(right.file.relativePath);
-    }).slice(0, RESULT_LIMIT).map(function(match) { return match.file; });
+  function compareMatches(left, right) {
+    return right.score - left.score || left.file.relativePath.localeCompare(right.file.relativePath);
   }
 
-  function suggestionScore(file) {
-    var name = String(file.name || '').toLowerCase();
-    var important = ['readme.md', 'package.json', 'pyproject.toml', 'requirements.txt', 'cargo.toml', 'go.mod', 'pom.xml', 'build.gradle', 'makefile'];
-    var importantIndex = important.indexOf(name);
-    var score = importantIndex >= 0 ? 400 - importantIndex : 0;
-    if (/^(?:main|index|app|application|program)\.[a-z0-9]+$/.test(name)) score += 260;
-    var depth = file.relativePath.split('/').length - 1;
-    score += Math.max(0, 80 - depth * 20);
-    var tabIndex = (S.tabs || []).findIndex(function(tab) { return normalizedPath(tab.path) === normalizedPath(file.path); });
+  function insertBoundedMatch(matches, match, limit) {
+    if (matches.length === limit && compareMatches(match, matches[matches.length - 1]) >= 0) return;
+    var low = 0;
+    var high = matches.length;
+    while (low < high) {
+      var middle = (low + high) >>> 1;
+      if (compareMatches(match, matches[middle]) < 0) high = middle;
+      else low = middle + 1;
+    }
+    matches.splice(low, 0, match);
+    if (matches.length > limit) matches.pop();
+  }
+
+  function searchFiles(query) {
+    var normalizedQuery = String(query || '').toLowerCase();
+    var matches = [];
+    cachedFiles.forEach(function(file) {
+      var nameScore = fuzzyMatch(normalizedQuery, file.searchName);
+      var pathScore = fuzzyMatch(normalizedQuery, file.searchPath);
+      var score = Math.max(nameScore >= 0 ? nameScore + 4 : -1, pathScore);
+      if (score >= 0) insertBoundedMatch(matches, { file: file, score: score }, RESULT_LIMIT);
+    });
+    return matches.map(function(match) { return match.file; });
+  }
+
+  function suggestionScore(file, tabRanks) {
+    var score = file.suggestionBase;
+    var tabIndex = tabRanks.has(file.normalizedPath) ? tabRanks.get(file.normalizedPath) : -1;
     if (tabIndex >= 0) score += 600 - tabIndex;
     return score;
   }
 
   function suggestedFiles(excluded) {
-    return cachedFiles.filter(function(file) {
-      return !excluded.has(normalizedPath(file.path));
-    }).map(function(file) {
-      return { file: file, score: suggestionScore(file) };
-    }).sort(function(left, right) {
-      return right.score - left.score || left.file.relativePath.localeCompare(right.file.relativePath);
-    }).slice(0, SUGGESTION_LIMIT).map(function(entry) { return entry.file; });
+    var tabRanks = new Map();
+    (S.tabs || []).forEach(function(tab, index) {
+      var path = normalizedPath(tab && tab.path);
+      if (path && !tabRanks.has(path)) tabRanks.set(path, index);
+    });
+    var suggestions = [];
+    cachedFiles.forEach(function(file) {
+      if (excluded.has(file.normalizedPath)) return;
+      insertBoundedMatch(suggestions, { file: file, score: suggestionScore(file, tabRanks) }, SUGGESTION_LIMIT);
+    });
+    return suggestions.map(function(entry) { return entry.file; });
   }
 
   function createFileIcon(file) {
@@ -324,7 +351,7 @@
       status.textContent = matches.length ? t('Search results: {count}', { count: matches.length }) : t('No matching files');
     } else {
       var recent = readHistory();
-      var recentPaths = new Set(recent.map(function(file) { return normalizedPath(file.path); }));
+      var recentPaths = new Set(recent.map(function(file) { return file.normalizedPath; }));
       var suggestions = suggestedFiles(recentPaths);
       appendSection('Recently opened', recent, { kind: 'recent', clearHistory: true });
       appendSection('Suggested files', suggestions, { kind: 'suggested' });

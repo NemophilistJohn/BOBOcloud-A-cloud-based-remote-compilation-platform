@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const esbuild = require('esbuild');
 
 const projectRoot = path.resolve(__dirname, '..');
 const pluginRpcTransport = require('../main/plugin-rpc-transport');
@@ -44,6 +45,17 @@ function loadScript(relativePath, windowObject, extras) {
   }, extras || {}));
   vm.runInContext(source, context, { filename: relativePath });
   return context;
+}
+
+async function loadTypeScriptModule(relativePath) {
+  const source = fs.readFileSync(path.join(projectRoot, relativePath), 'utf8');
+  const transformed = await esbuild.transform(source, {
+    loader: 'ts',
+    format: 'esm',
+    target: 'es2022',
+    sourcefile: relativePath
+  });
+  return import('data:text/javascript;base64,' + Buffer.from(transformed.code).toString('base64'));
 }
 
 function createElement(tagName) {
@@ -232,15 +244,17 @@ test('rclone operations isolate progress by operation id and dispose exactly one
   };
   const syncLines = [];
   const pullLines = [];
-  const windowObject = {
-    api,
-    BOBO: { state: { serverSettings: {}, workspaceRoot: 'a', workspaceIdentity: 7 } }
-  };
-  loadScript('src/rclone-client.js', windowObject);
-  assert.deepEqual(await windowObject.BOBO.rclone.validateConnection(), { success: true });
+  const { createRcloneClient } = await loadTypeScriptModule('src/rclone-client.ts');
+  let uuid = 0;
+  const rclone = createRcloneClient({
+    host: api,
+    state: { serverSettings: {}, workspaceRoot: 'a', workspaceIdentity: 7 },
+    randomUUID: () => 'uuid-' + (++uuid)
+  });
+  assert.deepEqual(await rclone.validateConnection(), { success: true });
 
-  const syncPromise = windowObject.BOBO.rclone.sync({ src: 'a', remoteGrantId: 'grant-sync', onProgress: line => syncLines.push(line) });
-  const pullPromise = windowObject.BOBO.rclone.pull({ dest: 'a', remoteGrantId: 'grant-pull', onProgress: line => pullLines.push(line) });
+  const syncPromise = rclone.sync({ src: 'a', remoteGrantId: 'grant-sync', onProgress: line => syncLines.push(line) });
+  const pullPromise = rclone.pull({ dest: 'a', remoteGrantId: 'grant-pull', onProgress: line => pullLines.push(line) });
   const syncId = invocations[0].payload.operationId;
   const pullId = invocations[1].payload.operationId;
   assert.notEqual(syncId, pullId);
@@ -279,6 +293,72 @@ test('rclone operations isolate progress by operation id and dispose exactly one
   pending.find(item => item.operationId === pullId).resolve({ success: true });
   await pullPromise;
   assert.equal(listeners.size, 0);
+});
+
+test('typed rclone facade preserves every legacy host operation and payload shape', async () => {
+  const { createRcloneClient } = await loadTypeScriptModule('src/rclone-client.ts');
+  const calls = [];
+  const result = (method, payload) => {
+    calls.push({ method, payload });
+    return Promise.resolve({ method });
+  };
+  const host = {
+    rclonePrepareRemote: payload => result('prepare', payload),
+    rcloneSync: payload => result('sync', payload),
+    rclonePull: payload => result('pull', payload),
+    rcloneCancel: operationId => result('cancel', operationId),
+    rcloneCancelAll: reason => result('cancelAll', reason),
+    rcloneListBinaries: () => result('list'),
+    rcloneGetSelection: () => result('selection'),
+    rcloneSelectBinary: payload => result('select', payload),
+    rcloneCheckVersion: () => result('version'),
+    rcloneValidateConnection: () => result('validate'),
+    onRcloneProgress() { return () => {}; }
+  };
+  const rclone = createRcloneClient({
+    host,
+    state: { workspaceRoot: '/workspace', workspaceIdentity: { revision: 4 } },
+    randomUUID: (() => { let value = 0; return () => 'complete-' + (++value); })()
+  });
+
+  await rclone.prepareWorkspace({ target: 'project' }, null);
+  await rclone.prepareTeamPull({ target: 'team' }, { dest: '/mapping', localGrant: 'grant-local' });
+  await rclone.cancel('op-1');
+  await rclone.cancelAll('');
+  await rclone.listBinaries();
+  await rclone.getSelection();
+  await rclone.selectBinary('scan-1', 'candidate-2');
+  await rclone.checkVersion();
+  await rclone.validateConnection();
+  await assert.rejects(rclone.sync(null), /prepared remote synchronization grant/);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    {
+      method: 'prepare',
+      payload: {
+        operationId: 'rclone-prepare-complete-1',
+        kind: 'workspace',
+        request: { target: 'project' },
+        localScope: { type: 'workspace', rootPath: '/workspace', workspaceIdentity: { revision: 4 } }
+      }
+    },
+    {
+      method: 'prepare',
+      payload: {
+        operationId: 'rclone-prepare-complete-2',
+        kind: 'team-pull',
+        request: { target: 'team' },
+        localScope: { type: 'mapping', grantId: 'grant-local' }
+      }
+    },
+    { method: 'cancel', payload: 'op-1' },
+    { method: 'cancelAll', payload: 'renderer-context-changed' },
+    { method: 'list' },
+    { method: 'selection' },
+    { method: 'select', payload: { scanId: 'scan-1', candidateId: 'candidate-2' } },
+    { method: 'version' },
+    { method: 'validate' }
+  ]);
 });
 
 test('run output appends escaped batches without rewriting existing DOM', async () => {

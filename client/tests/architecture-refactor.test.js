@@ -174,7 +174,6 @@ const LEGACY_RENDERER_MODULES = [
   'src/workspace.js',
   'src/agent-workbench.js',
   'src/plugin-details.js',
-  'src/rclone-client.js',
   'src/run-config.js',
   'src/runner.js',
   'src/dap-client.js',

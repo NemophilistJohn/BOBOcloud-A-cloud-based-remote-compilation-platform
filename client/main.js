@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu, screen, shell, safeStorage, session: electronSession } = require('electron');
+const { app, BrowserWindow, ipcMain: electronIpcMain, dialog, Menu, screen, shell, safeStorage, session: electronSession } = require('electron');
 const path = require('path');
 const rclone = require('./rclone');
 const { createSettingsStore } = require('./main/settings-store');
@@ -24,7 +24,9 @@ const { createMarketplaceController } = require('./main/marketplace');
 const { createPackageCenterController } = require('./main/package-center');
 const { createLifecycleCoordinator } = require('./main/lifecycle-coordinator');
 const { attachWindowLifecycle } = require('./main/window-lifecycle');
+const { createTrustedIpcMain } = require('./main/trusted-ipc');
 let window = null, menu = null; const getWindow = () => window;
+const ipcMain = createTrustedIpcMain({ ipcMain: electronIpcMain, getWindow });
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
 const settings = createSettingsStore({ app, safeStorage }), rcloneBinaries = createRcloneBinaryManager({ app, rclone }), localDirectories = createLocalDirectoryAuthority({ assertSafeLocalRoot: rcloneBinaries.assertSafeLocalRoot });

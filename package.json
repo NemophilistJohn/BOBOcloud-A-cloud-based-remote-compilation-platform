@@ -6,6 +6,7 @@
     "start": "npm --prefix client run start",
     "dev": "npm --prefix client run dev",
     "test": "npm --prefix client run test",
+    "typecheck": "npm --prefix client run typecheck",
     "test:ui": "npm --prefix client run test:ui",
     "build:renderer": "npm --prefix client run build:renderer",
     "build:win": "npm --prefix client run build:win",

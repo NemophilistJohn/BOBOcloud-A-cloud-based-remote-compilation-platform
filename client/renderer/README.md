@@ -18,6 +18,14 @@ module is `src/file-icons.js`: it exports an injected service factory,
 same instance through `BOBO.fileIcons`. Follow that pattern one low-coupling
 module at a time; do not move a feature and all of its consumers in one change.
 
+`core/native-host-adapter.ts` is the only new-code entrypoint to the preload
+bridge. It projects narrow, host-only domain services into the service registry;
+feature modules consume those services through injection. The rclone renderer
+facade is the first TypeScript vertical slice using this boundary, while
+`compat/rclone-client-adapter.ts` preserves the existing `BOBO.rclone` contract.
+The direct-access contract test ratchets the remaining JavaScript callers down
+and rejects bridge access from any other TypeScript module.
+
 The future third-party contract is specified in `../../docs/plugin-api.md`. The
 current runtime activates only already-loaded trusted modules and is not a
 plugin package loader or security sandbox.

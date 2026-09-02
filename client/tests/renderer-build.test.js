@@ -14,6 +14,7 @@ const { inspectRendererBundleEntries } = require('../scripts/audit-release');
 const ROOT = path.resolve(__dirname, '..');
 const EXPECTED_MODULES = [
   './core/bootstrap.js',
+  './core/native-host-adapter.ts',
   './compat/platform-adapter.js',
   '../theme-manager.js',
   '../editor-rules/completion-engine.js',
@@ -59,7 +60,7 @@ const EXPECTED_MODULES = [
   '../src/workspace.js',
   '../src/agent-workbench.js',
   '../src/plugin-details.js',
-  '../src/rclone-client.js',
+  './compat/rclone-client-adapter.ts',
   '../src/rclone-settings.js',
   '../src/run-config.js',
   '../src/task-problem-matcher.js',
