@@ -143,6 +143,7 @@ const EXPECTED_IPC = new Map([
 const REQUIRED_RENDERER_INPUTS = [
   'renderer/core/service-registry.ts',
   'renderer/core/command-registry.ts',
+  'renderer/core/contribution-registry.ts',
   'theme-manager.js',
   'editor-rules/completion-engine.js',
   'completion-rules.js',
@@ -264,6 +265,11 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     fs.existsSync(path.join(ROOT, 'renderer', 'core', 'command-registry.js')),
     false,
     'legacy command-registry.js must not coexist with the TypeScript implementation'
+  );
+  assert.equal(
+    fs.existsSync(path.join(ROOT, 'renderer', 'core', 'contribution-registry.js')),
+    false,
+    'legacy contribution-registry.js must not coexist with the TypeScript implementation'
   );
 
   const metadata = JSON.parse(read('renderer-dist/bobo-renderer.meta.json'));

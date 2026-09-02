@@ -1,5 +1,5 @@
 import { DisposableStore, toDisposable } from './disposable.js';
-import { ContributionPoint } from './contribution-registry.js';
+import { ContributionPoint } from './contribution-registry.ts';
 import { PLUGIN_API_VERSION, PluginPermission, validatePluginManifest } from './plugin-runtime.js';
 import { createScmFileDecorationProvider } from './scm-file-decoration.js';
 import { normalizeScmGitRequest } from './scm-git.js';

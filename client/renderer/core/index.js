@@ -1,7 +1,7 @@
 export { toDisposable, DisposableStore } from './disposable.js';
 export { ServiceRegistry } from './service-registry.ts';
 export { CommandRegistry } from './command-registry.ts';
-export { ContributionPoint, ContributionRegistry } from './contribution-registry.js';
+export { ContributionPoint, ContributionRegistry } from './contribution-registry.ts';
 export { selectDocumentView, validateDocumentViewDescriptor } from './document-view.js';
 export {
   DOCUMENT_VIEW_PROTOCOL_VERSION,

@@ -1,7 +1,7 @@
 import { DisposableStore } from './disposable.js';
 import { ServiceRegistry } from './service-registry.ts';
 import { CommandRegistry } from './command-registry.ts';
-import { ContributionRegistry } from './contribution-registry.js';
+import { ContributionRegistry } from './contribution-registry.ts';
 import { SourceControlStateStore } from './source-control.js';
 import { AgentStateStore } from './agent.js';
 import { PLUGIN_API_VERSION, PluginRuntime } from './plugin-runtime.js';

@@ -1,5 +1,5 @@
 import { DisposableStore } from './disposable.js';
-import { ContributionPoint } from './contribution-registry.js';
+import { ContributionPoint } from './contribution-registry.ts';
 import { SourceControlStateStore, validateSourceControlDescriptor } from './source-control.js';
 import { validateDocumentViewDescriptor } from './document-view.js';
 import { validateAgentDescriptor } from './agent.js';

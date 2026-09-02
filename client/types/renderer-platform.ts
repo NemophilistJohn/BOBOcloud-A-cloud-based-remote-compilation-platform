@@ -13,7 +13,18 @@ import type {
 import type { DisposableStore } from './lifecycle';
 import type { RcloneNativeHost } from './native-host';
 import type { CommandRegistry } from '../renderer/core/command-registry';
+import type {
+  ContributionRegistrationMapFor,
+  ContributionRegistry
+} from '../renderer/core/contribution-registry';
 import type { ServiceRegistry } from '../renderer/core/service-registry';
+import type {
+  AgentDescriptorDto,
+  DocumentViewDescriptorDto,
+  FileDecorationProviderDto,
+  RendererOpaqueContributionDto,
+  SourceControlDescriptorDto
+} from './contributions';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -36,6 +47,26 @@ export interface RendererPluginServiceMap {
   readonly 'workbench.projectTasks': ProjectTasksPluginView;
 }
 
+export interface RendererContributionMap {
+  readonly menus: RendererOpaqueContributionDto;
+  readonly 'fileDecorations.sync': FileDecorationProviderDto<'sync'>;
+  readonly 'fileDecorations.scm': FileDecorationProviderDto<'scm'>;
+  readonly 'fileDecorations.diagnostic': FileDecorationProviderDto<'diagnostic'>;
+  readonly tasks: RendererOpaqueContributionDto;
+  readonly 'debug.configurationProviders': RendererOpaqueContributionDto;
+  readonly settings: RendererOpaqueContributionDto;
+  readonly languages: RendererOpaqueContributionDto;
+  readonly 'ai.tools': RendererOpaqueContributionDto;
+  readonly 'mcp.providers': RendererOpaqueContributionDto;
+  readonly 'skills.providers': RendererOpaqueContributionDto;
+  readonly agents: AgentDescriptorDto;
+  readonly sourceControl: SourceControlDescriptorDto;
+  readonly documentViews: DocumentViewDescriptorDto;
+}
+
+export type RendererContributionRegistrationMap =
+  ContributionRegistrationMapFor<RendererContributionMap>;
+
 export type { Disposable, DisposableStore } from './lifecycle';
 export type {
   CommandDescription,
@@ -49,15 +80,51 @@ export type {
   DynamicCommandHandler
 } from '../renderer/core/command-registry';
 export type {
+  ContributionChangeEvent,
+  ContributionChangeEventFor,
+  ContributionChangeType,
+  ContributionCollectionError,
+  ContributionCollectionResult,
+  ContributionDescription,
+  ContributionDescriptionFor,
+  ContributionEntry,
+  ContributionEntryFor,
+  ContributionPointId,
+  ContributionRegistrationMapFor,
+  ContributionRegistrationOptions,
+  ContributionRegistry,
+  ContributionRegistryErrorEvent,
+  ContributionRegistryOptions,
+  DynamicContributionMethod
+} from '../renderer/core/contribution-registry';
+export type {
   ServiceDescription,
   ServiceRegistrationOptions,
   ServiceRegistry,
   ServiceRegistryErrorEvent,
   ServiceRegistryOptions
 } from '../renderer/core/service-registry';
+export type {
+  AgentAccessModeDto,
+  AgentCapabilitiesDto,
+  AgentCommandMapDto,
+  AgentDescriptorDto,
+  AgentModeDto,
+  AgentReasoningEffortDto,
+  DocumentViewDescriptorDto,
+  DocumentViewDescriptorRegistrationDto,
+  FileDecorationColorDto,
+  FileDecorationDto,
+  FileDecorationLaneDto,
+  FileDecorationProviderDto,
+  RendererOpaqueContributionDto,
+  SourceControlDescriptorDto,
+  SourceControlDescriptorRegistrationDto
+} from './contributions';
 
 export interface RendererPlatform {
   readonly lifecycle: DisposableStore;
   readonly services: ServiceRegistry<RendererServiceMap, RendererPluginServiceMap>;
   readonly commands: CommandRegistry<RendererCommandMap>;
+  readonly contributions: ContributionRegistry<RendererContributionMap>;
 }

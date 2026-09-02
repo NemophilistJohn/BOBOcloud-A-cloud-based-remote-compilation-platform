@@ -1,5 +1,5 @@
 import { rendererPlatform } from '../core/bootstrap.js';
-import { ContributionPoint } from '../core/contribution-registry.js';
+import { ContributionPoint } from '../core/contribution-registry.ts';
 import {
   FileDecorationLane,
   contributionPointForDecorationLane,
