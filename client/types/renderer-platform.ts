@@ -12,7 +12,13 @@ import type {
 } from './server-runtime';
 import type { DisposableStore } from './lifecycle';
 import type { RcloneNativeHost } from './native-host';
+import type { CommandRegistry } from '../renderer/core/command-registry';
 import type { ServiceRegistry } from '../renderer/core/service-registry';
+
+export interface RendererCommandMap {
+  readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
+  readonly 'bobocloud.tasks.refresh': ProjectTasksService['refresh'];
+}
 
 export interface RendererServiceMap {
   readonly 'host.diagnostics': Readonly<DiagnosticsHost>;
@@ -32,6 +38,17 @@ export interface RendererPluginServiceMap {
 
 export type { Disposable, DisposableStore } from './lifecycle';
 export type {
+  CommandDescription,
+  CommandExecutionFailure,
+  CommandExecutionResult,
+  CommandExecutionSuccess,
+  CommandRegistrationMetadata,
+  CommandRegistry,
+  CommandRegistryErrorEvent,
+  CommandRegistryOptions,
+  DynamicCommandHandler
+} from '../renderer/core/command-registry';
+export type {
   ServiceDescription,
   ServiceRegistrationOptions,
   ServiceRegistry,
@@ -42,4 +59,5 @@ export type {
 export interface RendererPlatform {
   readonly lifecycle: DisposableStore;
   readonly services: ServiceRegistry<RendererServiceMap, RendererPluginServiceMap>;
+  readonly commands: CommandRegistry<RendererCommandMap>;
 }

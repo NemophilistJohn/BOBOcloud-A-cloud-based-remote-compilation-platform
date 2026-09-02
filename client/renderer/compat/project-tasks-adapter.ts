@@ -9,7 +9,6 @@ import type {
   ProjectTasksRunnerPort,
   ProjectTasksService
 } from '../../types/project-tasks';
-import { rendererPlatform as runtimeRendererPlatform } from '../core/bootstrap.js';
 import { PROJECT_TASKS_HOST_SERVICE_ID } from '../core/native-host-adapter';
 import { rendererPlatform } from '../core/typed-platform';
 
@@ -63,13 +62,13 @@ rendererPlatform.lifecycle.add(rendererPlatform.services.register(
   { owner: 'core.tasks', exposeToPlugins: true, pluginView }
 ));
 
-rendererPlatform.lifecycle.add(runtimeRendererPlatform.commands.register(
+rendererPlatform.lifecycle.add(rendererPlatform.commands.register(
   'bobocloud.tasks.runSelected',
   () => projectTasks.runSelected(),
   { owner: 'core.tasks', title: 'Run Selected Task', category: 'Tasks' }
 ));
 
-rendererPlatform.lifecycle.add(runtimeRendererPlatform.commands.register(
+rendererPlatform.lifecycle.add(rendererPlatform.commands.register(
   'bobocloud.tasks.refresh',
   () => projectTasks.refresh(),
   { owner: 'core.tasks', title: 'Refresh Project Tasks', category: 'Tasks' }

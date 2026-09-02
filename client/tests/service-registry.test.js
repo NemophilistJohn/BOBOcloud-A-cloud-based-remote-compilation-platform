@@ -5,7 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 const esbuild = require('esbuild');
-const ts = require('typescript');
+const { assertTypeScriptContract } = require('./support/typescript-contract');
 
 const ROOT = path.resolve(__dirname, '..');
 let ServiceRegistry;
@@ -78,7 +78,6 @@ test('service registry validates and normalizes registrations without leaking se
 });
 
 test('typed service maps require an explicit plugin DTO and keep host services private', () => {
-  const contractPath = path.join(ROOT, 'tests', '__service-registry-contract.ts');
   const source = [
     "import { ServiceRegistry } from '../renderer/core/service-registry';",
     "import type { RendererPluginServiceMap, RendererServiceMap } from '../types/renderer-platform';",
@@ -100,28 +99,11 @@ test('typed service maps require an explicit plugin DTO and keep host services p
     '  pluginView: { value: 1 }',
     '});'
   ].join('\n');
-  const config = ts.readConfigFile(path.join(ROOT, 'tsconfig.renderer.json'), ts.sys.readFile);
-  assert.equal(config.error, undefined);
-  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, ROOT);
-  const host = ts.createCompilerHost(parsed.options);
-  const getSourceFile = host.getSourceFile.bind(host);
-  const fileExists = host.fileExists.bind(host);
-  const readFile = host.readFile.bind(host);
-  host.fileExists = fileName => path.resolve(fileName) === contractPath || fileExists(fileName);
-  host.readFile = fileName => path.resolve(fileName) === contractPath ? source : readFile(fileName);
-  host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) => (
-    path.resolve(fileName) === contractPath
-      ? ts.createSourceFile(fileName, source, languageVersion, true)
-      : getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile)
-  );
-  const program = ts.createProgram([contractPath], parsed.options, host);
-  const diagnostics = ts.getPreEmitDiagnostics(program);
-  const formatted = ts.formatDiagnosticsWithColorAndContext(diagnostics, {
-    getCanonicalFileName: fileName => fileName,
-    getCurrentDirectory: () => ROOT,
-    getNewLine: () => '\n'
+  assertTypeScriptContract({
+    root: ROOT,
+    fileName: '__service-registry-contract.ts',
+    source
   });
-  assert.equal(diagnostics.length, 0, formatted);
 });
 
 test('an active registration handle removes and disposes its service exactly once', () => {
