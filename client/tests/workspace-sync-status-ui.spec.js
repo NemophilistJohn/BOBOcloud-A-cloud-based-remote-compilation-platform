@@ -37,6 +37,16 @@ async function closeFixture(fixture) {
   await fs.promises.rm(fixture.sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
 }
 
+async function setActiveEditorValue(page, filePath, value) {
+  await page.waitForFunction(expectedPath => {
+    const state = window.BOBO && window.BOBO.state;
+    const activePath = String(state && state.activeTabPath || '').replace(/\\/g, '/').toLowerCase();
+    const targetPath = String(expectedPath || '').replace(/\\/g, '/').toLowerCase();
+    return activePath === targetPath && Boolean(state.editor && state.editor.getModel());
+  }, filePath);
+  await page.evaluate(content => window.BOBO.state.editor.getModel().setValue(content), value);
+}
+
 test('workspace tree cloud rail tracks local, queued, syncing, success, error and conflict states', async () => {
   test.setTimeout(60000);
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-sync-rail-'));
@@ -112,7 +122,7 @@ test('workspace tree cloud rail tracks local, queued, syncing, success, error an
     ]);
 
     await alpha.click();
-    await page.evaluate(() => window.BOBO.state.editor.getModel().setValue('export const alpha = 2;\n'));
+    await setActiveEditorValue(page, path.join(workspace, 'alpha.js'), 'export const alpha = 2;\n');
     await expect(alpha.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'queued');
     await expect(root.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'queued');
 
@@ -123,7 +133,7 @@ test('workspace tree cloud rail tracks local, queued, syncing, success, error an
     }, path.join(workspace, 'alpha.js'));
     await expect(alpha.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'local-only');
     await alpha.click();
-    await page.evaluate(() => window.BOBO.state.editor.getModel().setValue('export const alpha = 3;\n'));
+    await setActiveEditorValue(page, path.join(workspace, 'alpha.js'), 'export const alpha = 3;\n');
     await expect(alpha.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'queued');
 
     await page.evaluate(() => {
@@ -137,7 +147,7 @@ test('workspace tree cloud rail tracks local, queued, syncing, success, error an
     await source.click();
     const beta = page.locator('.tree-row[data-name="beta.js"]');
     await beta.click();
-    await page.evaluate(() => window.BOBO.state.editor.getModel().setValue('export const beta = 2;\n'));
+    await setActiveEditorValue(page, path.join(workspace, 'src', 'beta.js'), 'export const beta = 2;\n');
     await expect(beta.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'queued');
     await page.evaluate(() => window.BOBO.workspaceSyncStatus.finishSync(window.__syncRailContext, { success: true }));
     await expect(alpha.locator('.tree-sync-rail')).toHaveAttribute('data-sync-state', 'queued');
