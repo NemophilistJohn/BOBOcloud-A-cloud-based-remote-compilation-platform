@@ -358,14 +358,8 @@
   }
 
   function loadDiagnosticsSettings() {
-    if (!global.api || !global.api.readDiagnosticsSettings) return;
-    global.api.readDiagnosticsSettings().then(function (s) {
-      S.diagnosticsSettings = s;
-      var reg = global.editorRuleRegistry;
-      if (reg) reg.setDiagnosticsSettings(s);
-      // apply to any models that were checked before settings loaded
-      recheckAll();
-    }).catch(function (e) { console.error('Load diagnostics settings:', e); });
+    if (!BOBO.diagnosticsSettings || typeof BOBO.diagnosticsSettings.load !== 'function') return;
+    BOBO.diagnosticsSettings.load();
   }
 
   function initEditor(monaco) {

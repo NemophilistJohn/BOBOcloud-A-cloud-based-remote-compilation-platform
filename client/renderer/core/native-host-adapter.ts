@@ -1,7 +1,24 @@
+import type {
+  DiagnosticsHost,
+  DiagnosticsOpenListener,
+  DiagnosticsSettingsWriteDto
+} from '../../types/diagnostics';
 import type { NativeHost, RcloneNativeHost, RcloneProgressListener } from '../../types/native-host';
+import { toDisposable } from './disposable.js';
 import { rendererPlatform } from './typed-platform';
 
+export const DIAGNOSTICS_HOST_SERVICE_ID = 'host.diagnostics';
 export const RCLONE_HOST_SERVICE_ID = 'host.rclone';
+
+function createDiagnosticsHost(host: NativeHost): Readonly<DiagnosticsHost> {
+  return Object.freeze({
+    readSettings: () => host.readDiagnosticsSettings(),
+    writeSettings: (settings: DiagnosticsSettingsWriteDto) => host.writeDiagnosticsSettings(settings),
+    onOpen: (listener: DiagnosticsOpenListener) => toDisposable(
+      host.onOpenDiagnosticsSettings(() => listener())
+    )
+  });
+}
 
 function createRcloneNativeHost(host: NativeHost): Readonly<RcloneNativeHost> {
   return Object.freeze({
@@ -28,9 +45,16 @@ if (!nativeHost || typeof nativeHost !== 'object') {
   throw new Error('The BOBOCLOUD native host bridge is unavailable.');
 }
 
-const registration = rendererPlatform.services.register(
+const diagnosticsRegistration = rendererPlatform.services.register(
+  DIAGNOSTICS_HOST_SERVICE_ID,
+  createDiagnosticsHost(nativeHost),
+  { owner: 'core', exposeToPlugins: false }
+);
+rendererPlatform.lifecycle.add(diagnosticsRegistration);
+
+const rcloneRegistration = rendererPlatform.services.register(
   RCLONE_HOST_SERVICE_ID,
   createRcloneNativeHost(nativeHost),
   { owner: 'core', exposeToPlugins: false }
 );
-rendererPlatform.lifecycle.add(registration);
+rendererPlatform.lifecycle.add(rcloneRegistration);

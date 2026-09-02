@@ -7,6 +7,7 @@
  */
 
 import type { Dispose } from './lifecycle';
+import type { DiagnosticsSettingsDto, DiagnosticsSettingsWriteDto } from './diagnostics';
 
 export type { Dispose } from './lifecycle';
 
@@ -138,8 +139,8 @@ export interface IpcInvokeContracts {
   'read-files': IpcInvokeContract<[filePaths: unknown]>;
   'chat-history-read': IpcInvokeContract<[workspaceRoot: unknown]>;
   'chat-history-write': IpcInvokeContract<[request: unknown]>;
-  'diagnostics-read': IpcInvokeContract;
-  'diagnostics-write': IpcInvokeContract<[settings: unknown]>;
+  'diagnostics-read': IpcInvokeContract<[], DiagnosticsSettingsDto>;
+  'diagnostics-write': IpcInvokeContract<[settings: DiagnosticsSettingsWriteDto], boolean>;
   'auth-get': IpcInvokeContract;
   'auth-set': IpcInvokeContract<[request: unknown]>;
   'auth-clear': IpcInvokeContract;

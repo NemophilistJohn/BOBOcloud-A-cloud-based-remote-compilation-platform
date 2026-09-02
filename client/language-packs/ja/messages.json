@@ -1320,6 +1320,7 @@
   "Could not connect to the server. Check the address and try again.": "サーバーに接続できません。アドレスを確認して再試行してください。",
   "Connected to {server}": "{server} に接続しました",
   "Failed to save server settings": "サーバー設定を保存できませんでした",
+  "Failed to save diagnostics settings": "診断設定を保存できませんでした",
   "Local editor mode selected. Cloud features remain available after you add a server.": "ローカル編集モードを選択しました。サーバーを追加するとクラウド機能を利用できます。",
   "ai.control.done": "完了",
   "ai.control.autosaveReady": "変更は自動的に保存されます",

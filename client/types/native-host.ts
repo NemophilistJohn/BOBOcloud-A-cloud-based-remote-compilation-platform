@@ -1,4 +1,9 @@
 import type { Dispose, Invoke, Subscribe } from './ipc-contracts';
+import type {
+  DiagnosticsOpenListener,
+  DiagnosticsSettingsDto,
+  DiagnosticsSettingsWriteDto
+} from './diagnostics';
 
 export interface WorkspaceTextFileWrite {
   readonly content: string;
@@ -213,9 +218,9 @@ export interface NativeHost {
   onOpenAiSettings: Subscribe<'open-ai-settings'>;
   onToggleAiChat: Subscribe<'toggle-ai-chat'>;
 
-  readDiagnosticsSettings: Invoke<'diagnostics-read'>;
-  writeDiagnosticsSettings: Invoke<'diagnostics-write'>;
-  onOpenDiagnosticsSettings: Subscribe<'open-diagnostics-settings'>;
+  readDiagnosticsSettings(): Promise<DiagnosticsSettingsDto>;
+  writeDiagnosticsSettings(settings: DiagnosticsSettingsWriteDto): Promise<boolean>;
+  onOpenDiagnosticsSettings(listener: DiagnosticsOpenListener): Dispose;
 
   authGet: Invoke<'auth-get'>;
   authSet(credential: unknown): Promise<unknown>;

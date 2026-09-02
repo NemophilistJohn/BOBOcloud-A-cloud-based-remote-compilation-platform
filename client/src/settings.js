@@ -347,16 +347,24 @@
     // Diagnostics
     var diagEnabled = document.getElementById('settings-diag-enabled');
     var diagMode = document.getElementById('settings-diag-mode');
+    var diagnosticsSave = null;
     if (diagEnabled || diagMode) {
-      if (!S.diagnosticsSettings) S.diagnosticsSettings = {};
-      if (diagEnabled) S.diagnosticsSettings.enabled = diagEnabled.checked;
-      if (diagMode) S.diagnosticsSettings.checkOn = diagMode.value;
-      if (global.api && global.api.writeDiagnosticsSettings) {
-        global.api.writeDiagnosticsSettings(S.diagnosticsSettings);
+      var diagnosticsUpdate = {};
+      if (diagEnabled) diagnosticsUpdate.enabled = diagEnabled.checked;
+      if (diagMode) diagnosticsUpdate.checkOn = diagMode.value;
+      if (BOBO.diagnosticsSettings && typeof BOBO.diagnosticsSettings.updateBasic === 'function') {
+        diagnosticsSave = BOBO.diagnosticsSettings.updateBasic(diagnosticsUpdate);
       }
-      if (BOBO.editorCore && BOBO.editorCore.recheckAll) BOBO.editorCore.recheckAll();
     }
 
+    if (diagnosticsSave && typeof diagnosticsSave.then === 'function') {
+      diagnosticsSave.then(function(saved) {
+        if (saved === true) close();
+      }).catch(function(error) {
+        console.error('Save diagnostics settings:', error);
+      });
+      return;
+    }
     close();
   }
 

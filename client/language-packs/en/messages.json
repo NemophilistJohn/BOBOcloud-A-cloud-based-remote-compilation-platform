@@ -1320,6 +1320,7 @@
   "Could not connect to the server. Check the address and try again.": "Could not connect to the server. Check the address and try again.",
   "Connected to {server}": "Connected to {server}",
   "Failed to save server settings": "Failed to save server settings",
+  "Failed to save diagnostics settings": "Failed to save diagnostics settings",
   "Local editor mode selected. Cloud features remain available after you add a server.": "Local editor mode selected. Cloud features remain available after you add a server.",
   "ai.control.done": "Done",
   "ai.control.autosaveReady": "Changes save automatically",

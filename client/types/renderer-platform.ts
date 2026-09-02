@@ -1,4 +1,5 @@
 import type { RcloneClient } from '../src/rclone-client';
+import type { DiagnosticsHost, DiagnosticsSettingsService } from './diagnostics';
 import type {
   CloudFeaturePolicyService,
   ServerCapabilityService,
@@ -8,7 +9,9 @@ import type { Disposable, DisposableStore } from './lifecycle';
 import type { RcloneNativeHost } from './native-host';
 
 export interface RendererServiceMap {
+  readonly 'host.diagnostics': Readonly<DiagnosticsHost>;
   readonly 'host.rclone': Readonly<RcloneNativeHost>;
+  readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
   readonly 'workbench.rclone': RcloneClient;
   readonly 'workbench.serverTransport': Readonly<ServerTransportService>;
   readonly 'workbench.serverCapabilities': ServerCapabilityService;

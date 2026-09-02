@@ -30,6 +30,7 @@ const EXPECTED_MODULES = [
   '../src/state.js',
   '../src/tab-order.js',
   '../src/i18n.js',
+  './compat/diagnostics-settings-adapter.ts',
   '../src/workspace-launch.js',
   '../src/icons.js',
   '../src/confirm-dialog.js',
@@ -76,7 +77,6 @@ const EXPECTED_MODULES = [
   '../src/environment-center.js',
   '../src/package-center.js',
   '../src/views.js',
-  '../src/diagnostics-settings.js',
   '../src/auth.js',
   '../src/projects.js',
   '../src/collaboration.js',
@@ -164,6 +164,8 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/server-transport.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/server-capabilities.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/cloud-feature-policy.ts')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/diagnostics-settings.ts')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/diagnostics-settings-adapter.ts')));
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/src/ai-chat-panel.js')));
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/node_modules/temml/dist/temml.mjs')));
   assert.ok(terminalUiSourceMap.sources.some((source) => source.endsWith('/renderer/terminal-ui-entry.js')));

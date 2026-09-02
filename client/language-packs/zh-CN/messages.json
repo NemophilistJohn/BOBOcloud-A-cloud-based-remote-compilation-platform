@@ -1321,6 +1321,7 @@
   "Could not connect to the server. Check the address and try again.": "无法连接服务器，请检查地址后重试。",
   "Connected to {server}": "已连接到 {server}",
   "Failed to save server settings": "保存服务器设置失败",
+  "Failed to save diagnostics settings": "保存诊断设置失败",
   "Local editor mode selected. Cloud features remain available after you add a server.": "已进入本地编辑模式；添加服务器后仍可使用云端功能。",
   "ai.control.done": "完成",
   "ai.control.autosaveReady": "更改会自动保存",

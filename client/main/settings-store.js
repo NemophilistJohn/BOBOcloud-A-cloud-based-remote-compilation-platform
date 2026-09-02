@@ -64,6 +64,51 @@ function defaultDiagnosticsSettings() {
   };
 }
 
+const DIAGNOSTICS_CHECK_IDS = Object.freeze(Object.keys(defaultDiagnosticsSettings().checks));
+const DIAGNOSTICS_CHECK_ON_VALUES = new Set(['type', 'save']);
+const DIAGNOSTICS_SEVERITY_VALUES = new Set(['error', 'warning', 'info', 'hint']);
+
+function ownDataValue(value, key) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+    ? descriptor.value
+    : undefined;
+}
+
+function clampFiniteNumber(value, fallback, minimum, maximum) {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(minimum, Math.min(maximum, value))
+    : fallback;
+}
+
+function normalizeDiagnosticsSettings(value) {
+  const normalized = defaultDiagnosticsSettings();
+  const enabled = ownDataValue(value, 'enabled');
+  const checkOn = ownDataValue(value, 'checkOn');
+  const debounceMs = ownDataValue(value, 'debounceMs');
+  const checks = ownDataValue(value, 'checks');
+
+  if (typeof enabled === 'boolean') normalized.enabled = enabled;
+  if (DIAGNOSTICS_CHECK_ON_VALUES.has(checkOn)) normalized.checkOn = checkOn;
+  normalized.debounceMs = clampFiniteNumber(debounceMs, normalized.debounceMs, 0, 5000);
+
+  for (const id of DIAGNOSTICS_CHECK_IDS) {
+    const check = ownDataValue(checks, id);
+    if (!check || typeof check !== 'object' || Array.isArray(check)) continue;
+    const checkEnabled = ownDataValue(check, 'enabled');
+    const severity = ownDataValue(check, 'severity');
+    const maxLineLength = ownDataValue(check, 'maxLineLength');
+    if (typeof checkEnabled === 'boolean') normalized.checks[id].enabled = checkEnabled;
+    if (DIAGNOSTICS_SEVERITY_VALUES.has(severity)) normalized.checks[id].severity = severity;
+    if (typeof maxLineLength === 'number' && Number.isFinite(maxLineLength)) {
+      normalized.checks[id].maxLineLength = Math.max(20, Math.min(1000, maxLineLength));
+    }
+  }
+
+  return normalized;
+}
+
 function createSettingsStore(options) {
   const app = options.app;
   const secretCodec = createSecretCodec(options.safeStorage);
@@ -293,29 +338,19 @@ function createSettingsStore(options) {
     try {
       if (fs.existsSync(paths.diagnostics)) {
         const raw = readJsonFileSync(paths.diagnostics, { maxBytes: STORAGE_LIMITS.diagnostics });
-        const merged = defaultDiagnosticsSettings();
-        if (typeof raw.enabled === 'boolean') merged.enabled = raw.enabled;
-        if (typeof raw.checkOn === 'string') merged.checkOn = raw.checkOn;
-        if (typeof raw.debounceMs === 'number') merged.debounceMs = raw.debounceMs;
-        if (raw.checks && typeof raw.checks === 'object') {
-          for (const id in raw.checks) {
-            if (!merged.checks[id] || !raw.checks[id]) continue;
-            if (typeof raw.checks[id].enabled === 'boolean') merged.checks[id].enabled = raw.checks[id].enabled;
-            if (typeof raw.checks[id].severity === 'string') merged.checks[id].severity = raw.checks[id].severity;
-            if (typeof raw.checks[id].maxLineLength === 'number') merged.checks[id].maxLineLength = raw.checks[id].maxLineLength;
-          }
-        }
-        return merged;
+        return normalizeDiagnosticsSettings(raw);
       }
     } catch (error) {
       console.error('Error reading diagnostics settings:', error);
     }
-    return defaultDiagnosticsSettings();
+    return normalizeDiagnosticsSettings();
   }
 
   function writeDiagnosticsSettings(settings) {
     try {
-      writeJsonAtomicSync(paths.diagnostics, settings, { maxBytes: STORAGE_LIMITS.diagnostics });
+      writeJsonAtomicSync(paths.diagnostics, normalizeDiagnosticsSettings(settings), {
+        maxBytes: STORAGE_LIMITS.diagnostics
+      });
       return true;
     } catch (error) {
       console.error('Error writing diagnostics settings:', error);
@@ -431,4 +466,4 @@ function createSettingsStore(options) {
   };
 }
 
-module.exports = { createSettingsStore, defaultDiagnosticsSettings };
+module.exports = { createSettingsStore, defaultDiagnosticsSettings, normalizeDiagnosticsSettings };

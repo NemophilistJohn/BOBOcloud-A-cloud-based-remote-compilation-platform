@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const ts = require('typescript');
+const { directBridgeAccessCount } = require('./support/renderer-bridge-access');
 
 const ROOT = path.resolve(__dirname, '..');
 const SOURCE_ROOTS = [path.join(ROOT, 'renderer'), path.join(ROOT, 'src')];
@@ -19,9 +19,7 @@ const LEGACY_DIRECT_ACCESS_LIMITS = new Map([
   ['src/auth.js', 16],
   ['src/collaboration.js', 6],
   ['src/dap-client.js', 27],
-  ['src/diagnostics-settings.js', 4],
   ['src/document-views.js', 2],
-  ['src/editor-core.js', 3],
   ['src/environment-center.js', 6],
   ['src/i18n.js', 22],
   ['src/lsp-client.js', 56],
@@ -31,12 +29,17 @@ const LEGACY_DIRECT_ACCESS_LIMITS = new Map([
   ['src/project-tasks.js', 3],
   ['src/projects.js', 5],
   ['src/runner.js', 15],
-  ['src/settings.js', 3],
   ['src/terminal.js', 30],
   ['src/views.js', 2],
   ['src/workspace-launch.js', 9],
   ['src/workspace-settings.js', 6],
   ['src/workspace.js', 28]
+]);
+const MIGRATED_DIAGNOSTICS_MODULES = Object.freeze([
+  'renderer/compat/diagnostics-settings-adapter.ts',
+  'src/diagnostics-settings.ts',
+  'src/editor-core.js',
+  'src/settings.js'
 ]);
 
 function sourceFiles(directory) {
@@ -51,24 +54,24 @@ function relative(file) {
   return path.relative(ROOT, file).replace(/\\/g, '/');
 }
 
-function directBridgeAccessCount(file, source) {
-  const scriptKind = file.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS;
-  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, scriptKind);
-  let count = 0;
-  function visit(node) {
-    if (ts.isPropertyAccessExpression(node) && node.name.text === 'api' &&
-        ts.isIdentifier(node.expression) && (node.expression.text === 'window' || node.expression.text === 'global')) {
-      count += 1;
-    } else if (ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression) &&
-        (node.expression.text === 'window' || node.expression.text === 'global') &&
-        ts.isStringLiteralLike(node.argumentExpression) && node.argumentExpression.text === 'api') {
-      count += 1;
-    }
-    ts.forEachChild(node, visit);
+test('renderer bridge detector catches global aliases and destructuring forms', () => {
+  const probes = [
+    ['window.api', 1],
+    ["globalThis['api']", 1],
+    ['self.api', 1],
+    ['globalThis.window.api', 1],
+    ['const root = globalThis.window; root.api', 1],
+    ['const { api } = globalThis', 1],
+    ["const { ['api']: bridge } = globalThis", 1],
+    ['({ api } = globalThis)', 1],
+    ["({ ['api']: bridge } = self)", 1],
+    ['const { window: root } = globalThis; root.api', 1],
+    ['const value = object.api; const { api } = config', 0]
+  ];
+  for (const [source, expected] of probes) {
+    assert.equal(directBridgeAccessCount('probe.js', source), expected, source);
   }
-  visit(sourceFile);
-  return count;
-}
+});
 
 test('renderer bridge access is confined to the adapter and bounded legacy callers', () => {
   const actual = new Map();
@@ -96,11 +99,24 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
 
   assert.equal(actual.has('src/rclone-client.js'), false,
     'the migrated rclone slice must not regain a direct preload dependency');
+  for (const file of MIGRATED_DIAGNOSTICS_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated diagnostics slice must not regain a direct preload dependency: ${file}`);
+  }
 });
 
 test('native host services remain private to the workbench', () => {
   const adapter = fs.readFileSync(path.join(ROOT, NATIVE_HOST_ADAPTER), 'utf8');
+  const diagnosticsAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/diagnostics-settings-adapter.ts'),
+    'utf8'
+  );
+  assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
   assert.match(adapter, /RCLONE_HOST_SERVICE_ID\s*=\s*['"]host\.rclone['"]/);
-  assert.match(adapter, /exposeToPlugins:\s*false/);
+  assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 2);
   assert.doesNotMatch(adapter, /pluginView\s*:/);
+  assert.match(diagnosticsAdapter,
+    /DIAGNOSTICS_SETTINGS_SERVICE_ID\s*=\s*['"]workbench\.diagnosticsSettings['"]/);
+  assert.match(diagnosticsAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(diagnosticsAdapter, /pluginView\s*:/);
 });
