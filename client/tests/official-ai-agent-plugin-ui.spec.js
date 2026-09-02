@@ -72,6 +72,37 @@ function createWorkspace(root) {
   ].join('\n'), 'utf8');
 }
 
+function sendOpenAiStream(response, message, finishReason) {
+  response.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive'
+  });
+  const chunks = [];
+  if (message.reasoning_content) {
+    chunks.push({ choices: [{ index: 0, delta: { reasoning_content: message.reasoning_content }, finish_reason: null }] });
+  }
+  if (Array.isArray(message.tool_calls)) {
+    chunks.push({ choices: [{ index: 0, delta: { tool_calls: message.tool_calls.map((call, index) => ({
+      index,
+      id: call.id,
+      type: call.type,
+      function: call.function
+    })) }, finish_reason: null }] });
+  } else {
+    const content = String(message.content || '');
+    const splitAt = Math.max(1, Math.floor(content.length / 2));
+    chunks.push({ choices: [{ index: 0, delta: { content: content.slice(0, splitAt) }, finish_reason: null }] });
+    chunks.push({ choices: [{ index: 0, delta: { content: content.slice(splitAt) }, finish_reason: null }] });
+  }
+  chunks.push({
+    choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+    usage: { prompt_tokens: 20, completion_tokens: 12, total_tokens: 32 }
+  });
+  for (const chunk of chunks) response.write('data: ' + JSON.stringify(chunk) + '\n\n');
+  response.end('data: [DONE]\n\n');
+}
+
 test('official AI Agent plugin owns a full workbench tab and cleans it up when disabled', async () => {
   test.skip(shouldSkipMissingArtifact(ARTIFACT_INFO, 'Official AI Agent plugin artifact'), 'Official AI Agent plugin artifact is not present beside the app repository.');
   test.setTimeout(120000);
@@ -102,7 +133,12 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
       });
       const lastMessage = parsed.messages[parsed.messages.length - 1] || {};
       const processRequest = lastMessage.role === 'user' && lastMessage.content.includes('approved local process');
-      const processResult = lastMessage.role === 'tool';
+      const processResult = lastMessage.role === 'tool' && lastMessage.name === 'process_run';
+      const toolNames = Array.isArray(parsed.tools) ? parsed.tools.map((tool) => tool.function && tool.function.name) : [];
+      const loadedSkill = parsed.messages.some((message) => message.role === 'tool' && message.name === 'skill_load');
+      const goalUpdateResults = parsed.messages.filter((message) => message.role === 'tool' && message.name === 'goal_update').length;
+      const initialWorkspaceTurn = !processRequest && !processResult && !loadedSkill && toolNames.includes('skill_load');
+      const goalCompletionTurn = loadedSkill && goalUpdateResults === 1 && toolNames.includes('goal_update');
       let processFailed = false;
       if (processResult) {
         try { processFailed = JSON.parse(lastMessage.content).failed === true; } catch (_) {}
@@ -125,6 +161,52 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
               }
             }]
           }
+        : initialWorkspaceTurn
+          ? {
+              role: 'assistant',
+              content: '',
+              reasoning_content: 'I will create a concrete plan and load only the selected relevant skill.',
+              tool_calls: [{
+                id: 'agent-ui-goal-call',
+                type: 'function',
+                function: {
+                  name: 'goal_update',
+                  arguments: JSON.stringify({
+                    title: 'Review the workspace',
+                    steps: [
+                      { title: 'Load review guidance', status: 'in-progress' },
+                      { title: 'Inspect the workspace', status: 'pending' },
+                      { title: 'Report verified findings', status: 'pending' }
+                    ]
+                  })
+                }
+              }, {
+                id: 'agent-ui-skill-call',
+                type: 'function',
+                function: { name: 'skill_load', arguments: JSON.stringify({ id: 'skill-test-placeholder' }) }
+              }]
+            }
+          : goalCompletionTurn
+            ? {
+                role: 'assistant',
+                content: '',
+                reasoning_content: 'I verified the selected skill and can now close every planned step.',
+                tool_calls: [{
+                  id: 'agent-ui-goal-complete-call',
+                  type: 'function',
+                  function: {
+                    name: 'goal_update',
+                    arguments: JSON.stringify({
+                      title: 'Review the workspace',
+                      steps: [
+                        { title: 'Load review guidance', status: 'completed' },
+                        { title: 'Inspect the workspace', status: 'completed' },
+                        { title: 'Report verified findings', status: 'completed' }
+                      ]
+                    })
+                  }
+                }]
+              }
         : {
             role: 'assistant',
             content: processResult
@@ -152,17 +234,23 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
             reasoning_content: processResult
               ? 'I verified the bounded process result returned by the trusted host.'
               : 'I checked the selected workspace skill and request mode.'
-          };
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({
-        id: 'agent-ui-response',
-        model: 'agent-ui-model',
-        choices: [{
-          finish_reason: processRequest ? 'tool_calls' : 'stop',
-          message
-        }],
-        usage: { prompt_tokens: 20, completion_tokens: 12, total_tokens: 32 }
-      }));
+      };
+      if (initialWorkspaceTurn) {
+        const skillDescriptor = parsed.messages[0].content.match(/<available_skills>[\s\S]*?- id: ([^\s]+)/);
+        message.tool_calls[1].function.arguments = JSON.stringify({ id: skillDescriptor ? skillDescriptor[1] : '' });
+      }
+      const finishReason = Array.isArray(message.tool_calls) && message.tool_calls.length ? 'tool_calls' : 'stop';
+      if (parsed.stream === true) {
+        sendOpenAiStream(response, message, finishReason);
+      } else {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({
+          id: 'agent-ui-response',
+          model: 'agent-ui-model',
+          choices: [{ finish_reason: finishReason, message }],
+          usage: { prompt_tokens: 20, completion_tokens: 12, total_tokens: 32 }
+        }));
+      }
     });
   });
   mockServer.on('connection', (socket) => {
@@ -203,7 +291,7 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
       );
       await window.BOBO.workspace.openFile(sourcePath, 'main.js');
       await window.api.aiWriteSettings({
-        schemaVersion: 3,
+        schemaVersion: 4,
         chatProfiles: [{
           id: 'agent-ui',
           name: 'Local Agent Mock',
@@ -212,6 +300,18 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
           endpoint: modelEndpoint,
           modelId: 'agent-ui-model',
           mode: 'chat',
+          capabilities: {
+            contextWindowTokens: 128000,
+            maxOutputTokens: 8192,
+            tools: true,
+            streaming: true,
+            parallelToolCalls: true,
+            reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+            effectiveEffortMap: {
+              low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max'
+            },
+            source: 'user-override'
+          },
           options: { enableReasoningEffort: true }
         }],
         inlineProfiles: [],
@@ -375,18 +475,19 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
     await expect(markdown.locator('a[href^="javascript:"]')).toHaveCount(0);
     await expect(markdown.locator('script, img')).toHaveCount(0);
     expect(await page.evaluate(() => window.__agentMarkdownXss)).toBeUndefined();
-    await expect(workbench.locator('.agent-timeline-row[data-kind="thought"]')).toContainText('selected workspace skill');
+    await expect(workbench.locator('.agent-timeline-row[data-kind="thought"]')
+      .filter({ hasText: 'selected workspace skill' })).toHaveCount(1);
     await expect(workbench.locator('.agent-timeline-row[data-kind="skill"]')).toContainText('UI Review Checklist');
     await expect(workbench.locator('.agent-goal')).toBeVisible();
-    await expect(workbench.locator('.agent-goal-progress')).toHaveText('4 / 4');
+    await expect(workbench.locator('.agent-goal-progress')).toHaveText('3 / 3');
     await expect(sidebar.locator('.agent-session-row')).toContainText('Workspace inspection complete');
 
-    expect(requests).toHaveLength(2);
+    expect(requests).toHaveLength(4);
     expect(requests[0].url).toBe('/v1/chat/completions');
     expect(requests[0].authorization).toBe('Bearer agent-ui-key');
     expect(requests[0].body).toMatchObject({
       model: 'agent-ui-model',
-      stream: false,
+      stream: true,
       reasoning_effort: 'xhigh',
       tool_choice: 'auto'
     });
@@ -396,16 +497,32 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
       'workspace_write',
       'process_run'
     ]));
-    expect(requests[0].body.messages[0].content).toContain('AGENT_UI_SKILL_MARKER');
+    expect(requests[0].body.messages[0].content).not.toContain('AGENT_UI_SKILL_MARKER');
     expect(requests[0].body.messages.some((message) => message.role === 'user' && message.content === prompt)).toBe(true);
     expect(requests[0].body.messages.some((message) => message.role === 'user' && message.content.startsWith('/goal'))).toBe(false);
     expect(requests[1].body).toMatchObject({
       model: 'agent-ui-model',
+      stream: true,
+      reasoning_effort: 'xhigh'
+    });
+    expect(requests[1].body.tools.map((tool) => tool.function.name)).toContain('skill_load');
+    expect(JSON.stringify(requests[1].body.messages)).toContain('AGENT_UI_SKILL_MARKER');
+    expect(requests[2].body).toMatchObject({
+      model: 'agent-ui-model',
+      stream: true,
+      reasoning_effort: 'xhigh'
+    });
+    const completedGoalResult = requests[2].body.messages.find((message) =>
+      message.role === 'tool' && message.name === 'goal_update' && message.tool_call_id === 'agent-ui-goal-complete-call'
+    );
+    expect(JSON.parse(completedGoalResult.content)).toMatchObject({ goal: { status: 'completed' } });
+    expect(requests[3].body).toMatchObject({
+      model: 'agent-ui-model',
       stream: false,
       reasoning_effort: 'low'
     });
-    expect(requests[1].body.tools).toBeUndefined();
-    expect(JSON.stringify(requests[1].body.messages)).toContain(prompt);
+    expect(requests[3].body.tools).toBeUndefined();
+    expect(JSON.stringify(requests[3].body.messages)).toContain(prompt);
     const requestCountAfterGoal = requests.length;
 
     await expect(page.locator('#bottom-panel')).toBeVisible();

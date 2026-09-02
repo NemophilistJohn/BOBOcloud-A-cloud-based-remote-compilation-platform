@@ -24,8 +24,12 @@ test('settings store encrypts server, auth, and AI credentials without changing 
   await store.writeServerSettings({ ip: 'cloud.test', user: 'root', pass: 'ssh-secret', apiKey: 'server-secret', setupCompleted: true });
   store.writeAuth({ servers: { current: { token: 'session-secret' } } });
   store.writeAiSettings({
-    schemaVersion: 3,
-    chatProfiles: [{ id: 'chat', name: 'Chat', endpoint: 'https://ai.test', modelId: 'model', apiKey: 'ai-secret' }],
+    schemaVersion: 4,
+    chatProfiles: [{
+      id: 'chat', name: 'Chat', provider: 'qwen', protocol: 'chat-completions', authType: 'bearer',
+      endpoint: 'https://ai.test', modelId: 'model', apiKey: 'ai-secret', region: 'cn-beijing', billingPlan: 'standard',
+      capabilities: { contextWindowTokens: 1000000, tools: true, source: 'user-override' }
+    }],
     inlineProfiles: [], chatProfileId: 'chat', inlineProfileId: ''
   });
 
@@ -34,7 +38,11 @@ test('settings store encrypts server, auth, and AI credentials without changing 
   }
   assert.equal((await store.readServerSettings()).pass, 'ssh-secret');
   assert.equal(store.readAuth().servers.current.token, 'session-secret');
-  assert.equal(store.readAiSettings().chatProfiles[0].apiKey, 'ai-secret');
+  const aiProfile = store.readAiSettings().chatProfiles[0];
+  assert.equal(aiProfile.apiKey, 'ai-secret');
+  assert.equal(aiProfile.provider, 'qwen');
+  assert.equal(aiProfile.capabilities.contextWindowTokens, 1000000);
+  assert.equal(aiProfile.capabilities.source, 'user-override');
 });
 
 test('an unreadable encrypted AI file is never replaced with migrated defaults', (t) => {

@@ -167,10 +167,19 @@
       purpose: purpose,
       id: profile.id,
       provider: profile.provider,
+      protocol: profile.protocol,
+      authType: profile.authType,
       endpoint: normalizeEndpoint(profile.endpoint),
       modelId: String(profile.modelId || '').trim(),
       apiKey: String(profile.apiKey || ''),
       mode: purpose === 'inline' ? profile.mode : 'chat',
+      apiVersion: profile.apiVersion,
+      organizationId: profile.organizationId,
+      projectId: profile.projectId,
+      workspaceId: profile.workspaceId,
+      region: profile.region,
+      billingPlan: profile.billingPlan,
+      capabilities: stableValue(profile.capabilities || {}),
       options: stableValue(profile.options || {})
     });
     var hash = 2166136261;
@@ -229,10 +238,19 @@
       id: profile.id,
       name: profile.name,
       provider: profile.provider,
+      protocol: profile.protocol,
+      authType: profile.authType,
       apiKey: profile.apiKey,
       endpoint: normalizeEndpoint(profile.endpoint),
       modelId: String(profile.modelId || '').trim(),
       mode: purpose === 'inline' && profile.mode === 'fim' ? 'fim' : 'chat',
+      apiVersion: profile.apiVersion,
+      organizationId: profile.organizationId,
+      projectId: profile.projectId,
+      workspaceId: profile.workspaceId,
+      region: profile.region,
+      billingPlan: profile.billingPlan,
+      capabilities: clone(profile.capabilities || {}),
       options: clone(profile.options || {})
     };
   }

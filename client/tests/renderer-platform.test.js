@@ -482,10 +482,10 @@ test('plugin API ranges are parsed strictly and evaluated against the host versi
     version: '1.0.0',
     permissions: []
   };
-  for (const range of ['^1.0.0', '^1', '1.x', '>=1 <2', '>=1.0.0 <2.0.0', '>=2.0.0 || ^1.0.0']) {
+  for (const range of ['^1.0.0', '^1', '1.x', '>=1 <2', '>=1.0.0 <2.0.0', '>=2.0.0 || ^1.0.0', '>1.5']) {
     assert.equal(core.validatePluginManifest({ ...base, engines: { pluginApi: range } }).id, base.id);
   }
-  for (const range of ['garbage1', '^2.0.0', '>=2.0.0', '>1', '>1.5', '1.0.0 ||']) {
+  for (const range of ['garbage1', '^2.0.0', '>=2.0.0', '>1', '1.0.0 ||']) {
     assert.throws(
       () => core.validatePluginManifest({ ...base, engines: { pluginApi: range } }),
       /incompatible or missing/
@@ -1505,7 +1505,7 @@ test('thin BOBO adapter projects the same registered file icon service', () => {
   vm.runInNewContext(compatibilityBundle, context);
 
   const BOBO = context.window.BOBO;
-  assert.equal(BOBO.platform.apiVersion, '1.5.0');
+  assert.equal(BOBO.platform.apiVersion, '1.6.0');
   assert.equal(BOBO.platform.services.has('workbench.fileIcons'), true);
   assert.equal(BOBO.platform.services.get('workbench.fileIcons'), BOBO.fileIcons);
   assert.equal(BOBO.fileIcons.getFileIcon('main.go'), 'ico/file_type_go.svg');

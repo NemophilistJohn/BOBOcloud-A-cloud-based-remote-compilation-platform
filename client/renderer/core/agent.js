@@ -9,6 +9,8 @@ const MAX_MESSAGES = 240;
 const MAX_TIMELINE = 320;
 const MAX_MODELS = 80;
 const MAX_SKILLS = 256;
+const MAX_PATCH_OPERATIONS = 128;
+const MAX_MODEL_REQUEST_OUTPUT_TOKENS = 262_144;
 const MAX_STATE_TEXT = 2 * 1024 * 1024;
 const MAX_APPROVAL_RESULT_STRING = 2 * 1024 * 1024;
 const MAX_APPROVAL_RESULT_ITEMS = 8192;
@@ -194,6 +196,7 @@ const PHASES = new Set(Object.values(AgentPhase));
 const SESSION_STATUSES = new Set(Object.values(AgentSessionStatus));
 const MODES = new Set(['chat', 'goal']);
 const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+const EFFECTIVE_EFFORTS = new Set([...EFFORTS, 'none']);
 const ACCESS_MODES = new Set(['ask', 'auto', 'full']);
 const ROLES = new Set(['user', 'assistant', 'system']);
 const TIMELINE_KINDS = new Set(['thought', 'tool', 'status', 'skill', 'compaction', 'error']);
@@ -246,25 +249,81 @@ function sessionSummary(value) {
 }
 
 function modelChoice(value) {
-  fields(value, new Set(['ref', 'name', 'provider', 'modelId', 'purpose', 'configured']), 'Agent model choice');
+  fields(value, new Set(['ref', 'name', 'provider', 'modelId', 'purpose', 'configured', 'capabilities']), 'Agent model choice');
+  const source = value.capabilities === undefined || value.capabilities === null
+    ? null
+    : fields(value.capabilities, new Set([
+        'contextWindowTokens', 'maxOutputTokens', 'requestOutputLimitTokens', 'tools', 'streaming',
+        'parallelToolCalls', 'reasoningEfforts', 'effectiveEffortMap', 'source'
+      ]), 'Agent model capabilities');
+  const boundedTokenLimit = (input, label, maximum = 100_000_000) => {
+    if (input === undefined || input === null) return null;
+    if (!Number.isSafeInteger(input) || input < 1 || input > maximum) {
+      throw new TypeError(label + ' is invalid.');
+    }
+    return input;
+  };
+  const nullableBoolean = (input, label) => {
+    if (input === undefined || input === null) return null;
+    if (typeof input !== 'boolean') throw new TypeError(label + ' is invalid.');
+    return input;
+  };
+  const effortMap = {};
+  if (source && source.effectiveEffortMap !== undefined && source.effectiveEffortMap !== null) {
+    fields(source.effectiveEffortMap, EFFORTS, 'Agent model effective effort map');
+    for (const [requested, effective] of Object.entries(source.effectiveEffortMap)) {
+      if (!EFFECTIVE_EFFORTS.has(effective)) throw new TypeError('Agent model effective effort map is invalid.');
+      effortMap[requested] = effective;
+    }
+  }
+  const capabilities = source ? Object.freeze({
+    contextWindowTokens: boundedTokenLimit(source.contextWindowTokens, 'Agent model context window'),
+    maxOutputTokens: boundedTokenLimit(source.maxOutputTokens, 'Agent model output limit'),
+    requestOutputLimitTokens: boundedTokenLimit(
+      source.requestOutputLimitTokens,
+      'Agent model request output limit',
+      MAX_MODEL_REQUEST_OUTPUT_TOKENS
+    ),
+    tools: nullableBoolean(source.tools, 'Agent model tool support'),
+    streaming: nullableBoolean(source.streaming, 'Agent model streaming support'),
+    parallelToolCalls: nullableBoolean(source.parallelToolCalls, 'Agent model parallel tool support'),
+    reasoningEfforts: Object.freeze(Array.isArray(source.reasoningEfforts)
+      ? [...new Set(source.reasoningEfforts.filter((effort) => EFFORTS.has(effort)))]
+      : []),
+    effectiveEffortMap: Object.freeze(effortMap),
+    source: ['provider-api', 'official-catalog', 'user-override'].includes(source.source) ? source.source : 'unknown'
+  }) : null;
   return Object.freeze({
     ref: scopedId(value.ref, 'Agent model reference'),
     name: requiredText(value.name, 'Agent model name'),
     provider: optionalText(value.provider, 'Agent model provider', 80),
     modelId: optionalText(value.modelId, 'Agent model id', 200),
     purpose: value.purpose === 'inline' ? 'inline' : 'chat',
-    configured: value.configured === true
+    configured: value.configured === true,
+    capabilities
   });
 }
 
 function skillChoice(value) {
-  fields(value, new Set(['id', 'name', 'description', 'source', 'enabled']), 'Agent skill choice');
+  fields(value, new Set([
+    'id', 'name', 'description', 'source', 'enabled', 'revision', 'sizeBytes', 'estimatedTokens'
+  ]), 'Agent skill choice');
+  const boundedCount = (input, label) => {
+    if (input === undefined || input === null) return null;
+    if (!Number.isSafeInteger(input) || input < 0 || input > 100_000_000) {
+      throw new TypeError(label + ' is invalid.');
+    }
+    return input;
+  };
   return Object.freeze({
     id: scopedId(value.id, 'Agent skill id'),
     name: requiredText(value.name, 'Agent skill name'),
     description: optionalText(value.description, 'Agent skill description', 1000),
     source: value.source === 'workspace' ? 'workspace' : 'user',
-    enabled: value.enabled !== false
+    enabled: value.enabled !== false,
+    revision: optionalText(value.revision, 'Agent skill revision', 160),
+    sizeBytes: boundedCount(value.sizeBytes, 'Agent skill size'),
+    estimatedTokens: boundedCount(value.estimatedTokens, 'Agent skill token estimate')
   });
 }
 
@@ -333,7 +392,7 @@ function compaction(value) {
 
 function activeSession(value) {
   if (value === undefined || value === null) return null;
-  fields(value, new Set(['id', 'title', 'status', 'mode', 'reasoningEffort', 'accessMode', 'modelRef', 'messages', 'timeline', 'goal', 'approval', 'compacting', 'compaction']), 'Active Agent session');
+  fields(value, new Set(['id', 'title', 'status', 'mode', 'reasoningEffort', 'effectiveReasoningEffort', 'accessMode', 'modelRef', 'messages', 'timeline', 'goal', 'approval', 'compacting', 'compaction']), 'Active Agent session');
   const messages = Array.isArray(value.messages) ? value.messages.slice(-MAX_MESSAGES).map(message) : [];
   const timeline = Array.isArray(value.timeline) ? value.timeline.slice(-MAX_TIMELINE).map(timelineItem) : [];
   return freeze({
@@ -342,6 +401,9 @@ function activeSession(value) {
     status: SESSION_STATUSES.has(value.status) ? value.status : 'idle',
     mode: MODES.has(value.mode) ? value.mode : 'chat',
     reasoningEffort: EFFORTS.has(value.reasoningEffort) ? value.reasoningEffort : 'medium',
+    effectiveReasoningEffort: EFFECTIVE_EFFORTS.has(value.effectiveReasoningEffort)
+      ? value.effectiveReasoningEffort
+      : 'none',
     accessMode: ACCESS_MODES.has(value.accessMode) ? value.accessMode : 'ask',
     modelRef: optionalText(value.modelRef, 'Agent model reference', MAX_ID),
     messages,
@@ -376,6 +438,73 @@ export function validateAgentState(value) {
     skills,
     activeSession: current
   });
+}
+
+const STATE_MERGE_FIELDS = new Set(['phase', 'message', 'activeSessionId', 'sessions', 'models', 'skills']);
+const SESSION_MERGE_FIELDS = new Set([
+  'id', 'title', 'status', 'mode', 'reasoningEffort', 'effectiveReasoningEffort',
+  'accessMode', 'modelRef', 'goal', 'approval', 'compacting', 'compaction'
+]);
+const PATCH_OPERATION_TYPES = new Set(['state.merge', 'session.merge', 'message.upsert', 'timeline.upsert']);
+
+function mergeFields(target, source, allowed, label) {
+  fields(source, allowed, label);
+  for (const [key, value] of Object.entries(source)) target[key] = value;
+}
+
+function upsertById(values, value, maximum) {
+  const index = values.findIndex((item) => item.id === value.id);
+  if (index >= 0) values[index] = value;
+  else values.push(value);
+  return values.slice(-maximum);
+}
+
+/** Applies a bounded domain patch and validates the complete resulting state atomically. */
+export function applyAgentStatePatch(currentState, patch) {
+  if (!currentState) throw new TypeError('Agent state patch requires an existing state.');
+  fields(patch, new Set(['baseVersion', 'operations']), 'Agent state patch');
+  if (!Number.isSafeInteger(patch.baseVersion) || patch.baseVersion < 0) {
+    throw new TypeError('Agent state patch base version is invalid.');
+  }
+  if (!Array.isArray(patch.operations) || patch.operations.length < 1 || patch.operations.length > MAX_PATCH_OPERATIONS) {
+    throw new TypeError('Agent state patch operations are invalid.');
+  }
+  const candidate = {
+    ...currentState,
+    sessions: [...currentState.sessions],
+    models: [...currentState.models],
+    skills: [...currentState.skills],
+    activeSession: currentState.activeSession ? {
+      ...currentState.activeSession,
+      messages: [...currentState.activeSession.messages],
+      timeline: [...currentState.activeSession.timeline]
+    } : null
+  };
+  for (const operation of patch.operations) {
+    fields(operation, new Set(['type', 'value']), 'Agent state patch operation');
+    if (!PATCH_OPERATION_TYPES.has(operation.type)) throw new TypeError('Agent state patch operation type is invalid.');
+    if (operation.type === 'state.merge') {
+      mergeFields(candidate, operation.value, STATE_MERGE_FIELDS, 'Agent state merge');
+      continue;
+    }
+    if (!candidate.activeSession) throw new TypeError('Agent session patch requires an active session.');
+    if (operation.type === 'session.merge') {
+      mergeFields(candidate.activeSession, operation.value, SESSION_MERGE_FIELDS, 'Agent session merge');
+    } else if (operation.type === 'message.upsert') {
+      candidate.activeSession.messages = upsertById(
+        candidate.activeSession.messages,
+        message(operation.value),
+        MAX_MESSAGES
+      );
+    } else if (operation.type === 'timeline.upsert') {
+      candidate.activeSession.timeline = upsertById(
+        candidate.activeSession.timeline,
+        timelineItem(operation.value),
+        MAX_TIMELINE
+      );
+    }
+  }
+  return validateAgentState(candidate);
 }
 
 export function createAgentCommandPayload(providerId, action, values = {}) {
@@ -425,14 +554,31 @@ export class AgentStateStore {
         if (!active || !record.active || this._records.get(record.id) !== record) throw new Error('Agent provider has been disposed.');
         record.state = validateAgentState(state);
         record.version += 1;
-        this._emit('state', record);
+        this._emit('state', record, null);
         return Object.freeze({ version: record.version });
+      },
+      updateState: (patch) => {
+        if (!active || !record.active || this._records.get(record.id) !== record) throw new Error('Agent provider has been disposed.');
+        if (!isPlainObject(patch) || !Number.isSafeInteger(patch.baseVersion) || patch.baseVersion < 0 ||
+            !Array.isArray(patch.operations) || patch.operations.length < 1 || patch.operations.length > MAX_PATCH_OPERATIONS) {
+          throw new TypeError('Agent state patch is invalid.');
+        }
+        if (patch.baseVersion !== record.version) {
+          return Object.freeze({ applied: false, version: record.version });
+        }
+        record.state = applyAgentStatePatch(record.state, patch);
+        record.version += 1;
+        this._emit('state', record, freeze(cloneExtensionData({
+          baseVersion: patch.baseVersion,
+          operations: patch.operations
+        })));
+        return Object.freeze({ applied: true, version: record.version });
       },
       clearState: () => {
         if (!active || !record.active || this._records.get(record.id) !== record) return Object.freeze({ version: record.version });
         record.state = null;
         record.version += 1;
-        this._emit('state', record);
+        this._emit('state', record, null);
         return Object.freeze({ version: record.version });
       },
       dispose: () => {
@@ -486,8 +632,8 @@ export class AgentStateStore {
     return Object.freeze({ id: record.id, owner: record.owner, descriptor: record.descriptor, state: record.state, version: record.version });
   }
 
-  _emit(type, record) {
-    const event = Object.freeze({ type, record: this._snapshot(record) });
+  _emit(type, record, patch = null) {
+    const event = Object.freeze({ type, record: this._snapshot(record), patch });
     for (const listener of Array.from(this._listeners)) {
       try { listener(event); } catch (error) { this._onError({ source: 'agent-state-listener', id: record.id, error }); }
     }

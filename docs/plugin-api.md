@@ -1,6 +1,6 @@
-# BOBOCloud Plugin API 1.5.0
+# BOBOCloud Plugin API 1.6.0
 
-Status: public package and isolated extension-host contract. BOBOCloud desktop `2.8.0` implements API 1.5 while remaining compatible with packages that target an earlier API 1.x range. Desktop `2.8.1` adds reliable one-shot Agent approval failure delivery without changing the Plugin API version.
+Status: public package and isolated extension-host contract. BOBOCloud desktop `2.8.1` implements API 1.6 while remaining compatible with packages that target an earlier API 1.x range. API 1.6 adds truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism.
 
 The reference guide, package checklist, and complete example are in [Plugin Development Guide](./plugin-development.md).
 
@@ -18,7 +18,7 @@ The reference guide, package checklist, and complete example are in [Plugin Deve
   "version": "1.0.0",
   "engines": {
     "bobocloud": ">=2.8.0 <3.0.0",
-    "pluginApi": "^1.5.0"
+    "pluginApi": "^1.6.0"
   },
   "main": "dist/extension.js",
   "activationEvents": ["onStartupFinished"],
@@ -142,7 +142,7 @@ interface PluginContext {
 
 ## Permissions
 
-For API 1.5.0, a package may request only these permissions:
+For API 1.6.0, a package may request only these permissions:
 
 | Permission | Enables |
 | --- | --- |
@@ -166,7 +166,7 @@ For API 1.5.0, a package may request only these permissions:
 
 A manifest declaration is the package's hard capability ceiling. BOBOCloud automatically enables all declared permissions after a verified install or update; users can revoke or restore each permission in the **Extensions** detail tab. A call still requires both the manifest declaration and a currently active grant. Undeclared or revoked calls reject with `EXTENSION_PERMISSION_DENIED`.
 
-API 1.5 adds only the named local Agent brokers above. It does not add arbitrary filesystem access, a shell command string, caller-selected environment variables, raw network connections, credentials, MCP process control, DAP, or arbitrary IPC. Every Agent filesystem result is workspace-relative, model profiles are exposed only as opaque references, and writes or processes pass through the trusted access policy and host risk matrix. `documents.read` remains limited to the current user-opened document through a sender-, plugin-, viewer-, workspace-, size-, and modification-bound opaque handle. The local SCM methods below likewise remain a narrow broker rather than a general workspace, process, or network capability.
+API 1.6 exposes only the named local Agent brokers above. It does not add arbitrary filesystem access, a shell command string, caller-selected environment variables, raw network connections, credentials, MCP process control, DAP, or arbitrary IPC. Every Agent filesystem result is workspace-relative, model profiles are exposed only as opaque references, and writes or processes pass through the trusted access policy and host risk matrix. `documents.read` remains limited to the current user-opened document through a sender-, plugin-, viewer-, workspace-, size-, and modification-bound opaque handle. The local SCM methods below likewise remain a narrow broker rather than a general workspace, process, or network capability.
 
 ## Commands
 
@@ -187,7 +187,7 @@ Some BOBOCloud command palette builds do not yet expose disposable third-party c
 
 ## Contributions
 
-Plugin contribution ids must also begin with the plugin id plus `.`. API 1.5.0 accepts data declarations at these points:
+Plugin contribution ids must also begin with the plugin id plus `.`. API 1.6.0 accepts data declarations at these points:
 
 | Point | API status |
 | --- | --- |
@@ -199,7 +199,7 @@ Plugin contribution ids must also begin with the plugin id plus `.`. API 1.5.0 a
 | `mcp.providers` | Declarative storage; main-process MCP lifecycle is pending. |
 | `skills.providers` | Declarative storage; skill catalog consumer is pending. |
 
-`documentViews` and `agents` use dedicated structurally validated registration APIs and cannot be registered through `context.contributions.register()`. Executable file-decoration callbacks and debug-configuration providers are intentionally not exposed to installed package code because they require executable callbacks or security-sensitive workflow ownership. The static SCM decoration publisher documented below remains the sole data-only file-decoration exception in API 1.5.0.
+`documentViews` and `agents` use dedicated structurally validated registration APIs and cannot be registered through `context.contributions.register()`. Executable file-decoration callbacks and debug-configuration providers are intentionally not exposed to installed package code because they require executable callbacks or security-sensitive workflow ownership. The static SCM decoration publisher documented below remains the sole data-only file-decoration exception in API 1.6.0.
 
 ## Document Views
 
@@ -319,7 +319,7 @@ For a section item, the payload also includes `sectionId` and `itemId`; for a lo
 
 ## Agent Platform
 
-API 1.5 separates the reusable local capability plane from product-specific Agent orchestration:
+API 1.6 separates the reusable local capability plane from product-specific Agent orchestration:
 
 | Layer | Owner | Responsibilities |
 | --- | --- | --- |
@@ -381,7 +381,7 @@ await agent.setState({
 });
 ```
 
-The workbench invokes a referenced command with exactly one `AgentCommandPayload`: `{ providerId, action }` plus only the bounded fields relevant to that action (`sessionId`, `text`, `mode`, `reasoningEffort`, `accessMode`, `modelRef`, `skillIds`, `approvalId`, or the canonical host-produced `approvalResult`). The plugin owns command behavior and republishes a complete state snapshot after each meaningful transition. The host accepts no HTML, CSS, SVG, URLs, callbacks, or DOM objects in the descriptor or state.
+The workbench invokes a referenced command with exactly one `AgentCommandPayload`: `{ providerId, action }` plus only the bounded fields relevant to that action (`sessionId`, `text`, `mode`, `reasoningEffort`, `accessMode`, `modelRef`, `skillIds`, `approvalId`, or the canonical host-produced `approvalResult`). The plugin owns command behavior. It may publish a complete snapshot with `setState()`, or use `updateState({ baseVersion, operations })` for `state.merge`, `session.merge`, `message.upsert`, and `timeline.upsert`. Updates use compare-and-swap: a stale base returns `{ applied: false, version }`, after which the plugin must republish a complete current snapshot. Every resulting state is fully validated and bounded before becoming visible. The host accepts no HTML, CSS, SVG, URLs, callbacks, or DOM objects in the descriptor or state.
 
 Agent command handlers must acknowledge quickly and continue model/tool work in plugin-owned asynchronous tasks. Installed command invocations retain the normal 10-second upper bound, so a `send` handler must not await the complete model turn. Track the task by session/request id, publish progress, and let `cancel` stop the corresponding model request and plugin orchestration. An approved process is cancelled only by the trusted workbench/main path described below.
 
@@ -389,9 +389,11 @@ The state model supports `idle`, `loading`, `ready`, `unconfigured`, and `error`
 
 ### Model broker
 
-`context.models.list()`, `context.models.generate()`, and `context.models.cancel()` require `models.generate`. `list()` returns bounded display metadata and opaque refs such as a chat-profile ref. `generate()` accepts bounded messages, JSON-schema function tools, a selected opaque ref, a plugin-local request id, and a reasoning effort. The host prefixes that request id with the plugin identity before dispatch. `cancel(requestId)` can therefore cancel only the calling plugin's matching in-flight request. The host resolves the model ref against current local AI settings and sends the request with the host-owned secret profile. A missing, revoked, or incomplete profile fails cleanly; no fallback key or endpoint is sent into the Worker.
+`context.models.list()`, `context.models.generate()`, `context.models.generateStream()`, and `context.models.cancel()` require `models.generate`. `list()` returns bounded display metadata, opaque refs, and a capability snapshot. `contextWindowTokens` and `maxOutputTokens` are exact configured provider values or `null`; `requestOutputLimitTokens` is the effective per-request ceiling after the host's 262,144-token safety limit is applied. Tools, streaming, and parallel-tool support are `true`, `false`, or `null` when unknown. The snapshot also declares accepted and effective reasoning tiers plus its source (`provider-api`, `official-catalog`, `user-override`, or `unknown`). The host never derives provider capabilities from a model-name guess.
 
-Reasoning effort is a portable Agent-level control. The broker maps it to provider-native fields only for profiles that explicitly enable that provider option; otherwise it still controls the orchestrator's budget and defaults without sending an unsupported provider parameter.
+`generate()` accepts bounded messages, JSON-schema function tools, a selected opaque ref, a plugin-local request id, and a requested reasoning effort. Its result includes normalized provider usage plus both `requestedReasoningEffort` and the provider-effective tier; unsupported reasoning is reported as `none`. `generateStream(request, listener)` uses the same final result and emits revision-scoped, request-scoped, monotonically sequenced `response.started`, text/reasoning/tool deltas, usage, and exactly one completed or error terminal event. The adapter emits `response.started` only after provider parameters and the effective reasoning tier are finalized, so its effective tier agrees with completion for the built-in adapters. Provider-native SSE and secrets never cross into the Worker. The host prefixes request ids with plugin identity, rejects late events after cancellation, reload, or workspace changes, and `cancel(requestId)` can affect only the calling plugin's matching request. A missing, revoked, or incomplete profile fails cleanly; no fallback key or endpoint is sent into the Worker.
+
+Reasoning effort is a portable Agent-level control. The broker maps it to provider-native fields only when the selected profile declares or explicitly configures that mapping. The visible choices remain low, medium, high, xhigh, and max, while providers may collapse several choices to one effective tier. The final effective value is authoritative and unsupported reasoning is never reported as active.
 
 ### Trusted access modes
 
@@ -411,7 +413,7 @@ Access choices are volatile. Deleting a session, switching the active session, d
 
 ### Local tools and approval
 
-`context.tools.invoke(name, input)` exposes only these fixed tools:
+`context.tools.list()` returns host-owned descriptors containing schema, risk, `readOnly`, `parallelSafe`, and workspace requirements. Plugins may parallelize only calls for which both trusted flags are true; a plugin-authored schema or tool name cannot grant parallel safety. `context.tools.invoke(name, input)` exposes only these fixed tools:
 
 | Tool | Permission | Behavior |
 | --- | --- | --- |
@@ -444,7 +446,7 @@ When `auto` or confirmed `full` authorizes an operation, `invoke()` returns the 
 
 ### Skills and local storage
 
-`context.skills.list()` and `read()` require `skills.read`. The host discovers bounded `SKILL.md` files from supported workspace and user roots for `.agents`, `.codex`, and `.claude`, returns an opaque id plus metadata, and reveals content only when that id is read. It never returns the filesystem path. Skill text is untrusted instruction data: the plugin decides whether to include it in a model turn, while every resulting local action still passes through the normal tool permission and approval boundary.
+`context.skills.list()` and `read()` require `skills.read`. The host discovers bounded `SKILL.md` files from supported workspace and user roots for `.agents`, `.codex`, and `.claude`, returns an opaque id, size/token metadata, and a content revision, and reveals content only through `read(skillId, revision?)`. A supplied stale revision fails with `AGENT_SKILL_CHANGED`; no filesystem path is returned. Skill text is untrusted instruction data: metadata can be shown progressively, content should be loaded only when relevant, and every resulting local action still passes through the normal tool permission and approval boundary.
 
 `context.storage` requires `storage.local`. It reads or atomically replaces one JSON object isolated by plugin id in BOBOCloud application data, with an 8 MiB limit. It is suitable for session summaries and preferences, not secrets; the storage API is whole-document replacement rather than a transactional database.
 
@@ -555,7 +557,7 @@ Stable local-SCM error codes are:
 
 ### Implemented vs Reserved
 
-API v1 implements package installation and validation, permission storage, isolated activation, lifecycle cleanup, the command registry, the `workbench.projectTasks` read-only snapshot, local SCM broker mediation, the host-rendered source-control sidebar, static SCM file-tree decorations, schema-2 document views, and the API 1.5 Agent platform described above. The generic `ai.tools` and `skills.providers` declarations remain reserved; they do not invoke models or load Skills. Agent plugins use the dedicated `context.models`, `context.tools`, `context.skills`, and `context.agents` APIs instead. Other declarative points are stored and disposed correctly but still do not add a visible menu, create a settings UI, run a cloud task, register a Monaco provider, or start MCP.
+API v1 implements package installation and validation, permission storage, isolated activation, lifecycle cleanup, the command registry, the `workbench.projectTasks` read-only snapshot, local SCM broker mediation, the host-rendered source-control sidebar, static SCM file-tree decorations, schema-2 document views, and the API 1.6 Agent platform described above. The generic `ai.tools` and `skills.providers` declarations remain reserved; they do not invoke models or load Skills. Agent plugins use the dedicated `context.models`, `context.tools`, `context.skills`, and `context.agents` APIs instead. Other declarative points are stored and disposed correctly but still do not add a visible menu, create a settings UI, run a cloud task, register a Monaco provider, or start MCP.
 
 ## Services
 
@@ -595,7 +597,7 @@ BOBO.pluginDetails.open(pluginId: string): Promise<boolean>
 
 It opens or reuses one closeable main-workbench tab per installed plugin id. The page renders only the sanitized `PluginRecord`: identity, version, status, integrity state, engine ranges, requested/granted permissions, activation events, and contribution-point names. It never displays package source, an installation path, or secrets, and it never creates or changes a Monaco editor model. A `plugins:changed` event refreshes opened details or closes a tab for an uninstalled package.
 
-This helper is not available to installed package code and is not part of Plugin API 1.5.0.
+This helper is not available to installed package code and is not part of Plugin API 1.6.0.
 
 Typical runtime failures have stable error codes:
 
@@ -617,7 +619,7 @@ Errors are attributed to the owning plugin and do not abort workbench startup or
 
 `window.api.plugins` is an application-internal preload bridge for the trusted BOBOCloud renderer. It exposes package management, validated descriptor, source, and broker calls to the extension host. It is not available to plugin code and must not be treated as a public plugin API.
 
-The host metadata methods do not expose filesystem, network, process, credential, MCP, AI, task, debug, or arbitrary IPC access. API 1.5's Agent methods remain explicit, permissioned, mediated by the main process, workspace-scoped, and governed by trusted access state plus the host risk matrix where they can mutate state.
+The host metadata methods do not expose filesystem, network, process, credential, MCP, AI, task, debug, or arbitrary IPC access. API 1.6's Agent methods remain explicit, permissioned, mediated by the main process, workspace-scoped, and governed by trusted access state plus the host risk matrix where they can mutate state.
 
 ## Future Direction
 

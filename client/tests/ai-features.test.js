@@ -162,7 +162,98 @@ test('chat and inline use independent profiles, parameters, and context budgets'
   assert.equal(JSON.stringify(inlinePayload.stop), JSON.stringify(['INLINE_STOP']));
 });
 
-test('profile and policy updates persist only the canonical v3 schema', async () => {
+test('provider-specific connection metadata survives the renderer request projection', () => {
+  const openai = profile('openai-profile', 'chat', {
+    provider: 'openai',
+    protocol: 'chat-completions',
+    authType: 'bearer',
+    organizationId: 'org-test',
+    projectId: 'proj-test',
+    capabilities: {
+      contextWindowTokens: 128000,
+      maxOutputTokens: 32768,
+      tools: true,
+      streaming: true,
+      parallelToolCalls: true,
+      reasoningEfforts: ['low', 'high'],
+      effectiveEffortMap: { max: 'high' },
+      source: 'user-override'
+    }
+  });
+  const anthropic = profile('anthropic-profile', 'inline', {
+    provider: 'anthropic',
+    protocol: 'messages',
+    authType: 'bearer',
+    apiVersion: '2025-01-01',
+    workspaceId: 'workspace-test',
+    mode: 'chat'
+  });
+  const qwen = profile('qwen-profile', 'chat', {
+    provider: 'qwen',
+    protocol: 'chat-completions',
+    authType: 'bearer',
+    workspaceId: 'ws-test',
+    region: 'ap-southeast-1',
+    billingPlan: 'workspace'
+  });
+  const fixture = loadAiCore({ settings: settings({
+    chatProfiles: [openai, qwen],
+    inlineProfiles: [anthropic],
+    chatProfileId: openai.id,
+    inlineProfileId: anthropic.id
+  }) });
+
+  const openaiPayload = fixture.service.buildChatPayload(
+    fixture.service.getProfileFor('chat'), 'Hello.', {}, 'openai-request', false
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(openaiPayload.modelConfig)), {
+    id: 'openai-profile',
+    name: 'openai-profile',
+    provider: 'openai',
+    protocol: 'chat-completions',
+    authType: 'bearer',
+    apiKey: 'mock-key',
+    endpoint: 'https://openai-profile.example/v1/chat/completions',
+    modelId: 'openai-profile-chat',
+    mode: 'chat',
+    apiVersion: '',
+    organizationId: 'org-test',
+    projectId: 'proj-test',
+    workspaceId: '',
+    region: '',
+    billingPlan: '',
+    capabilities: {
+      contextWindowTokens: 128000,
+      maxOutputTokens: 32768,
+      tools: true,
+      streaming: true,
+      parallelToolCalls: true,
+      reasoningEfforts: ['low', 'high'],
+      effectiveEffortMap: { max: 'high' },
+      source: 'user-override'
+    },
+    options: { connection: 'chat' }
+  });
+
+  const anthropicPayload = fixture.service.buildInlineRequest(
+    fixture.service.getProfileFor('inline'),
+    { codeBefore: 'const value = ', codeAfter: ';', language: 'javascript', fileName: 'value.js' },
+    'anthropic-request'
+  );
+  assert.equal(anthropicPayload.modelConfig.protocol, 'messages');
+  assert.equal(anthropicPayload.modelConfig.authType, 'bearer');
+  assert.equal(anthropicPayload.modelConfig.apiVersion, '2025-01-01');
+  assert.equal(anthropicPayload.modelConfig.workspaceId, '');
+
+  const qwenPayload = fixture.service.buildChatPayload(
+    fixture.service.getProfileById(qwen.id, 'chat'), 'Hello.', {}, 'qwen-request', false
+  );
+  assert.equal(qwenPayload.modelConfig.workspaceId, 'ws-test');
+  assert.equal(qwenPayload.modelConfig.region, 'ap-southeast-1');
+  assert.equal(qwenPayload.modelConfig.billingPlan, 'workspace');
+});
+
+test('profile and policy updates persist only the canonical v4 schema', async () => {
   const fixture = loadAiCore();
   const result = await fixture.service.updateSettings({
     globalInstructions: 'Prefer tests first.',
@@ -170,7 +261,7 @@ test('profile and policy updates persist only the canonical v3 schema', async ()
   });
   assert.equal(result.success, true);
   const written = fixture.calls.writes[0];
-  assert.equal(written.schemaVersion, 3);
+  assert.equal(written.schemaVersion, 4);
   assert.equal(written.globalInstructions, 'Prefer tests first.');
   assert.equal(written.inline.context.suffixChars, 0);
   assert.equal(written.inline.parameters.maxTokens, 128);
@@ -252,6 +343,30 @@ test('settings changes invalidate health and automatically retest active agents'
   assert.equal(fixture.calls.tests.length, 4);
   assert.equal(fixture.service.getProfileFor('chat').modelId, 'changed-model');
   assert.equal(fixture.service.getModelStatus(fixture.service.getProfileFor('chat'), 'chat').state, 'ready');
+});
+
+test('wire metadata and capability changes invalidate connection health fingerprints', async () => {
+  const initial = profile('chat-profile', 'chat', {
+    provider: 'openai',
+    protocol: 'chat-completions',
+    authType: 'bearer',
+    organizationId: 'org-one',
+    projectId: 'project-one',
+    capabilities: { reasoningEfforts: ['low'], source: 'user-override' }
+  });
+  const fixture = loadAiCore({ settings: settings({ chatProfiles: [initial] }) });
+  await fixture.service.testActiveConnections();
+  assert.equal(fixture.calls.tests.length, 2);
+
+  await fixture.service.updateSettings({ chatProfiles: [Object.assign({}, initial, {
+    organizationId: 'org-two',
+    capabilities: { reasoningEfforts: ['low', 'high'], source: 'user-override' }
+  })] });
+
+  assert.equal(fixture.calls.tests.length, 4);
+  const latestChatProbe = fixture.calls.tests.filter(function(call) { return String(call.requestId).startsWith('test-chat-'); }).at(-1);
+  assert.equal(latestChatProbe.modelConfig.organizationId, 'org-two');
+  assert.deepEqual(JSON.parse(JSON.stringify(latestChatProbe.modelConfig.capabilities.reasoningEfforts)), ['low', 'high']);
 });
 
 test('prompt and generation policy autosaves do not spend connection probes', async () => {

@@ -134,6 +134,124 @@ test('standalone AI control center configures and toggles independent chat and c
   }
 });
 
+test('provider-specific connection fields preserve per-provider drafts and explicit capabilities', async () => {
+  test.setTimeout(60000);
+  let fixture;
+  try {
+    fixture = await launch();
+    const { page } = fixture;
+    await page.setViewportSize({ width: 1100, height: 800 });
+    await page.evaluate(() => window.BOBO.settings.open('ai'));
+    await page.locator('[data-ai-tab="connections"]').click();
+    await page.getByRole('button', { name: 'Add chat connection' }).click();
+    const editor = page.locator('.ai-profile-editor');
+    const provider = editor.locator('[data-profile-field="provider"]');
+
+    await expect(provider.locator('option')).toHaveText([
+      'OpenAI API (ChatGPT models)', 'Claude', 'DeepSeek', 'GLM', 'Kimi', 'Qwen', 'Compatible API'
+    ]);
+    await editor.locator('[data-profile-field="name"]').fill('Provider-aware profile');
+
+    await provider.selectOption('openai');
+    await expect(editor.locator('[data-profile-field="organizationId"]')).toBeVisible();
+    await expect(editor.locator('[data-profile-field="projectId"]')).toBeVisible();
+    await expect(editor.locator('[data-profile-field="endpoint"]')).toHaveValue('https://api.openai.com/v1/chat/completions');
+    await editor.locator('[data-profile-field="apiKey"]').fill('openai-secret');
+    await editor.locator('[data-profile-field="modelId"]').fill('gpt-test');
+    await editor.locator('[data-profile-field="organizationId"]').fill('org-test');
+    await editor.locator('[data-profile-field="projectId"]').fill('proj-test');
+
+    await provider.selectOption('anthropic');
+    await expect(editor.locator('[data-profile-field="organizationId"]')).toHaveCount(0);
+    await expect(editor.locator('[data-profile-field="apiVersion"]')).toHaveValue('2023-06-01');
+    await expect(editor.locator('[data-profile-field="authType"]')).toHaveValue('api-key');
+    await expect(editor.locator('[data-profile-field="endpoint"]')).toHaveValue('https://api.anthropic.com/v1/messages');
+    await expect(editor.locator('[data-profile-field="workspaceId"]')).toHaveCount(0);
+    await editor.locator('[data-profile-field="apiKey"]').fill('anthropic-secret');
+    await editor.locator('[data-profile-field="modelId"]').fill('claude-test');
+
+    await provider.selectOption('openai');
+    await expect(editor.locator('[data-profile-field="apiKey"]')).toHaveValue('openai-secret');
+    await expect(editor.locator('[data-profile-field="modelId"]')).toHaveValue('gpt-test');
+    await expect(editor.locator('[data-profile-field="organizationId"]')).toHaveValue('org-test');
+    await expect(editor.locator('[data-profile-field="projectId"]')).toHaveValue('proj-test');
+
+    await provider.selectOption('qwen');
+    await expect(editor.locator('[data-profile-field="region"]')).toBeVisible();
+    await expect(editor.locator('[data-profile-field="billingPlan"]')).toBeVisible();
+    await expect(editor.locator('[data-profile-field="billingPlan"] option')).toHaveText([
+      'Pay as you go (shared)', 'Pay as you go (workspace)', 'Trial API', 'Token Plan', 'Coding Plan'
+    ]);
+    await expect(editor.locator('[data-profile-field="workspaceId"]')).toHaveCount(0);
+    await expect(editor.locator('[data-profile-field="endpoint"]')).toHaveValue('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions');
+    await editor.locator('[data-profile-field="billingPlan"]').selectOption('workspace');
+    await expect(editor.locator('[data-profile-field="region"] option')).toHaveText([
+      'China (Beijing)', 'International (Singapore)', 'Japan (Tokyo)', 'Germany (Frankfurt)', 'United States'
+    ]);
+    await expect(editor.locator('[data-profile-field="workspaceId"]')).toHaveValue('');
+    await expect(editor.locator('[data-profile-field="endpoint"]')).toHaveValue('');
+    await editor.locator('[data-profile-field="workspaceId"]').fill('ws-test');
+    await editor.locator('[data-profile-field="apiKey"]').fill('qwen-secret');
+    await editor.locator('[data-profile-field="modelId"]').fill('qwen-test');
+    await expect(editor.locator('[data-profile-field="apiKey"]')).toHaveValue('qwen-secret');
+    await expect(editor.locator('[data-profile-field="modelId"]')).toHaveValue('qwen-test');
+
+    const advanced = editor.locator('details');
+    await advanced.locator('summary').click();
+    await editor.locator('[data-profile-field="capabilityContextWindowTokens"]').fill('1000000');
+    await editor.locator('[data-profile-field="capabilityMaxOutputTokens"]').fill('128000');
+    await editor.locator('[data-profile-field="capabilityTools"]').selectOption('true');
+    await editor.locator('[data-profile-field="capabilityStreaming"]').selectOption('true');
+    await editor.locator('[data-profile-field="capabilityParallelToolCalls"]').selectOption('false');
+    await editor.locator('[data-profile-field="capabilityReasoningEfforts"]').fill('low, medium, xhigh');
+    await editor.locator('[data-profile-field="capabilityEffectiveEffortMap"]').fill('{"high":"xhigh","max":"xhigh"}');
+    await editor.locator('[data-profile-field="options"]').fill('{"enableReasoningEffort":true}');
+    await expect(editor.locator('[data-profile-field="apiKey"]')).toHaveValue('qwen-secret');
+
+    await page.evaluate(async () => window.BOBO.i18n.setLocale('ja'));
+    await expect(editor.locator('[data-profile-field="apiKey"]')).toHaveValue('qwen-secret');
+    await expect(editor.locator('[data-profile-field="workspaceId"]')).toHaveValue('ws-test');
+    await expect(editor.locator('[data-profile-field="endpoint"]')).toHaveValue('https://ws-test.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions');
+    await expect(editor.locator('[data-profile-field="capabilityContextWindowTokens"]')).toHaveValue('1000000');
+    await expect(advanced).toHaveAttribute('open', '');
+    await page.evaluate(async () => window.BOBO.i18n.setLocale('en'));
+    await expect(editor.locator('[data-profile-field="apiKey"]')).toHaveValue('qwen-secret');
+
+    const evidenceDirectory = path.join(os.tmpdir(), 'bobo-ui-evidence');
+    fs.mkdirSync(evidenceDirectory, { recursive: true });
+    await page.screenshot({
+      path: path.join(evidenceDirectory, 'ai-settings-provider-capabilities.png'),
+      fullPage: false,
+      animations: 'disabled'
+    });
+    await page.locator('.ai-control-content').evaluate((node) => { node.scrollTop = 0; });
+    await page.screenshot({
+      path: path.join(evidenceDirectory, 'ai-settings-provider-connections.png'),
+      fullPage: false,
+      animations: 'disabled'
+    });
+
+    await page.getByRole('button', { name: 'Apply profile' }).click();
+    await expect(page.locator('#ai-control-save-status')).toHaveText('Changes saved');
+    const stored = await page.evaluate(() => window.BOBO.aiService.getSettings().chatProfiles[0]);
+    expect(stored).toMatchObject({
+      provider: 'qwen', protocol: 'chat-completions', authType: 'bearer', apiKey: 'qwen-secret',
+      modelId: 'qwen-test', region: 'cn-beijing', billingPlan: 'workspace', workspaceId: 'ws-test',
+      endpoint: 'https://ws-test.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions',
+      capabilities: {
+        contextWindowTokens: 1000000, maxOutputTokens: 128000,
+        tools: true, streaming: true, parallelToolCalls: false,
+        reasoningEfforts: ['low', 'medium', 'xhigh'],
+        effectiveEffortMap: { high: 'xhigh', max: 'xhigh' }, source: 'user-override'
+      },
+      options: { enableReasoningEffort: true }
+    });
+    await expect(page.locator('#ai-settings-modal')).not.toContainText(/ai\.control\./);
+  } finally {
+    await close(fixture);
+  }
+});
+
 test('chat configuration failures recover and settings auto-save before closing', async () => {
   test.setTimeout(60000);
   let fixture;

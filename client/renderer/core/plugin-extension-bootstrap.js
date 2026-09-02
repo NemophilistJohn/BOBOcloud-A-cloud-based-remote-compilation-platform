@@ -84,4 +84,10 @@ if (rendererExtensionHost) {
     const disposeChange = pluginApi.onChanged(refresh);
     if (typeof disposeChange === 'function') rendererPlatform.lifecycle.add({ dispose: disposeChange });
   }
+  if (typeof pluginApi.onAgentModelEvent === 'function') {
+    const disposeModelEvent = pluginApi.onAgentModelEvent((payload) => {
+      rendererExtensionHost.handleAgentModelEvent(payload);
+    });
+    if (typeof disposeModelEvent === 'function') rendererPlatform.lifecycle.add({ dispose: disposeModelEvent });
+  }
 }

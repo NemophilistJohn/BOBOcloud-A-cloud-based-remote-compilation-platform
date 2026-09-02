@@ -159,6 +159,7 @@ function extensionWorkerBootstrapSource() {
     DOCUMENT_VIEW_DISPOSE: 'documentViews.dispose',
     AGENT_REGISTER: 'agents.register',
     AGENT_SET_STATE: 'agents.setState',
+    AGENT_UPDATE_STATE: 'agents.updateState',
     AGENT_CLEAR_STATE: 'agents.clearState',
     AGENT_DISPOSE: 'agents.dispose',
     AGENT_BROKER_REQUEST: 'agent.broker.request',
@@ -168,6 +169,7 @@ function extensionWorkerBootstrapSource() {
   const SANDBOX_METHOD = {
     COMMAND_INVOKE: 'command.invoke',
     I18N_CHANGED: 'i18n.changed',
+    AGENT_MODEL_EVENT: 'models.event',
     DEACTIVATE: 'extension.deactivate'
   };
   let port = null;
@@ -180,6 +182,7 @@ function extensionWorkerBootstrapSource() {
   const pending = new SafeMap();
   const incomingRequests = new SafeSet();
   const commandHandlers = new SafeMap();
+  const modelStreamListeners = new SafeMap();
   const subscriptions = new SafeSet();
   let localization = freeze({ locale: 'en', messages: freeze(safeObjectCreate(null)) });
   const localizationListeners = new SafeSet();
@@ -463,6 +466,10 @@ function extensionWorkerBootstrapSource() {
               requireActive();
               return request(HOST_METHOD.AGENT_SET_STATE, { handle: result.handle, state });
             },
+            updateState(patch) {
+              requireActive();
+              return request(HOST_METHOD.AGENT_UPDATE_STATE, { handle: result.handle, patch });
+            },
             clearState() {
               requireActive();
               return request(HOST_METHOD.AGENT_CLEAR_STATE, { handle: result.handle });
@@ -480,14 +487,31 @@ function extensionWorkerBootstrapSource() {
       models: freeze({
         list: () => agentBrokerRequest('models.list'),
         generate: (args) => agentBrokerRequest('models.generate', args),
+        generateStream(args, onEvent) {
+          if (!args || typeof args !== 'object' || safeArrayIsArray(args) ||
+              typeof args.requestId !== 'string' || !matches(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/, args.requestId)) {
+            throw new SafeTypeError('Streaming model requests require a valid requestId.');
+          }
+          if (typeof onEvent !== 'function') throw new SafeTypeError('Streaming model requests require an event listener.');
+          if (mapGet(modelStreamListeners, args.requestId)) {
+            throw fail('EXTENSION_INVALID_REQUEST', 'Streaming model request id is already active.');
+          }
+          mapSet(modelStreamListeners, args.requestId, onEvent);
+          const operation = agentBrokerRequest('models.generateStream', args);
+          return apply(safePromiseCatch, operation, [(error) => {
+            mapDelete(modelStreamListeners, args.requestId);
+            throw error;
+          }]);
+        },
         cancel: (requestId) => agentBrokerRequest('models.cancel', { requestId })
       }),
       tools: freeze({
+        list: () => agentBrokerRequest('agent.tools.list'),
         invoke: (tool, input) => agentBrokerRequest('agent.tools.invoke', { tool, input: input || {} })
       }),
       skills: freeze({
         list: () => agentBrokerRequest('agent.skills.list'),
-        read: (skillId) => agentBrokerRequest('agent.skills.read', { skillId })
+        read: (skillId, revision) => agentBrokerRequest('agent.skills.read', { skillId, revision })
       }),
       storage: freeze({
         read: () => agentBrokerRequest('agent.storage.read'),
@@ -566,6 +590,26 @@ function extensionWorkerBootstrapSource() {
     return apply(handler, undefined, safeArrayIsArray(args.args) ? args.args : []);
   }
 
+  async function deliverModelEvent(args) {
+    if (!args || typeof args !== 'object' || safeArrayIsArray(args) ||
+        typeof args.requestId !== 'string' || !safeNumberIsSafeInteger(args.sequence) ||
+        args.sequence < 1 || !args.event || typeof args.event !== 'object' || safeArrayIsArray(args.event)) {
+      throw fail('EXTENSION_PROTOCOL_ERROR', 'Streaming model event payload is invalid.');
+    }
+    const listener = mapGet(modelStreamListeners, args.requestId);
+    if (!listener) return null;
+    const event = freeze(cloneData(args.event, {
+      maxStringLength: 2 * 1024 * 1024,
+      maxItems: 8192,
+      maxBytes: 8 * 1024 * 1024
+    }));
+    await apply(listener, undefined, [event]);
+    if (event.type === 'response.completed' || event.type === 'response.error') {
+      mapDelete(modelStreamListeners, args.requestId);
+    }
+    return null;
+  }
+
   function deactivate() {
     if (deactivationPromise) return deactivationPromise;
     deactivated = true;
@@ -580,6 +624,7 @@ function extensionWorkerBootstrapSource() {
       } finally {
         disposeSubscriptions();
         mapClear(commandHandlers);
+        mapClear(modelStreamListeners);
         setClear(localizationListeners);
         activated = false;
       }
@@ -593,6 +638,7 @@ function extensionWorkerBootstrapSource() {
       throw fail('EXTENSION_CANCELLED', 'Extension is being deactivated.');
     }
     if (message.method === SANDBOX_METHOD.COMMAND_INVOKE) return invokeCommand(message.args);
+    if (message.method === SANDBOX_METHOD.AGENT_MODEL_EVENT) return deliverModelEvent(message.args);
     if (message.method === SANDBOX_METHOD.I18N_CHANGED) {
       updateLocalization(message.args);
       return null;

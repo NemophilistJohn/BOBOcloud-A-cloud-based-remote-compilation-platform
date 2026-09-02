@@ -9,7 +9,70 @@
 })(typeof window !== 'undefined' ? window : null, function() {
   'use strict';
 
-  var SCHEMA_VERSION = 3;
+  var SCHEMA_VERSION = 4;
+  var MAX_MODEL_REQUEST_OUTPUT_TOKENS = 262144;
+  var CAPABILITY_SOURCES = ['unknown', 'provider-api', 'official-catalog', 'user-override'];
+  var REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  var PROVIDER_ORDER = ['openai', 'anthropic', 'deepseek', 'glm', 'kimi', 'qwen', 'openai-compatible'];
+  var QWEN_REGIONS = ['cn-beijing', 'ap-southeast-1', 'ap-northeast-1', 'eu-central-1', 'us-east-1'];
+  var QWEN_BILLING_PLANS = ['standard', 'workspace', 'trial', 'token-plan', 'coding-plan'];
+  var PROVIDER_CATALOG = {
+    openai: {
+      labelKey: 'ai.control.provider.openai',
+      protocols: ['chat-completions'],
+      defaultProtocol: 'chat-completions',
+      authTypes: ['bearer'],
+      defaultAuthType: 'bearer',
+      organization: true,
+      project: true
+    },
+    anthropic: {
+      labelKey: 'ai.control.provider.anthropic',
+      protocols: ['messages'],
+      defaultProtocol: 'messages',
+      authTypes: ['api-key', 'bearer'],
+      defaultAuthType: 'api-key',
+      apiVersion: '2023-06-01'
+    },
+    deepseek: {
+      labelKey: 'ai.control.provider.deepseek',
+      protocols: ['chat-completions'],
+      defaultProtocol: 'chat-completions',
+      authTypes: ['bearer'],
+      defaultAuthType: 'bearer'
+    },
+    glm: {
+      labelKey: 'ai.control.provider.glm',
+      protocols: ['chat-completions'],
+      defaultProtocol: 'chat-completions',
+      authTypes: ['api-key', 'jwt'],
+      defaultAuthType: 'api-key'
+    },
+    kimi: {
+      labelKey: 'ai.control.provider.kimi',
+      protocols: ['chat-completions'],
+      defaultProtocol: 'chat-completions',
+      authTypes: ['bearer'],
+      defaultAuthType: 'bearer'
+    },
+    qwen: {
+      labelKey: 'ai.control.provider.qwen',
+      protocols: ['chat-completions'],
+      defaultProtocol: 'chat-completions',
+      authTypes: ['bearer'],
+      defaultAuthType: 'bearer',
+      region: true,
+      workspace: true,
+      billingPlan: true
+    },
+    'openai-compatible': {
+      labelKey: 'ai.control.provider.compatible',
+      protocols: ['chat-completions', 'completions'],
+      defaultProtocol: 'chat-completions',
+      authTypes: ['bearer'],
+      defaultAuthType: 'bearer'
+    }
+  };
 
   function isObject(value) {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -44,6 +107,130 @@
     } catch (_) {
       return {};
     }
+  }
+
+  function normalizeProviderId(value) {
+    var provider = text(value).toLowerCase();
+    if (provider === 'claude') return 'anthropic';
+    if (provider === 'chatgpt') return 'openai';
+    if (provider === 'zhipu' || provider === 'bigmodel' || provider === 'zhipu-glm') return 'glm';
+    if (provider === 'moonshot') return 'kimi';
+    if (provider === 'dashscope' || provider === 'aliyun' || provider === 'alibaba') return 'qwen';
+    return PROVIDER_CATALOG[provider] ? provider : 'openai-compatible';
+  }
+
+  function providerDefinition(provider) {
+    return PROVIDER_CATALOG[normalizeProviderId(provider)];
+  }
+
+  function inferProtocol(provider, endpoint, purpose, mode) {
+    var definition = providerDefinition(provider);
+    var pathname = text(endpoint).toLowerCase().replace(/[?#].*$/, '').replace(/\/+$/, '');
+    if (definition.protocols.indexOf('responses') >= 0 && /(^|\/)responses$/.test(pathname)) return 'responses';
+    if (definition.protocols.indexOf('messages') >= 0 && /(^|\/)messages$/.test(pathname)) return 'messages';
+    if (purpose === 'inline' && mode === 'fim' && definition.protocols.indexOf('completions') >= 0 && /(^|\/)completions$/.test(pathname)) return 'completions';
+    return definition.defaultProtocol;
+  }
+
+  function normalizeProtocol(value, provider, endpoint, purpose, mode) {
+    var definition = providerDefinition(provider);
+    var protocol = text(value).toLowerCase();
+    if (protocol === 'chat' || protocol === 'openai') protocol = 'chat-completions';
+    if (protocol === 'anthropic') protocol = 'messages';
+    if (protocol === 'fim') protocol = 'completions';
+    return definition.protocols.indexOf(protocol) >= 0
+      ? protocol
+      : inferProtocol(provider, endpoint, purpose, mode);
+  }
+
+  function nullableInteger(value, min, max) {
+    if (value === undefined || value === null || value === '') return null;
+    var parsed = Number(value);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.max(min, Math.min(max, Math.round(parsed)));
+  }
+
+  function nullableBoolean(value) {
+    return value === true || value === 'true' ? true : (value === false || value === 'false' ? false : null);
+  }
+
+  function normalizeReasoningEfforts(value) {
+    var source = Array.isArray(value) ? value : (typeof value === 'string' ? value.split(',') : []);
+    var result = [];
+    source.forEach(function(item) {
+      var effort = text(item).toLowerCase();
+      if (REASONING_EFFORTS.indexOf(effort) >= 0 && result.indexOf(effort) < 0) result.push(effort);
+    });
+    return result;
+  }
+
+  function normalizeEffortMap(value) {
+    value = isObject(value) ? value : {};
+    var result = {};
+    Object.keys(value).slice(0, 16).forEach(function(key) {
+      var requested = text(key).toLowerCase();
+      var effective = text(value[key]).toLowerCase();
+      if (REASONING_EFFORTS.indexOf(requested) >= 0 && REASONING_EFFORTS.indexOf(effective) >= 0) result[requested] = effective;
+    });
+    return result;
+  }
+
+  function normalizeCapabilities(value) {
+    value = isObject(value) ? value : {};
+    var source = text(value.source).toLowerCase();
+    return {
+      contextWindowTokens: nullableInteger(value.contextWindowTokens, 1, 100000000),
+      maxOutputTokens: nullableInteger(value.maxOutputTokens, 1, 100000000),
+      tools: nullableBoolean(value.tools),
+      streaming: nullableBoolean(value.streaming),
+      parallelToolCalls: nullableBoolean(value.parallelToolCalls),
+      reasoningEfforts: normalizeReasoningEfforts(value.reasoningEfforts),
+      effectiveEffortMap: normalizeEffortMap(value.effectiveEffortMap),
+      source: CAPABILITY_SOURCES.indexOf(source) >= 0 ? source : 'unknown'
+    };
+  }
+
+  function qwenRegionsForBillingPlan(value) {
+    if (value === 'workspace') return QWEN_REGIONS.slice();
+    if (value === 'trial') return ['cn-beijing', 'ap-southeast-1'];
+    if (value === 'standard') return ['cn-beijing', 'ap-southeast-1', 'us-east-1'];
+    return [];
+  }
+
+  function validQwenWorkspaceId(value) {
+    var workspaceId = text(value);
+    return workspaceId.length <= 63 && /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(workspaceId);
+  }
+
+  function defaultEndpointFor(provider, values) {
+    provider = normalizeProviderId(provider);
+    values = isObject(values) ? values : {};
+    var definition = providerDefinition(provider);
+    var protocol = normalizeProtocol(values.protocol, provider, '', 'chat', 'chat');
+    var suffix = protocol === 'responses' ? 'responses' : protocol === 'messages' ? 'messages' : protocol === 'completions' ? 'completions' : 'chat/completions';
+    if (provider === 'openai') return 'https://api.openai.com/v1/' + suffix;
+    if (provider === 'anthropic') return 'https://api.anthropic.com/v1/messages';
+    if (provider === 'deepseek') return 'https://api.deepseek.com/' + suffix;
+    if (provider === 'glm') return 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+    if (provider === 'kimi') return 'https://api.moonshot.cn/v1/' + suffix;
+    if (provider !== 'qwen') return '';
+
+    var billingPlan = QWEN_BILLING_PLANS.indexOf(values.billingPlan) >= 0 ? values.billingPlan : 'standard';
+    if (billingPlan === 'coding-plan') return 'https://coding.dashscope.aliyuncs.com/v1/' + suffix;
+    if (billingPlan === 'token-plan') return 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/' + suffix;
+    var allowedRegions = qwenRegionsForBillingPlan(billingPlan);
+    var region = allowedRegions.indexOf(values.region) >= 0 ? values.region : (allowedRegions[0] || '');
+    if (billingPlan === 'workspace') {
+      var workspaceId = text(values.workspaceId);
+      return validQwenWorkspaceId(workspaceId) ? 'https://' + workspaceId + '.' + region + '.maas.aliyuncs.com/compatible-mode/v1/' + suffix : '';
+    }
+    if (billingPlan === 'trial') return 'https://trial.' + region + '.maas.aliyuncs.com/compatible-mode/v1/' + suffix;
+    var sharedHosts = {
+      'cn-beijing': 'dashscope.aliyuncs.com',
+      'ap-southeast-1': 'dashscope-intl.aliyuncs.com',
+      'us-east-1': 'dashscope-us.aliyuncs.com'
+    };
+    return 'https://' + sharedHosts[region] + '/compatible-mode/v1/' + suffix;
   }
 
   function normalizeStop(value) {
@@ -108,14 +295,32 @@
       ? value
       : legacyConnection(value, purpose);
     var id = text(value.id) || (purpose + '-agent-' + (index + 1));
+    var provider = normalizeProviderId(value.provider);
+    var definition = providerDefinition(provider);
+    var mode = purpose === 'inline' && connection.mode === 'fim' ? 'fim' : 'chat';
+    var protocol = normalizeProtocol(value.protocol, provider, connection.endpoint, purpose, mode);
+    var authType = text(value.authType).toLowerCase();
+    if (definition.authTypes.indexOf(authType) < 0) authType = definition.defaultAuthType;
+    var billingPlan = definition.billingPlan && QWEN_BILLING_PLANS.indexOf(value.billingPlan) >= 0 ? value.billingPlan : (definition.billingPlan ? 'standard' : '');
+    var allowedRegions = definition.region ? qwenRegionsForBillingPlan(billingPlan) : [];
+    var region = definition.region && allowedRegions.indexOf(value.region) >= 0 ? value.region : (allowedRegions[0] || '');
     return {
       id: id.slice(0, 120),
       name: (text(value.name) || id).slice(0, 160),
-      provider: (text(value.provider) || 'openai-compatible').slice(0, 80),
+      provider: provider,
+      protocol: protocol,
+      authType: authType,
       apiKey: typeof value.apiKey === 'string' ? value.apiKey : '',
       endpoint: text(connection.endpoint),
       modelId: normalizeModelId(connection.modelId),
-      mode: purpose === 'inline' && connection.mode === 'fim' ? 'fim' : 'chat',
+      mode: mode,
+      apiVersion: definition.apiVersion ? text(value.apiVersion, definition.apiVersion).slice(0, 80) : '',
+      organizationId: definition.organization ? text(value.organizationId || value.organization).slice(0, 160) : '',
+      projectId: definition.project ? text(value.projectId || value.project).slice(0, 160) : '',
+      workspaceId: definition.workspace ? text(value.workspaceId || value.workspace).slice(0, 160) : '',
+      region: region,
+      billingPlan: billingPlan,
+      capabilities: normalizeCapabilities(value.capabilities || value.capabilitySnapshot || value.capabilitiesOverride),
       options: cloneJsonObject(connection.options)
     };
   }
@@ -193,7 +398,7 @@
         instructions: typeof rawChat.instructions === 'string'
           ? rawChat.instructions.slice(0, 12000)
           : String(raw.chatSystemPrompt || '').slice(0, 12000),
-        parameters: normalizeParameters(chatParameters, { maxTokens: 4096, temperature: 0.2, topP: 1 }, 32768),
+        parameters: normalizeParameters(chatParameters, { maxTokens: 4096, temperature: 0.2, topP: 1 }, MAX_MODEL_REQUEST_OUTPUT_TOKENS),
         context: normalizeChatContext(rawChat.context)
       },
       inline: {
@@ -216,6 +421,19 @@
 
   return {
     SCHEMA_VERSION: SCHEMA_VERSION,
+    MAX_MODEL_REQUEST_OUTPUT_TOKENS: MAX_MODEL_REQUEST_OUTPUT_TOKENS,
+    PROVIDER_ORDER: PROVIDER_ORDER.slice(),
+    PROVIDER_CATALOG: PROVIDER_CATALOG,
+    CAPABILITY_SOURCES: CAPABILITY_SOURCES.slice(),
+    REASONING_EFFORTS: REASONING_EFFORTS.slice(),
+    QWEN_REGIONS: QWEN_REGIONS.slice(),
+    QWEN_BILLING_PLANS: QWEN_BILLING_PLANS.slice(),
+    normalizeProviderId: normalizeProviderId,
+    normalizeProtocol: normalizeProtocol,
+    normalizeCapabilities: normalizeCapabilities,
+    qwenRegionsForBillingPlan: qwenRegionsForBillingPlan,
+    validQwenWorkspaceId: validQwenWorkspaceId,
+    defaultEndpointFor: defaultEndpointFor,
     normalizeProfile: normalizeProfile,
     normalizeModelId: normalizeModelId,
     normalizeSettings: normalizeSettings,

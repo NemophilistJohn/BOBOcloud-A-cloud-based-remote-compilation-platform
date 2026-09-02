@@ -14,7 +14,7 @@ const { createPluginDocumentBroker } = require('./plugin-documents');
 const { capturePluginRpcResult } = require('./plugin-rpc-transport');
 const { compareSemver, isValidSemver, satisfiesVersionRange } = require('../shared/plugin-semver');
 
-const PLUGIN_API_VERSION = '1.5.0';
+const PLUGIN_API_VERSION = '1.6.0';
 const PACKAGE_SCHEMA_VERSIONS = new Set([1, 2]);
 const STATE_SCHEMA_VERSION = 1;
 const PERMISSIONS_SCHEMA_VERSION = 2;
@@ -1395,7 +1395,7 @@ function createPluginController(options) {
     if (!isNonEmptyString(method, 120)) {
       throw pluginError('plugins.rpc.denied', 'Plugin RPC method is invalid.');
     }
-    const agentMethod = method === 'models.generate' || method.startsWith('agent.');
+    const agentMethod = method === 'models.generate' || method === 'models.generateStream' || method.startsWith('agent.');
     const payload = validateRpcArguments(args, agentMethod ? MAX_AGENT_RPC_ARGUMENT_BYTES : MAX_RPC_ARGUMENT_BYTES);
     const permissionForMethod = Object.assign({
       'commands.register': PluginPermission.COMMANDS_REGISTER,
@@ -1408,11 +1408,13 @@ function createPluginController(options) {
       'agents.register': PluginPermission.AGENTS_REGISTER,
       'models.list': PluginPermission.MODELS_GENERATE,
       'models.generate': PluginPermission.MODELS_GENERATE,
+      'models.generateStream': PluginPermission.MODELS_GENERATE,
       'models.cancel': PluginPermission.MODELS_GENERATE,
       'agent.storage.read': PluginPermission.STORAGE_LOCAL,
       'agent.storage.write': PluginPermission.STORAGE_LOCAL,
       'agent.skills.list': PluginPermission.SKILLS_READ,
-      'agent.skills.read': PluginPermission.SKILLS_READ
+      'agent.skills.read': PluginPermission.SKILLS_READ,
+      'agent.tools.list': PluginPermission.AGENTS_REGISTER
     }, SCM_GIT_METHODS);
     if (method === 'host.getInfo') {
       return immutable({ apiVersion: PLUGIN_API_VERSION, plugin: { id: pluginId, version: record.version } });
@@ -1443,9 +1445,10 @@ function createPluginController(options) {
       // ids and sanitized data, never a path, command, credential, or server.
       return scmGit.request(method, payload);
     }
-    if (method === 'models.list' || method === 'models.generate' || method === 'models.cancel' || method.startsWith('agent.')) {
+    if (method === 'models.list' || method === 'models.generate' || method === 'models.generateStream' ||
+        method === 'models.cancel' || method.startsWith('agent.')) {
       if (!agentBroker) throw pluginError('plugins.agent.unavailable', 'The local Agent broker is unavailable.');
-      return immutable(await agentBroker.request(pluginId, method, payload));
+      return immutable(await agentBroker.request(pluginId, method, payload, { revision: record.revision }));
     }
     if (method === 'commands.register') {
       if (!isNonEmptyString(payload.id, 180) || !payload.id.startsWith(pluginId + '.')) {

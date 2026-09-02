@@ -9,6 +9,113 @@ const { marked } = require('marked');
 
 const ROOT = path.resolve(__dirname, '..');
 
+class FakeNode {
+  constructor(tagName = '', nodeType = 1) {
+    this.tagName = String(tagName).toUpperCase();
+    this.nodeType = nodeType;
+    this.childNodes = [];
+    this.parentNode = null;
+    this.dataset = {};
+    this.style = {};
+    this.attributes = new Map();
+    this.className = '';
+    this._text = '';
+    this.offsetTop = 0;
+    this.offsetHeight = 0;
+    this.scrollTop = 0;
+    this.scrollHeight = 0;
+    this.clientHeight = 0;
+    this.replaceChildrenCalls = 0;
+  }
+
+  get children() { return this.childNodes.filter((node) => node.nodeType === 1); }
+  get firstChild() { return this.childNodes[0] || null; }
+  get lastChild() { return this.childNodes[this.childNodes.length - 1] || null; }
+  get nextSibling() {
+    if (!this.parentNode) return null;
+    const index = this.parentNode.childNodes.indexOf(this);
+    return this.parentNode.childNodes[index + 1] || null;
+  }
+  get textContent() { return this._text + this.childNodes.map((node) => node.textContent).join(''); }
+  set textContent(value) {
+    this.childNodes.forEach((node) => { node.parentNode = null; });
+    this.childNodes = [];
+    this._text = String(value || '');
+  }
+  get classList() {
+    const node = this;
+    const values = () => new Set(node.className.split(/\s+/).filter(Boolean));
+    const write = (set) => { node.className = Array.from(set).join(' '); };
+    return {
+      add(...names) { const set = values(); names.forEach((name) => set.add(name)); write(set); },
+      remove(...names) { const set = values(); names.forEach((name) => set.delete(name)); write(set); },
+      contains(name) { return values().has(name); },
+      toggle(name, enabled) { const set = values(); enabled ? set.add(name) : set.delete(name); write(set); }
+    };
+  }
+
+  appendChild(node) {
+    if (node.parentNode) node.parentNode.removeChild(node);
+    node.parentNode = this;
+    this.childNodes.push(node);
+    return node;
+  }
+  append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
+  insertBefore(node, reference) {
+    if (node === reference) return node;
+    if (node.parentNode) node.parentNode.removeChild(node);
+    const index = reference == null ? this.childNodes.length : this.childNodes.indexOf(reference);
+    if (index < 0) throw new Error('Reference node is not a child.');
+    node.parentNode = this;
+    this.childNodes.splice(index, 0, node);
+    return node;
+  }
+  replaceChild(node, previous) {
+    const index = this.childNodes.indexOf(previous);
+    if (index < 0) throw new Error('Previous node is not a child.');
+    if (node.parentNode) node.parentNode.removeChild(node);
+    previous.parentNode = null;
+    node.parentNode = this;
+    this.childNodes[index] = node;
+    return previous;
+  }
+  removeChild(node) {
+    const index = this.childNodes.indexOf(node);
+    if (index < 0) throw new Error('Node is not a child.');
+    this.childNodes.splice(index, 1);
+    node.parentNode = null;
+    return node;
+  }
+  replaceChildren(...nodes) {
+    this.replaceChildrenCalls += 1;
+    this.childNodes.forEach((node) => { node.parentNode = null; });
+    this.childNodes = [];
+    nodes.forEach((node) => this.appendChild(node));
+  }
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  getAttribute(name) { return this.attributes.get(name) || null; }
+  addEventListener() {}
+}
+
+function fakeDocument() {
+  const nodes = new Map();
+  return {
+    nodes,
+    documentElement: { getAttribute: () => '' },
+    addEventListener() {},
+    removeEventListener() {},
+    getElementById(id) { return nodes.get(id) || null; },
+    querySelector() { return null; },
+    createElement(tagName) { return new FakeNode(tagName); },
+    createElementNS(_namespace, tagName) { return new FakeNode(tagName); },
+    createTextNode(value) {
+      const node = new FakeNode('', 3);
+      node.textContent = value;
+      return node;
+    }
+  };
+}
+
 function loadWorkbench(options = {}) {
   const calls = [];
   const eventListeners = new Map();
@@ -22,7 +129,7 @@ function loadWorkbench(options = {}) {
     },
     capabilities: { modes: ['chat'], reasoningEfforts: ['medium'], skills: false, localTools: false }
   };
-  const record = { id: descriptor.id, owner: 'acme.agent', descriptor, state: options.state || null };
+  const record = { id: descriptor.id, owner: 'acme.agent', descriptor, state: options.state || null, version: options.version || 0 };
   const addEventListener = (type, listener) => {
     if (!eventListeners.has(type)) eventListeners.set(type, new Set());
     eventListeners.get(type).add(listener);
@@ -42,7 +149,7 @@ function loadWorkbench(options = {}) {
     marked,
     api: options.api || {},
     window: null,
-    document: {
+    document: options.document || {
       documentElement: { getAttribute: () => '' },
       addEventListener() {},
       removeEventListener() {},
@@ -96,6 +203,17 @@ function loadWorkbench(options = {}) {
         '})(window);',
         ''
       ].join('\n'));
+  }
+  if (options.exposeRenderInternals === true) {
+    source = source.replace(/\}\)\(window\);\s*$/, [
+      '  BOBO.__agentRenderTest = Object.freeze({',
+      '    feedItemNode: feedItemNode,',
+      '    renderStatePatch: renderStatePatch,',
+      '    setRenderedWorkspace: function(value) { renderedWorkspace = value; }',
+      '  });',
+      '})(window);',
+      ''
+    ].join('\n'));
   }
   vm.runInNewContext(source, sandbox, { filename: 'src/agent-workbench.js' });
   return { sandbox, calls, record, eventListeners };
@@ -392,6 +510,115 @@ test('assistant Markdown uses lexer tokens and never injects parser HTML', () =>
   assert.doesNotMatch(source, /innerHTML\s*=/);
   assert.match(css, /\.agent-markdown-table-wrap/);
   assert.match(css, /\.agent-markdown-code-block/);
+});
+
+test('Agent feed patches update keyed nodes without rebuilding the composer', () => {
+  const document = fakeDocument();
+  const runtime = loadWorkbench({ document, exposeRenderInternals: true, version: 2 });
+  const internals = runtime.sandbox.BOBO.__agentRenderTest;
+  const root = new FakeNode('section');
+  const scroll = new FakeNode('div');
+  const content = new FakeNode('main');
+  const feed = new FakeNode('div');
+  const composer = new FakeNode('form');
+  const firstMessage = {
+    id: 'message-1',
+    role: 'assistant',
+    content: 'Before',
+    reasoning: '',
+    createdAt: '2026-09-01T00:00:00.000Z'
+  };
+  const timeline = {
+    id: 'timeline-1',
+    kind: 'tool',
+    status: 'running',
+    title: 'Read workspace',
+    detail: '',
+    createdAt: '2026-09-01T00:00:01.000Z'
+  };
+  const session = {
+    id: 'session-1',
+    messages: [firstMessage],
+    timeline: [timeline]
+  };
+  runtime.record.state = { activeSessionId: session.id, activeSession: session };
+  runtime.sandbox.BOBO.state.activeTabPath = `agent-workbench:${runtime.record.id}`;
+  document.nodes.set('agent-workbench-view', root);
+  root.append(scroll, composer);
+  scroll.appendChild(content);
+  content.appendChild(feed);
+
+  const oldMessageNode = internals.feedItemNode({ type: 'message', value: firstMessage });
+  const oldTimelineNode = internals.feedItemNode({ type: 'timeline', value: timeline });
+  oldMessageNode.offsetTop = 0;
+  oldMessageNode.offsetHeight = 80;
+  oldTimelineNode.offsetTop = 100;
+  oldTimelineNode.offsetHeight = 40;
+  feed.append(oldMessageNode, oldTimelineNode);
+  scroll.scrollTop = 100;
+  scroll.scrollHeight = 1000;
+  scroll.clientHeight = 200;
+  internals.setRenderedWorkspace({
+    providerId: runtime.record.id,
+    sessionId: session.id,
+    version: 2,
+    root,
+    scroll,
+    content,
+    feed,
+    nodes: new Map([
+      ['message:message-1', oldMessageNode],
+      ['timeline:timeline-1', oldTimelineNode]
+    ])
+  });
+
+  const updatedMessage = { ...firstMessage, content: '**After**\n\n<script>alert(1)</script>' };
+  session.messages = [updatedMessage];
+  runtime.record.version = 3;
+  assert.equal(internals.renderStatePatch({
+    type: 'state',
+    record: runtime.record,
+    patch: { baseVersion: 2, operations: [{ type: 'message.upsert', value: updatedMessage }] }
+  }), true);
+
+  const renderedMessage = feed.childNodes[0];
+  assert.notEqual(renderedMessage, oldMessageNode);
+  assert.equal(feed.childNodes[1], oldTimelineNode);
+  assert.equal(root.childNodes[1], composer);
+  assert.match(renderedMessage.textContent, /After/);
+  assert.match(renderedMessage.textContent, /<script>alert\(1\)<\/script>/);
+  assert.equal(feed.replaceChildrenCalls, 0);
+  assert.equal(root.replaceChildrenCalls, 0);
+  assert.equal(scroll.scrollTop, 100);
+
+  const appendedMessage = {
+    id: 'message-2',
+    role: 'assistant',
+    content: 'Done',
+    reasoning: '',
+    createdAt: '2026-09-01T00:00:02.000Z'
+  };
+  session.messages = [updatedMessage, appendedMessage];
+  runtime.record.version = 4;
+  assert.equal(internals.renderStatePatch({
+    type: 'state',
+    record: runtime.record,
+    patch: { baseVersion: 3, operations: [{ type: 'message.upsert', value: appendedMessage }] }
+  }), true);
+  assert.equal(feed.childNodes[0], renderedMessage);
+  assert.equal(feed.childNodes[1], oldTimelineNode);
+  assert.equal(feed.childNodes[2].dataset.feedKey, 'message:message-2');
+  assert.equal(root.childNodes[1], composer);
+
+  assert.equal(internals.renderStatePatch({ type: 'state', record: runtime.record, patch: null }), false);
+  assert.equal(internals.renderStatePatch({
+    type: 'state',
+    record: runtime.record,
+    patch: { baseVersion: 4, operations: [{ type: 'session.merge', value: { status: 'running' } }] }
+  }), false);
+
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8');
+  assert.match(source, /function sync\(change\)\s*\{\s*if \(renderStatePatch\(change\)\) return;/);
 });
 
 test('xhigh reasoning and compaction state are host-rendered workbench options', () => {

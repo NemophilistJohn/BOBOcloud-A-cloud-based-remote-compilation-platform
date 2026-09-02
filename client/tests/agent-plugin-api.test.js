@@ -63,14 +63,25 @@ function agentState() {
       provider: 'openai-compatible',
       modelId: 'model-1',
       purpose: 'chat',
-      configured: true
+      configured: true,
+      capabilities: {
+        contextWindowTokens: 131072,
+        maxOutputTokens: 32768,
+        tools: true,
+        streaming: true,
+        parallelToolCalls: true,
+        reasoningEfforts: ['low', 'medium', 'high', 'xhigh']
+      }
     }],
     skills: [{
       id: 'skill-123',
       name: 'Review',
       description: 'Review the active workspace.',
       source: 'workspace',
-      enabled: true
+      enabled: true,
+      revision: 'sha256-' + 'a'.repeat(64),
+      sizeBytes: 1024,
+      estimatedTokens: 256
     }],
     activeSession: {
       id: 'session-1',
@@ -78,6 +89,7 @@ function agentState() {
       status: 'waiting-approval',
       mode: 'goal',
       reasoningEffort: 'xhigh',
+      effectiveReasoningEffort: 'high',
       accessMode: 'auto',
       modelRef: 'chat:local-model',
       messages: [{ id: 'message-1', role: 'user', content: 'Inspect this project.' }],
@@ -146,8 +158,8 @@ test.after(() => {
   fs.rmSync(temporaryDirectory, { recursive: true, force: true });
 });
 
-test('Plugin API 1.5 publishes the complete Agent permission set', () => {
-  assert.equal(core.PLUGIN_API_VERSION, '1.5.0');
+test('Plugin API 1.6 publishes the complete Agent permission set', () => {
+  assert.equal(core.PLUGIN_API_VERSION, '1.6.0');
   assert.deepEqual([
     core.PluginPermission.AGENTS_REGISTER,
     core.PluginPermission.MODELS_GENERATE,
@@ -169,7 +181,7 @@ test('Plugin API 1.5 publishes the complete Agent permission set', () => {
   const manifest = core.validatePluginManifest({
     id: 'acme.agent',
     version: '1.0.0',
-    engines: { pluginApi: '^1.5.0' },
+    engines: { pluginApi: '^1.6.0' },
     permissions: Object.values(core.PluginPermission)
   });
   assert.equal(manifest.permissions.includes('agents.register'), true);
@@ -197,6 +209,9 @@ test('Agent descriptors, command payloads, and state snapshots are bounded data'
   assert.deepEqual(state.activeSession.approval, { id: 'approval-123' });
   assert.equal(state.activeSession.accessMode, 'auto');
   assert.equal(state.activeSession.compaction.compactedMessages, 8);
+  assert.equal(state.activeSession.effectiveReasoningEffort, 'high');
+  assert.equal(state.models[0].capabilities.contextWindowTokens, 131072);
+  assert.match(state.skills[0].revision, /^sha256-/);
   assert.equal(Object.isFrozen(state.activeSession.messages), true);
   assert.throws(
     () => core.validateAgentState({
@@ -358,17 +373,31 @@ test('Agent state store isolates listener failures and disposes owner state', ()
   const errors = [];
   const events = [];
   const store = new core.AgentStateStore({ onError: (event) => errors.push(event) });
-  store.onDidChange((event) => events.push(event.type));
+  store.onDidChange((event) => events.push(event));
   store.onDidChange(() => { throw new Error('listener failed'); });
   const provider = store.register(agentDescriptor(), { owner: 'acme.agent' });
 
   assert.deepEqual(provider.setState(agentState()), { version: 1 });
   assert.equal(store.get(provider.id).state.activeSession.id, 'session-1');
-  assert.deepEqual(provider.clearState(), { version: 2 });
+  assert.deepEqual(provider.updateState({
+    baseVersion: 1,
+    operations: [
+      { type: 'message.upsert', value: { id: 'message-2', role: 'assistant', content: 'Streaming.' } },
+      { type: 'session.merge', value: { effectiveReasoningEffort: 'max' } }
+    ]
+  }), { applied: true, version: 2 });
+  assert.equal(store.get(provider.id).state.activeSession.messages.at(-1).content, 'Streaming.');
+  assert.equal(store.get(provider.id).state.activeSession.effectiveReasoningEffort, 'max');
+  assert.deepEqual(provider.updateState({
+    baseVersion: 1,
+    operations: [{ type: 'session.merge', value: { status: 'completed' } }]
+  }), { applied: false, version: 2 });
+  assert.deepEqual(provider.clearState(), { version: 3 });
   store.disposeOwner('acme.agent');
 
-  assert.deepEqual(events, ['added', 'state', 'state', 'removed']);
-  assert.equal(errors.length, 4);
+  assert.deepEqual(events.map((event) => event.type), ['added', 'state', 'state', 'state', 'removed']);
+  assert.equal(events[2].patch.operations[0].type, 'message.upsert');
+  assert.equal(errors.length, 5);
   assert.equal(store.list().length, 0);
   assert.throws(() => provider.setState(agentState()), /disposed/);
   store.dispose();
@@ -470,6 +499,18 @@ test('installed extension host gates Agent brokers and tears down Agent state', 
   });
   sandbox.emit({
     type: 'request',
+    id: 11,
+    method: 'agents.updateState',
+    args: {
+      handle: registration.value.handle,
+      patch: {
+        baseVersion: 1,
+        operations: [{ type: 'message.upsert', value: { id: 'message-stream', role: 'assistant', content: 'Partial' } }]
+      }
+    }
+  });
+  sandbox.emit({
+    type: 'request',
     id: 3,
     method: 'agent.broker.request',
     args: { method: 'models.list', args: {} }
@@ -520,6 +561,8 @@ test('installed extension host gates Agent brokers and tears down Agent state', 
   await nextTurn();
 
   assert.equal(responseFor(sandbox, 2).ok, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(responseFor(sandbox, 11).value)), { applied: true, version: 2 });
+  assert.equal(platform.agents.list()[0].state.activeSession.messages.at(-1).content, 'Partial');
   assert.deepEqual(JSON.parse(JSON.stringify(responseFor(sandbox, 3).value)), { models: [] });
   assert.deepEqual(JSON.parse(JSON.stringify(responseFor(sandbox, 4).value)), { success: true, cancelled: true });
   assert.equal(responseFor(sandbox, 5).ok, true);
@@ -539,11 +582,84 @@ test('installed extension host gates Agent brokers and tears down Agent state', 
   await platform.dispose();
 });
 
+test('installed extension host routes ordered model events only to the current plugin revision', async () => {
+  const platform = core.createRendererPlatform();
+  let sandbox;
+  let resolveStream;
+  const streamResult = new Promise((resolve) => { resolveStream = resolve; });
+  const host = new core.PluginExtensionHost({
+    services: platform.services,
+    commands: platform.commands,
+    contributions: platform.contributions,
+    agents: platform.agents,
+    loadEntry: async (id) => ({ id, source: 'export function activate() {}' }),
+    broker: async (_id, method) => method === 'models.generateStream' ? streamResult : { authorized: true },
+    sandboxFactory: (options) => (sandbox = createExtensionSandboxHarness(options))
+  });
+  const descriptor = {
+    id: 'acme.agent',
+    revision: 'revision-1',
+    manifest: {
+      id: 'acme.agent',
+      version: '1.0.0',
+      engines: { pluginApi: '^1.6.0' },
+      permissions: [core.PluginPermission.MODELS_GENERATE]
+    },
+    grantedPermissions: [core.PluginPermission.MODELS_GENERATE]
+  };
+  assert.equal((await host.activate(descriptor)).ok, true);
+  sandbox.emit({
+    type: 'request', id: 1, method: 'agent.broker.request',
+    args: { method: 'models.generateStream', args: { requestId: 'stream-1' } }
+  });
+  await nextTurn();
+
+  const envelope = (sequence, event, revision = 'revision-1') => ({
+    pluginId: 'acme.agent', revision, requestId: 'stream-1', sequence, event
+  });
+  assert.equal(host.handleAgentModelEvent(envelope(1, {
+    type: 'response.started', requestedReasoningEffort: 'high', effectiveReasoningEffort: 'high'
+  })), true);
+  assert.equal(host.handleAgentModelEvent(envelope(2, { type: 'content.delta', delta: 'Partial' })), true);
+  assert.equal(host.handleAgentModelEvent(envelope(3, {
+    type: 'response.completed',
+    requestedReasoningEffort: 'high',
+    effectiveReasoningEffort: 'high',
+    result: { content: 'Partial', reasoning: '', toolCalls: [], finishReason: 'stop', usage: null }
+  })), true);
+  assert.equal(host.handleAgentModelEvent(envelope(4, { type: 'content.delta', delta: 'late' })), false);
+  assert.equal(host.handleAgentModelEvent(envelope(1, { type: 'content.delta', delta: 'wrong' }, 'revision-2')), false);
+
+  resolveStream({ content: 'Partial', reasoning: '', toolCalls: [], finishReason: 'stop', usage: null });
+  await nextTurn();
+  await nextTurn();
+  assert.equal(sandbox.sent.some((message) => message.type === 'response' && message.id === 1), false,
+    'generateStream must wait until the terminal event reaches the Worker');
+
+  for (const expectedType of ['response.started', 'content.delta', 'response.completed']) {
+    await nextTurn();
+    const delivery = sandbox.sent.find((message) => message.type === 'request' &&
+      message.method === 'models.event' && message.args.event.type === expectedType);
+    assert.ok(delivery);
+    assert.equal(delivery.args.event.requestId, 'stream-1');
+    sandbox.emit({ type: 'response', id: delivery.id, ok: true, value: null });
+  }
+  await nextTurn();
+  await nextTurn();
+  assert.equal(responseFor(sandbox, 1).ok, true);
+
+  await host.deactivate('acme.agent');
+  await platform.dispose();
+});
+
 test('extension sandbox exposes only dedicated Agent data APIs', () => {
   const source = core.buildExtensionSandboxDocument();
   assert.match(source, /agents: freeze/);
   assert.match(source, /const safeFreeze = Object\.freeze/);
   assert.match(source, /models\.cancel/);
+  assert.match(source, /models\.generateStream/);
+  assert.match(source, /agents\.updateState/);
+  assert.match(source, /agent\.tools\.list/);
   assert.match(source, /agent\.tools\.invoke/);
   assert.doesNotMatch(source, /agent\.tools\.(?:approve|reject|cancel)/);
   assert.match(source, /agent\.skills\.read/);

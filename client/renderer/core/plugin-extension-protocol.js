@@ -38,6 +38,7 @@ export const ExtensionHostMethod = Object.freeze({
   DOCUMENT_VIEW_DISPOSE: 'documentViews.dispose',
   AGENT_REGISTER: 'agents.register',
   AGENT_SET_STATE: 'agents.setState',
+  AGENT_UPDATE_STATE: 'agents.updateState',
   AGENT_CLEAR_STATE: 'agents.clearState',
   AGENT_DISPOSE: 'agents.dispose',
   AGENT_BROKER_REQUEST: 'agent.broker.request',
@@ -48,6 +49,7 @@ export const ExtensionHostMethod = Object.freeze({
 export const ExtensionSandboxMethod = Object.freeze({
   COMMAND_INVOKE: 'command.invoke',
   I18N_CHANGED: 'i18n.changed',
+  AGENT_MODEL_EVENT: 'models.event',
   DEACTIVATE: 'extension.deactivate'
 });
 
