@@ -1,37 +1,19 @@
-import type { Disposable } from './lifecycle';
-
 export type {
   SourceControlDescriptorDto,
   SourceControlDescriptorRegistrationDto
 } from './source-control';
+export type {
+  FileDecorationColorDto,
+  FileDecorationDto,
+  FileDecorationLaneForPoint,
+  FileDecorationLaneDto,
+  FileDecorationProvider,
+  FileDecorationProviderDto,
+  FileDecorationProviderResult,
+  FileDecorationRegistrationDto
+} from './file-decoration';
 
 export type RendererOpaqueContributionDto = object;
-
-export type FileDecorationLaneDto = 'sync' | 'scm' | 'diagnostic';
-export type FileDecorationColorDto = 'success' | 'warning' | 'danger' | 'info' | 'muted';
-
-export interface FileDecorationDto {
-  readonly status: string;
-  readonly badge: string;
-  readonly color?: FileDecorationColorDto;
-  readonly tooltip?: string;
-  readonly ariaLabel?: string;
-  readonly transient?: boolean;
-}
-
-export interface FileDecorationProviderDto<Lane extends FileDecorationLaneDto> {
-  readonly id?: string;
-  readonly namespace: string;
-  readonly lane: Lane;
-  readonly priority?: number;
-  readonly getDecoration: (
-    resourcePath: string,
-    node: unknown
-  ) => FileDecorationDto | null | false | undefined;
-  readonly onDidChange?: (
-    listener: (paths?: readonly string[]) => void
-  ) => Disposable | null | void;
-}
 
 export interface DocumentViewDescriptorDto {
   readonly id: string;

@@ -12,9 +12,10 @@ export {
 export {
   FileDecorationLane,
   contributionPointForDecorationLane,
+  decorationLaneForContributionPoint,
   normalizeFileDecoration,
   validateFileDecorationProvider
-} from './file-decoration.js';
+} from './file-decoration.ts';
 export {
   ScmFileStatus,
   createScmFileDecorationProvider,

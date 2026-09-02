@@ -7,7 +7,7 @@ import type {
 } from '../../types/contributions';
 import { toDisposable } from './disposable.js';
 import { validateDocumentViewDescriptor } from './document-view.js';
-import { validateFileDecorationProvider } from './file-decoration.js';
+import { validateFileDecorationProvider } from './file-decoration';
 import { validateSourceControlDescriptor } from './source-control.js';
 
 export const ContributionPoint = Object.freeze({

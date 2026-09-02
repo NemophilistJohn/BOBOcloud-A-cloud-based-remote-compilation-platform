@@ -147,7 +147,9 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/core/service-registry.ts',
   'renderer/core/command-registry.ts',
   'renderer/core/contribution-registry.ts',
+  'renderer/core/file-decoration.ts',
   'renderer/core/source-control.ts',
+  'renderer/compat/file-decoration-adapter.ts',
   'theme-manager.js',
   'editor-rules/completion-engine.js',
   'completion-rules.js',
@@ -275,14 +277,25 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     false,
     'legacy contribution-registry.js must not coexist with the TypeScript implementation'
   );
-  for (const legacyModule of ['disposable.js', 'platform.js', 'bootstrap.js', 'source-control.js', 'typed-platform.ts']) {
+  for (const legacyModule of [
+    'disposable.js',
+    'platform.js',
+    'bootstrap.js',
+    'file-decoration.js',
+    'source-control.js',
+    'typed-platform.ts'
+  ]) {
     assert.equal(
       fs.existsSync(path.join(ROOT, 'renderer', 'core', legacyModule)),
       false,
       'legacy renderer core module must not coexist with the typed platform: ' + legacyModule
     );
   }
-  for (const legacyModule of ['src/file-icons.js', 'renderer/compat/file-icons-adapter.js']) {
+  for (const legacyModule of [
+    'src/file-icons.js',
+    'renderer/compat/file-icons-adapter.js',
+    'renderer/compat/file-decoration-adapter.js'
+  ]) {
     assert.equal(
       fs.existsSync(path.join(ROOT, legacyModule)),
       false,

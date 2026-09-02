@@ -116,7 +116,7 @@ test.before(async () => {
   const compatibilityBuild = await esbuild.build({
     absWorkingDir: ROOT,
     stdin: {
-      contents: "import { rendererPlatform } from './renderer/core/bootstrap.ts'; import './renderer/core/native-host-adapter.ts'; import './renderer/compat/platform-adapter.js'; import './renderer/compat/file-icons-adapter.ts'; import './renderer/compat/project-tasks-adapter.ts'; window.__rendererPlatform = rendererPlatform; window.__fileIconsPluginView = rendererPlatform.services.getForPlugin('workbench.fileIcons'); window.__tasksPluginView = rendererPlatform.services.getForPlugin('workbench.projectTasks');",
+      contents: "import { rendererPlatform } from './renderer/core/bootstrap.ts'; import { createFileDecorationService } from './renderer/compat/file-decoration-adapter.ts'; import './renderer/core/native-host-adapter.ts'; import './renderer/compat/platform-adapter.js'; import './renderer/compat/file-icons-adapter.ts'; import './renderer/compat/project-tasks-adapter.ts'; window.__rendererPlatform = rendererPlatform; window.__createFileDecorationService = createFileDecorationService; window.__fileIconsPluginView = rendererPlatform.services.getForPlugin('workbench.fileIcons'); window.__tasksPluginView = rendererPlatform.services.getForPlugin('workbench.projectTasks');",
       resolveDir: ROOT,
       sourcefile: 'compatibility-test-entry.js'
     },
@@ -645,9 +645,23 @@ test('file decoration contract keeps sync and SCM lanes separate', () => {
     core.ContributionPoint.FILE_DECORATIONS_SYNC
   );
   assert.equal(core.validateFileDecorationProvider(provider, 'fileDecorations.sync'), provider);
+  assert.equal(core.decorationLaneForContributionPoint('fileDecorations.sync'), 'sync');
+  assert.equal(core.decorationLaneForContributionPoint('fileDecorations.unknown'), null);
   assert.throws(
     () => core.validateFileDecorationProvider(provider, 'fileDecorations.scm'),
     /does not match/
+  );
+  assert.throws(
+    () => core.contributionPointForDecorationLane('constructor'),
+    /Unknown file decoration lane/
+  );
+  assert.throws(
+    () => core.validateFileDecorationProvider(Object.assign([], provider), 'fileDecorations.sync'),
+    /must be an object/
+  );
+  assert.throws(
+    () => core.validateFileDecorationProvider({ ...provider, id: 42 }, 'fileDecorations.sync'),
+    /id must be a non-empty string/
   );
   assert.deepEqual(core.normalizeFileDecoration({
     status: 'synced',
@@ -661,6 +675,10 @@ test('file decoration contract keeps sync and SCM lanes separate', () => {
     ariaLabel: '',
     transient: false
   });
+  assert.throws(
+    () => core.normalizeFileDecoration(Object.assign([], { status: 'synced', badge: 'cloud-check' })),
+    /must be an object/
+  );
 });
 
 test('plugin runtime enforces permissions and cleans partial activation', async () => {
@@ -1998,8 +2016,27 @@ test('BOBO file decoration facade selects by priority, isolates failures, and fo
   const changes = [];
   let providerListener = null;
   let providerDisposeCount = 0;
+  let activeProviderListener = null;
+  let activeProviderDisposeCount = 0;
+  let reentrantProviderListener = null;
+  let reentrantProviderDisposeCount = 0;
   BOBO.platform.fileDecorations.onDidChange((event) => changes.push(event));
+  assert.equal(BOBO.platform.services.has('workbench.fileDecorations'), true);
+  assert.equal(
+    BOBO.platform.services.describe()
+      .find((service) => service.id === 'workbench.fileDecorations').exposeToPlugins,
+    false
+  );
 
+  BOBO.platform.contributions.register('fileDecorations.sync', {
+    id: 'acme.async-sync',
+    namespace: 'acme.async-sync',
+    lane: 'sync',
+    priority: 300,
+    getDecoration() {
+      return { then(_resolve, reject) { reject(new Error('async provider failed')); } };
+    }
+  }, { owner: 'acme.plugin' });
   BOBO.platform.contributions.register('fileDecorations.sync', {
     id: 'acme.throwing-sync',
     namespace: 'acme.throwing-sync',
@@ -2021,15 +2058,37 @@ test('BOBO file decoration facade selects by priority, isolates failures, and fo
     }
   }, { owner: 'acme.plugin' });
 
+  const registryChange = changes.find((event) => (
+    event.reason === 'registry' && event.providerId === 'acme.valid-sync'
+  ));
+  assert.deepEqual(Array.from(Object.keys(registryChange)), ['lane', 'paths', 'reason', 'providerId']);
+  assert.equal(Object.hasOwn(registryChange, 'paths'), true);
+  assert.equal(registryChange.paths, undefined);
+  assert.equal(Object.isFrozen(registryChange), true);
+
   const decoration = BOBO.platform.fileDecorations.get('sync', 'src/app.js', { type: 'file', name: 'app.js' });
   assert.equal(decoration.status, 'queued');
   assert.equal(decoration.badge, 'cloud-upload');
-  assert.equal(logged.length, 1);
+  assert.equal(logged.length, 2);
   providerListener(['src/app.js']);
   const providerChange = changes.at(-1);
   assert.equal(providerChange.lane, 'sync');
   assert.equal(providerChange.reason, 'provider');
   assert.deepEqual(Array.from(providerChange.paths), ['src/app.js']);
+  assert.equal(Object.isFrozen(providerChange.paths), true);
+  assert.equal(Object.isFrozen(providerChange), true);
+  providerListener([42]);
+  assert.equal(changes.at(-1).reason, 'provider');
+  assert.equal(changes.at(-1).paths, undefined);
+  let pathIterations = 0;
+  const singleReadPaths = ['src/single-read.js'];
+  singleReadPaths[Symbol.iterator] = function* () {
+    pathIterations += 1;
+    yield pathIterations === 1 ? 'src/single-read.js' : 42;
+  };
+  providerListener(singleReadPaths);
+  assert.equal(pathIterations, 1);
+  assert.deepEqual(Array.from(changes.at(-1).paths), ['src/single-read.js']);
 
   validRegistration.dispose();
   assert.equal(providerDisposeCount, 1);
@@ -2037,4 +2096,237 @@ test('BOBO file decoration facade selects by priority, isolates failures, and fo
   assert.equal(changes.at(-1).providerId, 'acme.valid-sync');
   assert.equal(BOBO.platform.fileDecorations.get('scm', 'src/app.js', { type: 'file', name: 'app.js' }), null);
   assert.throws(() => BOBO.platform.fileDecorations.get('unknown', 'src/app.js', {}), /Unknown file decoration lane/);
+
+  BOBO.platform.contributions.register('fileDecorations.sync', {
+    id: 'acme.reentrant-sync',
+    namespace: 'acme.reentrant-sync',
+    lane: 'sync',
+    getDecoration: () => null,
+    onDidChange(listener) {
+      reentrantProviderListener = listener;
+      context.window.__rendererPlatform.contributions.disposeOwner('acme.reentrant');
+      return { dispose() { reentrantProviderDisposeCount += 1; } };
+    }
+  }, { owner: 'acme.reentrant' });
+  assert.equal(reentrantProviderDisposeCount, 1);
+  const changesBeforeStaleCallback = changes.length;
+  reentrantProviderListener(['src/ghost.js']);
+  assert.equal(changes.length, changesBeforeStaleCallback);
+
+  BOBO.platform.contributions.register('fileDecorations.sync', {
+    id: 'acme.active-sync',
+    namespace: 'acme.active-sync',
+    lane: 'sync',
+    getDecoration: () => null,
+    onDidChange(listener) {
+      activeProviderListener = listener;
+      return { dispose() { activeProviderDisposeCount += 1; } };
+    }
+  }, { owner: 'acme.active' });
+  context.window.__rendererPlatform.lifecycle.clear();
+  assert.equal(BOBO.platform.services.has('workbench.fileDecorations'), false);
+  assert.equal(providerDisposeCount, 1);
+  assert.equal(reentrantProviderDisposeCount, 1);
+  assert.equal(activeProviderDisposeCount, 1);
+  const changesAfterServiceDispose = changes.length;
+  activeProviderListener(['src/inactive.js']);
+  assert.equal(changes.length, changesAfterServiceDispose);
+  context.window.__rendererPlatform.lifecycle.clear();
+  assert.equal(activeProviderDisposeCount, 1);
+});
+
+test('file decoration services reconcile stale initial provider snapshots', () => {
+  const context = createCompatibilityContext();
+  vm.runInNewContext(compatibilityBundle, context);
+  const platform = context.window.__rendererPlatform;
+  const callbacks = [];
+  let firstSubscribeCount = 0;
+  let firstDisposeCount = 0;
+  let staleSubscribeCount = 0;
+  let staleDisposeCount = 0;
+
+  platform.contributions.register('fileDecorations.sync', {
+    id: 'acme.first-sync',
+    namespace: 'acme.first-sync',
+    lane: 'sync',
+    getDecoration: () => null,
+    onDidChange() {
+      firstSubscribeCount += 1;
+      if (firstSubscribeCount === 2) platform.contributions.disposeOwner('acme.stale');
+      return { dispose() { firstDisposeCount += 1; } };
+    }
+  }, { owner: 'acme.first' });
+  platform.contributions.register('fileDecorations.sync', {
+    id: 'acme.stale-sync',
+    namespace: 'acme.stale-sync',
+    lane: 'sync',
+    getDecoration: () => null,
+    onDidChange(listener) {
+      staleSubscribeCount += 1;
+      callbacks.push(listener);
+      return { dispose() { staleDisposeCount += 1; } };
+    }
+  }, { owner: 'acme.stale' });
+
+  const secondService = context.window.__createFileDecorationService();
+  const secondEvents = [];
+  secondService.onDidChange((event) => secondEvents.push(event));
+  assert.equal(platform.contributions.listEntries('fileDecorations.sync').some(
+    (entry) => entry.id === 'acme.stale-sync'
+  ), false);
+  assert.equal(staleSubscribeCount, 1);
+  assert.equal(staleDisposeCount, 1);
+  callbacks[0](['src/stale.js']);
+  assert.equal(secondEvents.length, 0);
+
+  secondService.dispose();
+  assert.equal(firstDisposeCount, 1);
+  platform.lifecycle.clear();
+  assert.equal(firstDisposeCount, 2);
+  assert.equal(staleDisposeCount, 1);
+});
+
+test('stale removal events cannot tear down a same-key replacement provider', () => {
+  const context = createCompatibilityContext();
+  vm.runInNewContext(compatibilityBundle, context);
+  const platform = context.window.__rendererPlatform;
+  const replacementCallbacks = [];
+  let oldDisposeCount = 0;
+  let replacementDisposeCount = 0;
+  let replacementSubscribeCount = 0;
+  let replacementRegistration = null;
+
+  const replacementProvider = {
+    id: 'acme.replace-sync',
+    namespace: 'acme.replace-sync',
+    lane: 'sync',
+    getDecoration: () => null,
+    onDidChange(listener) {
+      replacementSubscribeCount += 1;
+      replacementCallbacks.push(listener);
+      return { dispose() { replacementDisposeCount += 1; } };
+    }
+  };
+  const reentrantRegistryListener = platform.contributions.onDidChange((event) => {
+    if (event.type !== 'removed' || event.id !== 'acme.replace-sync' || replacementRegistration) return;
+    replacementRegistration = platform.contributions.register(
+      'fileDecorations.sync',
+      replacementProvider,
+      { owner: 'acme.replacement' }
+    );
+  });
+  const oldRegistration = platform.contributions.register('fileDecorations.sync', {
+    id: 'acme.replace-sync',
+    namespace: 'acme.replace-sync',
+    lane: 'sync',
+    getDecoration: () => null,
+    onDidChange() {
+      return { dispose() { oldDisposeCount += 1; } };
+    }
+  }, { owner: 'acme.original' });
+  const secondService = context.window.__createFileDecorationService();
+  const secondEvents = [];
+  secondService.onDidChange((event) => secondEvents.push(event));
+
+  oldRegistration.dispose();
+  assert.equal(oldDisposeCount, 2);
+  assert.equal(replacementSubscribeCount, 2);
+  replacementCallbacks.at(-1)(['src/replacement.js']);
+  assert.equal(secondEvents.at(-1).reason, 'provider');
+  assert.deepEqual(Array.from(secondEvents.at(-1).paths), ['src/replacement.js']);
+
+  secondService.dispose();
+  assert.equal(replacementDisposeCount, 1);
+  reentrantRegistryListener.dispose();
+  platform.lifecycle.clear();
+  assert.equal(replacementDisposeCount, 2);
+  replacementRegistration.dispose();
+});
+
+test('replacement reconciliation re-reads the registry after a reentrant disposer', () => {
+  const context = createCompatibilityContext();
+  vm.runInNewContext(compatibilityBundle, context);
+  const platform = context.window.__rendererPlatform;
+  let firstSubscribeCount = 0;
+  let firstDisposeCount = 0;
+  let secondSubscribeCount = 0;
+  let secondDisposeCount = 0;
+  let thirdSubscribeCount = 0;
+  let thirdDisposeCount = 0;
+  let installedSecond = false;
+
+  const thirdProvider = {
+    id: 'acme.generation-sync',
+    namespace: 'acme.generation-sync',
+    lane: 'sync',
+    getDecoration: () => null,
+    onDidChange() {
+      thirdSubscribeCount += 1;
+      return { dispose() { thirdDisposeCount += 1; } };
+    }
+  };
+  const secondProvider = {
+    id: 'acme.generation-sync',
+    namespace: 'acme.generation-sync',
+    lane: 'sync',
+    getDecoration: () => null,
+    onDidChange() {
+      secondSubscribeCount += 1;
+      return { dispose() { secondDisposeCount += 1; } };
+    }
+  };
+  const firstRegistration = platform.contributions.register('fileDecorations.sync', {
+    id: 'acme.generation-sync',
+    namespace: 'acme.generation-sync',
+    lane: 'sync',
+    getDecoration: () => null,
+    onDidChange() {
+      firstSubscribeCount += 1;
+      const subscriptionIndex = firstSubscribeCount;
+      return {
+        dispose() {
+          firstDisposeCount += 1;
+          if (subscriptionIndex !== 2) return;
+          platform.contributions.disposeOwner('acme.generation-b');
+          platform.contributions.register(
+            'fileDecorations.sync',
+            thirdProvider,
+            { owner: 'acme.generation-c' }
+          );
+        }
+      };
+    }
+  }, { owner: 'acme.generation-a' });
+  const replacementListener = platform.contributions.onDidChange((event) => {
+    if (
+      installedSecond ||
+      event.type !== 'removed' ||
+      event.owner !== 'acme.generation-a'
+    ) return;
+    installedSecond = true;
+    platform.contributions.register(
+      'fileDecorations.sync',
+      secondProvider,
+      { owner: 'acme.generation-b' }
+    );
+  });
+  const secondService = context.window.__createFileDecorationService();
+
+  firstRegistration.dispose();
+  const current = platform.contributions.listEntries('fileDecorations.sync')
+    .find((entry) => entry.id === 'acme.generation-sync');
+  assert.equal(current.owner, 'acme.generation-c');
+  assert.equal(current.contribution, thirdProvider);
+  assert.equal(firstSubscribeCount, 2);
+  assert.equal(firstDisposeCount, 2);
+  assert.equal(secondSubscribeCount, 1);
+  assert.equal(secondDisposeCount, 1);
+  assert.equal(thirdSubscribeCount, 2);
+
+  secondService.dispose();
+  assert.equal(thirdDisposeCount, 1);
+  replacementListener.dispose();
+  platform.lifecycle.clear();
+  assert.equal(thirdDisposeCount, 2);
+  assert.equal(thirdDisposeCount, thirdSubscribeCount);
 });

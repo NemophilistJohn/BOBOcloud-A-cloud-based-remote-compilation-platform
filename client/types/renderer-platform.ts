@@ -13,6 +13,10 @@ import type {
 import type { DisposableStore } from './lifecycle';
 import type { RcloneNativeHost } from './native-host';
 import type { FileIconPluginView, FileIconService } from './file-icons';
+import type {
+  FileDecorationProvider,
+  FileDecorationService
+} from './file-decoration';
 import type { CommandRegistry } from '../renderer/core/command-registry';
 import type {
   ContributionRegistrationMapFor,
@@ -25,7 +29,6 @@ import type { SourceControlStateStoreContract } from './source-control';
 import type {
   AgentDescriptorDto,
   DocumentViewDescriptorDto,
-  FileDecorationProviderDto,
   RendererOpaqueContributionDto,
   SourceControlDescriptorDto
 } from './contributions';
@@ -40,6 +43,7 @@ export interface RendererServiceMap {
   readonly 'host.projectTasks': Readonly<ProjectTasksHost>;
   readonly 'host.rclone': Readonly<RcloneNativeHost>;
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
+  readonly 'workbench.fileDecorations': FileDecorationService;
   readonly 'workbench.fileIcons': FileIconService;
   readonly 'workbench.projectTasks': ProjectTasksService;
   readonly 'workbench.rclone': RcloneClient;
@@ -55,9 +59,9 @@ export interface RendererPluginServiceMap {
 
 export interface RendererContributionMap {
   readonly menus: RendererOpaqueContributionDto;
-  readonly 'fileDecorations.sync': FileDecorationProviderDto<'sync'>;
-  readonly 'fileDecorations.scm': FileDecorationProviderDto<'scm'>;
-  readonly 'fileDecorations.diagnostic': FileDecorationProviderDto<'diagnostic'>;
+  readonly 'fileDecorations.sync': FileDecorationProvider<'sync'>;
+  readonly 'fileDecorations.scm': FileDecorationProvider<'scm'>;
+  readonly 'fileDecorations.diagnostic': FileDecorationProvider<'diagnostic'>;
   readonly tasks: RendererOpaqueContributionDto;
   readonly 'debug.configurationProviders': RendererOpaqueContributionDto;
   readonly settings: RendererOpaqueContributionDto;
@@ -118,6 +122,21 @@ export type {
   ServiceRegistryOptions
 } from '../renderer/core/service-registry';
 export type {
+  FileDecorationChangeEvent,
+  FileDecorationChangeListener,
+  FileDecorationColorDto,
+  FileDecorationDto,
+  FileDecorationLaneForPoint,
+  FileDecorationLaneDto,
+  FileDecorationPointId,
+  FileDecorationProvider,
+  FileDecorationProviderChangeListener,
+  FileDecorationProviderDto,
+  FileDecorationProviderResult,
+  FileDecorationRegistrationDto,
+  FileDecorationService
+} from './file-decoration';
+export type {
   AgentAccessModeDto,
   AgentCapabilitiesDto,
   AgentCommandMapDto,
@@ -126,10 +145,6 @@ export type {
   AgentReasoningEffortDto,
   DocumentViewDescriptorDto,
   DocumentViewDescriptorRegistrationDto,
-  FileDecorationColorDto,
-  FileDecorationDto,
-  FileDecorationLaneDto,
-  FileDecorationProviderDto,
   RendererOpaqueContributionDto,
   SourceControlDescriptorDto,
   SourceControlDescriptorRegistrationDto
