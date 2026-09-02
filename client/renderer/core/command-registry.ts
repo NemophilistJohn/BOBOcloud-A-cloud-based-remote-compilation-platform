@@ -76,6 +76,7 @@ function requireId(id: unknown, label: string): string {
 export class CommandRegistry<
   Commands extends CommandMapConstraint<Commands> = Record<string, DynamicCommandHandler>
 > {
+  declare private readonly _commandsBrand: (commands: Commands) => Commands;
   private readonly _records = new Map<string, CommandRecord>();
   private readonly _onError: (event: CommandRegistryErrorEvent) => void;
   private _disposed = false;
