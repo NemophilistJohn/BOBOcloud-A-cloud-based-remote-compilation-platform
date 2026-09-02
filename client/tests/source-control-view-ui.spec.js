@@ -223,3 +223,199 @@ test('installed source-control providers receive a host-rendered sidebar with fo
     await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
   }
 });
+
+test('source-control view keeps provider order, form payloads, targeted renders, and async replacement isolation', async () => {
+  test.setTimeout(90000);
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-source-control-contracts-'));
+  const appData = path.join(sandbox, 'appdata');
+  const home = path.join(sandbox, 'home');
+  fs.mkdirSync(appData, { recursive: true });
+  fs.mkdirSync(home, { recursive: true });
+  let app;
+
+  try {
+    app = await electron.launch({
+      executablePath: electronPath(),
+      args: ['.', '--user-data-dir=' + path.join(sandbox, 'chromium')],
+      env: Object.assign({}, process.env, {
+        APPDATA: appData,
+        HOME: home,
+        USERPROFILE: home,
+        XDG_CONFIG_HOME: path.join(sandbox, 'xdg-config'),
+        BOBO_FORCE_FIRST_RUN: '0',
+        ELECTRON_DISABLE_SECURITY_WARNINGS: 'true'
+      })
+    });
+    const page = await app.firstWindow();
+    const pageErrors = [];
+    page.on('pageerror', (error) => pageErrors.push(error.message));
+    await page.waitForFunction(() => document.documentElement.dataset.boboReady === 'true', null, { timeout: 25000 });
+
+    const activations = await page.evaluate(async () => {
+      const platform = window.BOBO.platform;
+      const harness = { payloads: [], providers: {} };
+      let releaseOldCommand;
+      const oldCommand = new Promise((resolve) => { releaseOldCommand = resolve; });
+
+      const manifest = (id) => ({
+        id,
+        version: '1.0.0',
+        engines: { pluginApi: '^1.6.0' },
+        permissions: ['commands.register', 'sourceControl.register']
+      });
+      const stateFor = (title, message, actions = []) => ({
+        phase: 'ready',
+        title,
+        message,
+        actions
+      });
+
+      const high = await platform.plugins.activate(manifest('tests.high-source'), {
+        async activate(context) {
+          const provider = await context.sourceControl.register({
+            id: 'tests.high-source.view', title: 'High order', order: 80
+          });
+          harness.providers.high = provider;
+          await provider.setState(stateFor('High order', 'High remains stable'));
+        }
+      });
+
+      const lowActions = [{
+        id: 'configure',
+        title: 'Configure values',
+        command: 'tests.low-source.configure',
+        form: {
+          title: 'Configure values',
+          submitLabel: 'Apply values',
+          fields: [{ id: 'summary', label: 'Summary' }, {
+            id: 'details', label: 'Details', type: 'textarea'
+          }, {
+            id: 'branch', label: 'Branch', type: 'select', value: 'main',
+            options: [{ value: 'main', label: 'main' }, { value: 'develop', label: 'develop' }]
+          }, {
+            id: 'amend', label: 'Amend', type: 'checkbox', value: false
+          }]
+        }
+      }, {
+        id: 'menu',
+        title: 'Menu action',
+        command: 'tests.low-source.menu',
+        placement: 'menu'
+      }];
+      const low = await platform.plugins.activate(manifest('tests.low-source'), {
+        async activate(context) {
+          context.commands.register('tests.low-source.configure', (payload) => {
+            harness.payloads.push(payload);
+          });
+          context.commands.register('tests.low-source.menu', () => undefined);
+          const provider = await context.sourceControl.register({
+            id: 'tests.low-source.view', title: 'Low order', order: 5
+          });
+          harness.providers.low = provider;
+          await provider.setState(stateFor('Low order', 'Low initial', lowActions));
+        }
+      });
+
+      async function activateRace(replacement) {
+        return platform.plugins.activate(manifest('tests.race-source'), {
+          async activate(context) {
+            context.commands.register(
+              'tests.race-source.run',
+              replacement ? () => undefined : () => oldCommand
+            );
+            const provider = await context.sourceControl.register({
+              id: 'tests.race-source.view', title: 'Race provider', order: 40
+            });
+            await provider.setState(stateFor(
+              replacement ? 'Replacement provider' : 'Race provider',
+              replacement ? 'Replacement ready' : 'Original ready',
+              [{ id: 'run', title: 'Run delayed', command: 'tests.race-source.run' }]
+            ));
+          }
+        });
+      }
+      const race = await activateRace(false);
+
+      harness.updateLow = async () => {
+        await harness.providers.low.setState(stateFor('Low order', 'Low updated', lowActions));
+      };
+      harness.replaceRace = async () => {
+        await platform.plugins.deactivate('tests.race-source');
+        const replacement = await activateRace(true);
+        releaseOldCommand({ completed: true });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return replacement;
+      };
+      window.__sourceControlViewHarness = harness;
+      return { high, low, race };
+    });
+    expect(activations.high.ok).toBe(true);
+    expect(activations.low.ok).toBe(true);
+    expect(activations.race.ok).toBe(true);
+
+    const activities = page.locator('.source-control-activity');
+    await expect(activities).toHaveCount(3);
+    await expect.poll(() => activities.evaluateAll((nodes) => (
+      nodes.map((node) => node.getAttribute('data-workbench-view'))
+    ))).toEqual([
+      'source-control:tests.low-source.view',
+      'source-control:tests.race-source.view',
+      'source-control:tests.high-source.view'
+    ]);
+
+    const targetedRenderPreserved = await page.evaluate(async () => {
+      const highBody = document.querySelector(
+        '[data-sidebar-view="source-control:tests.high-source.view"] .source-control-body'
+      );
+      const stableNode = highBody.firstElementChild;
+      stableNode.dataset.renderIdentity = 'preserve';
+      await window.__sourceControlViewHarness.updateLow();
+      return highBody.firstElementChild === stableNode &&
+        highBody.firstElementChild.dataset.renderIdentity === 'preserve';
+    });
+    expect(targetedRenderPreserved).toBe(true);
+
+    await page.locator('[data-workbench-view="source-control:tests.low-source.view"]').click();
+    const lowPanel = page.locator('[data-sidebar-view="source-control:tests.low-source.view"]');
+    await expect(lowPanel).toContainText('Low updated');
+    await lowPanel.locator('.source-control-more-button').click();
+    await expect(page.locator('.source-control-overflow-menu')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.source-control-overflow-menu')).toHaveCount(0);
+
+    await lowPanel.locator('.source-control-action', { hasText: 'Configure values' }).click();
+    const form = lowPanel.locator('.source-control-form');
+    await form.locator('input[name="summary"]').fill('Typed summary');
+    await form.locator('textarea[name="details"]').fill('Typed details');
+    await form.locator('select[name="branch"]').selectOption('develop');
+    await form.locator('input[name="amend"]').check();
+    await form.locator('button[type="submit"]').click();
+    await expect.poll(() => page.evaluate(() => window.__sourceControlViewHarness.payloads.length)).toBe(1);
+    expect(await page.evaluate(() => window.__sourceControlViewHarness.payloads[0])).toEqual({
+      sourceControlId: 'tests.low-source.view',
+      actionId: 'configure',
+      values: {
+        summary: 'Typed summary',
+        details: 'Typed details',
+        branch: 'develop',
+        amend: true
+      },
+      kind: 'action'
+    });
+
+    await page.locator('[data-workbench-view="source-control:tests.race-source.view"]').click();
+    let racePanel = page.locator('[data-sidebar-view="source-control:tests.race-source.view"]');
+    await racePanel.locator('.source-control-action', { hasText: 'Run delayed' }).click();
+    await expect(racePanel.locator('.source-control-action', { hasText: 'Run delayed' })).toBeDisabled();
+    expect((await page.evaluate(() => window.__sourceControlViewHarness.replaceRace())).ok).toBe(true);
+    racePanel = page.locator('[data-sidebar-view="source-control:tests.race-source.view"]');
+    await expect(racePanel.locator('.source-control-heading')).toHaveText('Replacement provider');
+    await expect(racePanel).toContainText('Replacement ready');
+    await expect(racePanel.locator('.source-control-host-error')).toHaveCount(0);
+    await expect(racePanel.locator('.source-control-action', { hasText: 'Run delayed' })).toBeEnabled();
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await stop(app);
+    await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+  }
+});

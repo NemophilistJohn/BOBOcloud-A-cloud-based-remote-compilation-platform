@@ -21,13 +21,13 @@ export {
   createScmFileDecorationProvider,
   normalizeScmDecorationEntries,
   normalizeScmRelativePath
-} from './scm-file-decoration.js';
+} from './scm-file-decoration.ts';
 export {
   ScmGitOperation,
   ScmGitPermission,
   normalizeScmGitRequest,
   scmGitPermissionForOperation
-} from './scm-git.js';
+} from './scm-git.ts';
 export {
   AgentPhase,
   AgentSessionStatus,

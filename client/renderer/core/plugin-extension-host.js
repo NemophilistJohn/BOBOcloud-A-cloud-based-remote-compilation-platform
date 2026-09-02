@@ -1,8 +1,8 @@
 import { DisposableStore, toDisposable } from './disposable.js';
 import { ContributionPoint } from './contribution-registry.ts';
 import { PLUGIN_API_VERSION, PluginPermission, validatePluginManifest } from './plugin-runtime.js';
-import { createScmFileDecorationProvider } from './scm-file-decoration.js';
-import { normalizeScmGitRequest } from './scm-git.js';
+import { createScmFileDecorationProvider } from './scm-file-decoration.ts';
+import { normalizeScmGitRequest } from './scm-git.ts';
 import { SourceControlStateStore, validateSourceControlDescriptor } from './source-control.js';
 import { validateDocumentViewDescriptor } from './document-view.js';
 import { validateAgentDescriptor } from './agent.js';

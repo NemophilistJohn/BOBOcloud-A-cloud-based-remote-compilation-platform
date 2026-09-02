@@ -26,6 +26,7 @@ import type { ServiceRegistry } from '../renderer/core/service-registry';
 import type { AgentStateStore } from '../renderer/core/agent.js';
 import type { PluginRuntime } from '../renderer/core/plugin-runtime.js';
 import type { SourceControlStateStoreContract } from './source-control';
+import type { SourceControlViewService } from './source-control-view';
 import type {
   AgentDescriptorDto,
   DocumentViewDescriptorDto,
@@ -50,6 +51,7 @@ export interface RendererServiceMap {
   readonly 'workbench.serverTransport': Readonly<ServerTransportService>;
   readonly 'workbench.serverCapabilities': ServerCapabilityService;
   readonly 'workbench.cloudFeaturePolicy': Readonly<CloudFeaturePolicyService>;
+  readonly 'workbench.sourceControlView': SourceControlViewService;
 }
 
 export interface RendererPluginServiceMap {
@@ -209,6 +211,32 @@ export type {
   SourceControlToolbarActionRegistrationDto,
   SourceControlVersionDto
 } from './source-control';
+export type {
+  SourceControlViewCommandPort,
+  SourceControlViewCommandResult,
+  SourceControlViewDependencies,
+  SourceControlViewI18n,
+  SourceControlViewService,
+  SourceControlViewWorkbench
+} from './source-control-view';
+export type {
+  ScmDecorationClearResultDto,
+  ScmDecorationEntryDto,
+  ScmDecorationEntryRegistrationDto,
+  ScmDecorationSetResultDto,
+  ScmFileDecorationProvider,
+  ScmFileDecorationProviderOptions,
+  ScmFileStatusDto,
+  ScmGitArgumentsMap,
+  ScmGitArgumentsRegistrationMap,
+  ScmGitOperationDto,
+  ScmGitPermissionDto,
+  ScmGitPermissionFor,
+  ScmGitReadOperationDto,
+  ScmGitRequestDto,
+  ScmGitRequestRegistrationDto,
+  ScmGitWriteOperationDto
+} from './scm';
 
 export interface RendererPlatform {
   readonly apiVersion: string;

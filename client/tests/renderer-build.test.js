@@ -38,7 +38,7 @@ const EXPECTED_MODULES = [
   '../src/command-palette.js',
   './core/plugin-extension-bootstrap.js',
   '../src/workbench-layout.js',
-  '../src/source-control-view.js',
+  './compat/source-control-view-adapter.ts',
   '../src/file-search.js',
   '../src/settings.js',
   '../src/plugin-manager-ui.js',
@@ -170,6 +170,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-decoration-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/source-control.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/source-control.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/scm-file-decoration.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/scm-file-decoration.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/scm-git.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/scm-git.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/disposable.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/disposable.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/platform.ts')));
@@ -187,6 +191,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/diagnostics-settings-adapter.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/project-tasks.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/project-tasks-adapter.ts')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/source-control-view.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/source-control-view.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/source-control-view-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/source-control-view-adapter.js')), false);
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/src/ai-chat-panel.js')));
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/node_modules/temml/dist/temml.mjs')));
   assert.ok(terminalUiSourceMap.sources.some((source) => source.endsWith('/renderer/terminal-ui-entry.js')));

@@ -1,5 +1,5 @@
 /* Trusted source-control extension host. Plugin strings are inserted only as
- * text nodes by src/source-control-view.js; this stylesheet has no plugin CSS
+ * text nodes by src/source-control-view.ts; this stylesheet has no plugin CSS
  * extension point. */
 .source-control-sidebar { background: var(--bg-surface); }
 .source-control-header { position: relative; z-index: 3; overflow: visible; }

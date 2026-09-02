@@ -149,6 +149,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/core/contribution-registry.ts',
   'renderer/core/file-decoration.ts',
   'renderer/core/source-control.ts',
+  'renderer/core/scm-file-decoration.ts',
+  'renderer/core/scm-git.ts',
   'renderer/compat/file-decoration-adapter.ts',
   'theme-manager.js',
   'editor-rules/completion-engine.js',
@@ -170,6 +172,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'src/toast.js',
   'src/command-palette.js',
   'src/workbench-layout.js',
+  'src/source-control-view.ts',
+  'renderer/compat/source-control-view-adapter.ts',
   'src/file-search.js',
   'src/settings.js',
   'src/language-packs-panel.js',
@@ -283,6 +287,8 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'bootstrap.js',
     'file-decoration.js',
     'source-control.js',
+    'scm-file-decoration.js',
+    'scm-git.js',
     'typed-platform.ts'
   ]) {
     assert.equal(
@@ -294,7 +300,9 @@ test('HTML has at most two startup scripts and the renderer build covers every f
   for (const legacyModule of [
     'src/file-icons.js',
     'renderer/compat/file-icons-adapter.js',
-    'renderer/compat/file-decoration-adapter.js'
+    'renderer/compat/file-decoration-adapter.js',
+    'src/source-control-view.js',
+    'renderer/compat/source-control-view-adapter.js'
   ]) {
     assert.equal(
       fs.existsSync(path.join(ROOT, legacyModule)),

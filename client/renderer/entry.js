@@ -32,7 +32,7 @@ import '../src/toast.js';
 import '../src/command-palette.js';
 import './core/plugin-extension-bootstrap.js';
 import '../src/workbench-layout.js';
-import '../src/source-control-view.js';
+import './compat/source-control-view-adapter.ts';
 import '../src/file-search.js';
 import '../src/settings.js';
 import '../src/plugin-manager-ui.js';

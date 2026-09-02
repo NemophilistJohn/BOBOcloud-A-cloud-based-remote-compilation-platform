@@ -122,10 +122,15 @@ export class CommandRegistry<
     id: Id & SingleCommandId<Id>,
     ...args: Parameters<StrictCommandFor<Commands, NoInfer<Id>>>
   ): Promise<Awaited<ReturnType<StrictCommandFor<Commands, Id>>>> {
+    return await this.executeDynamic(id, ...args) as Awaited<ReturnType<StrictCommandFor<Commands, Id>>>;
+  }
+
+  /** Runtime boundary for command ids supplied by a validated plugin descriptor. */
+  async executeDynamic(id: string, ...args: unknown[]): Promise<unknown> {
     const record = this._records.get(id);
     if (!record) throw new Error('Unknown command: ' + id);
     try {
-      return await record.handler(...args) as Awaited<ReturnType<StrictCommandFor<Commands, Id>>>;
+      return await record.handler(...args);
     } catch (error) {
       try {
         this._onError({ source: 'command', id: record.id, owner: record.owner, error });
@@ -142,6 +147,17 @@ export class CommandRegistry<
   ): Promise<CommandExecutionResult<Awaited<ReturnType<StrictCommandFor<Commands, Id>>>>> {
     try {
       return { ok: true, value: await this.execute<Id>(id, ...args) };
+    } catch (error) {
+      return { ok: false, error };
+    }
+  }
+
+  async executeDynamicIsolated(
+    id: string,
+    ...args: unknown[]
+  ): Promise<CommandExecutionResult<unknown>> {
+    try {
+      return { ok: true, value: await this.executeDynamic(id, ...args) };
     } catch (error) {
       return { ok: false, error };
     }

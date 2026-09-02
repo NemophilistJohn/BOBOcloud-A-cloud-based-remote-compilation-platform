@@ -1,3 +1,13 @@
+import type {
+  ScmGitArgumentsMap,
+  ScmGitArgumentsRegistrationMap,
+  ScmGitOperationDto,
+  ScmGitPermissionDto,
+  ScmGitPermissionFor,
+  ScmGitRequestDto,
+  ScmGitRequestRegistrationDto
+} from '../../types/scm';
+
 const MAX_REFERENCE_LENGTH = 160;
 const MAX_REMOTE_URL_LENGTH = 2048;
 const MAX_COMMIT_MESSAGE_LENGTH = 16 * 1024;
@@ -25,37 +35,42 @@ export const ScmGitOperation = Object.freeze({
   FETCH: 'fetch',
   PULL: 'pull',
   PUSH: 'push'
-});
+} as const);
 
 export const ScmGitPermission = Object.freeze({
   READ: 'scm.git.read',
   WRITE: 'scm.git.write'
+} as const);
+
+const PERMISSION_BY_OPERATION = Object.freeze({
+  [ScmGitOperation.DETECT]: ScmGitPermission.READ,
+  [ScmGitOperation.STATUS]: ScmGitPermission.READ,
+  [ScmGitOperation.HISTORY]: ScmGitPermission.READ,
+  [ScmGitOperation.DIFF]: ScmGitPermission.READ,
+  [ScmGitOperation.BRANCHES]: ScmGitPermission.READ,
+  [ScmGitOperation.REMOTES]: ScmGitPermission.READ,
+  [ScmGitOperation.CLONE]: ScmGitPermission.WRITE,
+  [ScmGitOperation.INIT]: ScmGitPermission.WRITE,
+  [ScmGitOperation.SET_REMOTE]: ScmGitPermission.WRITE,
+  [ScmGitOperation.STAGE]: ScmGitPermission.WRITE,
+  [ScmGitOperation.STAGE_ALL]: ScmGitPermission.WRITE,
+  [ScmGitOperation.UNSTAGE]: ScmGitPermission.WRITE,
+  [ScmGitOperation.COMMIT]: ScmGitPermission.WRITE,
+  [ScmGitOperation.CHECKOUT]: ScmGitPermission.WRITE,
+  [ScmGitOperation.CREATE_BRANCH]: ScmGitPermission.WRITE,
+  [ScmGitOperation.DELETE_BRANCH]: ScmGitPermission.WRITE,
+  [ScmGitOperation.FETCH]: ScmGitPermission.WRITE,
+  [ScmGitOperation.PULL]: ScmGitPermission.WRITE,
+  [ScmGitOperation.PUSH]: ScmGitPermission.WRITE
+} as const satisfies {
+  readonly [Operation in ScmGitOperationDto]: ScmGitPermissionFor<Operation>;
 });
 
-const READ_OPERATIONS = new Set([
-  ScmGitOperation.DETECT,
-  ScmGitOperation.STATUS,
-  ScmGitOperation.HISTORY,
-  ScmGitOperation.DIFF,
-  ScmGitOperation.BRANCHES,
-  ScmGitOperation.REMOTES
-]);
-
-const WRITE_OPERATIONS = new Set([
-  ScmGitOperation.INIT,
-  ScmGitOperation.CLONE,
-  ScmGitOperation.SET_REMOTE,
-  ScmGitOperation.STAGE,
-  ScmGitOperation.STAGE_ALL,
-  ScmGitOperation.UNSTAGE,
-  ScmGitOperation.COMMIT,
-  ScmGitOperation.CHECKOUT,
-  ScmGitOperation.CREATE_BRANCH,
-  ScmGitOperation.DELETE_BRANCH,
-  ScmGitOperation.FETCH,
-  ScmGitOperation.PULL,
-  ScmGitOperation.PUSH
-]);
+type ScmGitArgumentField<Operation extends ScmGitOperationDto> =
+  Operation extends 'init' ? never : Extract<keyof ScmGitArgumentsRegistrationMap[Operation], string>;
+type ScmGitFieldMap = {
+  readonly [Operation in ScmGitOperationDto]: readonly ScmGitArgumentField<Operation>[];
+};
 
 const FIELDS_BY_OPERATION = Object.freeze({
   [ScmGitOperation.DETECT]: ['includeNested'],
@@ -77,22 +92,41 @@ const FIELDS_BY_OPERATION = Object.freeze({
   [ScmGitOperation.FETCH]: ['repositoryId', 'remote'],
   [ScmGitOperation.PULL]: ['repositoryId', 'remote', 'branch'],
   [ScmGitOperation.PUSH]: ['repositoryId', 'remote', 'branch', 'force', 'setUpstream']
-});
+} as const satisfies ScmGitFieldMap);
 
-function isPlainObject(value) {
+const ALLOWED_FIELDS_BY_OPERATION: Readonly<Record<ScmGitOperationDto, ReadonlySet<string>>> =
+  Object.freeze(Object.fromEntries(
+    Object.entries(FIELDS_BY_OPERATION).map(([operation, fields]) => [operation, new Set(fields)])
+  )) as unknown as Readonly<Record<ScmGitOperationDto, ReadonlySet<string>>>;
+
+function isPlainObject(value: unknown): value is Readonly<Record<string, unknown>> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
 
-function repositoryId(value) {
+function plainDataRecord(value: unknown, label: string): Readonly<Record<string, unknown>> {
+  if (!isPlainObject(value)) throw new TypeError(label + ' must be a plain object.');
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const result: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const key of Object.keys(descriptors)) {
+    const descriptor = descriptors[key];
+    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      throw new TypeError(label + ' cannot contain accessors.');
+    }
+    result[key] = descriptor.value;
+  }
+  return result;
+}
+
+function repositoryId(value: unknown): string {
   if (typeof value !== 'string' || !/^scm-[A-Za-z0-9-]{16,128}$/.test(value)) {
     throw new TypeError('SCM repository id must be an opaque id returned by detect.');
   }
   return value;
 }
 
-function normalizeRelativePath(value, label) {
+function normalizeRelativePath(value: unknown, label: string): string {
   if (typeof value !== 'string' || !value || value.length > 1024 || value.includes('\u0000') || value.includes('\\')) {
     throw new TypeError(label + ' must be a short repository-relative POSIX path.');
   }
@@ -113,7 +147,7 @@ function normalizeRelativePath(value, label) {
   return normalized;
 }
 
-function normalizeRef(value, label) {
+function normalizeRef(value: unknown, label: string): string | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   if (typeof value !== 'string' || value.length > MAX_REFERENCE_LENGTH ||
       !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) || value.includes('..') ||
@@ -123,7 +157,7 @@ function normalizeRef(value, label) {
   return value;
 }
 
-function normalizeBranchName(value, label) {
+function normalizeBranchName(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 120 ||
       !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) || value.includes('..') ||
       value.includes('//') || value.includes('@{') || value.endsWith('.') || value.endsWith('/')) {
@@ -132,12 +166,12 @@ function normalizeBranchName(value, label) {
   return value;
 }
 
-function normalizeOptionalBranch(value, label) {
+function normalizeOptionalBranch(value: unknown, label: string): string | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   return normalizeBranchName(value, label);
 }
 
-function normalizeRemoteName(value, label, fallback = 'origin') {
+function normalizeRemoteName(value: unknown, label: string, fallback = 'origin'): string {
   const name = value === undefined || value === null || value === '' ? fallback : value;
   if (typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
     throw new TypeError(label + ' is invalid.');
@@ -145,7 +179,7 @@ function normalizeRemoteName(value, label, fallback = 'origin') {
   return name;
 }
 
-function normalizeRemoteUrl(value) {
+function normalizeRemoteUrl(value: unknown): string {
   if (typeof value !== 'string' || !value || value.length > MAX_REMOTE_URL_LENGTH || /[\s\u0000]/.test(value)) {
     throw new TypeError('SCM remote url is invalid.');
   }
@@ -159,23 +193,23 @@ function normalizeRemoteUrl(value) {
     return value;
   }
   const scp = !value.includes('://') && value.match(/^([A-Za-z0-9._-]+@)?([A-Za-z0-9.-]+):[A-Za-z0-9._~/-]+$/);
-  if (scp && (scp[1] || scp[2].includes('.') || scp[2].toLowerCase() === 'localhost')) return value;
+  if (scp && (scp[1] || scp[2]!.includes('.') || scp[2]!.toLowerCase() === 'localhost')) return value;
   throw new TypeError('SCM remote url must use HTTPS or SSH.');
 }
 
-function normalizeCommitMessage(value) {
+function normalizeCommitMessage(value: unknown): string {
   if (typeof value !== 'string' || !value.trim() || value.length > MAX_COMMIT_MESSAGE_LENGTH || value.includes('\u0000')) {
     throw new TypeError('SCM commit message is invalid.');
   }
   return value;
 }
 
-function requireBoolean(value, label) {
+function requireBoolean(value: unknown, label: string): boolean {
   if (typeof value !== 'boolean') throw new TypeError(label + ' must be a boolean.');
   return value;
 }
 
-function requirePaths(value) {
+function requirePaths(value: unknown): readonly string[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_PATH_COUNT) {
     throw new TypeError('SCM paths must contain between 1 and ' + MAX_PATH_COUNT + ' relative paths.');
   }
@@ -184,36 +218,40 @@ function requirePaths(value) {
   return Object.freeze(paths);
 }
 
-function normalizeOffset(value) {
+function normalizeOffset(value: unknown): number | undefined {
   if (value === undefined || value === null) return undefined;
-  if (!Number.isInteger(value) || value < 0 || value > MAX_PAGE_OFFSET) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > MAX_PAGE_OFFSET) {
     throw new TypeError('SCM offset must be an integer from 0 to ' + MAX_PAGE_OFFSET + '.');
   }
   return value;
 }
 
-function normalizeLimit(value, maximum, label) {
+function normalizeLimit(value: unknown, maximum: number, label: string): number | undefined {
   if (value === undefined || value === null) return undefined;
-  if (!Number.isInteger(value) || value < 1 || value > maximum) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > maximum) {
     throw new TypeError(label + ' must be an integer from 1 to ' + maximum + '.');
   }
   return value;
 }
 
-function normalizeArguments(operation, value) {
-  if (!isPlainObject(value)) throw new TypeError('SCM Git arguments must be a plain object.');
-  const allowedFields = new Set(FIELDS_BY_OPERATION[operation]);
+function normalizeArguments<Operation extends ScmGitOperationDto>(
+  operation: Operation,
+  rawValue: unknown
+): ScmGitArgumentsMap[Operation] {
+  const value = plainDataRecord(rawValue, 'SCM Git arguments');
+  const allowedFields = ALLOWED_FIELDS_BY_OPERATION[operation];
   for (const field of Object.keys(value)) {
     if (!allowedFields.has(field)) {
       throw new TypeError('SCM Git operation "' + operation + '" does not accept "' + field + '".');
     }
   }
 
-  const result = Object.create(null);
+  const result: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   if (operation !== ScmGitOperation.DETECT && operation !== ScmGitOperation.CLONE && operation !== ScmGitOperation.INIT) {
     result.repositoryId = repositoryId(value.repositoryId);
   }
-  switch (operation) {
+  const concreteOperation: ScmGitOperationDto = operation;
+  switch (concreteOperation) {
     case ScmGitOperation.DETECT:
       if (value.includeNested !== undefined) result.includeNested = requireBoolean(value.includeNested, 'SCM includeNested');
       break;
@@ -295,16 +333,29 @@ function normalizeArguments(operation, value) {
       if (value.force !== undefined) result.force = requireBoolean(value.force, 'SCM force');
       if (value.setUpstream !== undefined) result.setUpstream = requireBoolean(value.setUpstream, 'SCM setUpstream');
       break;
-    default:
+    case ScmGitOperation.BRANCHES:
+    case ScmGitOperation.REMOTES:
+    case ScmGitOperation.INIT:
+    case ScmGitOperation.STAGE_ALL:
       break;
+    default:
+      return assertNever(concreteOperation);
   }
-  return Object.freeze(result);
+  return Object.freeze(result) as ScmGitArgumentsMap[Operation];
 }
 
-export function scmGitPermissionForOperation(operation) {
-  if (READ_OPERATIONS.has(operation)) return ScmGitPermission.READ;
-  if (WRITE_OPERATIONS.has(operation)) return ScmGitPermission.WRITE;
+export function scmGitPermissionForOperation<Operation extends ScmGitOperationDto>(
+  operation: Operation
+): ScmGitPermissionFor<Operation>;
+export function scmGitPermissionForOperation(operation: unknown): ScmGitPermissionDto {
+  if (typeof operation === 'string' && Object.prototype.hasOwnProperty.call(PERMISSION_BY_OPERATION, operation)) {
+    return PERMISSION_BY_OPERATION[operation as ScmGitOperationDto];
+  }
   throw new TypeError('Unknown SCM Git operation: ' + String(operation));
+}
+
+function assertNever(value: never): never {
+  throw new TypeError('Unknown SCM Git operation: ' + String(value));
 }
 
 /**
@@ -312,15 +363,18 @@ export function scmGitPermissionForOperation(operation) {
  * renderer contract accepts no cwd, repository root, environment, shell, or
  * arbitrary Git arguments, which keeps cloud synchronization out of SCM.
  */
-export function normalizeScmGitRequest(value) {
-  if (!isPlainObject(value)) throw new TypeError('SCM Git request must be a plain object.');
-  const keys = Object.keys(value);
+export function normalizeScmGitRequest<Operation extends ScmGitOperationDto>(
+  value: ScmGitRequestRegistrationDto<Operation>
+): ScmGitRequestDto<Operation>;
+export function normalizeScmGitRequest(value: unknown): ScmGitRequestDto {
+  const request = plainDataRecord(value, 'SCM Git request');
+  const keys = Object.keys(request);
   if (keys.some((key) => key !== 'operation' && key !== 'args')) {
     throw new TypeError('SCM Git request includes an unsupported field.');
   }
-  if (typeof value.operation !== 'string') throw new TypeError('SCM Git operation must be a string.');
-  const operation = value.operation;
+  if (typeof request.operation !== 'string') throw new TypeError('SCM Git operation must be a string.');
+  const operation = request.operation as ScmGitOperationDto;
   const permission = scmGitPermissionForOperation(operation);
-  const args = normalizeArguments(operation, value.args === undefined ? Object.create(null) : value.args);
-  return Object.freeze({ operation, permission, args });
+  const args = normalizeArguments(operation, request.args === undefined ? Object.create(null) : request.args);
+  return Object.freeze({ operation, permission, args }) as ScmGitRequestDto;
 }

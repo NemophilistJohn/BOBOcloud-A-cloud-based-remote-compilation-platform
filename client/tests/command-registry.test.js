@@ -178,6 +178,28 @@ test('registration handles, owner disposal, and global disposal preserve identit
   assert.throws(() => commands.register('late', () => {}), /has been disposed/);
 });
 
+test('dynamic execution keeps runtime plugin ids explicit without widening typed maps', async () => {
+  const observed = [];
+  const commands = new CommandRegistry({ onError: event => observed.push(event) });
+  const failure = new Error('dynamic failure');
+  commands.register('plugin.dynamic', payload => ({ accepted: payload.value }));
+  commands.register('plugin.failure', () => { throw failure; }, { owner: 'plugin.owner' });
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await commands.executeDynamic('plugin.dynamic', { value: 7 }))),
+    { accepted: 7 }
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await commands.executeDynamicIsolated('plugin.dynamic', { value: 8 }))),
+    { ok: true, value: { accepted: 8 } }
+  );
+  const failed = await commands.executeDynamicIsolated('plugin.failure');
+  assert.equal(failed.ok, false);
+  assert.equal(failed.error, failure);
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].id, 'plugin.failure');
+});
+
 test('typed command maps enforce host IDs, arguments, handlers, and isolated narrowing', () => {
   const source = [
     "import { CommandRegistry } from '../renderer/core/command-registry';",
@@ -199,6 +221,13 @@ test('typed command maps enforce host IDs, arguments, handlers, and isolated nar
     '});',
     '// @ts-expect-error Unknown host command IDs are rejected by the typed facade.',
     "commands.execute('plugin.dynamic');",
+    "const erasedResult: Promise<unknown> = commands.executeDynamic('plugin.dynamic', { value: 1 });",
+    "commands.executeDynamicIsolated('plugin.dynamic', { value: 1 }).then(result => {",
+    '  if (result.ok) {',
+    '    // @ts-expect-error Dynamic results remain unknown until the caller validates them.',
+    '    result.value.value;',
+    '  }',
+    '});',
     '// @ts-expect-error Unknown host command IDs cannot be registered through the typed facade.',
     "commands.register('plugin.dynamic', () => undefined);",
     '// @ts-expect-error Project Tasks commands accept no arguments.',
@@ -238,7 +267,8 @@ test('typed command maps enforce host IDs, arguments, handlers, and isolated nar
     'void (null as unknown as InvalidRegistry);',
     'void (null as unknown as OptionalRegistry);',
     'void invalidRefreshResult;',
-    'void dynamicResult;'
+    'void dynamicResult;',
+    'void erasedResult;'
   ].join('\n');
 
   assertTypeScriptContract({

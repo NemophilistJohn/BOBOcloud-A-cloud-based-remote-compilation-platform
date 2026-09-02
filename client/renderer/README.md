@@ -18,6 +18,12 @@ module is `src/file-icons.ts`: it exports an injected service factory,
 same instance through `BOBO.fileIcons`. Follow that pattern one low-coupling
 module at a time; do not move a feature and all of its consumers in one change.
 
+The source-control slice follows the same boundary: typed SCM request and
+decoration DTOs feed a host-rendered `src/source-control-view.ts` service, while
+`compat/source-control-view-adapter.ts` is the only legacy projection. Runtime
+plugin command ids use the explicit dynamic-command port, and the view remains
+host-only rather than becoming a plugin service.
+
 `core/native-host-adapter.ts` is the only new-code entrypoint to the preload
 bridge. It projects narrow, host-only domain services into the service registry;
 feature modules consume those services through injection. The rclone renderer

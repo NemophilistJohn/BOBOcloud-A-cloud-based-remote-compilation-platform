@@ -324,7 +324,7 @@ test('dynamic UI translation entry points reference defined English keys', () =>
     'ai-agent-button.js', 'ai-chat-panel.js', 'ai-markdown.js', 'ai-settings-center.js',
     'ai-prompts.js', 'collaboration.js', 'account-profile.js',
     'project-tasks.ts', 'workspace-sync-status.js', 'task-problem-matcher.js', 'runner.js', 'run-config.js', 'runtime.js', 'dap-client.js', 'terminal.js', 'auth.js', 'plugin-manager-ui.js', 'plugin-details.js',
-    'source-control-view.js', 'agent-workbench.js', 'command-palette.js', 'file-search.js', 'settings.js', 'workspace-launch.js', 'workspace.js', 'projects.js', 'cache-center.js', 'environment-center.js', 'package-center.js', 'rclone-settings.js'
+    'source-control-view.ts', 'agent-workbench.js', 'command-palette.js', 'file-search.js', 'settings.js', 'workspace-launch.js', 'workspace.js', 'projects.js', 'cache-center.js', 'environment-center.js', 'package-center.js', 'rclone-settings.js'
   ];
 
   function assertLiteralCalls(source, fileName, pattern, keyGroup) {
