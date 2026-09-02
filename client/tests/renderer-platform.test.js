@@ -75,9 +75,15 @@ function createCompatibilityContext(consoleObject = console) {
   });
   return {
     console: consoleObject,
-    document: {},
+    document: {
+      getElementById: () => null,
+      addEventListener() {},
+      removeEventListener() {}
+    },
     window: {
       BOBO: { state: {} },
+      addEventListener() {},
+      removeEventListener() {},
       api: {
         readDiagnosticsSettings: async () => ({}),
         writeDiagnosticsSettings: async () => true,
@@ -106,11 +112,11 @@ function createCompatibilityContext(consoleObject = console) {
 test.before(async () => {
   temporaryDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'bobocloud-renderer-platform-'));
   core = await bundleModule('renderer/core/index.js', 'core');
-  fileIconsModule = await bundleModule('src/file-icons.js', 'file-icons');
+  fileIconsModule = await bundleModule('src/file-icons.ts', 'file-icons');
   const compatibilityBuild = await esbuild.build({
     absWorkingDir: ROOT,
     stdin: {
-      contents: "import { rendererPlatform } from './renderer/core/bootstrap.ts'; import './renderer/core/native-host-adapter.ts'; import './renderer/compat/platform-adapter.js'; import './renderer/compat/file-icons-adapter.js'; import './renderer/compat/project-tasks-adapter.ts'; window.__tasksPluginView = rendererPlatform.services.getForPlugin('workbench.projectTasks');",
+      contents: "import { rendererPlatform } from './renderer/core/bootstrap.ts'; import './renderer/core/native-host-adapter.ts'; import './renderer/compat/platform-adapter.js'; import './renderer/compat/file-icons-adapter.ts'; import './renderer/compat/project-tasks-adapter.ts'; window.__rendererPlatform = rendererPlatform; window.__fileIconsPluginView = rendererPlatform.services.getForPlugin('workbench.fileIcons'); window.__tasksPluginView = rendererPlatform.services.getForPlugin('workbench.projectTasks');",
       resolveDir: ROOT,
       sourcefile: 'compatibility-test-entry.js'
     },
@@ -436,6 +442,10 @@ test('renderer platform bootstrap exposes the precise runtime contract without a
     'const disposed: boolean = created.disposed;',
     'const disposal: Promise<void> = created.dispose();',
     "created.services.require('workbench.projectTasks').refresh();",
+    "created.services.require('workbench.fileIcons').clearIconCache();",
+    "created.services.getForPlugin('workbench.fileIcons').getFileIcon('main.ts');",
+    '// @ts-expect-error The plugin view cannot invalidate the host icon cache.',
+    "created.services.getForPlugin('workbench.fileIcons').clearIconCache();",
     "created.commands.execute('bobocloud.tasks.refresh');",
     "created.contributions.list('agents')[0]?.capabilities.modes;",
     'created.sourceControls.list();',
@@ -1898,12 +1908,44 @@ test('file icon service is an injected ESM service with legacy-compatible maps',
   });
   assert.equal(icons.getFileIcon('main.ts'), 'assets/icons/file_type_typescript.svg');
   assert.equal(icons.getFileIcon('project.bobo'), 'assets/icons/file_type_bobocloud.svg');
+  assert.equal(icons.getFileIcon('docker-compose.yml'), 'assets/icons/file_type_docker.svg');
+  assert.equal(icons.getFileIcon('.gitignore'), 'assets/icons/file_type_git.svg');
   assert.equal(icons.getFolderIcon('.git'), 'assets/icons/file_type_git.svg');
   assert.equal(icons.getFileIcon('unknown.file'), null);
 
   icons.extensionMap['.file'] = 'yaml';
+  assert.equal(icons.getFileIcon('unknown.file'), null);
+  assert.equal(icons.getFileIcon('UNKNOWN.FILE'), 'assets/icons/file_type_yaml.svg');
   icons.clearIconCache();
   assert.equal(icons.getFileIcon('unknown.file'), 'assets/icons/file_type_yaml.svg');
+  assert.equal(icons.getFileIcon('constructor'), null);
+  assert.equal(icons.getFolderIcon('constructor'), null);
+  assert.equal(Object.isFrozen(icons), true);
+  assert.equal(Object.isFrozen(icons.extensionMap), false);
+  assert.equal(Object.getPrototypeOf(icons.extensionMap), Object.prototype);
+  assert.deepEqual(Object.keys(icons), [
+    'getFileIcon', 'getFolderIcon', 'clearIconCache',
+    'extensionMap', 'filenameMap', 'folderIconMap'
+  ]);
+  assert.deepEqual(Object.keys(JSON.parse(JSON.stringify(icons))), [
+    'extensionMap', 'filenameMap', 'folderIconMap'
+  ]);
+});
+
+test('default file icon maps reference packaged SVG assets', () => {
+  const icons = fileIconsModule.createFileIconService({ iconDirectory: 'ico' });
+  const iconNames = new Set([
+    ...Object.values(icons.extensionMap),
+    ...Object.values(icons.filenameMap),
+    ...Object.values(icons.folderIconMap)
+  ]);
+  for (const iconName of iconNames) {
+    assert.equal(
+      fs.existsSync(path.join(ROOT, 'ico', 'file_type_' + iconName + '.svg')),
+      true,
+      'missing packaged file icon: ' + iconName
+    );
+  }
 });
 
 test('thin BOBO adapter projects the same registered file icon service', () => {
@@ -1915,6 +1957,16 @@ test('thin BOBO adapter projects the same registered file icon service', () => {
   assert.equal(BOBO.platform.services.has('workbench.fileIcons'), true);
   assert.equal(BOBO.platform.services.get('workbench.fileIcons'), BOBO.fileIcons);
   assert.equal(BOBO.fileIcons.getFileIcon('main.go'), 'ico/file_type_go.svg');
+  assert.notEqual(context.window.__fileIconsPluginView, BOBO.fileIcons);
+  assert.equal(Object.isFrozen(context.window.__fileIconsPluginView), true);
+  assert.deepEqual(Object.keys(context.window.__fileIconsPluginView), ['getFileIcon', 'getFolderIcon']);
+  assert.equal(context.window.__fileIconsPluginView.getFileIcon('main.go'), 'ico/file_type_go.svg');
+  assert.equal(context.window.__fileIconsPluginView.clearIconCache, undefined);
+  assert.equal(context.window.__fileIconsPluginView.extensionMap, undefined);
+  const fileIconDescription = BOBO.platform.services.describe()
+    .find((service) => service.id === 'workbench.fileIcons');
+  assert.equal(fileIconDescription.owner, 'core.file-icons');
+  assert.equal(fileIconDescription.exposeToPlugins, true);
   assert.equal(BOBO.platform.services.has('workbench.projectTasks'), true);
   assert.equal(BOBO.platform.services.get('workbench.projectTasks'), BOBO.projectTasks);
   const commandIds = BOBO.platform.commands.describe().map((command) => command.id);
@@ -1929,6 +1981,9 @@ test('thin BOBO adapter projects the same registered file icon service', () => {
   assert.equal(context.window.__tasksPluginView.init, undefined);
   assert.equal(typeof context.window.__tasksPluginView.list, 'function');
   assert.equal(typeof context.window.__tasksPluginView.getSelected, 'function');
+  context.window.__rendererPlatform.lifecycle.clear();
+  assert.equal(BOBO.platform.services.has('workbench.fileIcons'), false);
+  assert.equal(BOBO.fileIcons.getFileIcon('main.go'), 'ico/file_type_go.svg');
 });
 
 test('BOBO file decoration facade selects by priority, isolates failures, and forwards lifecycle changes', () => {

@@ -1,3 +1,9 @@
+import type {
+  FileIconNameMap,
+  FileIconService,
+  FileIconServiceOptions
+} from '../types/file-icons';
+
 export const FILE_ICONS_SERVICE_ID = 'workbench.fileIcons';
 
 const DEFAULT_EXTENSION_MAP = Object.freeze({
@@ -15,7 +21,7 @@ const DEFAULT_EXTENSION_MAP = Object.freeze({
   '.json': 'json', '.yaml': 'yaml', '.yml': 'yaml',
   '.sql': 'sql', '.md': 'markdown', '.mdx': 'markdown',
   '.angular': 'angular'
-});
+}) satisfies Readonly<FileIconNameMap>;
 
 const DEFAULT_FILENAME_MAP = Object.freeze({
   'dockerfile': 'docker',
@@ -28,34 +34,40 @@ const DEFAULT_FILENAME_MAP = Object.freeze({
   'makefile': 'c',
   'license': 'yaml',
   'readme.md': 'markdown'
-});
+}) satisfies Readonly<FileIconNameMap>;
 
 const DEFAULT_FOLDER_ICON_MAP = Object.freeze({
   '.git': 'git'
-});
+}) satisfies Readonly<FileIconNameMap>;
 
-export function createFileIconService(options = {}) {
+function ownIconName(map: FileIconNameMap, key: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+}
+
+export function createFileIconService(options: FileIconServiceOptions = {}): FileIconService {
   const iconDirectory = typeof options.iconDirectory === 'string' && options.iconDirectory
     ? options.iconDirectory.replace(/[\\/]$/, '')
     : 'ico';
-  const extensionMap = { ...DEFAULT_EXTENSION_MAP, ...(options.extensionMap || {}) };
-  const filenameMap = { ...DEFAULT_FILENAME_MAP, ...(options.filenameMap || {}) };
-  const folderIconMap = { ...DEFAULT_FOLDER_ICON_MAP, ...(options.folderIconMap || {}) };
-  let iconCache = new Map();
+  const iconPathPrefix = iconDirectory + '/file_type_';
+  const extensionMap: FileIconNameMap = { ...DEFAULT_EXTENSION_MAP, ...(options.extensionMap || {}) };
+  const filenameMap: FileIconNameMap = { ...DEFAULT_FILENAME_MAP, ...(options.filenameMap || {}) };
+  const folderIconMap: FileIconNameMap = { ...DEFAULT_FOLDER_ICON_MAP, ...(options.folderIconMap || {}) };
+  let iconCache = new Map<string, string | null>();
 
-  function buildPath(iconName) {
-    return iconName ? iconDirectory + '/file_type_' + iconName + '.svg' : null;
+  function buildPath(iconName: string | undefined): string | null {
+    return iconName ? iconPathPrefix + iconName + '.svg' : null;
   }
 
-  function getFileIcon(fileName) {
+  function getFileIcon(fileName?: string | null): string | null {
     if (!fileName) return null;
-    if (iconCache.has(fileName)) return iconCache.get(fileName);
+    const cached = iconCache.get(fileName);
+    if (cached !== undefined) return cached;
 
     const lower = fileName.toLowerCase();
-    let iconName = filenameMap[lower];
+    let iconName = ownIconName(filenameMap, lower);
     if (!iconName) {
       const dot = lower.lastIndexOf('.');
-      if (dot !== -1) iconName = extensionMap[lower.substring(dot)];
+      if (dot !== -1) iconName = ownIconName(extensionMap, lower.substring(dot));
     }
 
     const result = buildPath(iconName);
@@ -63,13 +75,13 @@ export function createFileIconService(options = {}) {
     return result;
   }
 
-  function getFolderIcon(folderName) {
+  function getFolderIcon(folderName?: string | null): string | null {
     if (!folderName) return null;
-    return buildPath(folderIconMap[folderName.toLowerCase()]);
+    return buildPath(ownIconName(folderIconMap, folderName.toLowerCase()));
   }
 
-  function clearIconCache() {
-    iconCache = new Map();
+  function clearIconCache(): void {
+    iconCache = new Map<string, string | null>();
   }
 
   return Object.freeze({

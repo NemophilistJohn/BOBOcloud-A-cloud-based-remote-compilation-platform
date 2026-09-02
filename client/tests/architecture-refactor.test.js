@@ -183,7 +183,7 @@ const REQUIRED_RENDERER_INPUTS = [
   'src/output-panel.js',
   'src/terminal.js',
   'src/runtime.js',
-  'src/file-icons.js',
+  'src/file-icons.ts',
   'src/editor-core.js',
   'src/document-views.js',
   'src/workspace.js',
@@ -280,6 +280,13 @@ test('HTML has at most two startup scripts and the renderer build covers every f
       fs.existsSync(path.join(ROOT, 'renderer', 'core', legacyModule)),
       false,
       'legacy renderer core module must not coexist with the typed platform: ' + legacyModule
+    );
+  }
+  for (const legacyModule of ['src/file-icons.js', 'renderer/compat/file-icons-adapter.js']) {
+    assert.equal(
+      fs.existsSync(path.join(ROOT, legacyModule)),
+      false,
+      'legacy file-icons module must not coexist with the TypeScript implementation: ' + legacyModule
     );
   }
 

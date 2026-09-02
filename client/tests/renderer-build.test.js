@@ -53,7 +53,7 @@ const EXPECTED_MODULES = [
   '../src/output-panel.js',
   '../src/terminal.js',
   '../src/runtime.js',
-  './compat/file-icons-adapter.js',
+  './compat/file-icons-adapter.ts',
   '../src/workspace-sync-status.js',
   '../src/workspace-settings.js',
   '../src/editor-core.js',
@@ -172,8 +172,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/platform.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/bootstrap.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/bootstrap.js')), false);
-  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.js')));
-  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/file-icons.js')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/file-icons.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/file-icons.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/server-transport.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/server-capabilities.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/cloud-feature-policy.ts')));

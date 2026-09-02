@@ -47,7 +47,7 @@ import '../src/lsp-client.js';
 import '../src/output-panel.js';
 import '../src/terminal.js';
 import '../src/runtime.js';
-import './compat/file-icons-adapter.js';
+import './compat/file-icons-adapter.ts';
 import '../src/workspace-sync-status.js';
 import '../src/workspace-settings.js';
 import '../src/editor-core.js';

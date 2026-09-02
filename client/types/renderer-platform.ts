@@ -12,6 +12,7 @@ import type {
 } from './server-runtime';
 import type { DisposableStore } from './lifecycle';
 import type { RcloneNativeHost } from './native-host';
+import type { FileIconPluginView, FileIconService } from './file-icons';
 import type { CommandRegistry } from '../renderer/core/command-registry';
 import type {
   ContributionRegistrationMapFor,
@@ -39,6 +40,7 @@ export interface RendererServiceMap {
   readonly 'host.projectTasks': Readonly<ProjectTasksHost>;
   readonly 'host.rclone': Readonly<RcloneNativeHost>;
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
+  readonly 'workbench.fileIcons': FileIconService;
   readonly 'workbench.projectTasks': ProjectTasksService;
   readonly 'workbench.rclone': RcloneClient;
   readonly 'workbench.serverTransport': Readonly<ServerTransportService>;
@@ -47,6 +49,7 @@ export interface RendererServiceMap {
 }
 
 export interface RendererPluginServiceMap {
+  readonly 'workbench.fileIcons': FileIconPluginView;
   readonly 'workbench.projectTasks': ProjectTasksPluginView;
 }
 
@@ -71,6 +74,13 @@ export type RendererContributionRegistrationMap =
   ContributionRegistrationMapFor<RendererContributionMap>;
 
 export type { Disposable, DisposableStore, MaybeAsyncDisposable } from './lifecycle';
+export type {
+  FileIconLookupService,
+  FileIconNameMap,
+  FileIconPluginView,
+  FileIconService,
+  FileIconServiceOptions
+} from './file-icons';
 export type {
   CommandDescription,
   CommandExecutionFailure,

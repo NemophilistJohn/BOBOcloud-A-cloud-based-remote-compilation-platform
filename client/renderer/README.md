@@ -13,8 +13,8 @@ to `window.BOBO` at their public boundary.
 `core/` now contains the explicit renderer platform: lifecycle ownership plus
 service, command, contribution, and plugin registries. `compat/` is the only
 place that should add new legacy `window.BOBO` projections. The first migrated
-module is `src/file-icons.js`: it exports an injected service factory,
-`compat/file-icons-adapter.js` registers the service, and legacy callers see the
+module is `src/file-icons.ts`: it exports an injected service factory,
+`compat/file-icons-adapter.ts` registers the service, and legacy callers see the
 same instance through `BOBO.fileIcons`. Follow that pattern one low-coupling
 module at a time; do not move a feature and all of its consumers in one change.
 
