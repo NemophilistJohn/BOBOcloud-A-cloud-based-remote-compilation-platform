@@ -1,5 +1,10 @@
 import type { Disposable } from './lifecycle';
 
+export type {
+  SourceControlDescriptorDto,
+  SourceControlDescriptorRegistrationDto
+} from './source-control';
+
 export type RendererOpaqueContributionDto = object;
 
 export type FileDecorationLaneDto = 'sync' | 'scm' | 'diagnostic';
@@ -26,22 +31,6 @@ export interface FileDecorationProviderDto<Lane extends FileDecorationLaneDto> {
   readonly onDidChange?: (
     listener: (paths?: readonly string[]) => void
   ) => Disposable | null | void;
-}
-
-export interface SourceControlDescriptorDto {
-  readonly id: string;
-  readonly title: string;
-  readonly icon: 'git-branch';
-  readonly order: number;
-  readonly openCommand: string | null;
-}
-
-export interface SourceControlDescriptorRegistrationDto {
-  readonly id: string;
-  readonly title: string;
-  readonly icon?: 'git-branch';
-  readonly order?: number;
-  readonly openCommand?: string | null;
 }
 
 export interface DocumentViewDescriptorDto {

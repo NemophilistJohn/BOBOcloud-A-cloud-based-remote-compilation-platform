@@ -20,7 +20,7 @@ import type {
 import type { ServiceRegistry } from '../renderer/core/service-registry';
 import type { AgentStateStore } from '../renderer/core/agent.js';
 import type { PluginRuntime } from '../renderer/core/plugin-runtime.js';
-import type { SourceControlStateStore } from '../renderer/core/source-control.js';
+import type { SourceControlStateStoreContract } from './source-control';
 import type {
   AgentDescriptorDto,
   DocumentViewDescriptorDto,
@@ -124,6 +124,66 @@ export type {
   SourceControlDescriptorDto,
   SourceControlDescriptorRegistrationDto
 } from './contributions';
+export type {
+  SourceControlAddedEvent,
+  SourceControlActionDto,
+  SourceControlActionIconDto,
+  SourceControlActionKindDto,
+  SourceControlActionPlacementDto,
+  SourceControlActionRegistrationDto,
+  SourceControlButtonActionDto,
+  SourceControlButtonActionRegistrationDto,
+  SourceControlCheckboxFormFieldDto,
+  SourceControlCheckboxFormFieldRegistrationDto,
+  SourceControlChangeEvent,
+  SourceControlChangeListener,
+  SourceControlChangeType,
+  SourceControlClearedEvent,
+  SourceControlCommandDetailsDto,
+  SourceControlCommandPayloadDto,
+  SourceControlFormDto,
+  SourceControlFormFieldDto,
+  SourceControlFormFieldRegistrationDto,
+  SourceControlFormFieldTypeDto,
+  SourceControlFormRegistrationDto,
+  SourceControlFormValues,
+  SourceControlIconDto,
+  SourceControlLoadMoreDto,
+  SourceControlLoadMoreRegistrationDto,
+  SourceControlMenuActionDto,
+  SourceControlMenuActionRegistrationDto,
+  SourceControlPhaseDto,
+  SourceControlRawFormValues,
+  SourceControlRegistrationOptions,
+  SourceControlRemovedEvent,
+  SourceControlSectionDto,
+  SourceControlSectionItemDto,
+  SourceControlSectionItemRegistrationDto,
+  SourceControlSectionRegistrationDto,
+  SourceControlSelectOptionDto,
+  SourceControlSelectOptionRegistrationDto,
+  SourceControlSelectFormFieldDto,
+  SourceControlSelectFormFieldRegistrationDto,
+  SourceControlSnapshot,
+  SourceControlStateDto,
+  SourceControlStateChangedEvent,
+  SourceControlStateHandle,
+  SourceControlStateRegistrationDto,
+  SourceControlStateStoreContract,
+  SourceControlStateStoreErrorEvent,
+  SourceControlStateStoreOptions,
+  SourceControlSummaryDto,
+  SourceControlSummaryItemDto,
+  SourceControlSummaryItemRegistrationDto,
+  SourceControlSummaryRegistrationDto,
+  SourceControlTextFormFieldDto,
+  SourceControlTextFormFieldRegistrationDto,
+  SourceControlTextareaFormFieldDto,
+  SourceControlTextareaFormFieldRegistrationDto,
+  SourceControlToolbarActionDto,
+  SourceControlToolbarActionRegistrationDto,
+  SourceControlVersionDto
+} from './source-control';
 
 export interface RendererPlatform {
   readonly apiVersion: string;
@@ -131,7 +191,7 @@ export interface RendererPlatform {
   readonly services: ServiceRegistry<RendererServiceMap, RendererPluginServiceMap>;
   readonly commands: CommandRegistry<RendererCommandMap>;
   readonly contributions: ContributionRegistry<RendererContributionMap>;
-  readonly sourceControls: SourceControlStateStore;
+  readonly sourceControls: SourceControlStateStoreContract;
   readonly agents: AgentStateStore;
   readonly plugins: PluginRuntime;
   readonly disposed: boolean;

@@ -164,6 +164,8 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/command-registry.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/contribution-registry.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/contribution-registry.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/source-control.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/source-control.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/disposable.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/disposable.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/platform.ts')));

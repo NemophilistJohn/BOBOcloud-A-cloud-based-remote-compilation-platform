@@ -45,7 +45,7 @@ export {
   normalizeSourceControlFormValues,
   validateSourceControlDescriptor,
   validateSourceControlState
-} from './source-control.js';
+} from './source-control.ts';
 export {
   PLUGIN_API_VERSION,
   PluginPermission,
