@@ -1377,6 +1377,14 @@
     if (documentRegistration) {
       try {
         var documentView = await BOBO.documentViews.create(filePath, name, documentRegistration);
+        var committedDocumentTab = S.tabs.find(function(t) { return t.path === filePath; });
+        if (committedDocumentTab) {
+          if (committedDocumentTab.documentView !== documentView) {
+            BOBO.documentViews.disposeTab({ documentView: documentView });
+          }
+          activateTab(committedDocumentTab.path);
+          return true;
+        }
         var documentTab = {
           path: filePath,
           name: name,

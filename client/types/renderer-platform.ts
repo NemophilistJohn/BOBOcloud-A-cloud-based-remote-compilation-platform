@@ -28,8 +28,12 @@ import type { PluginRuntime } from '../renderer/core/plugin-runtime.js';
 import type { SourceControlStateStoreContract } from './source-control';
 import type { SourceControlViewService } from './source-control-view';
 import type {
-  AgentDescriptorDto,
   DocumentViewDescriptorDto,
+  DocumentViewHost,
+  DocumentViewService
+} from './document-view';
+import type {
+  AgentDescriptorDto,
   RendererOpaqueContributionDto,
   SourceControlDescriptorDto
 } from './contributions';
@@ -41,9 +45,11 @@ export interface RendererCommandMap {
 
 export interface RendererServiceMap {
   readonly 'host.diagnostics': Readonly<DiagnosticsHost>;
+  readonly 'host.documentViews': Readonly<DocumentViewHost>;
   readonly 'host.projectTasks': Readonly<ProjectTasksHost>;
   readonly 'host.rclone': Readonly<RcloneNativeHost>;
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
+  readonly 'workbench.documentViews': DocumentViewService;
   readonly 'workbench.fileDecorations': FileDecorationService;
   readonly 'workbench.fileIcons': FileIconService;
   readonly 'workbench.projectTasks': ProjectTasksService;
@@ -139,14 +145,46 @@ export type {
   FileDecorationService
 } from './file-decoration';
 export type {
+  DocumentCloseResultDto,
+  DocumentInfoDto,
+  DocumentReadDataDto,
+  DocumentReadRangeDto,
+  DocumentReadResultDto,
+  DocumentViewContributionChangeEventDto,
+  DocumentViewContributionEntryDto,
+  DocumentViewContributionPort,
+  DocumentViewDependencies,
+  DocumentViewDescriptorDto,
+  DocumentViewDescriptorRegistrationDto,
+  DocumentViewHideOptions,
+  DocumentViewHost,
+  DocumentViewI18n,
+  DocumentViewInstance,
+  DocumentViewLocalizationDto,
+  DocumentViewManifestDescriptorDto,
+  DocumentViewPublicDescriptorDto,
+  DocumentViewRegistrationDto,
+  DocumentViewService,
+  DocumentViewState,
+  DocumentViewSubscription,
+  DocumentViewTabLike,
+  DocumentViewThemeDto,
+  DocumentViewThemeKindDto,
+  DocumentViewThemePort,
+  DocumentViewViewsPort,
+  DocumentViewWorkspacePort,
+  LoadedDocumentViewDto,
+  SandboxedDocumentView,
+  SandboxedDocumentViewOptions,
+  VerifiedDocumentViewFileDto
+} from './document-view';
+export type {
   AgentAccessModeDto,
   AgentCapabilitiesDto,
   AgentCommandMapDto,
   AgentDescriptorDto,
   AgentModeDto,
   AgentReasoningEffortDto,
-  DocumentViewDescriptorDto,
-  DocumentViewDescriptorRegistrationDto,
   RendererOpaqueContributionDto,
   SourceControlDescriptorDto,
   SourceControlDescriptorRegistrationDto

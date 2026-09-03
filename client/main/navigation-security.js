@@ -78,7 +78,14 @@ function createNavigationSecurity(options) {
   function blockUntrustedNavigation(event, url, isMainFrame) {
     if (isTrustedRendererUrl(url) || isPluginSandboxBootstrap(isMainFrame, url)) return;
     if (event && typeof event.preventDefault === 'function') event.preventDefault();
-    openExternal(url);
+    // Subframes are untrusted plugin/document sandboxes. Block their navigation
+    // without turning it into an OS-level network side effect.
+    if (isMainFrame === true) openExternal(url);
+  }
+
+  function navigationIsMainFrame(event, legacyIsMainFrame) {
+    if (event && typeof event.isMainFrame === 'boolean') return event.isMainFrame;
+    return legacyIsMainFrame === true;
   }
 
   function isTrustedWebContents(webContents) {
@@ -95,10 +102,18 @@ function createNavigationSecurity(options) {
       blockUntrustedNavigation(event, navigationUrl(event, legacyUrl), true);
     });
     webContents.on('will-frame-navigate', (event, legacyUrl, isMainFrame) => {
-      blockUntrustedNavigation(event, navigationUrl(event, legacyUrl), isMainFrame);
+      blockUntrustedNavigation(
+        event,
+        navigationUrl(event, legacyUrl),
+        navigationIsMainFrame(event, isMainFrame)
+      );
     });
     webContents.on('will-redirect', (event, legacyUrl, isInPlace, isMainFrame) => {
-      blockUntrustedNavigation(event, navigationUrl(event, legacyUrl), isMainFrame);
+      blockUntrustedNavigation(
+        event,
+        navigationUrl(event, legacyUrl),
+        navigationIsMainFrame(event, isMainFrame)
+      );
     });
     webContents.on('will-attach-webview', (event) => {
       if (event && typeof event.preventDefault === 'function') event.preventDefault();

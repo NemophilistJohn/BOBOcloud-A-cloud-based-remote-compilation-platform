@@ -51,7 +51,7 @@ import './compat/file-icons-adapter.ts';
 import '../src/workspace-sync-status.js';
 import '../src/workspace-settings.js';
 import '../src/editor-core.js';
-import '../src/document-views.js';
+import './compat/document-views-adapter.ts';
 import '../src/workspace.js';
 import '../src/agent-workbench.js';
 import '../src/plugin-details.js';

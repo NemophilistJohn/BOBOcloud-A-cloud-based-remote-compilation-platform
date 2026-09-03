@@ -24,6 +24,16 @@ decoration DTOs feed a host-rendered `src/source-control-view.ts` service, while
 plugin command ids use the explicit dynamic-command port, and the view remains
 host-only rather than becoming a plugin service.
 
+Document Views use the same vertical boundary. `core/document-view.ts` owns
+descriptor validation and selection, `core/document-view-sandbox.ts` owns the
+bounded opaque-frame protocol, and `src/document-views.ts` owns injected
+workbench lifecycle. `core/native-host-adapter.ts` exposes only
+the slice's `host.documentViews` capability;
+`compat/document-views-adapter.ts` registers the private
+`workbench.documentViews` service and is the sole `BOBO.documentViews`
+projection for the still-coupled workspace and app callers. Neither service is
+available through the plugin service map.
+
 `core/native-host-adapter.ts` is the only new-code entrypoint to the preload
 bridge. It projects narrow, host-only domain services into the service registry;
 feature modules consume those services through injection. The rclone renderer

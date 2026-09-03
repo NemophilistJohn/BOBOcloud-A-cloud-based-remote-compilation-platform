@@ -1,4 +1,8 @@
 export type {
+  DocumentViewDescriptorDto,
+  DocumentViewDescriptorRegistrationDto
+} from './document-view';
+export type {
   SourceControlDescriptorDto,
   SourceControlDescriptorRegistrationDto
 } from './source-control';
@@ -14,24 +18,6 @@ export type {
 } from './file-decoration';
 
 export type RendererOpaqueContributionDto = object;
-
-export interface DocumentViewDescriptorDto {
-  readonly id: string;
-  readonly title: string;
-  readonly extensions: readonly string[];
-  readonly entry: string;
-  readonly resources: readonly string[];
-  readonly priority: number;
-}
-
-export interface DocumentViewDescriptorRegistrationDto {
-  readonly id: string;
-  readonly title: string;
-  readonly extensions: readonly string[];
-  readonly entry: string;
-  readonly resources?: readonly string[];
-  readonly priority?: number;
-}
 
 export type AgentModeDto = 'chat' | 'goal';
 export type AgentReasoningEffortDto = 'low' | 'medium' | 'high' | 'xhigh' | 'max';

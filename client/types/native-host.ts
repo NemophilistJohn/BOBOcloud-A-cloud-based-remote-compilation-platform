@@ -9,6 +9,13 @@ import type {
   ProjectTaskInputValues,
   ProjectTaskResolveResultDto
 } from './project-tasks';
+import type {
+  DocumentCloseResultDto,
+  DocumentInfoDto,
+  DocumentReadResultDto,
+  DocumentViewLocalizationDto,
+  LoadedDocumentViewDto
+} from './document-view';
 
 export interface WorkspaceTextFileWrite {
   readonly content: string;
@@ -16,9 +23,9 @@ export interface WorkspaceTextFileWrite {
 }
 
 export interface NativeHostPluginDocuments {
-  open(pluginId: string, viewerId: string, filePath: string): Promise<unknown>;
-  read(documentId: string, offset: number, length: number): Promise<unknown>;
-  close(documentId: string): Promise<unknown>;
+  open(pluginId: string, viewerId: string, filePath: string): Promise<DocumentInfoDto>;
+  read(documentId: string, offset: number, length: number): Promise<DocumentReadResultDto>;
+  close(documentId: string): Promise<DocumentCloseResultDto>;
 }
 
 export interface NativeHostPluginMarketplace {
@@ -40,8 +47,8 @@ export interface NativeHostPlugins {
   openFolder(): Promise<unknown>;
   runtimeDescriptors(): Promise<unknown>;
   loadEntry(id: string): Promise<unknown>;
-  loadLocalization(id: string, locale: string): Promise<unknown>;
-  loadDocumentView(pluginId: string, viewerId: string): Promise<unknown>;
+  loadLocalization(id: string, locale: string): Promise<DocumentViewLocalizationDto>;
+  loadDocumentView(pluginId: string, viewerId: string): Promise<LoadedDocumentViewDto>;
   readonly documents: NativeHostPluginDocuments;
   readonly marketplace: NativeHostPluginMarketplace;
   rpc(pluginId: string, method: string, args: unknown): Promise<unknown>;

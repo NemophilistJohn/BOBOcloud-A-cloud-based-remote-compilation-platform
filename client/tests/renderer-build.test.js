@@ -57,7 +57,7 @@ const EXPECTED_MODULES = [
   '../src/workspace-sync-status.js',
   '../src/workspace-settings.js',
   '../src/editor-core.js',
-  '../src/document-views.js',
+  './compat/document-views-adapter.ts',
   '../src/workspace.js',
   '../src/agent-workbench.js',
   '../src/plugin-details.js',
@@ -195,6 +195,14 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/source-control-view.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/source-control-view-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/source-control-view-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/document-view.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/document-view.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/document-view-sandbox.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/document-view-sandbox.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/document-views.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/document-views.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/document-views-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/document-views-adapter.js')), false);
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/src/ai-chat-panel.js')));
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/node_modules/temml/dist/temml.mjs')));
   assert.ok(terminalUiSourceMap.sources.some((source) => source.endsWith('/renderer/terminal-ui-entry.js')));

@@ -9,11 +9,13 @@ import type {
   ProjectTasksHost,
   ProjectTasksWorkspaceOpenedListener
 } from '../../types/project-tasks';
+import type { DocumentViewHost } from '../../types/document-view';
 import type { NativeHost, RcloneNativeHost, RcloneProgressListener } from '../../types/native-host';
 import { toDisposable } from './disposable.js';
 import { rendererPlatform } from './bootstrap';
 
 export const DIAGNOSTICS_HOST_SERVICE_ID = 'host.diagnostics';
+export const DOCUMENT_VIEWS_HOST_SERVICE_ID = 'host.documentViews';
 export const PROJECT_TASKS_HOST_SERVICE_ID = 'host.projectTasks';
 export const RCLONE_HOST_SERVICE_ID = 'host.rclone';
 
@@ -24,6 +26,24 @@ function createDiagnosticsHost(host: NativeHost): Readonly<DiagnosticsHost> {
     onOpen: (listener: DiagnosticsOpenListener) => toDisposable(
       host.onOpenDiagnosticsSettings(() => listener())
     )
+  });
+}
+
+function createDocumentViewsHost(host: NativeHost): Readonly<DocumentViewHost> {
+  return Object.freeze({
+    loadDocumentView: (pluginId: string, viewerId: string) => (
+      host.plugins.loadDocumentView(pluginId, viewerId)
+    ),
+    loadLocalization: (pluginId: string, locale: string) => (
+      host.plugins.loadLocalization(pluginId, locale)
+    ),
+    openDocument: (pluginId: string, viewerId: string, filePath: string) => (
+      host.plugins.documents.open(pluginId, viewerId, filePath)
+    ),
+    readDocument: (documentId: string, offset: number, length: number) => (
+      host.plugins.documents.read(documentId, offset, length)
+    ),
+    closeDocument: (documentId: string) => host.plugins.documents.close(documentId)
   });
 }
 
@@ -80,6 +100,13 @@ const diagnosticsRegistration = rendererPlatform.services.register(
   { owner: 'core', exposeToPlugins: false }
 );
 rendererPlatform.lifecycle.add(diagnosticsRegistration);
+
+const documentViewsRegistration = rendererPlatform.services.register(
+  DOCUMENT_VIEWS_HOST_SERVICE_ID,
+  createDocumentViewsHost(nativeHost),
+  { owner: 'core', exposeToPlugins: false }
+);
+rendererPlatform.lifecycle.add(documentViewsRegistration);
 
 const projectTasksRegistration = rendererPlatform.services.register(
   PROJECT_TASKS_HOST_SERVICE_ID,

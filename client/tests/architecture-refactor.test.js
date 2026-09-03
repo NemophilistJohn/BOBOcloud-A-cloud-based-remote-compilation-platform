@@ -151,6 +151,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/core/source-control.ts',
   'renderer/core/scm-file-decoration.ts',
   'renderer/core/scm-git.ts',
+  'renderer/core/document-view.ts',
+  'renderer/core/document-view-sandbox.ts',
   'renderer/compat/file-decoration-adapter.ts',
   'theme-manager.js',
   'editor-rules/completion-engine.js',
@@ -191,7 +193,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'src/runtime.js',
   'src/file-icons.ts',
   'src/editor-core.js',
-  'src/document-views.js',
+  'src/document-views.ts',
+  'renderer/compat/document-views-adapter.ts',
   'src/workspace.js',
   'src/agent-workbench.js',
   'src/plugin-details.js',
@@ -289,6 +292,8 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'source-control.js',
     'scm-file-decoration.js',
     'scm-git.js',
+    'document-view.js',
+    'document-view-sandbox.js',
     'typed-platform.ts'
   ]) {
     assert.equal(
@@ -302,12 +307,14 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'renderer/compat/file-icons-adapter.js',
     'renderer/compat/file-decoration-adapter.js',
     'src/source-control-view.js',
-    'renderer/compat/source-control-view-adapter.js'
+    'renderer/compat/source-control-view-adapter.js',
+    'src/document-views.js',
+    'renderer/compat/document-views-adapter.js'
   ]) {
     assert.equal(
       fs.existsSync(path.join(ROOT, legacyModule)),
       false,
-      'legacy file-icons module must not coexist with the TypeScript implementation: ' + legacyModule
+      'legacy renderer module must not coexist with the TypeScript implementation: ' + legacyModule
     );
   }
 

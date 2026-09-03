@@ -20,7 +20,6 @@ const LEGACY_DIRECT_ACCESS_LIMITS = new Map([
   ['src/auth.js', 16],
   ['src/collaboration.js', 6],
   ['src/dap-client.js', 27],
-  ['src/document-views.js', 2],
   ['src/environment-center.js', 6],
   ['src/i18n.js', 22],
   ['src/lsp-client.js', 56],
@@ -44,6 +43,12 @@ const MIGRATED_DIAGNOSTICS_MODULES = Object.freeze([
 const MIGRATED_PROJECT_TASKS_MODULES = Object.freeze([
   'renderer/compat/project-tasks-adapter.ts',
   'src/project-tasks.ts'
+]);
+const MIGRATED_DOCUMENT_VIEW_MODULES = Object.freeze([
+  'renderer/core/document-view.ts',
+  'renderer/core/document-view-sandbox.ts',
+  'renderer/compat/document-views-adapter.ts',
+  'src/document-views.ts'
 ]);
 
 function sourceFiles(directory) {
@@ -131,6 +136,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated project tasks slice must not regain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_DOCUMENT_VIEW_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated document views slice must not regain a direct preload dependency: ${file}`);
+  }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],
     'tasksResolve must remain a unique native-adapter bridge capability');
@@ -146,13 +155,22 @@ test('native host services remain private to the workbench', () => {
     path.join(ROOT, 'renderer/compat/diagnostics-settings-adapter.ts'),
     'utf8'
   );
+  const documentViewsAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/document-views-adapter.ts'),
+    'utf8'
+  );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
   assert.match(adapter, /PROJECT_TASKS_HOST_SERVICE_ID\s*=\s*['"]host\.projectTasks['"]/);
   assert.match(adapter, /RCLONE_HOST_SERVICE_ID\s*=\s*['"]host\.rclone['"]/);
-  assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 3);
+  assert.match(adapter, /DOCUMENT_VIEWS_HOST_SERVICE_ID\s*=\s*['"]host\.documentViews['"]/);
+  assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 4);
   assert.doesNotMatch(adapter, /pluginView\s*:/);
   assert.match(diagnosticsAdapter,
     /DIAGNOSTICS_SETTINGS_SERVICE_ID\s*=\s*['"]workbench\.diagnosticsSettings['"]/);
   assert.match(diagnosticsAdapter, /exposeToPlugins:\s*false/);
   assert.doesNotMatch(diagnosticsAdapter, /pluginView\s*:/);
+  assert.match(documentViewsAdapter,
+    /DOCUMENT_VIEWS_SERVICE_ID\s*=\s*['"]workbench\.documentViews['"]/);
+  assert.match(documentViewsAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(documentViewsAdapter, /pluginView\s*:/);
 });

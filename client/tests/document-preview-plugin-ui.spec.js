@@ -1,5 +1,6 @@
 const { test, expect, _electron: electron } = require('playwright/test');
 const fs = require('node:fs');
+const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { createPluginController } = require('../main/plugins');
@@ -89,6 +90,16 @@ test('official document preview renders four formats while retaining an opaque i
   fs.mkdirSync(home, { recursive: true });
   fs.mkdirSync(evidence, { recursive: true });
   let app;
+  const navigationRequests = [];
+  const navigationServer = http.createServer((request, response) => {
+    navigationRequests.push(request.url);
+    response.writeHead(204);
+    response.end();
+  });
+  await new Promise((resolve, reject) => {
+    navigationServer.once('error', reject);
+    navigationServer.listen(0, '127.0.0.1', resolve);
+  });
 
   try {
     app = await electron.launch({
@@ -127,10 +138,17 @@ test('official document preview renders four formats while retaining an opaque i
     }, PLUGIN_ID);
     await page.waitForFunction(() => Boolean(window.BOBO.documentViews.find('guide.md')), null, { timeout: 20000 });
 
-    await page.evaluate(({ filePath, name }) => window.BOBO.workspace.openFile(filePath, name), {
+    await page.evaluate(({ filePath, name }) => Promise.all([
+      window.BOBO.workspace.openFile(filePath, name),
+      window.BOBO.workspace.openFile(filePath, name)
+    ]), {
       filePath: path.join(workspace, 'guide.md'),
       name: 'guide.md'
     });
+    expect(await page.evaluate((filePath) => (
+      window.BOBO.state.tabs.filter((tab) => tab.path === filePath).length
+    ), path.join(workspace, 'guide.md'))).toBe(1);
+    await expect(page.locator('#document-view-host iframe.document-view-frame')).toHaveCount(1);
     let active = await activeDocumentFrame(page);
     await expect(active.frame.locator('.markdown-preview h1')).toHaveText('BOBOCloud Guide');
     await expect(active.frame.locator('.markdown-preview script')).toHaveCount(0);
@@ -144,12 +162,15 @@ test('official document preview renders four formats while retaining an opaque i
     expect(await active.frame.evaluate(async () => {
       try { await fetch('https://example.com/'); return false; } catch (_) { return true; }
     })).toBe(true);
-
     await page.evaluate(async () => { await window.BOBO.i18n.setLocale('zh-CN'); });
     await expect(active.frame.locator('.segmented-control button').first()).toHaveText('预览');
     await page.evaluate(async () => { await window.BOBO.i18n.setLocale('ja'); });
     await expect(active.frame.locator('.segmented-control button').first()).toHaveText('プレビュー');
     await page.evaluate(async () => { await window.BOBO.i18n.setLocale('en'); });
+    await page.evaluate(() => window.themeManager.applyTheme('light'));
+    await expect.poll(() => active.frame.evaluate(() => document.documentElement.dataset.theme)).toBe('light');
+    await page.evaluate(() => window.themeManager.applyTheme('cloud-forge'));
+    await expect.poll(() => active.frame.evaluate(() => document.documentElement.dataset.theme)).toBe('dark');
     await page.screenshot({ path: path.join(evidence, 'official-document-preview-markdown.png'), fullPage: false });
 
     await page.evaluate(({ filePath, name }) => window.BOBO.workspace.openFile(filePath, name), {
@@ -199,11 +220,20 @@ test('official document preview renders four formats while retaining an opaque i
     })).toBe(true);
     await page.screenshot({ path: path.join(evidence, 'official-document-preview-pdf.png'), fullPage: false });
 
+    const navigationAddress = navigationServer.address();
+    const exfiltrationUrl = `http://127.0.0.1:${navigationAddress.port}/leak?document=secret`;
+    await active.frame.evaluate((url) => { window.location.href = url; }, exfiltrationUrl);
+    await expect(page.locator('#document-view-host iframe.document-view-frame:not([hidden])')).toHaveCount(0, { timeout: 5000 });
+    await expect(page.locator('#document-view-host iframe.document-view-frame')).toHaveCount(3);
+    expect(navigationRequests).toEqual([]);
+    await expect(page.locator('#document-view-host .document-view-host-error:not([hidden])')).toBeVisible();
+
     await page.evaluate((id) => window.api.plugins.disable(id), PLUGIN_ID);
     await expect(page.locator('#document-view-host iframe.document-view-frame')).toHaveCount(0, { timeout: 20000 });
     expect(pageErrors).toEqual([]);
   } finally {
     await stop(app);
+    await new Promise((resolve) => navigationServer.close(resolve));
     await fs.promises.rm(sandbox, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
   }
 });

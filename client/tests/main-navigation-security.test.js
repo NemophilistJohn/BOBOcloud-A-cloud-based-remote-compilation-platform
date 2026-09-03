@@ -70,7 +70,7 @@ test('only explicit HTTP(S) external links can leave the app', () => {
   assert.equal(harness.security.allowedExternalUrl('https://user:secret@example.test/'), '');
 });
 
-test('navigation events retain the trusted renderer and block or externally open every other URL', async () => {
+test('navigation events retain the trusted renderer and only externalize blocked main-frame URLs', async () => {
   const harness = createHarness();
   const navigate = harness.listeners.get('will-navigate');
   const frameNavigate = harness.listeners.get('will-frame-navigate');
@@ -83,29 +83,47 @@ test('navigation events retain the trusted renderer and block or externally open
   navigate(externalEvent);
   assert.equal(externalEvent.prevented, true);
 
-  const duplicateFrameEvent = event('https://docs.example.test/guide');
-  frameNavigate(duplicateFrameEvent, undefined, false);
-  assert.equal(duplicateFrameEvent.prevented, true);
+  const subframeEvent = event('https://sandbox.example.test/exfiltrate?secret=value', false);
+  frameNavigate(subframeEvent);
+  assert.equal(subframeEvent.prevented, true);
+  const subframeRedirectEvent = event('https://redirect.example.test/exfiltrate?secret=value', false);
+  redirect(subframeRedirectEvent);
+  assert.equal(subframeRedirectEvent.prevented, true);
+  const ambiguousFrameEvent = event('https://ambiguous.example.test/exfiltrate');
+  frameNavigate(ambiguousFrameEvent);
+  assert.equal(ambiguousFrameEvent.prevented, true);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(harness.opened, ['https://docs.example.test/guide'], 'one navigation must not launch two browser tabs');
+  assert.deepEqual(harness.opened, ['https://docs.example.test/guide'], 'subframe and ambiguous navigation must fail closed');
 
   const blockedEvent = event('javascript:alert(1)');
   frameNavigate(blockedEvent, undefined, false);
   assert.equal(blockedEvent.prevented, true);
-  const redirectEvent = event('https://redirect.example.test/');
-  redirect(redirectEvent, undefined, false, true);
-  assert.equal(redirectEvent.prevented, true);
+  const mainFrameRedirectEvent = event('https://redirect.example.test/', true);
+  redirect(mainFrameRedirectEvent);
+  assert.equal(mainFrameRedirectEvent.prevented, true);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(harness.opened, ['https://docs.example.test/guide', 'https://redirect.example.test/']);
 
   for (const url of ['about:blank', 'about:srcdoc']) {
     const pluginSandboxEvent = event(url, false);
-    frameNavigate(pluginSandboxEvent, undefined, false);
+    frameNavigate(pluginSandboxEvent);
     assert.equal(pluginSandboxEvent.prevented, false, 'the sandboxed plugin iframe must retain its local bootstrap');
   }
   const topLevelAboutBlank = event('about:blank', true);
   navigate(topLevelAboutBlank);
   assert.equal(topLevelAboutBlank.prevented, true, 'the privileged workbench must not navigate to about:blank');
+
+  const legacyMainFrameEvent = event('');
+  delete legacyMainFrameEvent.url;
+  delete legacyMainFrameEvent.isMainFrame;
+  frameNavigate(legacyMainFrameEvent, 'https://legacy.example.test/', true);
+  assert.equal(legacyMainFrameEvent.prevented, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(harness.opened, [
+    'https://docs.example.test/guide',
+    'https://redirect.example.test/',
+    'https://legacy.example.test/'
+  ]);
 });
 
 test('window.open is always denied and only approved links are opened by the system browser', async () => {

@@ -10,6 +10,16 @@ const test = require('node:test');
 
 const { createPluginController, readZipEntries } = require('../main/plugins');
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function hash(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
@@ -37,6 +47,37 @@ async function writePackage(root, version = '1.0.0', source = 'export function a
   await fsp.mkdir(path.join(root, 'dist'), { recursive: true });
   await fsp.writeFile(path.join(root, 'dist', 'extension.js'), source, 'utf8');
   await fsp.writeFile(path.join(root, 'manifest.json'), JSON.stringify(makeManifest(version, source), null, 2), 'utf8');
+}
+
+async function writeDocumentViewPackage(root) {
+  const mainSource = 'export async function activate(context) { await context.documentViews.register({ id: "acme.sample-plugin.preview", title: "Preview" }); }\n';
+  const viewSource = 'export async function activate(context) { await context.read(0, 4); }\n';
+  const styleSource = ':root { color: white; }\n';
+  await fsp.mkdir(path.join(root, 'dist'), { recursive: true });
+  await fsp.writeFile(path.join(root, 'dist', 'extension.js'), mainSource, 'utf8');
+  await fsp.writeFile(path.join(root, 'dist', 'view.js'), viewSource, 'utf8');
+  await fsp.writeFile(path.join(root, 'dist', 'view.css'), styleSource, 'utf8');
+  const manifest = makeManifest('1.0.0', mainSource, {
+    permissions: ['documentViews.register', 'documents.read']
+  });
+  manifest.schemaVersion = 2;
+  manifest.engines.pluginApi = '^1.3.0';
+  manifest.contributes = {
+    documentViewers: [{
+      id: 'acme.sample-plugin.preview',
+      entry: 'dist/view.js',
+      extensions: ['.pdf', '.csv', '.tar.gz'],
+      resources: ['dist/view.css'],
+      priority: 10
+    }]
+  };
+  manifest.integrity.files = {
+    'dist/extension.js': hash(mainSource),
+    'dist/view.js': hash(viewSource),
+    'dist/view.css': hash(styleSource)
+  };
+  await fsp.writeFile(path.join(root, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
+  return { mainSource, viewSource, styleSource };
 }
 
 function makeZip(entries) {
@@ -503,33 +544,7 @@ test('plugin-localization loader returns only a verified selected flat message t
 test('schema-2 document viewers load only verified resources and read through sender-bound workspace handles', async (t) => {
   const harness = await createHarness(t);
   const sourceRoot = path.join(harness.root, 'document-view-package');
-  const mainSource = 'export async function activate(context) { await context.documentViews.register({ id: "acme.sample-plugin.preview", title: "Preview" }); }\n';
-  const viewSource = 'export async function activate(context) { await context.read(0, 4); }\n';
-  const styleSource = ':root { color: white; }\n';
-  await fsp.mkdir(path.join(sourceRoot, 'dist'), { recursive: true });
-  await fsp.writeFile(path.join(sourceRoot, 'dist', 'extension.js'), mainSource, 'utf8');
-  await fsp.writeFile(path.join(sourceRoot, 'dist', 'view.js'), viewSource, 'utf8');
-  await fsp.writeFile(path.join(sourceRoot, 'dist', 'view.css'), styleSource, 'utf8');
-  const manifest = makeManifest('1.0.0', mainSource, {
-    permissions: ['documentViews.register', 'documents.read']
-  });
-  manifest.schemaVersion = 2;
-  manifest.engines.pluginApi = '^1.3.0';
-  manifest.contributes = {
-    documentViewers: [{
-      id: 'acme.sample-plugin.preview',
-      extensions: ['.pdf', '.csv'],
-      entry: 'dist/view.js',
-      resources: ['dist/view.css'],
-      priority: 10
-    }]
-  };
-  manifest.integrity.files = {
-    'dist/extension.js': hash(mainSource),
-    'dist/view.js': hash(viewSource),
-    'dist/view.css': hash(styleSource)
-  };
-  await fsp.writeFile(path.join(sourceRoot, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
+  const { viewSource, styleSource } = await writeDocumentViewPackage(sourceRoot);
   const documentPath = path.join(harness.workspaceRoot, 'sample.pdf');
   await fsp.writeFile(documentPath, Buffer.from([1, 2, 3, 4, 5, 6]));
 
@@ -538,6 +553,9 @@ test('schema-2 document viewers load only verified resources and read through se
   const loaded = await harness.controller.loadDocumentView('acme.sample-plugin', 'acme.sample-plugin.preview');
   assert.equal(loaded.entry.source, viewSource);
   assert.equal(loaded.resources[0].source, styleSource);
+  assert.deepEqual(loaded.viewer.extensions, ['.pdf', '.csv', '.tar.gz']);
+  assert.deepEqual(Object.keys(loaded.viewer).sort(), ['entry', 'extensions', 'id', 'priority', 'resources']);
+  assert.equal(Object.hasOwn(loaded.viewer, 'title'), false);
   assert.equal(JSON.stringify(loaded).includes(harness.root), false, 'view source payload must not leak package paths');
   const registration = await harness.controller.rpc('acme.sample-plugin', 'documentViews.register', {
     id: 'acme.sample-plugin.preview', title: 'Preview'
@@ -589,6 +607,371 @@ test('schema-2 document viewers load only verified resources and read through se
     () => readHandler(trustedEvent, { documentId: reopened.documentId, offset: 0, length: 1 }),
     { code: 'DOCUMENT_VIEW_NOT_FOUND' }
   );
+});
+
+test('document viewer authorization changes before mutation persistence and revoked handles never revive', { concurrency: false }, async (t) => {
+  const harness = await createHarness(t);
+  const sourceRoot = path.join(harness.root, 'document-view-live-authorization');
+  await writeDocumentViewPackage(sourceRoot);
+  const documentPath = path.join(harness.workspaceRoot, 'live.pdf');
+  await fsp.writeFile(documentPath, Buffer.from([1, 2, 3, 4]));
+  await harness.controller.installFromPath(sourceRoot);
+  await harness.controller.setEnabled('acme.sample-plugin', true);
+
+  const trustedEvent = { sender: harness.window.webContents };
+  const openHandler = harness.handlers.get('plugins:document-open');
+  const readHandler = harness.handlers.get('plugins:document-read');
+  const closeHandler = harness.handlers.get('plugins:document-close');
+  const request = {
+    pluginId: 'acme.sample-plugin',
+    viewerId: 'acme.sample-plugin.preview',
+    filePath: documentPath
+  };
+  const opened = await openHandler(trustedEvent, request);
+
+  const permissionsPath = path.join(harness.root, 'plugins', '.permissions.json');
+  const permissionPersistStarted = deferred();
+  const permissionPersistGate = deferred();
+  const originalRename = fsp.rename;
+  let permissionRenameMatched = false;
+  let revoking;
+  fsp.rename = async (from, to) => {
+    if (!permissionRenameMatched && path.resolve(to) === path.resolve(permissionsPath)) {
+      permissionRenameMatched = true;
+      permissionPersistStarted.resolve();
+      await permissionPersistGate.promise;
+    }
+    return originalRename.call(fsp, from, to);
+  };
+  try {
+    revoking = harness.controller.grant('acme.sample-plugin', 'documents.read', false);
+    await permissionPersistStarted.promise;
+    assert.equal(
+      harness.controller.runtimeDescriptors()[0].grantedPermissions.includes('documents.read'),
+      false,
+      'runtime descriptors must remove a revoked permission before persistence completes'
+    );
+    await assert.rejects(
+      () => harness.controller.loadDocumentView('acme.sample-plugin', 'acme.sample-plugin.preview'),
+      { code: 'plugins.documentView.permission' }
+    );
+    await assert.rejects(() => openHandler(trustedEvent, request), { code: 'plugins.documentView.permission' });
+    await assert.rejects(
+      () => readHandler(trustedEvent, { documentId: opened.documentId, offset: 0, length: 1 }),
+      { code: 'DOCUMENT_VIEW_NOT_FOUND' }
+    );
+  } finally {
+    permissionPersistGate.resolve();
+    fsp.rename = originalRename;
+    if (revoking) await revoking.catch(() => {});
+  }
+  await revoking;
+
+  const grantPersistStarted = deferred();
+  const grantPersistGate = deferred();
+  let grantRenameMatched = false;
+  let granting;
+  fsp.rename = async (from, to) => {
+    if (!grantRenameMatched && path.resolve(to) === path.resolve(permissionsPath)) {
+      grantRenameMatched = true;
+      grantPersistStarted.resolve();
+      await grantPersistGate.promise;
+    }
+    return originalRename.call(fsp, from, to);
+  };
+  try {
+    granting = harness.controller.grant('acme.sample-plugin', 'documents.read', true);
+    await grantPersistStarted.promise;
+    assert.equal(
+      harness.controller.runtimeDescriptors()[0].grantedPermissions.includes('documents.read'),
+      false,
+      'a new grant must not become effective before persistence and refresh complete'
+    );
+    await assert.rejects(
+      () => harness.controller.loadDocumentView('acme.sample-plugin', 'acme.sample-plugin.preview'),
+      { code: 'plugins.documentView.permission' }
+    );
+    await assert.rejects(() => openHandler(trustedEvent, request), { code: 'plugins.documentView.permission' });
+  } finally {
+    grantPersistGate.resolve();
+    fsp.rename = originalRename;
+    if (granting) await granting.catch(() => {});
+  }
+  await granting;
+  await assert.rejects(
+    () => readHandler(trustedEvent, { documentId: opened.documentId, offset: 0, length: 1 }),
+    { code: 'DOCUMENT_VIEW_NOT_FOUND' }
+  );
+  const reopened = await openHandler(trustedEvent, request);
+
+  const registryPath = path.join(harness.root, 'plugins', '.registry.json');
+  const registryPersistStarted = deferred();
+  const registryPersistGate = deferred();
+  let registryRenameMatched = false;
+  let disabling;
+  fsp.rename = async (from, to) => {
+    if (!registryRenameMatched && path.resolve(to) === path.resolve(registryPath)) {
+      registryRenameMatched = true;
+      registryPersistStarted.resolve();
+      await registryPersistGate.promise;
+    }
+    return originalRename.call(fsp, from, to);
+  };
+  try {
+    disabling = harness.controller.setEnabled('acme.sample-plugin', false);
+    await registryPersistStarted.promise;
+    assert.deepEqual(harness.controller.runtimeDescriptors(), []);
+    await assert.rejects(
+      () => harness.controller.loadDocumentView('acme.sample-plugin', 'acme.sample-plugin.preview'),
+      { code: 'plugins.documentView.denied' }
+    );
+    await assert.rejects(() => openHandler(trustedEvent, request), { code: 'plugins.documentView.denied' });
+    await assert.rejects(
+      () => readHandler(trustedEvent, { documentId: reopened.documentId, offset: 0, length: 1 }),
+      { code: 'DOCUMENT_VIEW_NOT_FOUND' }
+    );
+  } finally {
+    registryPersistGate.resolve();
+    fsp.rename = originalRename;
+    if (disabling) await disabling.catch(() => {});
+  }
+  await disabling;
+
+  await harness.controller.setEnabled('acme.sample-plugin', true);
+  await assert.rejects(
+    () => readHandler(trustedEvent, { documentId: reopened.documentId, offset: 0, length: 1 }),
+    { code: 'DOCUMENT_VIEW_NOT_FOUND' }
+  );
+  const current = await openHandler(trustedEvent, request);
+  assert.deepEqual(await closeHandler(trustedEvent, { documentId: current.documentId }), { closed: true });
+});
+
+test('replacement and uninstall durably disable plugin runtime before moving package bytes', { concurrency: false }, async (t) => {
+  const harness = await createHarness(t);
+  const first = path.join(harness.root, 'document-view-first');
+  const replacement = path.join(harness.root, 'document-view-replacement');
+  await writeDocumentViewPackage(first);
+  await writeDocumentViewPackage(replacement);
+  const documentPath = path.join(harness.workspaceRoot, 'transaction.pdf');
+  await fsp.writeFile(documentPath, Buffer.from([1, 2, 3, 4]));
+  await harness.controller.installFromPath(first);
+  await harness.controller.setEnabled('acme.sample-plugin', true);
+
+  const trustedEvent = { sender: harness.window.webContents };
+  const openHandler = harness.handlers.get('plugins:document-open');
+  const readHandler = harness.handlers.get('plugins:document-read');
+  const request = {
+    pluginId: 'acme.sample-plugin',
+    viewerId: 'acme.sample-plugin.preview',
+    filePath: documentPath
+  };
+  const originalRename = fsp.rename;
+  const destination = path.join(harness.root, 'plugins', 'acme.sample-plugin');
+  const trashRoot = path.join(harness.root, 'plugins', '.trash');
+  const registryPath = path.join(harness.root, 'plugins', '.registry.json');
+  const opened = await openHandler(trustedEvent, request);
+
+  const replacementMoveStarted = deferred();
+  const replacementMoveGate = deferred();
+  let replacementMoveMatched = false;
+  let replacing;
+  fsp.rename = async (from, to) => {
+    if (!replacementMoveMatched && path.resolve(from) === path.resolve(destination) &&
+        path.dirname(path.resolve(to)) === path.resolve(trashRoot)) {
+      replacementMoveMatched = true;
+      replacementMoveStarted.resolve();
+      await replacementMoveGate.promise;
+    }
+    return originalRename.call(fsp, from, to);
+  };
+  try {
+    replacing = harness.controller.installFromPath(replacement);
+    await replacementMoveStarted.promise;
+    const persistedRegistry = JSON.parse(await fsp.readFile(registryPath, 'utf8'));
+    assert.equal(persistedRegistry.plugins['acme.sample-plugin'].enabled, false);
+    assert.deepEqual(harness.controller.runtimeDescriptors(), []);
+    await assert.rejects(() => harness.controller.loadEntry('acme.sample-plugin'), { code: 'plugins.entry.denied' });
+    await assert.rejects(
+      () => harness.controller.rpc('acme.sample-plugin', 'host.getInfo', {}),
+      { code: 'plugins.rpc.plugin' }
+    );
+    await assert.rejects(
+      () => harness.controller.loadDocumentView('acme.sample-plugin', 'acme.sample-plugin.preview'),
+      { code: 'plugins.documentView.denied' }
+    );
+    await assert.rejects(() => openHandler(trustedEvent, request), { code: 'plugins.documentView.denied' });
+    await assert.rejects(
+      () => readHandler(trustedEvent, { documentId: opened.documentId, offset: 0, length: 1 }),
+      { code: 'DOCUMENT_VIEW_NOT_FOUND' }
+    );
+  } finally {
+    replacementMoveGate.resolve();
+    fsp.rename = originalRename;
+    if (replacing) await replacing.catch(() => {});
+  }
+  const installed = await replacing;
+  assert.equal(installed.status, 'disabled');
+
+  await harness.controller.setEnabled('acme.sample-plugin', true);
+  await assert.rejects(
+    () => readHandler(trustedEvent, { documentId: opened.documentId, offset: 0, length: 1 }),
+    { code: 'DOCUMENT_VIEW_NOT_FOUND' }
+  );
+  const reopened = await openHandler(trustedEvent, request);
+
+  const uninstallMoveStarted = deferred();
+  const uninstallMoveGate = deferred();
+  let uninstallMoveMatched = false;
+  let uninstalling;
+  fsp.rename = async (from, to) => {
+    if (!uninstallMoveMatched && path.resolve(from) === path.resolve(destination) &&
+        path.dirname(path.resolve(to)) === path.resolve(trashRoot)) {
+      uninstallMoveMatched = true;
+      uninstallMoveStarted.resolve();
+      await uninstallMoveGate.promise;
+    }
+    return originalRename.call(fsp, from, to);
+  };
+  try {
+    uninstalling = harness.controller.uninstall('acme.sample-plugin');
+    await uninstallMoveStarted.promise;
+    const persistedRegistry = JSON.parse(await fsp.readFile(registryPath, 'utf8'));
+    assert.equal(persistedRegistry.plugins['acme.sample-plugin'].enabled, false);
+    assert.deepEqual(harness.controller.runtimeDescriptors(), []);
+    await assert.rejects(() => harness.controller.loadEntry('acme.sample-plugin'), { code: 'plugins.entry.denied' });
+    await assert.rejects(
+      () => harness.controller.rpc('acme.sample-plugin', 'host.getInfo', {}),
+      { code: 'plugins.rpc.plugin' }
+    );
+    await assert.rejects(
+      () => harness.controller.loadDocumentView('acme.sample-plugin', 'acme.sample-plugin.preview'),
+      { code: 'plugins.documentView.denied' }
+    );
+    await assert.rejects(() => openHandler(trustedEvent, request), { code: 'plugins.documentView.denied' });
+    await assert.rejects(
+      () => readHandler(trustedEvent, { documentId: reopened.documentId, offset: 0, length: 1 }),
+      { code: 'DOCUMENT_VIEW_NOT_FOUND' }
+    );
+  } finally {
+    uninstallMoveGate.resolve();
+    fsp.rename = originalRename;
+    if (uninstalling) await uninstalling.catch(() => {});
+  }
+  assert.deepEqual(await uninstalling, { id: 'acme.sample-plugin', removed: true });
+});
+
+test('a replacement rollback cannot revive an entry load from an older runtime generation', { concurrency: false }, async (t) => {
+  const harness = await createHarness(t);
+  const first = path.join(harness.root, 'entry-generation-first');
+  const replacement = path.join(harness.root, 'entry-generation-replacement');
+  await writePackage(first, '1.0.0', 'export const generation = 1;\n');
+  await writePackage(replacement, '1.0.0', 'export const generation = 2;\n');
+  await harness.controller.installFromPath(first);
+  await harness.controller.setEnabled('acme.sample-plugin', true);
+
+  const destination = path.join(harness.root, 'plugins', 'acme.sample-plugin');
+  const installedEntry = path.join(destination, 'dist', 'extension.js');
+  const trashRoot = path.join(harness.root, 'plugins', '.trash');
+  const readStarted = deferred();
+  const readGate = deferred();
+  const originalReadFile = fsp.readFile;
+  const originalRename = fsp.rename;
+  let entryReadMatched = false;
+  let replacementMoveFailed = false;
+  let loading;
+  fsp.readFile = async (filePath, ...args) => {
+    if (!entryReadMatched && path.resolve(filePath) === path.resolve(installedEntry)) {
+      entryReadMatched = true;
+      readStarted.resolve();
+      await readGate.promise;
+    }
+    return originalReadFile.call(fsp, filePath, ...args);
+  };
+  fsp.rename = async (from, to) => {
+    if (!replacementMoveFailed && path.resolve(from) === path.resolve(destination) &&
+        path.dirname(path.resolve(to)) === path.resolve(trashRoot)) {
+      replacementMoveFailed = true;
+      throw new Error('synthetic replacement move failure');
+    }
+    return originalRename.call(fsp, from, to);
+  };
+  try {
+    loading = harness.controller.loadEntry('acme.sample-plugin');
+    await readStarted.promise;
+    await assert.rejects(
+      () => harness.controller.installFromPath(replacement),
+      /synthetic replacement move failure/
+    );
+    assert.equal(harness.controller.runtimeDescriptors().length, 1, 'the original plugin should be restored');
+    readGate.resolve();
+    await assert.rejects(loading, { code: 'plugins.entry.denied' });
+  } finally {
+    readGate.resolve();
+    fsp.readFile = originalReadFile;
+    fsp.rename = originalRename;
+    if (loading) await loading.catch(() => {});
+  }
+});
+
+test('an incomplete same-version replacement rollback stays disabled after controller restart', { concurrency: false }, async (t) => {
+  const harness = await createHarness(t);
+  const first = path.join(harness.root, 'restart-first');
+  const replacement = path.join(harness.root, 'restart-replacement');
+  await writePackage(first, '1.0.0', 'export const generation = 1;\n');
+  await writePackage(replacement, '1.0.0', 'export const generation = 2;\n');
+  await harness.controller.installFromPath(first);
+  await harness.controller.setEnabled('acme.sample-plugin', true);
+
+  const destination = path.join(harness.root, 'plugins', 'acme.sample-plugin');
+  const trashRoot = path.join(harness.root, 'plugins', '.trash');
+  const permissionsPath = path.join(harness.root, 'plugins', '.permissions.json');
+  const originalRename = fsp.rename;
+  const originalRm = fsp.rm;
+  let permissionFailureInjected = false;
+  fsp.rename = async (from, to) => {
+    if (!permissionFailureInjected && path.resolve(to) === path.resolve(permissionsPath)) {
+      permissionFailureInjected = true;
+      throw new Error('synthetic permission persistence failure');
+    }
+    if (path.dirname(path.resolve(from)) === path.resolve(trashRoot) && path.resolve(to) === path.resolve(destination)) {
+      throw new Error('synthetic backup restore failure');
+    }
+    return originalRename.call(fsp, from, to);
+  };
+  fsp.rm = async (target, ...args) => {
+    if (path.resolve(target) === path.resolve(destination)) {
+      throw new Error('synthetic replacement removal failure');
+    }
+    return originalRm.call(fsp, target, ...args);
+  };
+  try {
+    await assert.rejects(
+      () => harness.controller.installFromPath(replacement),
+      /synthetic permission persistence failure/
+    );
+  } finally {
+    fsp.rename = originalRename;
+    fsp.rm = originalRm;
+  }
+
+  const persistedPermissions = JSON.parse(await fsp.readFile(permissionsPath, 'utf8'));
+  assert.deepEqual(persistedPermissions.grants['acme.sample-plugin'], []);
+  const restarted = createPluginController({
+    app: { getPath: () => harness.root, getVersion: () => '2.6.0' },
+    ipcMain: { handle() {} },
+    getWindow: () => harness.window,
+    getWorkspaceIdentity: () => ({ ...harness.workspaceState }),
+    resolveWorkspaceFile: (candidate) => ({
+      filePath: path.resolve(candidate),
+      workspaceIdentity: harness.workspaceState.workspaceIdentity
+    })
+  });
+  await restarted.initialize();
+  const recovered = restarted.get('acme.sample-plugin');
+  assert.equal(recovered.status, 'disabled');
+  assert.deepEqual(recovered.grantedPermissions, []);
+  assert.deepEqual(restarted.runtimeDescriptors(), []);
+  await assert.rejects(() => restarted.loadEntry('acme.sample-plugin'), { code: 'plugins.entry.denied' });
 });
 
 test('schema-1 packages still reject extra executable view code', async (t) => {

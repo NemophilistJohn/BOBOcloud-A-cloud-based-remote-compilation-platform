@@ -15,6 +15,13 @@ import type {
   ProjectTasksFileEvent,
   ProjectTasksWorkspaceOpenedEvent
 } from './project-tasks';
+import type {
+  DocumentCloseResultDto,
+  DocumentInfoDto,
+  DocumentReadResultDto,
+  DocumentViewLocalizationDto,
+  LoadedDocumentViewDto
+} from './document-view';
 
 export type { Dispose } from './lifecycle';
 
@@ -121,11 +128,21 @@ export interface IpcInvokeContracts {
   'plugins:open-folder': IpcInvokeContract;
   'plugins:runtime-descriptors': IpcInvokeContract;
   'plugins:load-entry': IpcInvokeContract<[id: string]>;
-  'plugins:load-localization': IpcInvokeContract<[request: unknown]>;
-  'plugins:load-document-view': IpcInvokeContract<[request: unknown]>;
-  'plugins:document-open': IpcInvokeContract<[request: unknown]>;
-  'plugins:document-read': IpcInvokeContract<[request: unknown]>;
-  'plugins:document-close': IpcInvokeContract<[request: unknown]>;
+  'plugins:load-localization': IpcInvokeContract<[
+    request: { readonly id: string; readonly locale: string }
+  ], DocumentViewLocalizationDto>;
+  'plugins:load-document-view': IpcInvokeContract<[
+    request: { readonly pluginId: string; readonly viewerId: string }
+  ], LoadedDocumentViewDto>;
+  'plugins:document-open': IpcInvokeContract<[
+    request: { readonly pluginId: string; readonly viewerId: string; readonly filePath: string }
+  ], DocumentInfoDto>;
+  'plugins:document-read': IpcInvokeContract<[
+    request: { readonly documentId: string; readonly offset: number; readonly length: number }
+  ], DocumentReadResultDto>;
+  'plugins:document-close': IpcInvokeContract<[
+    request: { readonly documentId: string }
+  ], DocumentCloseResultDto>;
   'plugins:marketplace-list': IpcInvokeContract;
   'plugins:marketplace-refresh': IpcInvokeContract;
   'plugins:marketplace-install': IpcInvokeContract<[request: unknown]>;

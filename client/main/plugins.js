@@ -260,7 +260,9 @@ function validateDocumentViewers(contributes, files, pluginId, schemaVersion) {
       throw pluginError('plugins.manifest.documentViews', 'Document viewer extensions must be a non-empty bounded array.');
     }
     const extensions = viewer.extensions.map((extension) => String(extension || '').toLowerCase());
-    if (new Set(extensions).size !== extensions.length || extensions.some((extension) => !/^\.[a-z0-9][a-z0-9+_-]{0,15}$/.test(extension))) {
+    if (new Set(extensions).size !== extensions.length || extensions.some((extension) => (
+      extension.length > 17 || !/^\.[a-z0-9][a-z0-9+_-]*(?:\.[a-z0-9][a-z0-9+_-]*)*$/.test(extension)
+    ))) {
       throw pluginError('plugins.manifest.documentViews', 'Document viewer extensions must be unique lowercase file extensions.');
     }
     const entry = normalizeRelativePath(viewer.entry, 'Document viewer entry');
@@ -807,13 +809,62 @@ function createPluginController(options) {
   let initialized = false;
   let initializePromise = null;
   let mutationQueue = Promise.resolve();
+  const pluginRuntimeRevisions = new Map();
+  const documentViewRevisions = new Map();
+  const pluginRuntimeRevocations = new Set();
+
+  function pluginRuntimeRevision(pluginId) {
+    return pluginRuntimeRevisions.get(pluginId) || 0;
+  }
+
+  function advancePluginRuntimeRevision(pluginId) {
+    pluginRuntimeRevisions.set(pluginId, pluginRuntimeRevision(pluginId) + 1);
+  }
+
+  function documentViewRevision(pluginId) {
+    return documentViewRevisions.get(pluginId) || 0;
+  }
+
+  function revokeDocumentViews(pluginId, latch = false) {
+    documentViewRevisions.set(pluginId, documentViewRevision(pluginId) + 1);
+    if (latch) pluginRuntimeRevocations.add(pluginId);
+    if (documentBroker) documentBroker.closePlugin(pluginId);
+  }
+
+  function revokePluginRuntime(pluginId, latch = false) {
+    advancePluginRuntimeRevision(pluginId);
+    revokeDocumentViews(pluginId, latch);
+    if (agentBroker && typeof agentBroker.disposePlugin === 'function') agentBroker.disposePlugin(pluginId);
+  }
+
+  function releasePluginRuntimeRevocation(pluginId) {
+    pluginRuntimeRevocations.delete(pluginId);
+  }
+
+  function isRuntimeEnabled(record) {
+    if (!record || record.status !== 'enabled' || !record.integrity.valid || !record.manifest ||
+        records.get(record.id) !== record || pluginRuntimeRevocations.has(record.id)) return false;
+    const liveState = registry.plugins[record.id];
+    return Boolean(liveState && liveState.enabled === true);
+  }
+
+  function runtimeGenerationMatches(record, revision) {
+    return isRuntimeEnabled(record) && pluginRuntimeRevision(record.id) === revision;
+  }
+
+  function effectiveGrantedPermissions(record) {
+    if (!record) return [];
+    const liveGrants = new Set(permissions.grants[record.id] || []);
+    return record.grantedPermissions.filter((permission) => liveGrants.has(permission));
+  }
 
   function documentViewerForRecord(record, viewerId, requireReadPermission = true) {
-    if (!record || record.status !== 'enabled' || !record.integrity.valid || !record.manifest) {
+    if (!isRuntimeEnabled(record)) {
       throw pluginError('plugins.documentView.denied', 'Document viewer is only available from an enabled, verified plugin.');
     }
-    if (!record.grantedPermissions.includes(PluginPermission.DOCUMENT_VIEWS_REGISTER) ||
-        (requireReadPermission && !record.grantedPermissions.includes(PluginPermission.DOCUMENTS_READ))) {
+    const effectiveGrants = effectiveGrantedPermissions(record);
+    if (!effectiveGrants.includes(PluginPermission.DOCUMENT_VIEWS_REGISTER) ||
+        (requireReadPermission && !effectiveGrants.includes(PluginPermission.DOCUMENTS_READ))) {
       throw pluginError('plugins.documentView.permission', 'Document viewer permissions have not been granted.');
     }
     const viewers = record.manifest.contributes && record.manifest.contributes.documentViewers;
@@ -874,6 +925,35 @@ function createPluginController(options) {
 
   async function persistPermissions() {
     await writeJsonAtomic(permissionsPath, permissions);
+  }
+
+  async function restorePersistedPluginState(previousRegistry, previousPermissions) {
+    permissions = previousPermissions;
+    try {
+      await persistPermissions();
+    } catch (_) {
+      return false;
+    }
+    registry = previousRegistry;
+    try {
+      await persistRegistry();
+    } catch (_) {
+      return false;
+    }
+    return true;
+  }
+
+  async function retainFailClosedPluginState(pluginId, version, previousRegistry, previousPermissions) {
+    registry = cloneJson(previousRegistry);
+    registry.plugins[pluginId] = Object.assign({}, registry.plugins[pluginId], {
+      enabled: false,
+      version: String(version || (registry.plugins[pluginId] && registry.plugins[pluginId].version) || '')
+    });
+    permissions = cloneJson(previousPermissions);
+    permissions.grants[pluginId] = [];
+    permissions.initialized[pluginId] = true;
+    await persistPermissions().catch(() => {});
+    await persistRegistry().catch(() => {});
   }
 
   async function ensureRoot() {
@@ -1085,25 +1165,61 @@ function createPluginController(options) {
       const hadExisting = fs.existsSync(destination);
       const previousRegistry = cloneJson(registry);
       const previousPermissions = cloneJson(permissions);
-      if (hadExisting) await fsp.rename(destination, backup);
+      const replacingExisting = hadExisting || records.has(id);
+      if (replacingExisting) {
+        revokePluginRuntime(id, true);
+        registry.plugins[id] = Object.assign({}, registry.plugins[id], {
+          enabled: false,
+          version: (records.get(id) && records.get(id).version) || checked.manifest.version
+        });
+        try {
+          // Persist the disabled state before touching the active package. A
+          // crash or incomplete rollback therefore cannot reactivate mixed bytes.
+          await persistRegistry();
+        } catch (error) {
+          registry = previousRegistry;
+          releasePluginRuntimeRevocation(id);
+          throw error;
+        }
+      }
+      if (hadExisting) {
+        try {
+          await fsp.rename(destination, backup);
+        } catch (error) {
+          const restored = await restorePersistedPluginState(previousRegistry, previousPermissions);
+          if (restored) releasePluginRuntimeRevocation(id);
+          else await retainFailClosedPluginState(id, checked.manifest.version, previousRegistry, previousPermissions);
+          throw error;
+        }
+      }
       try {
         await fsp.rename(stage, destination);
         registry.plugins[id] = { enabled: false, installedAt: new Date().toISOString(), version: checked.manifest.version };
         permissions.grants[id] = [...checked.manifest.permissions].sort();
         permissions.initialized[id] = true;
-        await persistRegistry();
         await persistPermissions();
+        await persistRegistry();
       } catch (error) {
-        await fsp.rm(destination, { recursive: true, force: true }).catch(() => {});
-        if (hadExisting && fs.existsSync(backup)) await fsp.rename(backup, destination).catch(() => {});
-        registry = previousRegistry;
-        permissions = previousPermissions;
-        await persistRegistry().catch(() => {});
-        await persistPermissions().catch(() => {});
+        let restored = !replacingExisting || hadExisting;
+        await fsp.rm(destination, { recursive: true, force: true }).catch(() => { restored = false; });
+        if (hadExisting) {
+          if (fs.existsSync(backup)) {
+            await fsp.rename(backup, destination).catch(() => { restored = false; });
+          } else {
+            restored = false;
+          }
+        }
+        if (restored) restored = await restorePersistedPluginState(previousRegistry, previousPermissions);
+        if (restored) {
+          releasePluginRuntimeRevocation(id);
+        } else {
+          await retainFailClosedPluginState(id, checked.manifest.version, previousRegistry, previousPermissions);
+        }
         throw error;
       }
       await fsp.rm(backup, { recursive: true, force: true }).catch(() => {});
       await refreshInternal('installed');
+      releasePluginRuntimeRevocation(id);
       return get(id);
     } finally {
       await fsp.rm(stage, { recursive: true, force: true }).catch(() => {});
@@ -1153,7 +1269,7 @@ function createPluginController(options) {
       await persistPermissions();
     }
     registry.plugins[id] = Object.assign({}, registry.plugins[id], { enabled: enabled === true, version: record.version });
-    if (enabled !== true && documentBroker) documentBroker.closePlugin(id);
+    if (enabled !== true) revokePluginRuntime(id);
     await persistRegistry();
     await refreshInternal(enabled === true ? 'enabled' : 'disabled');
     return get(id);
@@ -1170,9 +1286,11 @@ function createPluginController(options) {
     const next = new Set(permissions.grants[pluginId] || []);
     if (granted === true) next.add(permission); else next.delete(permission);
     permissions.grants[pluginId] = Array.from(next).sort();
-    if (granted !== true && documentBroker &&
-        (permission === PluginPermission.DOCUMENT_VIEWS_REGISTER || permission === PluginPermission.DOCUMENTS_READ)) {
-      documentBroker.closePlugin(pluginId);
+    if (granted !== true) {
+      advancePluginRuntimeRevision(pluginId);
+      if (permission === PluginPermission.DOCUMENT_VIEWS_REGISTER || permission === PluginPermission.DOCUMENTS_READ) {
+        revokeDocumentViews(pluginId);
+      }
     }
     if (granted !== true && agentBroker && typeof agentBroker.disposePlugin === 'function' && [
       PluginPermission.AGENTS_REGISTER,
@@ -1194,26 +1312,49 @@ function createPluginController(options) {
   async function uninstallInternal(id) {
     await initialize();
     const pluginId = assertSafePluginId(id);
-    if (!records.has(pluginId)) throw pluginError('plugins.notFound', 'Plugin is not installed.');
-    if (documentBroker) documentBroker.closePlugin(pluginId);
-    if (agentBroker && typeof agentBroker.disposePlugin === 'function') agentBroker.disposePlugin(pluginId);
-    const destination = packagePath(pluginId);
-    const backup = path.join(trashRoot, pluginId + '.' + crypto.randomUUID());
-    await fsp.rename(destination, backup);
+    const record = records.get(pluginId);
+    if (!record) throw pluginError('plugins.notFound', 'Plugin is not installed.');
     const previousRegistry = cloneJson(registry);
     const previousPermissions = cloneJson(permissions);
+    revokePluginRuntime(pluginId, true);
+    registry.plugins[pluginId] = Object.assign({}, registry.plugins[pluginId], {
+      enabled: false,
+      version: record.version
+    });
+    try {
+      // Disable durably before moving the package so an interrupted uninstall
+      // can only restart in a fail-closed state.
+      await persistRegistry();
+    } catch (error) {
+      registry = previousRegistry;
+      releasePluginRuntimeRevocation(pluginId);
+      throw error;
+    }
+    const destination = packagePath(pluginId);
+    const backup = path.join(trashRoot, pluginId + '.' + crypto.randomUUID());
+    try {
+      await fsp.rename(destination, backup);
+    } catch (error) {
+      const restored = await restorePersistedPluginState(previousRegistry, previousPermissions);
+      if (restored) releasePluginRuntimeRevocation(pluginId);
+      else await retainFailClosedPluginState(pluginId, record.version, previousRegistry, previousPermissions);
+      throw error;
+    }
     try {
       delete registry.plugins[pluginId];
       delete permissions.grants[pluginId];
       delete permissions.initialized[pluginId];
-      await persistRegistry();
       await persistPermissions();
+      await persistRegistry();
     } catch (error) {
-      registry = previousRegistry;
-      permissions = previousPermissions;
-      await fsp.rename(backup, destination).catch(() => {});
-      await persistRegistry().catch(() => {});
-      await persistPermissions().catch(() => {});
+      let restored = true;
+      await fsp.rename(backup, destination).catch(() => { restored = false; });
+      if (restored) restored = await restorePersistedPluginState(previousRegistry, previousPermissions);
+      if (restored) {
+        releasePluginRuntimeRevocation(pluginId);
+      } else {
+        await retainFailClosedPluginState(pluginId, record.version, previousRegistry, previousPermissions);
+      }
       throw error;
     }
     await fsp.rm(backup, { recursive: true, force: true }).catch(() => {});
@@ -1265,11 +1406,11 @@ function createPluginController(options) {
   function runtimeDescriptors() {
     const descriptors = [];
     for (const record of records.values()) {
-      if (record.status !== 'enabled' || !record.integrity.valid || !record.manifest) continue;
+      if (!isRuntimeEnabled(record)) continue;
       descriptors.push(immutable({
         id: record.id,
         manifest: record.manifest,
-        grantedPermissions: [...record.grantedPermissions],
+        grantedPermissions: effectiveGrantedPermissions(record),
         revision: record.revision
       }));
     }
@@ -1279,9 +1420,10 @@ function createPluginController(options) {
   async function loadEntry(id) {
     await initialize();
     const record = records.get(assertSafePluginId(id));
-    if (!record || record.status !== 'enabled' || !record.integrity.valid || !record.manifest) {
+    if (!isRuntimeEnabled(record)) {
       throw pluginError('plugins.entry.denied', 'Plugin entry is only available to enabled, verified plugins.');
     }
+    const runtimeRevision = pluginRuntimeRevision(record.id);
     const entryPath = path.join(packagePath(record.id), ...record.manifest.main.split('/'));
     if (!directoryInside(packagePath(record.id), entryPath)) throw pluginError('plugins.entry.path', 'Plugin entry resolves outside its package.');
     const source = await fsp.readFile(entryPath, 'utf8');
@@ -1290,6 +1432,9 @@ function createPluginController(options) {
     if (sha256(source) !== expected) {
       await refresh('integrity-failed');
       throw pluginError('plugins.integrity.mismatch', 'Plugin entry integrity check failed.');
+    }
+    if (!runtimeGenerationMatches(record, runtimeRevision)) {
+      throw pluginError('plugins.entry.denied', 'Plugin entry is only available to enabled, verified plugins.');
     }
     return immutable({ id: record.id, main: record.manifest.main, source, hash: expected });
   }
@@ -1300,9 +1445,10 @@ function createPluginController(options) {
   async function loadLocalization(id, locale) {
     await initialize();
     const record = records.get(assertSafePluginId(id));
-    if (!record || record.status !== 'enabled' || !record.integrity.valid || !record.manifest) {
+    if (!isRuntimeEnabled(record)) {
       throw pluginError('plugins.localization.denied', 'Plugin localization is only available to enabled, verified plugins.');
     }
+    const runtimeRevision = pluginRuntimeRevision(record.id);
     const selectedLocale = normalizePluginLocale(locale);
     const relativePath = selectLocalizationPath(record.manifest.localization, selectedLocale);
     if (!relativePath) return immutable({ locale: selectedLocale, messages: {} });
@@ -1320,6 +1466,9 @@ function createPluginController(options) {
     if (!expected || sha256(source) !== expected) {
       await refresh('integrity-failed');
       throw pluginError('plugins.integrity.mismatch', 'Plugin localization integrity check failed.');
+    }
+    if (!runtimeGenerationMatches(record, runtimeRevision)) {
+      throw pluginError('plugins.localization.denied', 'Plugin localization is only available to enabled, verified plugins.');
     }
     return immutable({ locale: selectedLocale, messages: parseLocalizationMessages(source) });
   }
@@ -1355,7 +1504,8 @@ function createPluginController(options) {
     await initialize();
     const pluginId = assertSafePluginId(id);
     const record = records.get(pluginId);
-    const viewer = documentViewerForRecord(record, viewerId, true);
+    const revision = documentViewRevision(pluginId);
+    const viewer = authorizeDocumentViewer(pluginId, viewerId, true);
     const entry = await loadVerifiedDocumentViewFile(record, viewer.entry, MAX_DOCUMENT_VIEW_ENTRY_BYTES);
     const resources = [];
     let totalBytes = Buffer.byteLength(entry.source, 'utf8');
@@ -1366,6 +1516,10 @@ function createPluginController(options) {
         throw pluginError('plugins.documentView.size', 'Document viewer source exceeds the combined host limit.');
       }
       resources.push(resource);
+    }
+    authorizeDocumentViewer(pluginId, viewerId, true);
+    if (records.get(pluginId) !== record || documentViewRevision(pluginId) !== revision) {
+      throw pluginError('plugins.documentView.stale', 'Document viewer loading was revoked before it completed.');
     }
     return immutable({
       pluginId,
@@ -1389,9 +1543,10 @@ function createPluginController(options) {
     await initialize();
     const pluginId = assertSafePluginId(id);
     const record = records.get(pluginId);
-    if (!record || record.status !== 'enabled' || !record.integrity.valid || !record.manifest) {
+    if (!isRuntimeEnabled(record)) {
       throw pluginError('plugins.rpc.plugin', 'Plugin RPC is only available to enabled, verified plugins.');
     }
+    const runtimeRevision = pluginRuntimeRevision(pluginId);
     if (!isNonEmptyString(method, 120)) {
       throw pluginError('plugins.rpc.denied', 'Plugin RPC method is invalid.');
     }
@@ -1420,7 +1575,7 @@ function createPluginController(options) {
       return immutable({ apiVersion: PLUGIN_API_VERSION, plugin: { id: pluginId, version: record.version } });
     }
     if (method === 'permissions.get') {
-      return immutable({ requested: [...record.requestedPermissions], granted: [...record.grantedPermissions] });
+      return immutable({ requested: [...record.requestedPermissions], granted: effectiveGrantedPermissions(record) });
     }
     if (method === 'agent.lifecycle.dispose') {
       if (agentBroker && typeof agentBroker.disposePlugin === 'function') agentBroker.disposePlugin(pluginId);
@@ -1434,7 +1589,7 @@ function createPluginController(options) {
       else if (tool === 'process_run') permission = PluginPermission.PROCESS_EXECUTE;
     }
     if (!permission) throw pluginError('plugins.rpc.denied', 'Plugin RPC method is not available: ' + String(method));
-    if (!record.grantedPermissions.includes(permission)) {
+    if (!effectiveGrantedPermissions(record).includes(permission)) {
       throw pluginError('plugins.rpc.permission', 'Plugin permission has not been granted: ' + permission);
     }
     if (!isPlainObject(payload)) throw pluginError('plugins.rpc.args', 'Plugin RPC payload must be an object.');
@@ -1443,12 +1598,22 @@ function createPluginController(options) {
       // Unlike ordinary renderer-owned registrations, SCM results originate
       // only in the local main-process broker. They contain opaque repository
       // ids and sanitized data, never a path, command, credential, or server.
-      return scmGit.request(method, payload);
+      const result = await scmGit.request(method, payload);
+      if (!runtimeGenerationMatches(record, runtimeRevision) ||
+          !effectiveGrantedPermissions(record).includes(permission)) {
+        throw pluginError('plugins.rpc.permission', 'Plugin permission was revoked while the request was running: ' + permission);
+      }
+      return result;
     }
     if (method === 'models.list' || method === 'models.generate' || method === 'models.generateStream' ||
         method === 'models.cancel' || method.startsWith('agent.')) {
       if (!agentBroker) throw pluginError('plugins.agent.unavailable', 'The local Agent broker is unavailable.');
-      return immutable(await agentBroker.request(pluginId, method, payload, { revision: record.revision }));
+      const result = await agentBroker.request(pluginId, method, payload, { revision: record.revision });
+      if (!runtimeGenerationMatches(record, runtimeRevision) ||
+          !effectiveGrantedPermissions(record).includes(permission)) {
+        throw pluginError('plugins.rpc.permission', 'Plugin permission was revoked while the request was running: ' + permission);
+      }
+      return immutable(result);
     }
     if (method === 'commands.register') {
       if (!isNonEmptyString(payload.id, 180) || !payload.id.startsWith(pluginId + '.')) {
@@ -1534,11 +1699,11 @@ function createPluginController(options) {
     await initialize();
     const id = assertSafePluginId(pluginId);
     const record = records.get(id);
-    if (!record || record.status !== 'enabled' || !record.integrity.valid || !record.manifest || !agentBroker) {
+    if (!isRuntimeEnabled(record) || !agentBroker) {
       throw pluginError('plugins.agent.unavailable', 'The Agent plugin or local approval broker is unavailable.');
     }
     const approval = agentBroker.describeApproval(id, approvalId);
-    if (!record.grantedPermissions.includes(approval.permission)) {
+    if (!effectiveGrantedPermissions(record).includes(approval.permission)) {
       throw pluginError('plugins.rpc.permission', 'Plugin permission has not been granted: ' + approval.permission);
     }
     return { id, approval };
@@ -1575,12 +1740,12 @@ function createPluginController(options) {
     await initialize();
     const id = assertSafePluginId(payload && payload.pluginId);
     const record = records.get(id);
-    if (!record || record.status !== 'enabled' || !record.integrity.valid || !record.manifest || !agentBroker ||
+    if (!isRuntimeEnabled(record) || !agentBroker ||
         typeof agentBroker.getAccessMode !== 'function' || typeof agentBroker.setAccessMode !== 'function' ||
         typeof agentBroker.clearAccessMode !== 'function') {
       throw pluginError('plugins.agent.unavailable', 'The Agent plugin or local access broker is unavailable.');
     }
-    if (!record.grantedPermissions.includes(PluginPermission.AGENTS_REGISTER)) {
+    if (!effectiveGrantedPermissions(record).includes(PluginPermission.AGENTS_REGISTER)) {
       throw pluginError('plugins.rpc.permission', 'Plugin permission has not been granted: ' + PluginPermission.AGENTS_REGISTER);
     }
     const providerId = String(payload && payload.providerId || '');
