@@ -32,6 +32,7 @@ import type {
   DocumentViewHost,
   DocumentViewService
 } from './document-view';
+import type { I18nService, LanguagePacksHost } from './i18n';
 import type {
   AgentDescriptorDto,
   RendererOpaqueContributionDto,
@@ -46,12 +47,14 @@ export interface RendererCommandMap {
 export interface RendererServiceMap {
   readonly 'host.diagnostics': Readonly<DiagnosticsHost>;
   readonly 'host.documentViews': Readonly<DocumentViewHost>;
+  readonly 'host.languagePacks': Readonly<LanguagePacksHost>;
   readonly 'host.projectTasks': Readonly<ProjectTasksHost>;
   readonly 'host.rclone': Readonly<RcloneNativeHost>;
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
   readonly 'workbench.documentViews': DocumentViewService;
   readonly 'workbench.fileDecorations': FileDecorationService;
   readonly 'workbench.fileIcons': FileIconService;
+  readonly 'workbench.i18n': I18nService;
   readonly 'workbench.projectTasks': ProjectTasksService;
   readonly 'workbench.rclone': RcloneClient;
   readonly 'workbench.serverTransport': Readonly<ServerTransportService>;
@@ -178,6 +181,34 @@ export type {
   SandboxedDocumentViewOptions,
   VerifiedDocumentViewFileDto
 } from './document-view';
+export type {
+  I18nChangeEvent,
+  I18nChangeListener,
+  I18nInterpolationParams,
+  I18nLocaleSelectionResult,
+  I18nService,
+  I18nServiceDependencies,
+  I18nSnapshot,
+  I18nTextBindingOptions,
+  I18nTranslatedAttribute,
+  LanguagePackDirectionDto,
+  LanguagePackDto,
+  LanguagePackErrorDto,
+  LanguagePackInstallCanceledDto,
+  LanguagePackInstallResultDto,
+  LanguagePackManifestDto,
+  LanguagePackMessagesDto,
+  LanguagePackOpenFolderResultDto,
+  LanguagePacksChangedDto,
+  LanguagePacksChangedListener,
+  LanguagePacksHost,
+  LanguagePacksInvalidationHint,
+  LanguagePacksInvalidationListener,
+  LanguagePacksListDto,
+  LanguagePacksStartupDto,
+  LanguagePackSourceDto,
+  LanguagePackSummaryDto
+} from './i18n';
 export type {
   AgentAccessModeDto,
   AgentCapabilitiesDto,

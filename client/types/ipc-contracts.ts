@@ -22,6 +22,14 @@ import type {
   DocumentViewLocalizationDto,
   LoadedDocumentViewDto
 } from './document-view';
+import type {
+  LanguagePackDto,
+  LanguagePackInstallResultDto,
+  LanguagePackOpenFolderResultDto,
+  LanguagePacksChangedDto,
+  LanguagePacksListDto,
+  LanguagePacksStartupDto
+} from './i18n';
 
 export type { Dispose } from './lifecycle';
 
@@ -108,14 +116,14 @@ export interface IpcInvokeContracts {
   'pick-local-mapping': IpcInvokeContract;
   'local-path-info': IpcInvokeContract<[request: unknown]>;
   'write-team-mapping': IpcInvokeContract<[payload: unknown]>;
-  'language-packs:startup': IpcInvokeContract;
-  'language-packs:list': IpcInvokeContract;
-  'language-packs:load': IpcInvokeContract<[id: string]>;
-  'language-packs:set-active': IpcInvokeContract<[id: string]>;
-  'language-packs:install-directory': IpcInvokeContract;
-  'language-packs:remove': IpcInvokeContract<[id: string]>;
-  'language-packs:open-folder': IpcInvokeContract;
-  'language-packs:refresh': IpcInvokeContract;
+  'language-packs:startup': IpcInvokeContract<[], LanguagePacksStartupDto>;
+  'language-packs:list': IpcInvokeContract<[], LanguagePacksListDto>;
+  'language-packs:load': IpcInvokeContract<[id: string], LanguagePackDto>;
+  'language-packs:set-active': IpcInvokeContract<[id: string], LanguagePacksStartupDto>;
+  'language-packs:install-directory': IpcInvokeContract<[], LanguagePackInstallResultDto>;
+  'language-packs:remove': IpcInvokeContract<[id: string], LanguagePacksStartupDto>;
+  'language-packs:open-folder': IpcInvokeContract<[], LanguagePackOpenFolderResultDto>;
+  'language-packs:refresh': IpcInvokeContract<[], LanguagePacksStartupDto>;
   'plugins:list': IpcInvokeContract;
   'plugins:get': IpcInvokeContract<[id: string]>;
   'plugins:install': IpcInvokeContract;
@@ -198,7 +206,7 @@ export interface IpcEventContracts {
   'rclone:progress': IpcEventContract<[payload: unknown]>;
   'theme-open-picker': IpcEventContract;
   'menu-save': IpcEventContract;
-  'language-packs:changed': IpcEventContract<[payload: unknown]>;
+  'language-packs:changed': IpcEventContract<[payload: LanguagePacksChangedDto]>;
   'plugins:agent-model-event': IpcEventContract<[payload: unknown]>;
   'plugins:changed': IpcEventContract<[payload: unknown]>;
   'open-plugin-manager': IpcEventContract;

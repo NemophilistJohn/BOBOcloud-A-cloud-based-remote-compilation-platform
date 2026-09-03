@@ -23,7 +23,7 @@ import '../editor-rules/plugins/rust.js';
 // Workbench modules.
 import '../src/state.js';
 import '../src/tab-order.js';
-import '../src/i18n.js';
+import './compat/i18n-adapter.ts';
 import './compat/diagnostics-settings-adapter.ts';
 import '../src/workspace-launch.js';
 import '../src/icons.js';

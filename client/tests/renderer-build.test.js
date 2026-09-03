@@ -29,7 +29,7 @@ const EXPECTED_MODULES = [
   '../editor-rules/plugins/rust.js',
   '../src/state.js',
   '../src/tab-order.js',
-  '../src/i18n.js',
+  './compat/i18n-adapter.ts',
   './compat/diagnostics-settings-adapter.ts',
   '../src/workspace-launch.js',
   '../src/icons.js',
@@ -189,6 +189,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/cloud-feature-policy.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/diagnostics-settings.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/diagnostics-settings-adapter.ts')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/i18n.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/i18n.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/i18n-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/i18n-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/project-tasks.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/project-tasks-adapter.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/source-control-view.ts')));

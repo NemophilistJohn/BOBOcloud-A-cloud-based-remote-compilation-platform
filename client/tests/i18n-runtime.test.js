@@ -3,8 +3,19 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const esbuild = require('esbuild');
 
 const ROOT = path.resolve(__dirname, '..');
+const I18N_BUNDLE = esbuild.buildSync({
+  absWorkingDir: ROOT,
+  entryPoints: ['src/i18n.ts'],
+  bundle: true,
+  platform: 'browser',
+  format: 'iife',
+  globalName: 'BoboI18nModule',
+  write: false,
+  logLevel: 'silent'
+}).outputFiles[0].text;
 
 class FakeNode {
   constructor(type) {
@@ -54,6 +65,19 @@ class FakeElement extends FakeNode {
   hasAttribute(name) { return this.attributes.has(name); }
   getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  removeAttribute(name) { this.attributes.delete(name); }
+  querySelectorAll(selector) {
+    const matches = [];
+    const visit = (node) => {
+      for (const child of node.childNodes) {
+        if (child.nodeType !== 1) continue;
+        if (selector === '[data-i18n-bound]' && child.hasAttribute('data-i18n-bound')) matches.push(child);
+        visit(child);
+      }
+    };
+    visit(this);
+    return matches;
+  }
 
   get textContent() {
     return this.childNodes.map((child) => child.nodeType === 3 ? child.nodeValue : child.textContent).join('');
@@ -109,19 +133,45 @@ function createRuntime() {
     disconnect() {}
   }
 
+  function pack(id, messages) {
+    return {
+      manifest: {
+        schemaVersion: 1,
+        id,
+        name: id,
+        nativeName: id,
+        locale: id,
+        version: '1.0.0',
+        direction: 'ltr',
+        monacoLocale: '',
+        fallback: ''
+      },
+      source: 'builtin',
+      removable: false,
+      byteSize: 1,
+      stale: false,
+      messages
+    };
+  }
   const packs = {
-    'zh-CN': { manifest: { id: 'zh-CN', locale: 'zh-CN', direction: 'ltr' }, messages: { Hello: '你好', Added: '新增', Changed: '改变', Working: '处理中', '{count} messages': 'ZH {count}' } },
-    ja: { manifest: { id: 'ja', locale: 'ja', direction: 'ltr' }, messages: { Hello: 'こんにちは', Added: '追加', Changed: '変更', Working: '処理中', '{count} messages': 'JA {count}' } }
+    'zh-CN': pack('zh-CN', { Hello: '你好', Added: '新增', Changed: '改变', Working: '处理中', '{count} messages': 'ZH {count}' }),
+    ja: pack('ja', { Hello: 'こんにちは', Added: '追加', Changed: '変更', Working: '処理中', '{count} messages': 'JA {count}' })
   };
   let activeId = 'zh-CN';
   const startup = () => ({ activeId, pack: packs[activeId], packs: Object.values(packs), errors: [] });
+  const host = {
+    startup: async () => startup(),
+    list: async () => startup(),
+    load: async (id) => packs[id],
+    setActive: async (id) => { activeId = id; return startup(); },
+    install: async () => null,
+    remove: async () => startup(),
+    openFolder: async () => ({ success: true, path: 'language-packs' }),
+    refresh: async () => startup(),
+    onDidChange() { return { dispose() {} }; }
+  };
 
   const sandbox = {
-    api: {
-      languagePacksStartup: async () => startup(),
-      languagePackLoad: async (id) => packs[id],
-      languagePackSetActive: async (id) => { activeId = id; return startup(); }
-    },
     console,
     CustomEvent: function CustomEvent(type, options) { this.type = type; this.detail = options.detail; },
     dispatchEvent() {},
@@ -133,7 +183,18 @@ function createRuntime() {
     clearTimeout
   };
   sandbox.window = sandbox;
-  vm.runInNewContext(fs.readFileSync(path.join(ROOT, 'src', 'i18n.js'), 'utf8'), sandbox, { filename: 'src/i18n.js' });
+  vm.runInNewContext(I18N_BUNDLE, sandbox, { filename: 'src/i18n.ts' });
+  sandbox.BOBO = {
+    i18n: sandbox.BoboI18nModule.createI18nService({
+      host,
+      document,
+      eventTarget: sandbox,
+      createMutationObserver: (callback) => new FakeMutationObserver(callback),
+      setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (timer) => clearTimeout(timer),
+      logger: console
+    })
+  };
 
   return { sandbox, body, documentElement, traversalRoots, getObserver: () => mutationObserver };
 }
@@ -195,6 +256,21 @@ test('large sibling mutation batches avoid quadratic containment scans', async (
   assert.equal(containsCalls, 0);
   assert.equal(runtime.traversalRoots.length, siblings.length);
   assert.equal(siblings.at(-1).textContent, '新增');
+});
+
+test('pending mutation roots detached before the incremental flush are skipped', async () => {
+  const runtime = createRuntime();
+  await runtime.sandbox.BOBO.i18n.init();
+  runtime.traversalRoots.length = 0;
+
+  const detached = runtime.body.appendChild(new FakeElement('section'));
+  const text = detached.appendChild(new FakeText('Added'));
+  runtime.getObserver().callback([{ type: 'childList', addedNodes: [detached], removedNodes: [] }]);
+  detached.isConnected = false;
+  await waitForMutationFlush();
+
+  assert.equal(text.nodeValue, 'Added');
+  assert.equal(runtime.traversalRoots.includes(detached), false);
 });
 
 test('skipped elements prune their complete subtree from full translation walks', async () => {
@@ -265,7 +341,7 @@ test('language packs have identical keys and placeholder contracts', () => {
     JSON.parse(sources[locale])
   ]));
   const keys = Object.keys(packs.en).sort();
-  const placeholders = (value) => Array.from(String(value).matchAll(/\{([a-zA-Z0-9_]+)\}/g), (match) => match[1]).sort();
+  const placeholders = (value) => Array.from(String(value).matchAll(/\{([A-Za-z0-9_.-]+)\}/g), (match) => match[1]).sort();
 
   for (const locale of locales) {
     const rawKeys = Array.from(sources[locale].matchAll(/^\s*"((?:\\.|[^"\\])*)"\s*:/gm), (match) => JSON.parse('"' + match[1] + '"'));

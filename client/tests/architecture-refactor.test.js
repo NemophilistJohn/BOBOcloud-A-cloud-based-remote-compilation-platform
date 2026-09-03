@@ -166,7 +166,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'editor-rules/plugins/go.js',
   'editor-rules/plugins/rust.js',
   'src/state.js',
-  'src/i18n.js',
+  'src/i18n.ts',
+  'renderer/compat/i18n-adapter.ts',
   'src/diagnostics-settings.ts',
   'renderer/compat/diagnostics-settings-adapter.ts',
   'src/icons.js',
@@ -309,7 +310,9 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'src/source-control-view.js',
     'renderer/compat/source-control-view-adapter.js',
     'src/document-views.js',
-    'renderer/compat/document-views-adapter.js'
+    'renderer/compat/document-views-adapter.js',
+    'src/i18n.js',
+    'renderer/compat/i18n-adapter.js'
   ]) {
     assert.equal(
       fs.existsSync(path.join(ROOT, legacyModule)),

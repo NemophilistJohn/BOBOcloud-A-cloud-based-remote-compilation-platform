@@ -323,6 +323,8 @@ flowchart LR
 
 The renderer is not a privilege boundary. Privileged filesystem, child-process, networking, rclone, package-transaction, and plugin-installation operations remain in Electron main behind explicit sender-bound IPC. Main persists credentials and uses them for transport, but the trusted application renderer currently reads some configured credentials; downloaded plugin Workers do not. `contextIsolation` is enabled, Node integration is disabled, new windows/webviews/permission requests are denied, and external HTTP(S) links are handed to the OS.
 
+Renderer localization is a typed, lifecycle-owned service. Only the native host adapter reads the preload bridge and exposes a private `host.languagePacks` capability; the compatibility adapter registers private `workbench.i18n` and projects that same instance to `BOBO.i18n` for existing modules. Language-pack DTOs are normalized at the renderer boundary, host change events are treated only as invalidation hints, and locale changes use latest-wins commits so disposed or superseded requests cannot update the DOM.
+
 The service validates authenticated owner, logical project, runtime, paths, limits, and operation identity before execution. Project workspaces are isolated copies; published dependency generations are read-only. LSP and DAP can read the same generation through separate leases, but they never share sessions, transports, analysis/debug caches, or protocol policy.
 
 When TLS is enabled, all configured HTTP/WebSocket listeners require TLS 1.3 or later. Do not expose the Docker socket, toolkit ports, Bolt files, dependency trees, or service data directory to clients.

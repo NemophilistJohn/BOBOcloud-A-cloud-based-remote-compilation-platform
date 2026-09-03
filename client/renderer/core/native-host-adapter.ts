@@ -10,12 +10,18 @@ import type {
   ProjectTasksWorkspaceOpenedListener
 } from '../../types/project-tasks';
 import type { DocumentViewHost } from '../../types/document-view';
+import type {
+  LanguagePacksHost,
+  LanguagePacksInvalidationHint,
+  LanguagePacksInvalidationListener
+} from '../../types/i18n';
 import type { NativeHost, RcloneNativeHost, RcloneProgressListener } from '../../types/native-host';
 import { toDisposable } from './disposable.js';
 import { rendererPlatform } from './bootstrap';
 
 export const DIAGNOSTICS_HOST_SERVICE_ID = 'host.diagnostics';
 export const DOCUMENT_VIEWS_HOST_SERVICE_ID = 'host.documentViews';
+export const LANGUAGE_PACKS_HOST_SERVICE_ID = 'host.languagePacks';
 export const PROJECT_TASKS_HOST_SERVICE_ID = 'host.projectTasks';
 export const RCLONE_HOST_SERVICE_ID = 'host.rclone';
 
@@ -44,6 +50,34 @@ function createDocumentViewsHost(host: NativeHost): Readonly<DocumentViewHost> {
       host.plugins.documents.read(documentId, offset, length)
     ),
     closeDocument: (documentId: string) => host.plugins.documents.close(documentId)
+  });
+}
+
+function createLanguagePacksHost(host: NativeHost): Readonly<LanguagePacksHost> {
+  const invalidationHint = (payload: unknown): LanguagePacksInvalidationHint => {
+    if (!payload || typeof payload !== 'object') return Object.freeze({});
+    try {
+      const reason = Object.getOwnPropertyDescriptor(payload, 'reason');
+      const value = reason && 'value' in reason ? reason.value : null;
+      return typeof value === 'string' && value.length <= 32 && value === 'filesystem'
+        ? Object.freeze({ reason: 'filesystem' as const })
+        : Object.freeze({});
+    } catch (_) {
+      return Object.freeze({});
+    }
+  };
+  return Object.freeze({
+    startup: () => host.languagePacksStartup(),
+    list: () => host.languagePacksList(),
+    load: (id: string) => host.languagePackLoad(id),
+    setActive: (id: string) => host.languagePackSetActive(id),
+    install: () => host.languagePackInstall(),
+    remove: (id: string) => host.languagePackRemove(id),
+    openFolder: () => host.languagePacksOpenFolder(),
+    refresh: () => host.languagePacksRefresh(),
+    onDidChange: (listener: LanguagePacksInvalidationListener) => toDisposable(
+      host.onLanguagePacksChanged((payload) => listener(invalidationHint(payload)))
+    )
   });
 }
 
@@ -107,6 +141,13 @@ const documentViewsRegistration = rendererPlatform.services.register(
   { owner: 'core', exposeToPlugins: false }
 );
 rendererPlatform.lifecycle.add(documentViewsRegistration);
+
+const languagePacksRegistration = rendererPlatform.services.register(
+  LANGUAGE_PACKS_HOST_SERVICE_ID,
+  createLanguagePacksHost(nativeHost),
+  { owner: 'core', exposeToPlugins: false }
+);
+rendererPlatform.lifecycle.add(languagePacksRegistration);
 
 const projectTasksRegistration = rendererPlatform.services.register(
   PROJECT_TASKS_HOST_SERVICE_ID,

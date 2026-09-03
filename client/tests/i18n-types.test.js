@@ -1,0 +1,91 @@
+'use strict';
+
+const path = require('node:path');
+const test = require('node:test');
+const { assertTypeScriptContract } = require('./support/typescript-contract');
+
+const ROOT = path.resolve(__dirname, '..');
+
+test('i18n contracts type IPC, host, private services, DTOs, and lifecycle', () => {
+  const source = [
+    "import { createI18nService, normalizeLanguagePacksStartup } from '../src/i18n';",
+    "import type { Disposable, Dispose } from '../types/lifecycle';",
+    "import type { IpcInvokeResult } from '../types/ipc-contracts';",
+    "import type { NativeHost } from '../types/native-host';",
+    'import type {',
+    '  I18nChangeEvent,',
+    '  I18nLocaleSelectionResult,',
+    '  I18nService,',
+    '  LanguagePackDto,',
+    '  LanguagePackManifestDto,',
+    '  LanguagePacksHost,',
+    '  LanguagePacksStartupDto,',
+    '  RendererPlatform,',
+    '  RendererPluginServiceMap,',
+    '  RendererServiceMap',
+    "} from '../types/renderer-platform';",
+    'type IsAny<Value> = 0 extends (1 & Value) ? true : false;',
+    'type AssertFalse<Value extends false> = Value;',
+    'const manifest: LanguagePackManifestDto = {',
+    "  schemaVersion: 1, id: 'en', name: 'English', nativeName: 'English', locale: 'en',",
+    "  version: '1.0.0', direction: 'ltr', monacoLocale: '', fallback: ''",
+    '};',
+    'const languagePack: LanguagePackDto = {',
+    "  manifest, source: 'builtin', removable: false, byteSize: 1, stale: false, messages: { Hello: 'Hello' }",
+    '};',
+    'const startup: LanguagePacksStartupDto = {',
+    '  activeId: manifest.id, packs: [languagePack], pack: languagePack, errors: []',
+    '};',
+    "const ipcStartup: IpcInvokeResult<'language-packs:startup'> = startup;",
+    'declare const nativeHost: NativeHost;',
+    'nativeHost.languagePacksStartup().then((value: LanguagePacksStartupDto) => void value);',
+    'const host: LanguagePacksHost = {',
+    '  startup: async () => startup,',
+    '  list: async () => startup,',
+    '  load: async () => languagePack,',
+    '  setActive: async () => startup,',
+    '  install: async () => null,',
+    '  remove: async () => startup,',
+    "  openFolder: async () => ({ success: true, path: 'language-packs' }),",
+    '  refresh: async () => startup,',
+    '  onDidChange: () => ({ dispose() {} })',
+    '};',
+    'declare const document: Document;',
+    'declare const window: Window;',
+    'const service: I18nService = createI18nService({ host, document, eventTarget: window });',
+    'const disposable: Disposable = service;',
+    'const unsubscribe: Dispose = service.onChange((event: I18nChangeEvent) => void event.reason);',
+    'service.setLocale(manifest.id).then((result: I18nLocaleSelectionResult) => void result.snapshot);',
+    'const normalized: LanguagePacksStartupDto = normalizeLanguagePacksStartup(startup);',
+    'declare const platform: RendererPlatform;',
+    "const registeredHost: RendererServiceMap['host.languagePacks'] = platform.services.require('host.languagePacks');",
+    "const registeredService: RendererServiceMap['workbench.i18n'] = platform.services.require('workbench.i18n');",
+    "type HostVisible = 'host.languagePacks' extends keyof RendererPluginServiceMap ? true : false;",
+    "type ServiceVisible = 'workbench.i18n' extends keyof RendererPluginServiceMap ? true : false;",
+    'const hostVisible: HostVisible = false;',
+    'const serviceVisible: ServiceVisible = false;',
+    '// @ts-expect-error Language pack hosts are private to the trusted workbench.',
+    "platform.services.getForPlugin('host.languagePacks');",
+    '// @ts-expect-error The i18n runtime is not projected to plugin Workers.',
+    "platform.services.getForPlugin('workbench.i18n');",
+    '// @ts-expect-error Direction is a closed wire enum.',
+    "const invalidManifest: LanguagePackManifestDto = { ...manifest, direction: 'auto' };",
+    '// @ts-expect-error Loaded language packs must carry a messages DTO.',
+    'const invalidPack: LanguagePackDto = { manifest, source: \'builtin\', removable: false, byteSize: 1, stale: false };',
+    '// @ts-expect-error Snapshots cannot be mutated by consumers.',
+    "service.getSnapshot().activeId = 'ja';",
+    'type FactoryIsNotAny = AssertFalse<IsAny<ReturnType<typeof createI18nService>>>;',
+    'type NormalizerIsNotAny = AssertFalse<IsAny<ReturnType<typeof normalizeLanguagePacksStartup>>>;',
+    'unsubscribe(); disposable.dispose();',
+    'void ipcStartup; void normalized; void registeredHost; void registeredService;',
+    'void hostVisible; void serviceVisible; void invalidManifest; void invalidPack;',
+    'void (null as unknown as FactoryIsNotAny);',
+    'void (null as unknown as NormalizerIsNotAny);'
+  ].join('\n');
+
+  assertTypeScriptContract({
+    root: ROOT,
+    fileName: '__i18n-types-contract.ts',
+    source
+  });
+});

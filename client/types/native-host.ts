@@ -16,6 +16,7 @@ import type {
   DocumentViewLocalizationDto,
   LoadedDocumentViewDto
 } from './document-view';
+import type { LanguagePacksChangedListener } from './i18n';
 
 export interface WorkspaceTextFileWrite {
   readonly content: string;
@@ -207,7 +208,7 @@ export interface NativeHost {
   languagePackRemove: Invoke<'language-packs:remove'>;
   languagePacksOpenFolder: Invoke<'language-packs:open-folder'>;
   languagePacksRefresh: Invoke<'language-packs:refresh'>;
-  onLanguagePacksChanged: Subscribe<'language-packs:changed'>;
+  onLanguagePacksChanged(listener: LanguagePacksChangedListener): Dispose;
 
   readonly plugins: NativeHostPlugins;
   onOpenPluginManager: Subscribe<'open-plugin-manager'>;
