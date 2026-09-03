@@ -24,6 +24,7 @@ import type {
 } from '../renderer/core/contribution-registry';
 import type { ServiceRegistry } from '../renderer/core/service-registry';
 import type { PluginRuntimeContract } from './plugin-runtime';
+import type { PluginExtensionNativeHost } from './plugin-extension-bootstrap';
 import type { AgentDescriptorDto, AgentStateStoreContract } from './agent';
 import type { SourceControlStateStoreContract } from './source-control';
 import type { SourceControlViewService } from './source-control-view';
@@ -47,6 +48,7 @@ export interface RendererServiceMap {
   readonly 'host.diagnostics': Readonly<DiagnosticsHost>;
   readonly 'host.documentViews': Readonly<DocumentViewHost>;
   readonly 'host.languagePacks': Readonly<LanguagePacksHost>;
+  readonly 'host.pluginExtensions': Readonly<PluginExtensionNativeHost>;
   readonly 'host.projectTasks': Readonly<ProjectTasksHost>;
   readonly 'host.rclone': Readonly<RcloneNativeHost>;
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
@@ -258,6 +260,14 @@ export type {
   PluginExtensionSandboxMountTarget,
   PluginExtensionSandboxOptions
 } from './plugin-extension-sandbox';
+export type {
+  PluginExtensionBootstrapErrorEvent,
+  PluginExtensionBootstrapErrorSource,
+  PluginExtensionBootstrapObservedErrorEvent,
+  PluginExtensionNativeHost,
+  PluginExtensionNativeHostAsyncValue,
+  PluginExtensionNativeHostSubscription
+} from './plugin-extension-bootstrap';
 export type {
   PluginExtensionChangeEventDto,
   PluginExtensionCommandExecutionResultDto,

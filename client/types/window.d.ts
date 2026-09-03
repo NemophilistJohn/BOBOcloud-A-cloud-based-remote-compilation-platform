@@ -8,6 +8,7 @@ declare global {
   }
 
   interface WindowEventMap {
+    'bobo:ready': Event;
     'bobo:language-changed': CustomEvent<I18nChangeEvent>;
   }
 }

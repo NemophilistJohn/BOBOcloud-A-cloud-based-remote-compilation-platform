@@ -15,15 +15,25 @@ import type {
   LanguagePacksInvalidationHint,
   LanguagePacksInvalidationListener
 } from '../../types/i18n';
+import type { Disposable } from '../../types/lifecycle';
 import type { NativeHost, RcloneNativeHost, RcloneProgressListener } from '../../types/native-host';
+import type { PluginExtensionNativeHost } from '../../types/plugin-extension-bootstrap';
 import { toDisposable } from './disposable.js';
 import { rendererPlatform } from './bootstrap';
+import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
 
 export const DIAGNOSTICS_HOST_SERVICE_ID = 'host.diagnostics';
 export const DOCUMENT_VIEWS_HOST_SERVICE_ID = 'host.documentViews';
 export const LANGUAGE_PACKS_HOST_SERVICE_ID = 'host.languagePacks';
+export const PLUGIN_EXTENSIONS_HOST_SERVICE_ID = 'host.pluginExtensions';
 export const PROJECT_TASKS_HOST_SERVICE_ID = 'host.projectTasks';
 export const RCLONE_HOST_SERVICE_ID = 'host.rclone';
+
+function optionalDisposable(candidate: unknown): Disposable | null {
+  return typeof candidate === 'function'
+    ? toDisposable(candidate as () => void)
+    : null;
+}
 
 function createDiagnosticsHost(host: NativeHost): Readonly<DiagnosticsHost> {
   return Object.freeze({
@@ -78,6 +88,37 @@ function createLanguagePacksHost(host: NativeHost): Readonly<LanguagePacksHost> 
     onDidChange: (listener: LanguagePacksInvalidationListener) => toDisposable(
       host.onLanguagePacksChanged((payload) => listener(invalidationHint(payload)))
     )
+  });
+}
+
+function createPluginExtensionNativeHost(
+  host: NativeHost
+): Readonly<PluginExtensionNativeHost> | null {
+  const plugins = host.plugins;
+  if (!plugins || typeof plugins !== 'object' ||
+      typeof plugins.runtimeDescriptors !== 'function' ||
+      typeof plugins.loadEntry !== 'function') return null;
+  return Object.freeze({
+    listDescriptors: () => plugins.runtimeDescriptors(),
+    loadEntry: (id: string) => plugins.loadEntry(id),
+    loadLocalization: typeof plugins.loadLocalization === 'function'
+      ? (id: string, locale: string) => plugins.loadLocalization(id, locale)
+      : undefined,
+    broker: typeof plugins.rpc === 'function'
+      ? (id: string, method: string, args?: unknown) => (
+          Promise.resolve()
+            .then(() => plugins.rpc(id, method, args))
+            .then(unwrapPluginRpcResult)
+        )
+      : undefined,
+    onDidChange: typeof plugins.onChanged === 'function'
+      ? (listener: () => void) => optionalDisposable(plugins.onChanged(() => listener()))
+      : undefined,
+    onAgentModelEvent: typeof plugins.onAgentModelEvent === 'function'
+      ? (listener: (payload: unknown) => void) => optionalDisposable(
+          plugins.onAgentModelEvent((payload) => listener(payload))
+        )
+      : undefined
   });
 }
 
@@ -148,6 +189,16 @@ const languagePacksRegistration = rendererPlatform.services.register(
   { owner: 'core', exposeToPlugins: false }
 );
 rendererPlatform.lifecycle.add(languagePacksRegistration);
+
+const pluginExtensionsHost = createPluginExtensionNativeHost(nativeHost);
+if (pluginExtensionsHost) {
+  const pluginExtensionsRegistration = rendererPlatform.services.register(
+    PLUGIN_EXTENSIONS_HOST_SERVICE_ID,
+    pluginExtensionsHost,
+    { owner: 'core', exposeToPlugins: false }
+  );
+  rendererPlatform.lifecycle.add(pluginExtensionsRegistration);
+}
 
 const projectTasksRegistration = rendererPlatform.services.register(
   PROJECT_TASKS_HOST_SERVICE_ID,

@@ -30,7 +30,7 @@ import '../src/icons.js';
 import '../src/confirm-dialog.js';
 import '../src/toast.js';
 import '../src/command-palette.js';
-import './core/plugin-extension-bootstrap.js';
+import './core/plugin-extension-bootstrap.ts';
 import '../src/workbench-layout.js';
 import './compat/source-control-view-adapter.ts';
 import '../src/file-search.js';

@@ -435,7 +435,7 @@ test('renderer platform bootstrap exposes the precise runtime contract without a
   const source = [
     "import { rendererPlatform } from '../renderer/core/bootstrap';",
     "import { createRendererPlatform } from '../renderer/core/platform';",
-    "import type { RendererPlatform } from '../types/renderer-platform';",
+    "import type { Disposable, PluginExtensionNativeHost, RendererPlatform } from '../types/renderer-platform';",
     'const bootstrapped: RendererPlatform = rendererPlatform;',
     'const created: RendererPlatform = createRendererPlatform();',
     'const apiVersion: string = created.apiVersion;',
@@ -443,6 +443,12 @@ test('renderer platform bootstrap exposes the precise runtime contract without a
     'const disposal: Promise<void> = created.dispose();',
     "created.services.require('workbench.projectTasks').refresh();",
     "created.services.require('workbench.fileIcons').clearIconCache();",
+    "const extensionNativeHost: PluginExtensionNativeHost = created.services.require('host.pluginExtensions');",
+    'const extensionDescriptors: unknown | PromiseLike<unknown> = extensionNativeHost.listDescriptors();',
+    "const extensionBrokerResult: unknown | PromiseLike<unknown> | undefined = extensionNativeHost.broker?.('acme.test', 'agent.tools.list');",
+    'const extensionChangeSubscription: Disposable | null | undefined = extensionNativeHost.onDidChange?.(() => {});',
+    '// @ts-expect-error Native extension capabilities are private to the renderer host.',
+    "created.services.getForPlugin('host.pluginExtensions');",
     "created.services.getForPlugin('workbench.fileIcons').getFileIcon('main.ts');",
     '// @ts-expect-error The plugin view cannot invalidate the host icon cache.',
     "created.services.getForPlugin('workbench.fileIcons').clearIconCache();",
@@ -460,7 +466,11 @@ test('renderer platform bootstrap exposes the precise runtime contract without a
     'void bootstrapped;',
     'void apiVersion;',
     'void disposed;',
-    'void disposal;'
+    'void disposal;',
+    'void extensionNativeHost;',
+    'void extensionDescriptors;',
+    'void extensionBrokerResult;',
+    'void extensionChangeSubscription;'
   ].join('\n');
 
   assertTypeScriptContract({
@@ -476,7 +486,7 @@ test('extension bootstrap owns partial subscriptions before later adapter teardo
     stdin: {
       contents: [
         "import { rendererPlatform } from './renderer/core/bootstrap.ts';",
-        "import { rendererExtensionHost } from './renderer/core/plugin-extension-bootstrap.js';",
+        "import { rendererExtensionHost } from './renderer/core/plugin-extension-bootstrap.ts';",
         "rendererPlatform.lifecycle.add({ dispose() { window.__events.push('adapter:dispose'); } });",
         'window.__extensionBootstrapPlatform = rendererPlatform;',
         'window.__rendererExtensionHost = rendererExtensionHost;'
@@ -503,6 +513,11 @@ test('extension bootstrap owns partial subscriptions before later adapter teardo
         plugins: {
           runtimeDescriptors: async () => [],
           loadEntry: async () => ({ source: '' }),
+          rpc: async (_id, method) => ({
+            __bobocloudPluginRpcResult: 1,
+            ok: true,
+            value: { method }
+          }),
           onChanged() {
             events.push('changed:subscribe');
             return () => events.push('changed:dispose');
@@ -528,6 +543,16 @@ test('extension bootstrap owns partial subscriptions before later adapter teardo
   };
   vm.runInNewContext(build.outputFiles[0].text, context);
 
+  const extensionNativeHost = context.window.__extensionBootstrapPlatform.services.get('host.pluginExtensions');
+  assert.ok(extensionNativeHost);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await extensionNativeHost.broker('acme.test', 'agent.tools.list'))),
+    { method: 'agent.tools.list' }
+  );
+  assert.throws(
+    () => context.window.__extensionBootstrapPlatform.services.getForPluginDynamic('host.pluginExtensions'),
+    /not exposed/
+  );
   await context.window.__extensionBootstrapPlatform.dispose();
   assert.deepEqual(events, [
     'ready:subscribe',

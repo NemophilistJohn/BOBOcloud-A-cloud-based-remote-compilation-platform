@@ -11,7 +11,6 @@ const ROOT = path.resolve(__dirname, '..');
 const SOURCE_ROOTS = [path.join(ROOT, 'renderer'), path.join(ROOT, 'src')];
 const NATIVE_HOST_ADAPTER = 'renderer/core/native-host-adapter.ts';
 const LEGACY_DIRECT_ACCESS_LIMITS = new Map([
-  ['renderer/core/plugin-extension-bootstrap.js', 2],
   ['src/agent-workbench.js', 7],
   ['src/ai-agent-button.js', 3],
   ['src/ai-chat-panel.js', 7],
@@ -175,7 +174,8 @@ test('native host services remain private to the workbench', () => {
   assert.match(adapter, /RCLONE_HOST_SERVICE_ID\s*=\s*['"]host\.rclone['"]/);
   assert.match(adapter, /DOCUMENT_VIEWS_HOST_SERVICE_ID\s*=\s*['"]host\.documentViews['"]/);
   assert.match(adapter, /LANGUAGE_PACKS_HOST_SERVICE_ID\s*=\s*['"]host\.languagePacks['"]/);
-  assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 5);
+  assert.match(adapter, /PLUGIN_EXTENSIONS_HOST_SERVICE_ID\s*=\s*['"]host\.pluginExtensions['"]/);
+  assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 6);
   assert.doesNotMatch(adapter, /pluginView\s*:/);
   assert.match(diagnosticsAdapter,
     /DIAGNOSTICS_SETTINGS_SERVICE_ID\s*=\s*['"]workbench\.diagnosticsSettings['"]/);

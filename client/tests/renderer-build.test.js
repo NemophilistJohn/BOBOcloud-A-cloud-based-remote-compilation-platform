@@ -36,7 +36,7 @@ const EXPECTED_MODULES = [
   '../src/confirm-dialog.js',
   '../src/toast.js',
   '../src/command-palette.js',
-  './core/plugin-extension-bootstrap.js',
+  './core/plugin-extension-bootstrap.ts',
   '../src/workbench-layout.js',
   './compat/source-control-view-adapter.ts',
   '../src/file-search.js',
@@ -159,6 +159,8 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/shared/plugin-semver.js')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-host.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-host.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-bootstrap.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-bootstrap.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-sandbox.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-sandbox.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-protocol.ts')));
@@ -234,6 +236,7 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.deepEqual(manifest.entries.terminalUi.outputs, [
     'bobo-terminal-ui.js', 'bobo-terminal-ui.js.map', 'bobo-terminal-ui.css', 'bobo-terminal-ui.css.map'
   ]);
+  assert.equal(manifest.entries.extensionHost.entry, 'renderer/core/plugin-extension-bootstrap.ts');
   assert.equal(manifest.entries.extensionHost.implementation, 'opaque-sandboxed-iframe-worker');
   assert.equal(manifest.entries.extensionHost.directNetwork, 'blocked-by-sandbox-csp');
 });

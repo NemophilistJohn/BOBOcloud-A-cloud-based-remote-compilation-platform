@@ -92,7 +92,7 @@ async function buildRenderer(options = {}) {
         outputs: ['bobo-terminal-ui.js', 'bobo-terminal-ui.js.map', 'bobo-terminal-ui.css', 'bobo-terminal-ui.css.map']
       },
       extensionHost: {
-        entry: 'renderer/core/plugin-extension-bootstrap.js',
+        entry: 'renderer/core/plugin-extension-bootstrap.ts',
         implementation: 'opaque-sandboxed-iframe-worker',
         load: 'after-bobo-ready',
         protocolVersion: 1,
