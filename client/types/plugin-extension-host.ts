@@ -1,4 +1,5 @@
 import type { AgentStateHandle, AgentStateStoreContract } from './agent';
+import type { CommandPaletteRegistrationPort } from './command-palette';
 import type { Disposable, DisposableStore, Dispose, MaybeAsyncDisposable } from './lifecycle';
 import type {
   PluginManifestDto,
@@ -147,17 +148,7 @@ export interface PluginExtensionHostContributionRegistryPort {
   disposeOwner(owner: string): void;
 }
 
-export interface PluginExtensionCommandPalettePort {
-  readonly supportsDisposables: true;
-  register(
-    id: string,
-    title: string,
-    hint: string,
-    category: string,
-    handler: () => unknown
-  ): Disposable | null | undefined;
-  unregister?(id: string): unknown;
-}
+export interface PluginExtensionCommandPalettePort extends CommandPaletteRegistrationPort {}
 
 export type PluginExtensionHostAsyncValue<Value> = Value | PromiseLike<Value>;
 

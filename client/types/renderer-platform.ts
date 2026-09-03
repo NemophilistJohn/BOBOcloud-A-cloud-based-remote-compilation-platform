@@ -1,4 +1,5 @@
 import type { RcloneClient } from '../src/rclone-client';
+import type { CommandPaletteService } from './command-palette';
 import type { DiagnosticsHost, DiagnosticsSettingsService } from './diagnostics';
 import type {
   ProjectTasksHost,
@@ -61,6 +62,7 @@ export interface RendererServiceMap {
   readonly 'workbench.serverTransport': Readonly<ServerTransportService>;
   readonly 'workbench.serverCapabilities': ServerCapabilityService;
   readonly 'workbench.cloudFeaturePolicy': Readonly<CloudFeaturePolicyService>;
+  readonly 'workbench.commandPalette': CommandPaletteService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
 }
 
@@ -90,6 +92,15 @@ export type RendererContributionRegistrationMap =
   ContributionRegistrationMapFor<RendererContributionMap>;
 
 export type { Disposable, DisposableStore, MaybeAsyncDisposable } from './lifecycle';
+export type {
+  CommandPaletteCommandDto,
+  CommandPaletteCommandHandler,
+  CommandPaletteDependencies,
+  CommandPaletteFacade,
+  CommandPaletteI18n,
+  CommandPaletteRegistrationPort,
+  CommandPaletteService
+} from './command-palette';
 export type {
   FileIconLookupService,
   FileIconNameMap,

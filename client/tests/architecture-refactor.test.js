@@ -180,7 +180,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'src/icons.js',
   'src/confirm-dialog.js',
   'src/toast.js',
-  'src/command-palette.js',
+  'src/command-palette.ts',
+  'renderer/compat/command-palette-adapter.ts',
   'src/workbench-layout.js',
   'src/source-control-view.ts',
   'renderer/compat/source-control-view-adapter.ts',
@@ -332,7 +333,9 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'src/document-views.js',
     'renderer/compat/document-views-adapter.js',
     'src/i18n.js',
-    'renderer/compat/i18n-adapter.js'
+    'renderer/compat/i18n-adapter.js',
+    'src/command-palette.js',
+    'renderer/compat/command-palette-adapter.js'
   ]) {
     assert.equal(
       fs.existsSync(path.join(ROOT, legacyModule)),

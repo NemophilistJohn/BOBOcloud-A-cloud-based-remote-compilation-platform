@@ -15,6 +15,7 @@ const ROOT = path.resolve(__dirname, '..');
 let temporaryDirectory;
 let core;
 let fileIconsModule;
+let commandPaletteModule;
 let compatibilityBundle;
 
 function deferred() {
@@ -113,10 +114,11 @@ test.before(async () => {
   temporaryDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'bobocloud-renderer-platform-'));
   core = await bundleModule('renderer/core/index.ts', 'core');
   fileIconsModule = await bundleModule('src/file-icons.ts', 'file-icons');
+  commandPaletteModule = await bundleModule('src/command-palette.ts', 'command-palette');
   const compatibilityBuild = await esbuild.build({
     absWorkingDir: ROOT,
     stdin: {
-      contents: "import { rendererPlatform } from './renderer/core/bootstrap.ts'; import { createFileDecorationService } from './renderer/compat/file-decoration-adapter.ts'; import './renderer/core/native-host-adapter.ts'; import './renderer/compat/platform-adapter.ts'; import './renderer/compat/file-icons-adapter.ts'; import './renderer/compat/project-tasks-adapter.ts'; window.__rendererPlatform = rendererPlatform; window.__createFileDecorationService = createFileDecorationService; window.__fileIconsPluginView = rendererPlatform.services.getForPlugin('workbench.fileIcons'); window.__tasksPluginView = rendererPlatform.services.getForPlugin('workbench.projectTasks');",
+      contents: "import { rendererPlatform } from './renderer/core/bootstrap.ts'; import { createFileDecorationService } from './renderer/compat/file-decoration-adapter.ts'; import './renderer/core/native-host-adapter.ts'; import './renderer/compat/platform-adapter.ts'; import './renderer/compat/file-icons-adapter.ts'; import './renderer/compat/project-tasks-adapter.ts'; import './renderer/compat/command-palette-adapter.ts'; window.__rendererPlatform = rendererPlatform; window.__createFileDecorationService = createFileDecorationService; window.__fileIconsPluginView = rendererPlatform.services.getForPlugin('workbench.fileIcons'); window.__tasksPluginView = rendererPlatform.services.getForPlugin('workbench.projectTasks'); window.__commandPaletteService = rendererPlatform.services.require('workbench.commandPalette');",
       resolveDir: ROOT,
       sourcefile: 'compatibility-test-entry.js'
     },
@@ -1966,10 +1968,21 @@ test('installed extensions receive only data-only source control, SCM, and local
 });
 
 test('command palette registrations are disposable and do not leave disabled extension commands behind', () => {
-  const source = fs.readFileSync(path.join(ROOT, 'src', 'command-palette.js'), 'utf8');
-  const context = { window: {}, document: {} };
-  vm.runInNewContext(source, context);
-  const palette = context.window.BOBO.commands;
+  const listeners = new Map();
+  const eventTarget = {
+    addEventListener(type, listener) { listeners.set(type, listener); },
+    removeEventListener(type, listener) {
+      if (listeners.get(type) === listener) listeners.delete(type);
+    }
+  };
+  const palette = commandPaletteModule.createCommandPalette({
+    document: {},
+    eventTarget,
+    getI18n: () => null,
+    setTimer: () => 1,
+    clearTimer() {}
+  });
+  assert.equal(listeners.has('bobo:language-changed'), true);
   const first = palette.register('acme.palette.command', 'One', '', 'Extensions', () => {});
   assert.equal(palette.has('acme.palette.command'), true);
   const replacement = palette.register('acme.palette.command', 'Two', '', 'Extensions', () => {});
@@ -1977,6 +1990,10 @@ test('command palette registrations are disposable and do not leave disabled ext
   assert.equal(palette.has('acme.palette.command'), true);
   replacement.dispose();
   assert.equal(palette.has('acme.palette.command'), false);
+  palette.dispose();
+  palette.dispose();
+  assert.equal(palette.disposed, true);
+  assert.equal(listeners.has('bobo:language-changed'), false);
 });
 
 test('deactivation waits for in-flight activation and leaves no late registrations', async () => {
@@ -2317,7 +2334,7 @@ test('default file icon maps reference packaged SVG assets', () => {
   }
 });
 
-test('thin BOBO adapter projects the same registered file icon service', () => {
+test('thin BOBO adapters project registered file icon and command palette services', () => {
   const context = createCompatibilityContext();
   vm.runInNewContext(compatibilityBundle, context);
 
@@ -2356,8 +2373,29 @@ test('thin BOBO adapter projects the same registered file icon service', () => {
   assert.equal(context.window.__tasksPluginView.init, undefined);
   assert.equal(typeof context.window.__tasksPluginView.list, 'function');
   assert.equal(typeof context.window.__tasksPluginView.getSelected, 'function');
+  assert.equal(BOBO.platform.services.has('workbench.commandPalette'), true);
+  assert.equal(
+    BOBO.platform.services.get('workbench.commandPalette'),
+    context.window.__commandPaletteService
+  );
+  assert.notEqual(BOBO.commands, context.window.__commandPaletteService);
+  assert.deepEqual(Object.keys(BOBO.commands), [
+    'register', 'unregister', 'has', 'supportsDisposables', 'show', 'hide'
+  ]);
+  assert.equal(BOBO.commands.dispose, undefined);
+  assert.equal(BOBO.commands.supportsDisposables, true);
+  assert.throws(
+    () => BOBO.platform.services.getForPlugin('workbench.commandPalette'),
+    /not exposed to plugins/
+  );
+  assert.equal(
+    BOBO.platform.services.describe()
+      .find((service) => service.id === 'workbench.commandPalette').exposeToPlugins,
+    false
+  );
   context.window.__rendererPlatform.lifecycle.clear();
   assert.equal(BOBO.platform.services.has('workbench.fileIcons'), false);
+  assert.equal(BOBO.platform.services.has('workbench.commandPalette'), false);
   assert.equal(BOBO.fileIcons.getFileIcon('main.go'), 'ico/file_type_go.svg');
 });
 

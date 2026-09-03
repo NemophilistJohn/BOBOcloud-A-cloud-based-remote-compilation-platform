@@ -35,7 +35,7 @@ const EXPECTED_MODULES = [
   '../src/icons.js',
   '../src/confirm-dialog.js',
   '../src/toast.js',
-  '../src/command-palette.js',
+  './compat/command-palette-adapter.ts',
   './core/plugin-extension-bootstrap.ts',
   '../src/workbench-layout.js',
   './compat/source-control-view-adapter.ts',
@@ -204,6 +204,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/i18n.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/i18n-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/i18n-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/command-palette.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/command-palette.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/command-palette-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/command-palette-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/project-tasks.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/project-tasks-adapter.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/source-control-view.ts')));

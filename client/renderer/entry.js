@@ -29,7 +29,7 @@ import '../src/workspace-launch.js';
 import '../src/icons.js';
 import '../src/confirm-dialog.js';
 import '../src/toast.js';
-import '../src/command-palette.js';
+import './compat/command-palette-adapter.ts';
 import './core/plugin-extension-bootstrap.ts';
 import '../src/workbench-layout.js';
 import './compat/source-control-view-adapter.ts';

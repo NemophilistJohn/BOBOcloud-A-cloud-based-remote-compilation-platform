@@ -8,24 +8,15 @@ import type {
   PluginExtensionHostContract
 } from '../../types/plugin-extension-host';
 import type { RendererPluginServiceMap } from '../../types/renderer-platform';
+import { COMMAND_PALETTE_SERVICE_ID } from '../../src/command-palette';
 import { rendererPlatform } from './bootstrap';
 import { PLUGIN_EXTENSIONS_HOST_SERVICE_ID } from './native-host-adapter';
 import { PluginExtensionHost } from './plugin-extension-host.js';
 
 const I18N_SERVICE_ID = 'workbench.i18n';
 
-interface LegacyBoboExtensionSurface {
-  readonly commands?: PluginExtensionCommandPalettePort;
-}
-
-type PluginExtensionBootstrapWindow = Window & {
-  readonly BOBO?: LegacyBoboExtensionSurface;
-};
-
-const legacyWindow = window as PluginExtensionBootstrapWindow;
-
 function resolveCommandPalette(): PluginExtensionCommandPalettePort | null {
-  const commands = legacyWindow.BOBO?.commands;
+  const commands = rendererPlatform.services.get(COMMAND_PALETTE_SERVICE_ID);
   return commands?.supportsDisposables === true ? commands : null;
 }
 

@@ -52,6 +52,10 @@ const MIGRATED_I18N_MODULES = Object.freeze([
   'renderer/compat/i18n-adapter.ts',
   'src/i18n.ts'
 ]);
+const MIGRATED_COMMAND_PALETTE_MODULES = Object.freeze([
+  'renderer/compat/command-palette-adapter.ts',
+  'src/command-palette.ts'
+]);
 
 function sourceFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -146,6 +150,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated i18n slice must not regain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_COMMAND_PALETTE_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated command palette must not gain a direct preload dependency: ${file}`);
+  }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],
     'tasksResolve must remain a unique native-adapter bridge capability');
@@ -169,6 +177,14 @@ test('native host services remain private to the workbench', () => {
     path.join(ROOT, 'renderer/compat/i18n-adapter.ts'),
     'utf8'
   );
+  const commandPaletteAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/command-palette-adapter.ts'),
+    'utf8'
+  );
+  const commandPalette = fs.readFileSync(
+    path.join(ROOT, 'src/command-palette.ts'),
+    'utf8'
+  );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
   assert.match(adapter, /PROJECT_TASKS_HOST_SERVICE_ID\s*=\s*['"]host\.projectTasks['"]/);
   assert.match(adapter, /RCLONE_HOST_SERVICE_ID\s*=\s*['"]host\.rclone['"]/);
@@ -188,4 +204,9 @@ test('native host services remain private to the workbench', () => {
   assert.match(i18nAdapter, /I18N_SERVICE_ID\s*=\s*['"]workbench\.i18n['"]/);
   assert.match(i18nAdapter, /exposeToPlugins:\s*false/);
   assert.doesNotMatch(i18nAdapter, /pluginView\s*:/);
+  assert.match(commandPalette,
+    /COMMAND_PALETTE_SERVICE_ID\s*=\s*['"]workbench\.commandPalette['"]/);
+  assert.match(commandPaletteAdapter, /COMMAND_PALETTE_SERVICE_ID/);
+  assert.match(commandPaletteAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(commandPaletteAdapter, /pluginView\s*:/);
 });

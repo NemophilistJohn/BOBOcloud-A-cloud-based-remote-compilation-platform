@@ -48,6 +48,14 @@ decoration DTOs feed a host-rendered `src/source-control-view.ts` service, while
 plugin command ids use the explicit dynamic-command port, and the view remains
 host-only rather than becoming a plugin service.
 
+The command palette is likewise a host-only typed presentation service.
+`src/command-palette.ts` keeps its ordered replacement semantics in an O(1)
+map and batches result DOM updates, while
+`compat/command-palette-adapter.ts` preserves the exact `BOBO.commands`
+surface. The installed extension host resolves the service through the typed
+registry, so typed core code no longer reaches back through the compatibility
+namespace.
+
 Document Views use the same vertical boundary. `core/document-view.ts` owns
 descriptor validation and selection, `core/document-view-sandbox.ts` owns the
 bounded opaque-frame protocol, and `src/document-views.ts` owns injected
