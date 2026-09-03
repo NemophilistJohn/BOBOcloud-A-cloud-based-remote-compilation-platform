@@ -2385,7 +2385,7 @@ test('thin BOBO adapters project registered file icon and command palette servic
   assert.equal(BOBO.commands.dispose, undefined);
   assert.equal(BOBO.commands.supportsDisposables, true);
   assert.throws(
-    () => BOBO.platform.services.getForPlugin('workbench.commandPalette'),
+    () => context.window.__rendererPlatform.services.getForPlugin('workbench.commandPalette'),
     /not exposed to plugins/
   );
   assert.equal(
