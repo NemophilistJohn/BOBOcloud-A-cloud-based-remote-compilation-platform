@@ -160,6 +160,8 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-sandbox.js')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-protocol.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-protocol.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/agent.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/agent.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/service-registry.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/service-registry.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/command-registry.ts')));

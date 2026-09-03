@@ -25,6 +25,15 @@ its bounded data cloner remains self-contained because the sandbox embeds that
 factory's source directly into the isolated Worker. This protocol module is not
 a service and does not add another host or compatibility adapter.
 
+Agent renderer state is the next typed core boundary. `core/agent.ts` preserves
+the existing runtime validation, bounds, compare-and-swap updates, and owner
+cleanup, while `../types/agent.ts` separates permissive registration DTOs from
+complete immutable snapshots. State handles and subscriptions use the shared
+disposable contract; published patch events are defensive frozen copies with
+normalized identities so the trusted workbench can update keyed rows safely.
+`types/renderer-platform.ts` depends on the structural Agent store contract,
+not on the concrete implementation class.
+
 The source-control slice follows the same boundary: typed SCM request and
 decoration DTOs feed a host-rendered `src/source-control-view.ts` service, while
 `compat/source-control-view-adapter.ts` is the only legacy projection. Runtime

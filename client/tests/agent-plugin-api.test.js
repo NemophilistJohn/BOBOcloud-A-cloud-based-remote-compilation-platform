@@ -403,6 +403,137 @@ test('Agent state store isolates listener failures and disposes owner state', ()
   store.dispose();
 });
 
+test('Agent state patches are atomic and publish normalized immutable copies', () => {
+  const events = [];
+  const store = new core.AgentStateStore();
+  store.onDidChange((event) => events.push(event));
+  const provider = store.register(agentDescriptor(), { owner: 'acme.agent' });
+  provider.setState(agentState());
+
+  const patch = {
+    baseVersion: 1,
+    operations: [
+      {
+        type: 'message.upsert',
+        value: { id: '  message-2  ', role: 'assistant', content: 'Streaming.' }
+      },
+      {
+        type: 'timeline.upsert',
+        value: { id: '  timeline-2  ', title: 'Streaming response', status: 'running' }
+      }
+    ]
+  };
+  assert.deepEqual(provider.updateState(patch), { applied: true, version: 2 });
+
+  const published = events.at(-1);
+  assert.equal(published.type, 'state');
+  assert.notEqual(published.patch, patch);
+  assert.notEqual(published.patch.operations, patch.operations);
+  assert.notEqual(published.patch.operations[0], patch.operations[0]);
+  assert.notEqual(published.patch.operations[0].value, patch.operations[0].value);
+  assert.equal(Object.isFrozen(published.patch), true);
+  assert.equal(Object.isFrozen(published.patch.operations), true);
+  assert.equal(Object.isFrozen(published.patch.operations[0]), true);
+  assert.equal(Object.isFrozen(published.patch.operations[0].value), true);
+  assert.equal(published.patch.operations[0].value.id, 'message-2');
+  assert.equal(published.patch.operations[1].value.id, 'timeline-2');
+  assert.equal(store.get(provider.id).state.activeSession.messages.at(-1).id, 'message-2');
+  assert.equal(store.get(provider.id).state.activeSession.timeline.at(-1).id, 'timeline-2');
+
+  patch.operations[0].value.id = 'mutated-message';
+  patch.operations[0].value.content = 'Mutated after publication.';
+  assert.equal(published.patch.operations[0].value.id, 'message-2');
+  assert.equal(published.patch.operations[0].value.content, 'Streaming.');
+
+  const beforeFailure = store.get(provider.id);
+  const eventCount = events.length;
+  assert.throws(
+    () => provider.updateState({
+      baseVersion: 2,
+      operations: [
+        {
+          type: 'message.upsert',
+          value: { id: 'message-never-published', role: 'assistant', content: 'Partial mutation' }
+        },
+        {
+          type: 'session.merge',
+          value: { messages: [] }
+        }
+      ]
+    }),
+    /unsupported field/
+  );
+  const afterFailure = store.get(provider.id);
+  assert.equal(afterFailure.version, beforeFailure.version);
+  assert.equal(afterFailure.state, beforeFailure.state);
+  assert.equal(events.length, eventCount);
+  assert.equal(
+    afterFailure.state.activeSession.messages.some((item) => item.id === 'message-never-published'),
+    false
+  );
+
+  const symbolKey = Symbol('not-extension-data');
+  const beforeCloneFailure = store.get(provider.id);
+  const cloneFailureEventCount = events.length;
+  assert.throws(
+    () => provider.updateState({
+      baseVersion: beforeCloneFailure.version,
+      operations: [{
+        type: 'message.upsert',
+        value: {
+          id: 'message-symbol-rejected',
+          role: 'assistant',
+          content: 'This update must not commit.',
+          [symbolKey]: true
+        }
+      }]
+    }),
+    /symbol properties/
+  );
+  const afterCloneFailure = store.get(provider.id);
+  assert.equal(afterCloneFailure.version, beforeCloneFailure.version);
+  assert.equal(afterCloneFailure.state, beforeCloneFailure.state);
+  assert.equal(events.length, cloneFailureEventCount);
+  assert.equal(
+    afterCloneFailure.state.activeSession.messages.some((item) => item.id === 'message-symbol-rejected'),
+    false
+  );
+
+  provider.dispose();
+  store.dispose();
+});
+
+test('Agent listener error reporting cannot block later listeners', () => {
+  const listenerFailure = new Error('listener failed');
+  const reporterFailure = new Error('error reporter failed');
+  const reports = [];
+  const observed = [];
+  const store = new core.AgentStateStore({
+    onError(event) {
+      reports.push(event);
+      throw reporterFailure;
+    }
+  });
+  store.onDidChange(() => {
+    throw listenerFailure;
+  });
+  store.onDidChange((event) => observed.push(event.type));
+
+  let provider;
+  assert.doesNotThrow(() => {
+    provider = store.register(agentDescriptor(), { owner: 'acme.agent' });
+  });
+  assert.doesNotThrow(() => provider.setState(agentState()));
+  assert.doesNotThrow(() => provider.dispose());
+
+  assert.deepEqual(observed, ['added', 'state', 'removed']);
+  assert.equal(reports.length, 3);
+  assert.equal(reports.every((event) => event.source === 'agent-state-listener'), true);
+  assert.equal(reports.every((event) => event.id === 'acme.agent.main'), true);
+  assert.equal(reports.every((event) => event.error === listenerFailure), true);
+  store.dispose();
+});
+
 test('trusted plugin runtime requires dedicated Agent registration and cleans it on deactivate', async () => {
   const platform = core.createRendererPlatform({ onError() {} });
   const manifest = {

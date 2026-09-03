@@ -455,7 +455,7 @@ test('reloaded workbench delivers a toolless evicted terminal result until accep
 
 test('Agent access modes stay session-scoped and full access requires trusted confirmation', () => {
   const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8');
-  const core = fs.readFileSync(path.join(ROOT, 'renderer', 'core', 'agent.js'), 'utf8');
+  const core = fs.readFileSync(path.join(ROOT, 'renderer', 'core', 'agent.ts'), 'utf8');
 
   assert.match(source, /agentAccessGet\(identity\)/);
   assert.match(source, /agentAccessSet\(Object\.assign\(\{\}, identity, \{ accessMode: accessMode, confirmed: confirmed \}\)\)/);
@@ -464,7 +464,7 @@ test('Agent access modes stay session-scoped and full access requires trusted co
   assert.match(source, /accessMode === 'full'[\s\S]*danger: true/);
   assert.match(source, /accessMode: normalizedAccessMode\(current\.accessMode\)/);
   assert.match(source, /session && !accessReady\(record\)/);
-  assert.match(core, /const ACCESS_MODES = new Set\(\['ask', 'auto', 'full'\]\)/);
+  assert.match(core, /const ACCESS_MODES = new Set(?:<AgentAccessModeDto>)?\(\['ask', 'auto', 'full'\]\)/);
 });
 
 test('Agent mode, effort, and access controls live in the composer with keyboard slash commands', () => {
@@ -623,7 +623,7 @@ test('Agent feed patches update keyed nodes without rebuilding the composer', ()
 
 test('xhigh reasoning and compaction state are host-rendered workbench options', () => {
   const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8');
-  const core = fs.readFileSync(path.join(ROOT, 'renderer', 'core', 'agent.js'), 'utf8');
+  const core = fs.readFileSync(path.join(ROOT, 'renderer', 'core', 'agent.ts'), 'utf8');
 
   assert.match(source, /effort === 'xhigh'/);
   assert.match(source, /value\.kind === 'compaction'/);

@@ -23,8 +23,8 @@ import type {
   ContributionRegistry
 } from '../renderer/core/contribution-registry';
 import type { ServiceRegistry } from '../renderer/core/service-registry';
-import type { AgentStateStore } from '../renderer/core/agent.js';
 import type { PluginRuntime } from '../renderer/core/plugin-runtime.js';
+import type { AgentDescriptorDto, AgentStateStoreContract } from './agent';
 import type { SourceControlStateStoreContract } from './source-control';
 import type { SourceControlViewService } from './source-control-view';
 import type {
@@ -34,7 +34,6 @@ import type {
 } from './document-view';
 import type { I18nService, LanguagePacksHost } from './i18n';
 import type {
-  AgentDescriptorDto,
   RendererOpaqueContributionDto,
   SourceControlDescriptorDto
 } from './contributions';
@@ -211,11 +210,78 @@ export type {
 } from './i18n';
 export type {
   AgentAccessModeDto,
+  AgentActiveSessionDto,
+  AgentActiveSessionRegistrationDto,
+  AgentApprovalDto,
+  AgentApprovalOutcomeDto,
+  AgentApprovalRegistrationDto,
+  AgentApprovalResultDto,
+  AgentApprovalResultRegistrationDto,
+  AgentApprovalToolDto,
   AgentCapabilitiesDto,
+  AgentCapabilitiesRegistrationDto,
+  AgentCommandMapRegistrationDto,
   AgentCommandMapDto,
+  AgentCommandPayloadDto,
+  AgentCommandValuesRegistrationDto,
+  AgentCompactionDto,
+  AgentCompactionRegistrationDto,
   AgentDescriptorDto,
+  AgentDescriptorRegistrationDto,
+  AgentEffectiveReasoningEffortDto,
+  AgentGoalDto,
+  AgentGoalRegistrationDto,
+  AgentGoalStepDto,
+  AgentGoalStepRegistrationDto,
+  AgentGoalStepStatusDto,
+  AgentMessageDto,
+  AgentMessageRegistrationDto,
+  AgentMessageRoleDto,
   AgentModeDto,
+  AgentModelCapabilitiesDto,
+  AgentModelCapabilitiesRegistrationDto,
+  AgentModelCapabilitySourceDto,
+  AgentModelChoiceDto,
+  AgentModelChoiceRegistrationDto,
+  AgentModelPurposeDto,
+  AgentObservedStatePatchDto,
+  AgentObservedStatePatchOperationDto,
+  AgentPhaseDto,
   AgentReasoningEffortDto,
+  AgentSessionStatusDto,
+  AgentSessionSummaryDto,
+  AgentSessionSummaryRegistrationDto,
+  AgentSkillChoiceDto,
+  AgentSkillChoiceRegistrationDto,
+  AgentStateAddedEvent,
+  AgentStateChangeEvent,
+  AgentStateChangeListener,
+  AgentStateChangeType,
+  AgentStateChangedEvent,
+  AgentStateClearedEvent,
+  AgentStateDto,
+  AgentStateHandle,
+  AgentStatePatchedEvent,
+  AgentStatePatchAppliedDto,
+  AgentStatePatchDto,
+  AgentStatePatchOperationDto,
+  AgentStatePatchRejectedDto,
+  AgentStateRegistrationDto,
+  AgentStateRegistrationOptions,
+  AgentStateRemovedEvent,
+  AgentStateSetEvent,
+  AgentStateSnapshot,
+  AgentStateStoreContract,
+  AgentStateStoreErrorEvent,
+  AgentStateStoreOptions,
+  AgentStateUpdateResultDto,
+  AgentTimelineItemDto,
+  AgentTimelineItemRegistrationDto,
+  AgentTimelineKindDto,
+  AgentTimelineStatusDto,
+  AgentVersionDto
+} from './agent';
+export type {
   RendererOpaqueContributionDto,
   SourceControlDescriptorDto,
   SourceControlDescriptorRegistrationDto
@@ -314,7 +380,7 @@ export interface RendererPlatform {
   readonly commands: CommandRegistry<RendererCommandMap>;
   readonly contributions: ContributionRegistry<RendererContributionMap>;
   readonly sourceControls: SourceControlStateStoreContract;
-  readonly agents: AgentStateStore;
+  readonly agents: AgentStateStoreContract;
   readonly plugins: PluginRuntime;
   readonly disposed: boolean;
   dispose(): Promise<void>;

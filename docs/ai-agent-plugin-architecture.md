@@ -42,7 +42,8 @@ Trusted Agent workbench          OS / local workspace / AI provider
 | `client/main/plugins.js` | Package validation, permission grants, broker method authorization, install/disable/uninstall lifecycle, and sanitized plugin records. |
 | `client/main/agent-platform.js` | Opaque model refs and declared capabilities, normalized stream events, structured local tools/descriptors, host-authoritative risk/access policy, revisioned Skill discovery, and isolated JSON persistence. |
 | `client/main/ai.js` | Provider-specific request, reasoning, SSE normalization, usage accounting, and cancellation while retaining secret model profiles in the main process. |
-| `client/renderer/core/agent.js` | Agent descriptor/state validation, complete snapshots, compare-and-swap state patches, bounds, events, and owner cleanup. |
+| `client/renderer/core/agent.ts` | Agent descriptor/state validation, complete snapshots, compare-and-swap state patches, bounds, events, and owner cleanup. |
+| `client/types/agent.ts` | Registration and normalized DTOs, patch/event unions, structural store ownership, and shared disposable contracts. |
 | `client/renderer/core/plugin-extension-protocol.ts` | Typed data-only cross-realm protocol and bounded cloning/error envelopes. |
 | `client/renderer/core/plugin-extension-host.js` | Permission enforcement, contribution handles, command routing, broker delegation, and deterministic teardown. |
 | `client/renderer/core/plugin-extension-sandbox.js` | Frozen public plugin context inside the network-disabled Worker. |
@@ -153,7 +154,7 @@ Plugin-local storage should still be treated as ordinary local application data,
 
 ## Cross-platform contract
 
-The implementation remains JavaScript-only and uses Node/Electron primitives that exist on Windows, macOS, and Linux:
+The packaged runtime remains JavaScript and uses Node/Electron primitives that exist on Windows, macOS, and Linux; typed renderer sources are erased by the existing esbuild pipeline:
 
 - `node:path`, `realpath`, and workspace-relative POSIX serialization normalize OS-specific paths at the broker edge.
 - `spawn(executable, argv, { shell: false })` avoids shell dialect coupling. `windowsHide` prevents helper windows on Windows.
@@ -165,9 +166,9 @@ macOS and Linux still require release-time validation for executable permissions
 
 ## Language decision
 
-Keeping the client and official plugin in JavaScript is the preferred design. The difficult parts are capability isolation, lifecycle, validation, concurrency, cancellation, and tests; adding another user-side language would not remove that complexity and would introduce a sidecar protocol, packaging matrix, update channel, signing surface, crash supervision, and cross-platform binary distribution.
+Keeping the client and official plugin in the JavaScript/TypeScript Electron architecture is the preferred design. The difficult parts are capability isolation, lifecycle, validation, concurrency, cancellation, and tests; adding a native sidecar language would not remove that complexity and would introduce another protocol, packaging matrix, update channel, signing surface, crash supervision, and cross-platform binary distribution.
 
-Use the TypeScript declaration as the public contract and incrementally add JSDoc or TypeScript source at build time if stronger static checking is needed. The emitted runtime can remain a single JavaScript bundle. A native or non-JS sidecar is justified only for a concrete capability Node/Electron cannot provide with acceptable correctness or performance, and it should still sit behind the same main-process broker rather than being exposed to plugins.
+Use typed DTO modules and incrementally migrated TypeScript renderer sources as compile-time contracts. The emitted runtime remains a single JavaScript bundle, and the downloadable plugin still ships one self-contained JavaScript module. A native or non-JS sidecar is justified only for a concrete capability Node/Electron cannot provide with acceptable correctness or performance, and it should still sit behind the same main-process broker rather than being exposed to plugins.
 
 ## Delivery and registration
 
