@@ -167,7 +167,6 @@ test('Agent contracts separate registration data, normalized state, patches, and
     '    }',
     '    // @ts-expect-error Observed operation arrays are immutable.',
     '    change.patch.operations.push(change.patch.operations[0]!);',
-    '    void observedValue;',
     '  }',
     '}',
     'const storeOptions: AgentStateStoreOptions = {',
