@@ -300,6 +300,23 @@ export class ContributionRegistry<
     contribution: object,
     options: ContributionRegistrationOptions = {}
   ): Disposable {
+    return this._register(point, contribution, options);
+  }
+
+  /** Runtime boundary for contribution points supplied by a validated plugin descriptor. */
+  registerDynamic(
+    point: string,
+    contribution: object,
+    options: ContributionRegistrationOptions = {}
+  ): Disposable {
+    return this._register(point, contribution, options);
+  }
+
+  private _register(
+    point: string,
+    contribution: object,
+    options: ContributionRegistrationOptions
+  ): Disposable {
     if (this._disposed) throw new Error('ContributionRegistry has been disposed.');
     const contributionPoint = requireId(point, 'Contribution point');
     const owner = requireId(options.owner || 'core', 'Contribution owner');

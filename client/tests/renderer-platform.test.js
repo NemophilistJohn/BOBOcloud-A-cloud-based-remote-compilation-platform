@@ -757,6 +757,116 @@ test('plugin runtime enforces permissions and cleans partial activation', async 
   await platform.dispose();
 });
 
+test('plugin runtime reports only string manifest ids across validation and disposed lifecycle failures', async () => {
+  const reported = [];
+  const platform = core.createRendererPlatform({ onError: (event) => reported.push(event) });
+  const invalid = await platform.plugins.activate({
+    id: ['acme.looks-valid'],
+    version: '1.0.0',
+    engines: { pluginApi: '^1.0.0' },
+    permissions: []
+  }, { activate() {} });
+  assert.equal(invalid.ok, false);
+  assert.equal(reported.find((event) => event.source === 'plugin-validate').id, undefined);
+  const throwingId = {};
+  Object.defineProperty(throwingId, 'id', {
+    get() { throw new Error('poisoned id'); }
+  });
+  const poisoned = await platform.plugins.activate(throwingId, { activate() {} });
+  assert.equal(poisoned.ok, false);
+  assert.equal(poisoned.error.message, 'poisoned id');
+  assert.equal(reported.filter((event) => event.source === 'plugin-validate').at(-1).id, undefined);
+  let versionReads = 0;
+  let displayNameReads = 0;
+  const statefulManifest = {
+    id: 'acme.stateful-manifest',
+    engines: { pluginApi: '^1.0.0' },
+    permissions: []
+  };
+  Object.defineProperties(statefulManifest, {
+    version: {
+      get() {
+        versionReads += 1;
+        return versionReads === 1 ? '1.0.0' : 'invalid-after-validation';
+      }
+    },
+    displayName: {
+      get() {
+        displayNameReads += 1;
+        return displayNameReads === 1 ? 'Stable name' : null;
+      }
+    }
+  });
+  const normalizedStateful = core.validatePluginManifest(statefulManifest);
+  assert.equal(normalizedStateful.version, '1.0.0');
+  assert.equal(normalizedStateful.displayName, 'Stable name');
+  assert.equal(versionReads, 1);
+  assert.equal(displayNameReads, 1);
+  assert.throws(() => core.validatePluginManifest({
+    id: 'acme.invalid-contributes',
+    version: '1.0.0',
+    engines: { pluginApi: '^1.0.0' },
+    permissions: [],
+    contributes: { toJSON() { return null; } }
+  }), /serialize to an object/);
+
+  await platform.dispose();
+  const disposed = await platform.plugins.activate({
+    id: { unsafe: true },
+    version: '1.0.0',
+    engines: { pluginApi: '^1.0.0' },
+    permissions: []
+  }, { activate() {} });
+  assert.equal(disposed.ok, false);
+  assert.equal(reported.find((event) => event.source === 'plugin-lifecycle').id, undefined);
+});
+
+test('plugin runtime resolves services through its typed dynamic registry port', async () => {
+  const expectedService = Object.freeze({ kind: 'expected' });
+  let strictReads = 0;
+  let dynamicReads = 0;
+  let receivedService = null;
+  const runtime = new core.PluginRuntime({
+    services: {
+      getForPlugin(id) {
+        strictReads += 1;
+        return Object.freeze({ kind: 'wrong', id });
+      },
+      getForPluginDynamic(id) {
+        dynamicReads += 1;
+        assert.equal(id, 'known.service');
+        return expectedService;
+      },
+      disposeOwner() {}
+    },
+    commands: {
+      registerDynamic() { throw new Error('not used'); },
+      executeDynamic() { return Promise.resolve(undefined); },
+      disposeOwner() {}
+    },
+    contributions: {
+      registerDynamic() { throw new Error('not used'); },
+      disposeOwner() {}
+    }
+  });
+
+  const activation = await runtime.activate({
+    id: 'acme.typed-services',
+    version: '1.0.0',
+    engines: { pluginApi: '^1.0.0' },
+    permissions: [core.PluginPermission.SERVICES_READ]
+  }, {
+    activate(context) {
+      receivedService = context.services.get('known.service');
+    }
+  });
+  assert.equal(activation.ok, true);
+  assert.equal(receivedService, expectedService);
+  assert.equal(strictReads, 0);
+  assert.equal(dynamicReads, 1);
+  await runtime.dispose();
+});
+
 test('legacy plugin runtime registers and owns source-control state', async () => {
   const platform = core.createRendererPlatform();
   const pluginId = 'acme.legacy-scm';
@@ -1751,6 +1861,50 @@ test('deactivation waits for in-flight activation and leaves no late registratio
   await platform.dispose();
 });
 
+test('plugin runtime preserves falsy activation and deactivation failures', async () => {
+  const platform = core.createRendererPlatform({ onError() {} });
+  const activationStarted = deferred();
+  const finishActivation = deferred();
+  let deactivateCount = 0;
+  const activationPromise = platform.plugins.activate({
+    id: 'acme.falsy-activation',
+    version: '1.0.0',
+    engines: { pluginApi: '^1.0.0' },
+    permissions: []
+  }, {
+    async activate() {
+      activationStarted.resolve();
+      await finishActivation.promise;
+      throw null;
+    },
+    deactivate() {
+      deactivateCount += 1;
+    }
+  });
+  await activationStarted.promise;
+  const deactivationPromise = platform.plugins.deactivate('acme.falsy-activation');
+  finishActivation.resolve();
+  const [activation, deactivation] = await Promise.all([activationPromise, deactivationPromise]);
+  assert.equal(activation.ok, false);
+  assert.equal(activation.error, null);
+  assert.equal(deactivation.ok, true);
+  assert.equal(deactivateCount, 0);
+
+  assert.equal((await platform.plugins.activate({
+    id: 'acme.falsy-deactivation',
+    version: '1.0.0',
+    engines: { pluginApi: '^1.0.0' },
+    permissions: []
+  }, {
+    activate() {},
+    deactivate() { throw 0; }
+  })).ok, true);
+  const failedDeactivation = await platform.plugins.deactivate('acme.falsy-deactivation');
+  assert.equal(failedDeactivation.ok, false);
+  assert.equal(failedDeactivation.error, 0);
+  await platform.dispose();
+});
+
 test('platform disposal waits for in-flight activation and tears it down once', async () => {
   const platform = core.createRendererPlatform();
   const activationStarted = deferred();
@@ -1826,6 +1980,45 @@ test('platform disposal awaits an asynchronous legacy plugin disposable', async 
   await disposePromise;
   assert.deepEqual(calls, ['plugin:start', 'plugin:end']);
   assert.equal(platform.plugins.list().length, 0);
+});
+
+test('plugin subscription disposal awaits asynchronous entries in LIFO order', async () => {
+  const platform = core.createRendererPlatform();
+  const gate = deferred();
+  const calls = [];
+  const activation = await platform.plugins.activate({
+    id: 'acme.async-subscriptions',
+    version: '1.0.0',
+    engines: { pluginApi: '^1.0.0' },
+    permissions: []
+  }, {
+    activate(context) {
+      context.subscriptions.add({
+        dispose() { calls.push('first'); }
+      });
+      context.subscriptions.add({
+        async dispose() {
+          calls.push('second:start');
+          await gate.promise;
+          calls.push('second:end');
+        }
+      });
+    }
+  });
+  assert.equal(activation.ok, true);
+
+  const deactivationPromise = platform.plugins.deactivate('acme.async-subscriptions');
+  let settled = false;
+  deactivationPromise.then(() => { settled = true; });
+  await nextTurn();
+  assert.deepEqual(calls, ['second:start']);
+  assert.equal(settled, false);
+
+  gate.resolve();
+  const deactivation = await deactivationPromise;
+  assert.equal(deactivation.ok, true);
+  assert.deepEqual(calls, ['second:start', 'second:end', 'first']);
+  await platform.dispose();
 });
 
 test('plugin cleanup keeps its owner id reserved until asynchronous teardown completes', async () => {

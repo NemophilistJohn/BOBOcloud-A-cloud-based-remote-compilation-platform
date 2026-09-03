@@ -34,6 +34,14 @@ normalized identities so the trusted workbench can update keyed rows safely.
 `types/renderer-platform.ts` depends on the structural Agent store contract,
 not on the concrete implementation class.
 
+The trusted-module `core/plugin-runtime.ts` now follows the same contract-first
+shape. `../types/plugin-runtime.ts` separates manifest input, immutable runtime
+snapshots, permission values, operation results, plugin context ports, and
+async disposal. Its dynamic service, command, and contribution paths enter the
+same registries through explicit checked runtime methods; the closed host maps
+remain strict for ordinary TypeScript callers. Installed packages still use
+the separate Worker extension host and do not gain this trusted context.
+
 The source-control slice follows the same boundary: typed SCM request and
 decoration DTOs feed a host-rendered `src/source-control-view.ts` service, while
 `compat/source-control-view-adapter.ts` is the only legacy projection. Runtime

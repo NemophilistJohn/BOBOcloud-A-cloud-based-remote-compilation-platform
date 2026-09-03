@@ -23,7 +23,7 @@ import type {
   ContributionRegistry
 } from '../renderer/core/contribution-registry';
 import type { ServiceRegistry } from '../renderer/core/service-registry';
-import type { PluginRuntime } from '../renderer/core/plugin-runtime.js';
+import type { PluginRuntimeContract } from './plugin-runtime';
 import type { AgentDescriptorDto, AgentStateStoreContract } from './agent';
 import type { SourceControlStateStoreContract } from './source-control';
 import type { SourceControlViewService } from './source-control-view';
@@ -209,6 +209,49 @@ export type {
   LanguagePackSummaryDto
 } from './i18n';
 export type {
+  PluginApiVersionDto,
+  PluginManifestDto,
+  PluginManifestEnginesDto,
+  PluginManifestEnginesRegistrationDto,
+  PluginManifestRegistrationDto,
+  PluginPermissionDto,
+  PluginRuntimeActivationValue,
+  PluginRuntimeAgentProvider,
+  PluginRuntimeAgents,
+  PluginRuntimeCommandHandler,
+  PluginRuntimeCommandMetadataDto,
+  PluginRuntimeCommandRegistryPort,
+  PluginRuntimeCommands,
+  PluginRuntimeContext,
+  PluginRuntimeContract,
+  PluginRuntimeContributionOptionsDto,
+  PluginRuntimeContributionPointDto,
+  PluginRuntimeContributionRegistrationDto,
+  PluginRuntimeContributionRegistryPort,
+  PluginRuntimeContributions,
+  PluginRuntimeDocumentViews,
+  PluginRuntimeErrorEvent,
+  PluginRuntimeErrorSourceDto,
+  PluginRuntimeI18n,
+  PluginRuntimeI18nChangeListener,
+  PluginRuntimeI18nValuesDto,
+  PluginRuntimeIdentityDto,
+  PluginRuntimeLocalizationRegistrationDto,
+  PluginRuntimeModule,
+  PluginRuntimeObservedErrorEvent,
+  PluginRuntimeOperationFailureDto,
+  PluginRuntimeOperationResultDto,
+  PluginRuntimeOperationSuccessDto,
+  PluginRuntimeOptions,
+  PluginRuntimeServices,
+  PluginRuntimeServiceRegistryPort,
+  PluginRuntimeSnapshotDto,
+  PluginRuntimeSourceControl,
+  PluginRuntimeSourceControlProvider,
+  PluginRuntimeStatusDto,
+  PluginRuntimeSubscriptions
+} from './plugin-runtime';
+export type {
   AgentAccessModeDto,
   AgentActiveSessionDto,
   AgentActiveSessionRegistrationDto,
@@ -381,7 +424,7 @@ export interface RendererPlatform {
   readonly contributions: ContributionRegistry<RendererContributionMap>;
   readonly sourceControls: SourceControlStateStoreContract;
   readonly agents: AgentStateStoreContract;
-  readonly plugins: PluginRuntime;
+  readonly plugins: PluginRuntimeContract<RendererPluginServiceMap>;
   readonly disposed: boolean;
   dispose(): Promise<void>;
 }

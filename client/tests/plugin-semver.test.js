@@ -66,7 +66,7 @@ test('all plugin SemVer consumers are wired to the shared helper and package it'
   const sources = {
     plugins: fs.readFileSync(path.join(ROOT, 'main', 'plugins.js'), 'utf8'),
     marketplace: fs.readFileSync(path.join(ROOT, 'main', 'marketplace.js'), 'utf8'),
-    runtime: fs.readFileSync(path.join(ROOT, 'renderer', 'core', 'plugin-runtime.js'), 'utf8'),
+    runtime: fs.readFileSync(path.join(ROOT, 'renderer', 'core', 'plugin-runtime.ts'), 'utf8'),
     manager: fs.readFileSync(path.join(ROOT, 'src', 'plugin-manager-ui.js'), 'utf8')
   };
   for (const [name, source] of Object.entries(sources)) {

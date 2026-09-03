@@ -90,6 +90,23 @@ export class CommandRegistry<
     handler: StrictCommandFor<Commands, NoInfer<Id>>,
     metadata: CommandRegistrationMetadata = {}
   ): Disposable {
+    return this._register(id, handler, metadata);
+  }
+
+  /** Runtime boundary for command ids supplied by a validated plugin descriptor. */
+  registerDynamic(
+    id: string,
+    handler: DynamicCommandHandler,
+    metadata: CommandRegistrationMetadata = {}
+  ): Disposable {
+    return this._register(id, handler, metadata);
+  }
+
+  private _register(
+    id: string,
+    handler: DynamicCommandHandler,
+    metadata: CommandRegistrationMetadata
+  ): Disposable {
     if (this._disposed) throw new Error('CommandRegistry has been disposed.');
     const commandId = requireId(id, 'Command id');
     const owner = requireId(metadata.owner || 'core', 'Command owner');

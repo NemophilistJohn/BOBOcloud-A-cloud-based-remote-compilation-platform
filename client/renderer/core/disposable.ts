@@ -50,7 +50,7 @@ export class DisposableStore implements DisposableStoreContract {
     return this._disposed;
   }
 
-  add<Value extends Disposable>(disposable: Value): Value {
+  add<Value extends MaybeAsyncDisposable>(disposable: Value): Value {
     this._requireDisposable(disposable);
     if (this._disposed) {
       if (this._itemsToDispose) this._itemsToDispose.push(disposable);

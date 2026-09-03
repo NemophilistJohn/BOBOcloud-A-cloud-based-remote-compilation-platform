@@ -147,10 +147,21 @@ export class ServiceRegistry<
   getForPlugin<Id extends PluginServiceId<Services, PluginServices>>(
     id: Id
   ): PluginServices[Id] {
+    return this.getForPluginDynamic(id);
+  }
+
+  /** Runtime boundary for service ids supplied by a validated plugin descriptor. */
+  getForPluginDynamic<Id extends PluginServiceId<Services, PluginServices>>(
+    id: Id
+  ): PluginServices[Id];
+  getForPluginDynamic<Id extends string>(
+    id: Id
+  ): Id extends keyof PluginServices ? PluginServices[Id] : unknown;
+  getForPluginDynamic(id: string): unknown {
     const record = this._records.get(id);
     if (!record) throw new Error('Unknown service: ' + id);
     if (!record.exposeToPlugins) throw new Error('Service is not exposed to plugins: ' + id);
-    return record.pluginView as PluginServices[Id];
+    return record.pluginView;
   }
 
   describe(): readonly ServiceDescription[] {

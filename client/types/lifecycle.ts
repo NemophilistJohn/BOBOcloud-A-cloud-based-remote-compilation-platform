@@ -10,7 +10,7 @@ export interface MaybeAsyncDisposable {
 
 export interface DisposableStore extends Disposable {
   readonly disposed: boolean;
-  add<Value extends Disposable>(disposable: Value): Value;
+  add<Value extends MaybeAsyncDisposable>(disposable: Value): Value;
   addAsync<Value extends MaybeAsyncDisposable>(disposable: Value): Value;
   delete(disposable: MaybeAsyncDisposable): boolean;
   clear(): void;

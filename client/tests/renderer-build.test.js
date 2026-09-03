@@ -154,7 +154,8 @@ test('production renderer build is minified, source-mapped and records ordered m
   ), 0);
   assert.ok(bundle.length < sourceBytes * 0.75);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/app.js')));
-  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-runtime.js')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-runtime.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-runtime.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/shared/plugin-semver.js')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-host.js')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-extension-sandbox.js')));

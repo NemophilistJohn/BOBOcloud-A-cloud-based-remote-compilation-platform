@@ -44,7 +44,14 @@ export function createRendererPlatform(options: RendererPlatformOptions = {}): R
   const contributions = new ContributionRegistry<RendererContributionMap>({ onError });
   const sourceControls = new SourceControlStateStore({ onError });
   const agents = new AgentStateStore({ onError });
-  const plugins = new PluginRuntime({ services, commands, contributions, sourceControls, agents, onError });
+  const plugins = new PluginRuntime<RendererPluginServiceMap>({
+    services,
+    commands,
+    contributions,
+    sourceControls,
+    agents,
+    onError
+  });
   let disposed = false;
   let disposePromise: Promise<void> | null = null;
 
