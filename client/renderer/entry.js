@@ -7,7 +7,7 @@
 // Theme and editor-rule foundations.
 import './core/bootstrap.ts';
 import './core/native-host-adapter.ts';
-import './compat/platform-adapter.js';
+import './compat/platform-adapter.ts';
 import '../theme-manager.js';
 import '../editor-rules/completion-engine.js';
 import '../completion-rules.js';

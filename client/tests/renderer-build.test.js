@@ -15,7 +15,7 @@ const ROOT = path.resolve(__dirname, '..');
 const EXPECTED_MODULES = [
   './core/bootstrap.ts',
   './core/native-host-adapter.ts',
-  './compat/platform-adapter.js',
+  './compat/platform-adapter.ts',
   '../theme-manager.js',
   '../editor-rules/completion-engine.js',
   '../completion-rules.js',
@@ -189,6 +189,8 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/platform.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/bootstrap.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/bootstrap.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/platform-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/platform-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/file-icons.ts')));

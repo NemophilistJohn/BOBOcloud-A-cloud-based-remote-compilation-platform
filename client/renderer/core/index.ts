@@ -1,7 +1,7 @@
-export { toDisposable, DisposableStore } from './disposable.ts';
-export { ServiceRegistry } from './service-registry.ts';
-export { CommandRegistry } from './command-registry.ts';
-export { ContributionPoint, ContributionRegistry } from './contribution-registry.ts';
+export { toDisposable, DisposableStore } from './disposable.js';
+export { ServiceRegistry } from './service-registry.js';
+export { CommandRegistry } from './command-registry.js';
+export { ContributionPoint, ContributionRegistry } from './contribution-registry.js';
 export { selectDocumentView, validateDocumentViewDescriptor } from './document-view.js';
 export {
   DOCUMENT_VIEW_PROTOCOL_VERSION,
@@ -15,19 +15,19 @@ export {
   decorationLaneForContributionPoint,
   normalizeFileDecoration,
   validateFileDecorationProvider
-} from './file-decoration.ts';
+} from './file-decoration.js';
 export {
   ScmFileStatus,
   createScmFileDecorationProvider,
   normalizeScmDecorationEntries,
   normalizeScmRelativePath
-} from './scm-file-decoration.ts';
+} from './scm-file-decoration.js';
 export {
   ScmGitOperation,
   ScmGitPermission,
   normalizeScmGitRequest,
   scmGitPermissionForOperation
-} from './scm-git.ts';
+} from './scm-git.js';
 export {
   AgentPhase,
   AgentSessionStatus,
@@ -46,7 +46,7 @@ export {
   normalizeSourceControlFormValues,
   validateSourceControlDescriptor,
   validateSourceControlState
-} from './source-control.ts';
+} from './source-control.js';
 export {
   PLUGIN_API_VERSION,
   PluginPermission,
@@ -75,4 +75,4 @@ export {
   buildExtensionSandboxDocument,
   createSandboxedExtensionSandbox
 } from './plugin-extension-sandbox.js';
-export { createRendererPlatform } from './platform.ts';
+export { createRendererPlatform } from './platform.js';

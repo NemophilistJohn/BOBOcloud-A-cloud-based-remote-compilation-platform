@@ -111,12 +111,12 @@ function createCompatibilityContext(consoleObject = console) {
 
 test.before(async () => {
   temporaryDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'bobocloud-renderer-platform-'));
-  core = await bundleModule('renderer/core/index.js', 'core');
+  core = await bundleModule('renderer/core/index.ts', 'core');
   fileIconsModule = await bundleModule('src/file-icons.ts', 'file-icons');
   const compatibilityBuild = await esbuild.build({
     absWorkingDir: ROOT,
     stdin: {
-      contents: "import { rendererPlatform } from './renderer/core/bootstrap.ts'; import { createFileDecorationService } from './renderer/compat/file-decoration-adapter.ts'; import './renderer/core/native-host-adapter.ts'; import './renderer/compat/platform-adapter.js'; import './renderer/compat/file-icons-adapter.ts'; import './renderer/compat/project-tasks-adapter.ts'; window.__rendererPlatform = rendererPlatform; window.__createFileDecorationService = createFileDecorationService; window.__fileIconsPluginView = rendererPlatform.services.getForPlugin('workbench.fileIcons'); window.__tasksPluginView = rendererPlatform.services.getForPlugin('workbench.projectTasks');",
+      contents: "import { rendererPlatform } from './renderer/core/bootstrap.ts'; import { createFileDecorationService } from './renderer/compat/file-decoration-adapter.ts'; import './renderer/core/native-host-adapter.ts'; import './renderer/compat/platform-adapter.ts'; import './renderer/compat/file-icons-adapter.ts'; import './renderer/compat/project-tasks-adapter.ts'; window.__rendererPlatform = rendererPlatform; window.__createFileDecorationService = createFileDecorationService; window.__fileIconsPluginView = rendererPlatform.services.getForPlugin('workbench.fileIcons'); window.__tasksPluginView = rendererPlatform.services.getForPlugin('workbench.projectTasks');",
       resolveDir: ROOT,
       sourcefile: 'compatibility-test-entry.js'
     },
@@ -435,10 +435,11 @@ test('renderer platform bootstrap exposes the precise runtime contract without a
   const source = [
     "import { rendererPlatform } from '../renderer/core/bootstrap';",
     "import { createRendererPlatform } from '../renderer/core/platform';",
-    "import type { Disposable, PluginExtensionNativeHost, RendererPlatform } from '../types/renderer-platform';",
+    "import type { Disposable, PluginExtensionNativeHost, RendererPlatform, RendererPlatformCompatibilityFacade } from '../types/renderer-platform';",
+    'declare const compatibility: RendererPlatformCompatibilityFacade;',
     'const bootstrapped: RendererPlatform = rendererPlatform;',
     'const created: RendererPlatform = createRendererPlatform();',
-    'const apiVersion: string = created.apiVersion;',
+    "const apiVersion: '1.6.0' = created.apiVersion;",
     'const disposed: boolean = created.disposed;',
     'const disposal: Promise<void> = created.dispose();',
     "created.services.require('workbench.projectTasks').refresh();",
@@ -457,6 +458,15 @@ test('renderer platform bootstrap exposes the precise runtime contract without a
     'created.sourceControls.list();',
     'created.agents.list();',
     'created.plugins.list();',
+    "const compatibilityApiVersion: '1.6.0' = compatibility.apiVersion;",
+    "const compatibilityService: unknown = compatibility.services.get('host.pluginExtensions');",
+    "const compatibilityCommand: Promise<unknown> = compatibility.commands.execute('plugin.dynamic', { value: 1 });",
+    "const compatibilityContribution: Disposable = compatibility.contributions.register('plugin.dynamic', { id: 'acme.dynamic' });",
+    "const compatibilityCollection: Promise<{ values: unknown[]; errors: unknown[] }> = compatibility.contributions.collect('plugin.dynamic', 'provide', { value: 1 });",
+    "compatibility.fileDecorations.get('scm', 'src/main.ts', { type: 'file' });",
+    "compatibility.sourceControl.createCommandPayload('acme.scm', 'refresh', {});",
+    "compatibility.agents.createCommandPayload('acme.agent', 'send', { text: 'hello' });",
+    'compatibility.plugins.list();',
     '// @ts-expect-error Unknown host services remain outside the typed service map.',
     "created.services.get('plugin.dynamic');",
     '// @ts-expect-error Unknown host commands remain outside the typed command map.',
@@ -470,7 +480,12 @@ test('renderer platform bootstrap exposes the precise runtime contract without a
     'void extensionNativeHost;',
     'void extensionDescriptors;',
     'void extensionBrokerResult;',
-    'void extensionChangeSubscription;'
+    'void extensionChangeSubscription;',
+    'void compatibilityApiVersion;',
+    'void compatibilityService;',
+    'void compatibilityCommand;',
+    'void compatibilityContribution;',
+    'void compatibilityCollection;'
   ].join('\n');
 
   assertTypeScriptContract({
@@ -2308,6 +2323,12 @@ test('thin BOBO adapter projects the same registered file icon service', () => {
 
   const BOBO = context.window.BOBO;
   assert.equal(BOBO.platform.apiVersion, '1.6.0');
+  assert.equal(Object.isFrozen(BOBO.platform), true);
+  for (const key of [
+    'fileDecorations', 'sourceControl', 'agents', 'services', 'commands', 'contributions', 'plugins'
+  ]) {
+    assert.equal(Object.isFrozen(BOBO.platform[key]), true, key + ' facade must remain frozen');
+  }
   assert.equal(BOBO.platform.services.has('workbench.fileIcons'), true);
   assert.equal(BOBO.platform.services.get('workbench.fileIcons'), BOBO.fileIcons);
   assert.equal(BOBO.fileIcons.getFileIcon('main.go'), 'ico/file_type_go.svg');

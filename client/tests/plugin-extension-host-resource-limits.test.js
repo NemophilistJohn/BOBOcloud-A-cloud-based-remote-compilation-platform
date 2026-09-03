@@ -189,7 +189,7 @@ test.before(async () => {
   const output = path.join(temporaryDirectory, 'core.cjs');
   await esbuild.build({
     absWorkingDir: ROOT,
-    entryPoints: ['renderer/core/index.js'],
+    entryPoints: ['renderer/core/index.ts'],
     outfile: output,
     bundle: true,
     platform: 'node',

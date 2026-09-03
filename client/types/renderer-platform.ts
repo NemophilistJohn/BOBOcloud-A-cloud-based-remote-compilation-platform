@@ -23,7 +23,7 @@ import type {
   ContributionRegistry
 } from '../renderer/core/contribution-registry';
 import type { ServiceRegistry } from '../renderer/core/service-registry';
-import type { PluginRuntimeContract } from './plugin-runtime';
+import type { PluginApiVersionDto, PluginRuntimeContract } from './plugin-runtime';
 import type { PluginExtensionNativeHost } from './plugin-extension-bootstrap';
 import type { AgentDescriptorDto, AgentStateStoreContract } from './agent';
 import type { SourceControlStateStoreContract } from './source-control';
@@ -464,7 +464,7 @@ export type {
 } from './scm';
 
 export interface RendererPlatform {
-  readonly apiVersion: string;
+  readonly apiVersion: PluginApiVersionDto;
   readonly lifecycle: DisposableStore;
   readonly services: ServiceRegistry<RendererServiceMap, RendererPluginServiceMap>;
   readonly commands: CommandRegistry<RendererCommandMap>;
@@ -491,3 +491,14 @@ export interface RendererPlatformOptions {
   readonly logger?: RendererPlatformLogger;
   readonly onError?: (event: RendererPlatformErrorEvent) => void;
 }
+
+export type {
+  RendererPlatformAgentsFacade,
+  RendererPlatformCommandsFacade,
+  RendererPlatformCompatibilityFacade,
+  RendererPlatformContributionsFacade,
+  RendererPlatformFileDecorationsFacade,
+  RendererPlatformPluginsFacade,
+  RendererPlatformServicesFacade,
+  RendererPlatformSourceControlFacade
+} from './platform-adapter';

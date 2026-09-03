@@ -159,6 +159,7 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/core/plugin-extension-sandbox.ts',
   'renderer/core/plugin-extension-host.ts',
   'renderer/core/plugin-extension-bootstrap.ts',
+  'renderer/compat/platform-adapter.ts',
   'renderer/compat/file-decoration-adapter.ts',
   'theme-manager.js',
   'editor-rules/completion-engine.js',
@@ -291,6 +292,11 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     false,
     'legacy contribution-registry.js must not coexist with the TypeScript implementation'
   );
+  assert.equal(
+    fs.existsSync(path.join(ROOT, 'renderer', 'core', 'index.ts')),
+    true,
+    'the typed renderer core barrel must remain available'
+  );
   for (const legacyModule of [
     'disposable.js',
     'platform.js',
@@ -307,6 +313,7 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'plugin-extension-sandbox.js',
     'plugin-extension-host.js',
     'plugin-extension-bootstrap.js',
+    'index.js',
     'typed-platform.ts'
   ]) {
     assert.equal(
@@ -316,6 +323,7 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     );
   }
   for (const legacyModule of [
+    'renderer/compat/platform-adapter.js',
     'src/file-icons.js',
     'renderer/compat/file-icons-adapter.js',
     'renderer/compat/file-decoration-adapter.js',

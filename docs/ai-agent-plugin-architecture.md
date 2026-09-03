@@ -49,6 +49,8 @@ Trusted Agent workbench          OS / local workspace / AI provider
 | `client/renderer/core/plugin-extension-host.ts` | Permission enforcement, contribution handles, command routing, broker delegation, and deterministic teardown. |
 | `client/types/plugin-extension-bootstrap.ts` | Private native extension bridge, subscription, and bootstrap error contracts. |
 | `client/renderer/core/plugin-extension-bootstrap.ts` | Delayed activation, refresh coalescing, typed locale integration, and lifecycle-owned native subscriptions. |
+| `client/types/platform-adapter.ts` | Typed contract for the frozen, trusted legacy workbench facade. |
+| `client/renderer/compat/platform-adapter.ts` | Compatibility projection over typed services, dynamic commands, contributions, Agent state, and source control. |
 | `client/renderer/core/plugin-extension-sandbox.ts` | Frozen public plugin context inside the network-disabled Worker. |
 | Trusted Agent workbench | Dynamic activity entry, session navigation, editor-sized tab, host access/approval controls, and state-to-command translation. |
 
