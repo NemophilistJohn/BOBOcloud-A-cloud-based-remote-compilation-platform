@@ -1,10 +1,27 @@
+import type {
+  ExtensionData,
+  ExtensionDataCloneOptions,
+  ExtensionDataCloner,
+  ExtensionErrorCodeDto,
+  ExtensionHostMethodDto,
+  ExtensionInboundMessageDto,
+  ExtensionMessageTypeDto,
+  ExtensionProtocolError,
+  ExtensionProtocolVersion,
+  ExtensionRequestId,
+  ExtensionSandboxMethodDto,
+  PluginRpcResultMarker,
+  PluginRpcResultVersion,
+  SerializedExtensionErrorDto
+} from '../../types/plugin-extension-protocol';
+
 // Cross-context protocol for installed BOBOCloud extensions. The renderer is
 // the privileged side of this channel; extension code only sees its opaque
 // MessagePort inside a sandboxed iframe.
 
-export const EXTENSION_PROTOCOL_VERSION = 1;
-export const PLUGIN_RPC_RESULT_MARKER = '__bobocloudPluginRpcResult';
-export const PLUGIN_RPC_RESULT_VERSION = 1;
+export const EXTENSION_PROTOCOL_VERSION: ExtensionProtocolVersion = 1;
+export const PLUGIN_RPC_RESULT_MARKER: PluginRpcResultMarker = '__bobocloudPluginRpcResult';
+export const PLUGIN_RPC_RESULT_VERSION: PluginRpcResultVersion = 1;
 
 export const ExtensionMessageType = Object.freeze({
   CONNECT: 'bobocloud.extension.connect',
@@ -14,7 +31,7 @@ export const ExtensionMessageType = Object.freeze({
   REQUEST: 'request',
   RESPONSE: 'response',
   FATAL: 'fatal'
-});
+} as const satisfies Readonly<Record<string, ExtensionMessageTypeDto>>);
 
 export const ExtensionHostMethod = Object.freeze({
   COMMAND_REGISTER: 'commands.register',
@@ -44,14 +61,14 @@ export const ExtensionHostMethod = Object.freeze({
   AGENT_BROKER_REQUEST: 'agent.broker.request',
   SERVICE_GET: 'services.get',
   BROKER_REQUEST: 'host.request'
-});
+} as const satisfies Readonly<Record<string, ExtensionHostMethodDto>>);
 
 export const ExtensionSandboxMethod = Object.freeze({
   COMMAND_INVOKE: 'command.invoke',
   I18N_CHANGED: 'i18n.changed',
   AGENT_MODEL_EVENT: 'models.event',
   DEACTIVATE: 'extension.deactivate'
-});
+} as const satisfies Readonly<Record<string, ExtensionSandboxMethodDto>>);
 
 export const ExtensionErrorCode = Object.freeze({
   CANCELLED: 'EXTENSION_CANCELLED',
@@ -61,39 +78,59 @@ export const ExtensionErrorCode = Object.freeze({
   PROTOCOL: 'EXTENSION_PROTOCOL_ERROR',
   TIMEOUT: 'EXTENSION_TIMEOUT',
   UNAVAILABLE: 'EXTENSION_UNAVAILABLE'
-});
+} as const satisfies Readonly<Record<string, ExtensionErrorCodeDto>>);
+
+type ValueOf<Value> = Value[keyof Value];
+type AssertNever<Value extends never> = Value;
+type MissingMessageTypes = AssertNever<Exclude<ExtensionMessageTypeDto, ValueOf<typeof ExtensionMessageType>>>;
+type MissingHostMethods = AssertNever<Exclude<ExtensionHostMethodDto, ValueOf<typeof ExtensionHostMethod>>>;
+type MissingSandboxMethods = AssertNever<Exclude<ExtensionSandboxMethodDto, ValueOf<typeof ExtensionSandboxMethod>>>;
+type MissingErrorCodes = AssertNever<Exclude<ExtensionErrorCodeDto, ValueOf<typeof ExtensionErrorCode>>>;
 
 const MAX_ERROR_CODE_LENGTH = 160;
 const MAX_ERROR_MESSAGE_LENGTH = 8 * 1024;
 const ERROR_CODE_PATTERN = /^[A-Za-z][A-Za-z0-9._-]*$/;
 
-export function createExtensionError(code, message) {
-  const error = new Error(message);
+export function createExtensionError(code: string, message: string): ExtensionProtocolError {
+  const error = new Error(message) as ExtensionProtocolError;
   error.code = code;
   return error;
 }
 
-export function serializeExtensionError(error, fallbackCode = ExtensionErrorCode.UNAVAILABLE) {
+type ErrorLike = Readonly<{ code?: unknown; message?: unknown }>;
+type PlainObject = Record<string, unknown>;
+
+export function serializeExtensionError(
+  error: unknown,
+  fallbackCode: string = ExtensionErrorCode.UNAVAILABLE
+): Readonly<SerializedExtensionErrorDto> {
   const safeFallback = typeof fallbackCode === 'string' &&
       ERROR_CODE_PATTERN.test(fallbackCode) && fallbackCode.length <= MAX_ERROR_CODE_LENGTH
     ? fallbackCode
     : ExtensionErrorCode.UNAVAILABLE;
-  const code = error && typeof error.code === 'string' &&
-      ERROR_CODE_PATTERN.test(error.code) && error.code.length <= MAX_ERROR_CODE_LENGTH
-    ? error.code
+  const code = error && typeof (error as ErrorLike).code === 'string' &&
+      ERROR_CODE_PATTERN.test((error as ErrorLike).code as string) &&
+      ((error as ErrorLike).code as string).length <= MAX_ERROR_CODE_LENGTH
+    ? (error as ErrorLike).code as string
     : safeFallback;
-  const message = error && typeof error.message === 'string' && error.message
-    ? error.message
+  const message = error && typeof (error as ErrorLike).message === 'string' && (error as ErrorLike).message
+    ? (error as ErrorLike).message as string
     : 'Extension operation failed.';
   return Object.freeze({ code, message: message.slice(0, MAX_ERROR_MESSAGE_LENGTH) });
 }
 
-export function deserializeExtensionError(value, fallbackCode = ExtensionErrorCode.UNAVAILABLE) {
+export function deserializeExtensionError(
+  value: unknown,
+  fallbackCode: string = ExtensionErrorCode.UNAVAILABLE
+): ExtensionProtocolError {
   const serialized = normalizeSerializedExtensionError(value, fallbackCode);
   return createExtensionError(serialized.code, serialized.message);
 }
 
-function normalizeSerializedExtensionError(value, fallbackCode = ExtensionErrorCode.UNAVAILABLE) {
+function normalizeSerializedExtensionError(
+  value: unknown,
+  fallbackCode: string = ExtensionErrorCode.UNAVAILABLE
+): SerializedExtensionErrorDto {
   const fallback = typeof fallbackCode === 'string' &&
       ERROR_CODE_PATTERN.test(fallbackCode) && fallbackCode.length <= MAX_ERROR_CODE_LENGTH
     ? fallbackCode
@@ -102,7 +139,7 @@ function normalizeSerializedExtensionError(value, fallbackCode = ExtensionErrorC
   return { code: value.code, message: value.message };
 }
 
-export function isSerializedExtensionError(value) {
+export function isSerializedExtensionError(value: unknown): value is SerializedExtensionErrorDto {
   if (!isPlainObject(value)) return false;
   return hasExactStringKeys(value, ['code', 'message']) &&
     typeof value.code === 'string' && ERROR_CODE_PATTERN.test(value.code) &&
@@ -110,7 +147,7 @@ export function isSerializedExtensionError(value) {
     value.message.length > 0 && value.message.length <= MAX_ERROR_MESSAGE_LENGTH;
 }
 
-export function unwrapPluginRpcResult(result) {
+export function unwrapPluginRpcResult(result: unknown): unknown {
   if (!isPlainObject(result) ||
       result[PLUGIN_RPC_RESULT_MARKER] !== PLUGIN_RPC_RESULT_VERSION ||
       typeof result.ok !== 'boolean') {
@@ -130,7 +167,7 @@ export function unwrapPluginRpcResult(result) {
   throw createExtensionError(failure.code, failure.message);
 }
 
-export function isPlainObject(value) {
+export function isPlainObject(value: unknown): value is PlainObject {
   if (!value || typeof value !== 'object') return false;
   try {
     const prototype = Object.getPrototypeOf(value);
@@ -154,7 +191,7 @@ export function isPlainObject(value) {
 // This factory is embedded verbatim into the isolated Worker. Capture every
 // intrinsic once, before downloaded code runs, instead of freezing the
 // plugin's JavaScript realm or consulting mutable globals at request time.
-export function createExtensionDataCloner() {
+export function createExtensionDataCloner(): ExtensionDataCloner {
   const SafeError = Error;
   const SafeWeakSet = WeakSet;
   const safeApply = Reflect.apply;
@@ -177,42 +214,49 @@ export function createExtensionDataCloner() {
   const arrayIndexPattern = /^(0|[1-9][0-9]*)$/;
   const nativeObjectPattern = /^function Object\(\) \{ \[native code\] \}$/;
 
-  function apply(method, receiver, args) {
-    return safeApply(method, receiver, args);
+  function apply<Result>(method: Function, receiver: unknown, args: readonly unknown[]): Result {
+    return safeApply(method, receiver, args) as Result;
   }
 
-  function hasOwn(value, key) {
-    return apply(safeHasOwn, value, [key]);
+  function hasOwn(value: unknown, key: PropertyKey): boolean {
+    return apply<boolean>(safeHasOwn, value, [key]);
   }
 
-  function matches(pattern, value) {
-    return apply(safeRegExpTest, pattern, [value]);
+  function matches(pattern: RegExp, value: string): boolean {
+    return apply<boolean>(safeRegExpTest, pattern, [value]);
   }
 
-  function option(options, name, fallback) {
+  function option(
+    options: ExtensionDataCloneOptions,
+    name: keyof ExtensionDataCloneOptions,
+    fallback: number
+  ): number {
     if (!options || typeof options !== 'object' || !hasOwn(options, name)) return fallback;
-    return safeNumberIsInteger(options[name]) ? options[name] : fallback;
+    return safeNumberIsInteger(options[name]) ? options[name] as number : fallback;
   }
 
   // Never let a trusted renderer object (or an accessor/function hidden
   // inside it) cross the extension boundary. This is intentionally narrower
   // than the structured-clone algorithm.
-  return function cloneExtensionData(value, options = {}) {
+  return function cloneExtensionData(
+    value: unknown,
+    options: ExtensionDataCloneOptions = {}
+  ): ExtensionData {
     const maxDepth = option(options, 'maxDepth', 24);
     const maxItems = option(options, 'maxItems', 4096);
     const maxStringLength = option(options, 'maxStringLength', 512 * 1024);
     const maxBytes = option(options, 'maxBytes', 2 * 1024 * 1024);
-    const seen = new SafeWeakSet();
+    const seen = new SafeWeakSet<object>();
     let itemCount = 0;
     let byteCount = 0;
 
-    function invalid(message) {
-      const error = new SafeError(message);
+    function invalid(message: string): ExtensionProtocolError {
+      const error = new SafeError(message) as ExtensionProtocolError;
       error.code = 'EXTENSION_INVALID_REQUEST';
       return error;
     }
 
-    function plainObject(current) {
+    function plainObject(current: unknown): current is Record<string, unknown> {
       if (!current || typeof current !== 'object') return false;
       try {
         const prototype = safeObjectGetPrototypeOf(current);
@@ -221,32 +265,32 @@ export function createExtensionDataCloner() {
         const constructor = safeObjectGetOwnPropertyDescriptor(prototype, 'constructor');
         if (!constructor || typeof constructor.value !== 'function') return false;
         return constructor.value.name === 'Object' &&
-          matches(nativeObjectPattern, apply(safeFunctionToString, constructor.value, []));
+          matches(nativeObjectPattern, apply<string>(safeFunctionToString, constructor.value, []));
       } catch (_) {
         return false;
       }
     }
 
-    function countBytes(bytes) {
+    function countBytes(bytes: number): void {
       byteCount += bytes;
       if (byteCount > maxBytes) throw invalid('Extension payload exceeds the total size limit.');
     }
 
-    function descriptorValue(descriptor) {
+    function descriptorValue(descriptor: PropertyDescriptor | undefined): unknown {
       if (!descriptor || !hasOwn(descriptor, 'value')) {
         throw invalid('Extension payload cannot contain accessors.');
       }
       return descriptor.value;
     }
 
-    function cloneArray(current, depth) {
+    function cloneArray(current: unknown[], depth: number): ExtensionData[] {
       if (current.length > maxItems) {
         throw invalid('Extension payload contains too many items.');
       }
       countBytes(current.length * 4);
       const descriptors = safeObjectGetOwnPropertyDescriptors(current);
       const keys = safeOwnKeys(descriptors);
-      const result = [];
+      const result: ExtensionData[] = [];
       result.length = current.length;
       for (let position = 0; position < keys.length; position += 1) {
         const key = keys[position];
@@ -267,7 +311,7 @@ export function createExtensionDataCloner() {
       return result;
     }
 
-    function clone(current, depth) {
+    function clone(current: unknown, depth: number): ExtensionData {
       itemCount += 1;
       if (itemCount > maxItems * 8) {
         throw invalid('Extension payload is too large.');
@@ -300,11 +344,11 @@ export function createExtensionDataCloner() {
       if (typeof current !== 'object') {
         throw invalid('Extension payload must contain data only.');
       }
-      if (apply(safeWeakSetHas, seen, [current])) {
+      if (apply<boolean>(safeWeakSetHas, seen, [current])) {
         throw invalid('Extension payload cannot contain circular data.');
       }
-      apply(safeWeakSetAdd, seen, [current]);
-      let result;
+      apply<void>(safeWeakSetAdd, seen, [current]);
+      let result: ExtensionData;
       if (safeArrayIsArray(current)) {
         result = cloneArray(current, depth);
       } else {
@@ -316,7 +360,7 @@ export function createExtensionDataCloner() {
         if (keys.length > maxItems) {
           throw invalid('Extension payload contains too many properties.');
         }
-        result = safeObjectCreate(null);
+        result = safeObjectCreate(null) as { [key: string]: ExtensionData };
         for (let position = 0; position < keys.length; position += 1) {
           const key = keys[position];
           if (typeof key !== 'string') {
@@ -324,10 +368,11 @@ export function createExtensionDataCloner() {
           }
           if (key.length > maxStringLength) throw invalid('Extension payload contains an oversized property name.');
           countBytes(key.length * 2);
-          result[key] = clone(descriptorValue(descriptors[key]), depth + 1);
+          (result as { [key: string]: ExtensionData })[key] =
+            clone(descriptorValue(descriptors[key]), depth + 1);
         }
       }
-      apply(safeWeakSetDelete, seen, [current]);
+      apply<void>(safeWeakSetDelete, seen, [current]);
       return result;
     }
 
@@ -337,19 +382,19 @@ export function createExtensionDataCloner() {
 
 export const cloneExtensionData = createExtensionDataCloner();
 
-export function isExtensionRequestId(value) {
-  return (Number.isSafeInteger(value) && value >= 1) ||
+export function isExtensionRequestId(value: unknown): value is ExtensionRequestId {
+  return (Number.isSafeInteger(value) && (value as number) >= 1) ||
     (typeof value === 'string' && /^[A-Za-z0-9_-]{1,96}$/.test(value));
 }
 
-function hasExactStringKeys(value, allowed) {
+function hasExactStringKeys(value: PlainObject, allowed: readonly string[]): boolean {
   const keys = Reflect.ownKeys(value);
   return keys.length === allowed.length &&
     !keys.some((key) => typeof key !== 'string') &&
-    keys.every((key) => allowed.includes(key));
+    keys.every((key) => allowed.includes(key as string));
 }
 
-export function isExtensionMessage(value) {
+export function isExtensionMessage(value: unknown): value is ExtensionInboundMessageDto {
   if (!isPlainObject(value) || value.protocolVersion !== EXTENSION_PROTOCOL_VERSION || typeof value.type !== 'string') {
     return false;
   }
@@ -373,11 +418,11 @@ export function isExtensionMessage(value) {
   return false;
 }
 
-export function isNamespacedExtensionId(value) {
+export function isNamespacedExtensionId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-z0-9][a-z0-9.-]*\.[a-z0-9][a-z0-9.-]*$/.test(value);
 }
 
-export function assertExtensionOwnedId(extensionId, value, label) {
+export function assertExtensionOwnedId(extensionId: string, value: unknown, label: string): string {
   if (typeof value !== 'string' || !value.startsWith(extensionId + '.')) {
     throw createExtensionError(
       ExtensionErrorCode.INVALID_REQUEST,

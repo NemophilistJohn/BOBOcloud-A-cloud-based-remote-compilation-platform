@@ -18,6 +18,13 @@ module is `src/file-icons.ts`: it exports an injected service factory,
 same instance through `BOBO.fileIcons`. Follow that pattern one low-coupling
 module at a time; do not move a feature and all of its consumers in one change.
 
+Installed extensions cross a separate typed wire boundary in
+`core/plugin-extension-protocol.ts`. Its DTOs keep request arguments and
+successful response values untrusted until the host method validates them, and
+its bounded data cloner remains self-contained because the sandbox embeds that
+factory's source directly into the isolated Worker. This protocol module is not
+a service and does not add another host or compatibility adapter.
+
 The source-control slice follows the same boundary: typed SCM request and
 decoration DTOs feed a host-rendered `src/source-control-view.ts` service, while
 `compat/source-control-view-adapter.ts` is the only legacy projection. Runtime

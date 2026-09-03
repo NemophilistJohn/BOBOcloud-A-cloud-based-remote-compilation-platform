@@ -43,7 +43,7 @@ Trusted Agent workbench          OS / local workspace / AI provider
 | `client/main/agent-platform.js` | Opaque model refs and declared capabilities, normalized stream events, structured local tools/descriptors, host-authoritative risk/access policy, revisioned Skill discovery, and isolated JSON persistence. |
 | `client/main/ai.js` | Provider-specific request, reasoning, SSE normalization, usage accounting, and cancellation while retaining secret model profiles in the main process. |
 | `client/renderer/core/agent.js` | Agent descriptor/state validation, complete snapshots, compare-and-swap state patches, bounds, events, and owner cleanup. |
-| `client/renderer/core/plugin-extension-protocol.js` | Data-only cross-realm protocol and bounded cloning/error envelopes. |
+| `client/renderer/core/plugin-extension-protocol.ts` | Typed data-only cross-realm protocol and bounded cloning/error envelopes. |
 | `client/renderer/core/plugin-extension-host.js` | Permission enforcement, contribution handles, command routing, broker delegation, and deterministic teardown. |
 | `client/renderer/core/plugin-extension-sandbox.js` | Frozen public plugin context inside the network-disabled Worker. |
 | Trusted Agent workbench | Dynamic activity entry, session navigation, editor-sized tab, host access/approval controls, and state-to-command translation. |

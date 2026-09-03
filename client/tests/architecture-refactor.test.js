@@ -153,6 +153,7 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/core/scm-git.ts',
   'renderer/core/document-view.ts',
   'renderer/core/document-view-sandbox.ts',
+  'renderer/core/plugin-extension-protocol.ts',
   'renderer/compat/file-decoration-adapter.ts',
   'theme-manager.js',
   'editor-rules/completion-engine.js',
@@ -295,6 +296,7 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'scm-git.js',
     'document-view.js',
     'document-view-sandbox.js',
+    'plugin-extension-protocol.js',
     'typed-platform.ts'
   ]) {
     assert.equal(
