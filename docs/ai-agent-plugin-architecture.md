@@ -45,7 +45,8 @@ Trusted Agent workbench          OS / local workspace / AI provider
 | `client/renderer/core/agent.ts` | Agent descriptor/state validation, complete snapshots, compare-and-swap state patches, bounds, events, and owner cleanup. |
 | `client/types/agent.ts` | Registration and normalized DTOs, patch/event unions, structural store ownership, and shared disposable contracts. |
 | `client/renderer/core/plugin-extension-protocol.ts` | Typed data-only cross-realm protocol and bounded cloning/error envelopes. |
-| `client/renderer/core/plugin-extension-host.js` | Permission enforcement, contribution handles, command routing, broker delegation, and deterministic teardown. |
+| `client/types/plugin-extension-host.ts` | Extension descriptors, lifecycle results, dynamic registry ports, service snapshots, and disposable ownership contracts. |
+| `client/renderer/core/plugin-extension-host.ts` | Permission enforcement, contribution handles, command routing, broker delegation, and deterministic teardown. |
 | `client/renderer/core/plugin-extension-sandbox.ts` | Frozen public plugin context inside the network-disabled Worker. |
 | Trusted Agent workbench | Dynamic activity entry, session navigation, editor-sized tab, host access/approval controls, and state-to-command translation. |
 

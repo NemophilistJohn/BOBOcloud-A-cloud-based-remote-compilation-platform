@@ -80,25 +80,86 @@ export interface SerializedExtensionErrorDto {
   readonly message: string;
 }
 
-interface ExtensionInboundMessageBaseDto {
+interface ExtensionProtocolMessageBaseDto {
   readonly protocolVersion: ExtensionProtocolVersion;
 }
 
-export interface ExtensionActivatedMessageDto extends ExtensionInboundMessageBaseDto {
+export interface ExtensionIdentityDto {
+  readonly id: string;
+  readonly version: string;
+}
+
+export type ExtensionLocaleDto = 'en' | 'zh-CN' | 'ja';
+
+export interface ExtensionLocalizationDto {
+  readonly locale: ExtensionLocaleDto;
+  readonly messages: Readonly<Record<string, string>>;
+}
+
+export interface ExtensionInitializeMessageDto extends ExtensionProtocolMessageBaseDto {
+  readonly type: 'initialize';
+  readonly extension: ExtensionIdentityDto;
+  readonly apiVersion: string;
+  readonly source: string;
+  readonly localization: ExtensionLocalizationDto;
+}
+
+export interface ExtensionSandboxRequestMessageDto extends ExtensionProtocolMessageBaseDto {
+  readonly type: 'request';
+  readonly id: ExtensionRequestId;
+  readonly method: ExtensionSandboxMethodDto;
+  readonly args: unknown;
+}
+
+export interface ExtensionHostSuccessResponseMessageDto extends ExtensionProtocolMessageBaseDto {
+  readonly type: 'response';
+  readonly id: ExtensionRequestId;
+  readonly ok: true;
+  readonly value: unknown;
+  readonly error?: never;
+}
+
+export interface ExtensionHostFailureResponseMessageDto extends ExtensionProtocolMessageBaseDto {
+  readonly type: 'response';
+  readonly id: ExtensionRequestId;
+  readonly ok: false;
+  readonly error: SerializedExtensionErrorDto;
+  readonly value?: never;
+}
+
+export type ExtensionHostResponseMessageDto =
+  | ExtensionHostSuccessResponseMessageDto
+  | ExtensionHostFailureResponseMessageDto;
+
+/** Messages sent by the renderer host to the isolated extension sandbox. */
+export type ExtensionHostToSandboxMessageDto =
+  | ExtensionInitializeMessageDto
+  | ExtensionSandboxRequestMessageDto
+  | ExtensionHostResponseMessageDto;
+
+type WithoutProtocolVersion<Message> = Message extends ExtensionProtocolMessageBaseDto
+  ? Omit<Message, 'protocolVersion'>
+  : never;
+
+/** Host payload before the shared protocol version envelope is attached. */
+export type ExtensionHostToSandboxPayloadDto =
+  WithoutProtocolVersion<ExtensionHostToSandboxMessageDto>;
+
+export interface ExtensionActivatedMessageDto extends ExtensionProtocolMessageBaseDto {
   readonly type: 'activated';
 }
 
-export interface ExtensionActivationFailedMessageDto extends ExtensionInboundMessageBaseDto {
+export interface ExtensionActivationFailedMessageDto extends ExtensionProtocolMessageBaseDto {
   readonly type: 'activationFailed';
   readonly error: SerializedExtensionErrorDto;
 }
 
-export interface ExtensionFatalMessageDto extends ExtensionInboundMessageBaseDto {
+export interface ExtensionFatalMessageDto extends ExtensionProtocolMessageBaseDto {
   readonly type: 'fatal';
   readonly error: SerializedExtensionErrorDto;
 }
 
-export interface ExtensionRequestMessageDto extends ExtensionInboundMessageBaseDto {
+export interface ExtensionRequestMessageDto extends ExtensionProtocolMessageBaseDto {
   readonly type: 'request';
   readonly id: ExtensionRequestId;
   // Runtime validation intentionally accepts any bounded method string. The
@@ -107,7 +168,7 @@ export interface ExtensionRequestMessageDto extends ExtensionInboundMessageBaseD
   readonly args: unknown;
 }
 
-export interface ExtensionSuccessResponseMessageDto extends ExtensionInboundMessageBaseDto {
+export interface ExtensionSuccessResponseMessageDto extends ExtensionProtocolMessageBaseDto {
   readonly type: 'response';
   readonly id: ExtensionRequestId;
   readonly ok: true;
@@ -115,7 +176,7 @@ export interface ExtensionSuccessResponseMessageDto extends ExtensionInboundMess
   readonly error?: never;
 }
 
-export interface ExtensionFailureResponseMessageDto extends ExtensionInboundMessageBaseDto {
+export interface ExtensionFailureResponseMessageDto extends ExtensionProtocolMessageBaseDto {
   readonly type: 'response';
   readonly id: ExtensionRequestId;
   readonly ok: false;

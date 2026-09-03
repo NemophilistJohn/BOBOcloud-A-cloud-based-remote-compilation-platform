@@ -1,4 +1,5 @@
 import type { Disposable } from './lifecycle';
+import type { ExtensionHostToSandboxMessageDto } from './plugin-extension-protocol';
 
 /** Narrow DOM target used to attach an isolated extension iframe. */
 export interface PluginExtensionSandboxMountTarget {
@@ -23,7 +24,7 @@ export interface PluginExtensionSandboxOptions {
 
 export interface PluginExtensionSandbox extends Disposable {
   readonly ready: Promise<void>;
-  postMessage(message: unknown): void;
+  postMessage(message: ExtensionHostToSandboxMessageDto): void;
 }
 
 export type PluginExtensionSandboxFactory = (

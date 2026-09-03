@@ -11,6 +11,7 @@ import type {
   PluginExtensionSandboxMountTarget,
   PluginExtensionSandboxOptions
 } from '../../types/plugin-extension-sandbox';
+import type { ExtensionHostToSandboxMessageDto } from '../../types/plugin-extension-protocol';
 
 // This CSP is deliberately stricter than the workbench CSP. The iframe has an
 // opaque origin (`sandbox` omits allow-same-origin), cannot connect to the
@@ -70,6 +71,7 @@ function extensionWorkerBootstrapSource(): string {
   const safeSetForEach = Set.prototype.forEach;
   const safeSetHas = Set.prototype.has;
   const safeSetSize = Object.getOwnPropertyDescriptor(Set.prototype, 'size').get;
+  const safeStringCharCodeAt = String.prototype.charCodeAt;
   const safeStringIncludes = String.prototype.includes;
   const safeStringReplace = String.prototype.replace;
   const safeStringSlice = String.prototype.slice;
@@ -109,6 +111,30 @@ function extensionWorkerBootstrapSource(): string {
   }
   function ignoreRejection(promise) {
     apply(safePromiseCatch, promise, [() => {}]);
+  }
+
+  function utf8ByteLength(value, maxBytes) {
+    let bytes = 0;
+    for (let position = 0; position < value.length; position += 1) {
+      const code = apply(safeStringCharCodeAt, value, [position]);
+      if (code <= 0x7f) {
+        bytes += 1;
+      } else if (code <= 0x7ff) {
+        bytes += 2;
+      } else if (code >= 0xd800 && code <= 0xdbff && position + 1 < value.length) {
+        const next = apply(safeStringCharCodeAt, value, [position + 1]);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          bytes += 4;
+          position += 1;
+        } else {
+          bytes += 3;
+        }
+      } else {
+        bytes += 3;
+      }
+      if (bytes > maxBytes) return bytes;
+    }
+    return bytes;
   }
 
   // Defense in depth for direct network/process-like browser APIs. CSP still
@@ -178,6 +204,17 @@ function extensionWorkerBootstrapSource(): string {
     AGENT_MODEL_EVENT: 'models.event',
     DEACTIVATE: 'extension.deactivate'
   };
+  const AGENT_REQUEST_CLONE_OPTIONS = freeze({
+    maxStringLength: 1024 * 1024,
+    maxItems: 8192,
+    maxBytes: 2 * 1024 * 1024
+  });
+  const AGENT_RESULT_CLONE_OPTIONS = freeze({
+    maxStringLength: 2 * 1024 * 1024,
+    maxItems: 8192,
+    maxBytes: 8 * 1024 * 1024
+  });
+  const MAX_EXTENSION_SOURCE_BYTES = 5 * 1024 * 1024;
   let port = null;
   let sequence = 0;
   let extensionModule = null;
@@ -223,7 +260,19 @@ function extensionWorkerBootstrapSource(): string {
 
   function cloneOptions(method) {
     return method === HOST_METHOD.AGENT_BROKER_REQUEST
-      ? { maxStringLength: 2 * 1024 * 1024, maxItems: 8192, maxBytes: 8 * 1024 * 1024 }
+      ? AGENT_REQUEST_CLONE_OPTIONS
+      : undefined;
+  }
+
+  function responseCloneOptions(method) {
+    return method === HOST_METHOD.AGENT_BROKER_REQUEST
+      ? AGENT_RESULT_CLONE_OPTIONS
+      : undefined;
+  }
+
+  function inboundCloneOptions(method) {
+    return method === SANDBOX_METHOD.AGENT_MODEL_EVENT
+      ? AGENT_RESULT_CLONE_OPTIONS
       : undefined;
   }
 
@@ -570,7 +619,7 @@ function extensionWorkerBootstrapSource(): string {
     if (!message.extension || typeof message.extension.id !== 'string' || typeof message.source !== 'string') {
       throw fail('EXTENSION_PROTOCOL_ERROR', 'Extension initialization payload is invalid.');
     }
-    if (message.source.length > 5 * 1024 * 1024) {
+    if (utf8ByteLength(message.source, MAX_EXTENSION_SOURCE_BYTES) > MAX_EXTENSION_SOURCE_BYTES) {
       throw fail('EXTENSION_INVALID_REQUEST', 'Extension entry exceeds the 5 MiB host limit.');
     }
     updateLocalization(message.localization || { locale: 'en', messages: {} });
@@ -609,11 +658,7 @@ function extensionWorkerBootstrapSource(): string {
     }
     const listener = mapGet(modelStreamListeners, args.requestId);
     if (!listener) return null;
-    const event = freeze(cloneData(args.event, {
-      maxStringLength: 2 * 1024 * 1024,
-      maxItems: 8192,
-      maxBytes: 8 * 1024 * 1024
-    }));
+    const event = freeze(cloneData(args.event, AGENT_RESULT_CLONE_OPTIONS));
     await apply(listener, undefined, [event]);
     if (event.type === 'response.completed' || event.type === 'response.error') {
       mapDelete(modelStreamListeners, args.requestId);
@@ -664,7 +709,7 @@ function extensionWorkerBootstrapSource(): string {
     mapDelete(pending, message.id);
     if (message.ok === true) {
       try {
-        pendingRequest.resolve(cloneData(message.value, cloneOptions(pendingRequest.method)));
+        pendingRequest.resolve(cloneData(message.value, responseCloneOptions(pendingRequest.method)));
       } catch (error) {
         pendingRequest.reject(error);
       }
@@ -739,7 +784,7 @@ function extensionWorkerBootstrapSource(): string {
     }
     setAdd(incomingRequests, message.id);
     try {
-      const args = cloneData(message.args);
+      const args = cloneData(message.args, inboundCloneOptions(message.method));
       const value = await handleHostRequest({ method: message.method, args });
       post({ type: TYPE.RESPONSE, id: message.id, ok: true, value: cloneData(value) });
     } catch (error) {
@@ -958,7 +1003,7 @@ export function createSandboxedExtensionSandbox(
 
   return Object.freeze({
     ready,
-    postMessage(message: unknown): void {
+    postMessage(message: ExtensionHostToSandboxMessageDto): void {
       if (disposed) throw createExtensionError(ExtensionErrorCode.CANCELLED, 'Extension sandbox has been disposed.');
       channel.port1.postMessage(message);
     },

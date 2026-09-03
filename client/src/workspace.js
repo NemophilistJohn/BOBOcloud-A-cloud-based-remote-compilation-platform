@@ -1950,7 +1950,7 @@
 
     // Internal workbench pages are registered by trusted renderer modules.
     // Downloaded extensions never receive this bridge; their public API is
-    // constrained by renderer/core/plugin-extension-host.js.
+    // constrained by renderer/core/plugin-extension-host.ts.
     registerWorkbenchTabProvider: registerWorkbenchTabProvider,
     getWorkbenchTab: function(key) {
       var match = findWorkbenchTab(key);

@@ -157,6 +157,7 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/core/plugin-runtime.ts',
   'renderer/core/plugin-extension-protocol.ts',
   'renderer/core/plugin-extension-sandbox.ts',
+  'renderer/core/plugin-extension-host.ts',
   'renderer/compat/file-decoration-adapter.ts',
   'theme-manager.js',
   'editor-rules/completion-engine.js',
@@ -303,6 +304,7 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'plugin-runtime.js',
     'plugin-extension-protocol.js',
     'plugin-extension-sandbox.js',
+    'plugin-extension-host.js',
     'typed-platform.ts'
   ]) {
     assert.equal(

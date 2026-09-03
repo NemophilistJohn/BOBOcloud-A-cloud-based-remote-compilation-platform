@@ -259,6 +259,36 @@ export type {
   PluginExtensionSandboxOptions
 } from './plugin-extension-sandbox';
 export type {
+  PluginExtensionChangeEventDto,
+  PluginExtensionCommandExecutionResultDto,
+  PluginExtensionCommandPalettePort,
+  PluginExtensionDescriptorDto,
+  PluginExtensionDescriptorRegistrationDto,
+  PluginExtensionErrorEvent,
+  PluginExtensionErrorSource,
+  PluginExtensionHostAsyncValue,
+  PluginExtensionHostBroker,
+  PluginExtensionHostCommandRegistryPort,
+  PluginExtensionHostConstructor,
+  PluginExtensionHostContract,
+  PluginExtensionHostContributionRegistryPort,
+  PluginExtensionHostOptions,
+  PluginExtensionHostServiceRegistryPort,
+  PluginExtensionLifecycleStatusDto,
+  PluginExtensionLocaleDto,
+  PluginExtensionLocaleSubscription,
+  PluginExtensionLocalizationDto,
+  PluginExtensionObservedErrorEvent,
+  PluginExtensionOperationResultDto,
+  PluginExtensionRefreshCompletedDto,
+  PluginExtensionRefreshFailureDto,
+  PluginExtensionRefreshRejectedDto,
+  PluginExtensionRefreshResultDto,
+  PluginExtensionServiceSnapshotFactory,
+  PluginExtensionSnapshotDto,
+  PluginExtensionStatusDto
+} from './plugin-extension-host';
+export type {
   AgentAccessModeDto,
   AgentActiveSessionDto,
   AgentActiveSessionRegistrationDto,
