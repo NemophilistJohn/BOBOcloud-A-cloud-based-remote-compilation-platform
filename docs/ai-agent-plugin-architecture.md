@@ -46,7 +46,7 @@ Trusted Agent workbench          OS / local workspace / AI provider
 | `client/types/agent.ts` | Registration and normalized DTOs, patch/event unions, structural store ownership, and shared disposable contracts. |
 | `client/renderer/core/plugin-extension-protocol.ts` | Typed data-only cross-realm protocol and bounded cloning/error envelopes. |
 | `client/renderer/core/plugin-extension-host.js` | Permission enforcement, contribution handles, command routing, broker delegation, and deterministic teardown. |
-| `client/renderer/core/plugin-extension-sandbox.js` | Frozen public plugin context inside the network-disabled Worker. |
+| `client/renderer/core/plugin-extension-sandbox.ts` | Frozen public plugin context inside the network-disabled Worker. |
 | Trusted Agent workbench | Dynamic activity entry, session navigation, editor-sized tab, host access/approval controls, and state-to-command translation. |
 
 No module above is specific to the official Agent plugin id. A future Agent plugin can use the same descriptor, state, model, tool, Skill, storage, and lifecycle contracts without a host patch.

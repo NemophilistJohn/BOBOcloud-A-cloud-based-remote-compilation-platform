@@ -5,6 +5,12 @@ import {
   createExtensionDataCloner,
   createExtensionError
 } from './plugin-extension-protocol.js';
+import type {
+  PluginExtensionSandbox,
+  PluginExtensionSandboxDocument,
+  PluginExtensionSandboxMountTarget,
+  PluginExtensionSandboxOptions
+} from '../../types/plugin-extension-sandbox';
 
 // This CSP is deliberately stricter than the workbench CSP. The iframe has an
 // opaque origin (`sandbox` omits allow-same-origin), cannot connect to the
@@ -26,7 +32,7 @@ export const EXTENSION_SANDBOX_CSP = [
 
 const CONNECT_TIMEOUT_MS = 5000;
 
-function extensionWorkerBootstrapSource() {
+function extensionWorkerBootstrapSource(): string {
   // Keep this self-contained: the worker intentionally cannot import host
   // modules or access any renderer global objects.
   return `
@@ -318,13 +324,15 @@ function extensionWorkerBootstrapSource() {
 
   function makeDisposable(dispose) {
     let active = true;
-    return freeze({
+    const disposable = freeze({
       dispose() {
         if (!active) return;
         active = false;
+        setDelete(subscriptions, disposable);
         try { dispose(); } catch (_) {}
       }
     });
+    return disposable;
   }
 
   function addSubscription(value) {
@@ -410,6 +418,7 @@ function extensionWorkerBootstrapSource() {
             dispose() {
               if (!active) return;
               active = false;
+              setDelete(subscriptions, provider);
               ignoreRejection(request(HOST_METHOD.SOURCE_CONTROL_DISPOSE, { handle: result.handle }));
             }
           });
@@ -436,6 +445,7 @@ function extensionWorkerBootstrapSource() {
             dispose() {
               if (!active) return;
               active = false;
+              setDelete(subscriptions, provider);
               ignoreRejection(request(HOST_METHOD.FILE_DECORATIONS_SCM_DISPOSE, { handle: result.handle }));
             }
           });
@@ -477,6 +487,7 @@ function extensionWorkerBootstrapSource() {
             dispose() {
               if (!active) return;
               active = false;
+              setDelete(subscriptions, provider);
               ignoreRejection(request(HOST_METHOD.AGENT_DISPOSE, { handle: result.handle }));
             }
           });
@@ -782,7 +793,7 @@ function extensionWorkerBootstrapSource() {
 })();`;
 }
 
-function sandboxBootstrapSource() {
+function sandboxBootstrapSource(): string {
   const workerSource = JSON.stringify(extensionWorkerBootstrapSource());
   return `
 (() => {
@@ -793,7 +804,8 @@ function sandboxBootstrapSource() {
   let connected = false;
   window.addEventListener('message', (event) => {
     const message = event.data;
-    if (!message || message.type !== CONNECT || message.protocolVersion !== VERSION || event.ports.length !== 1 || connected) return;
+    if (event.source !== window.parent || !message || message.type !== CONNECT ||
+        message.protocolVersion !== VERSION || event.ports.length !== 1 || connected) return;
     connected = true;
     try {
       const workerUrl = URL.createObjectURL(new Blob([WORKER_SOURCE], { type: 'text/javascript' }));
@@ -808,12 +820,19 @@ function sandboxBootstrapSource() {
 })();`;
 }
 
-export function buildExtensionSandboxDocument() {
-  return '<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="' +
-    EXTENSION_SANDBOX_CSP + '"></head><body><script>' + sandboxBootstrapSource() + '</script></body></html>';
+let cachedExtensionSandboxDocument: string | null = null;
+
+export function buildExtensionSandboxDocument(): string {
+  if (cachedExtensionSandboxDocument !== null) return cachedExtensionSandboxDocument;
+  const source = sandboxBootstrapSource().replace(/<\/script/gi, '<\\/script');
+  cachedExtensionSandboxDocument = '<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="' +
+    EXTENSION_SANDBOX_CSP.replace(/"/g, '&quot;') + '"></head><body><script>' + source + '</script></body></html>';
+  return cachedExtensionSandboxDocument;
 }
 
-function requireDocument(documentRef) {
+function requireDocument(
+  documentRef: PluginExtensionSandboxDocument | null | undefined
+): PluginExtensionSandboxMountTarget {
   if (!documentRef || typeof documentRef.createElement !== 'function') {
     throw createExtensionError(ExtensionErrorCode.UNAVAILABLE, 'The extension sandbox requires a renderer document.');
   }
@@ -824,8 +843,10 @@ function requireDocument(documentRef) {
   return target;
 }
 
-export function createSandboxedExtensionSandbox(options = {}) {
-  const documentRef = options.document || globalThis.document;
+export function createSandboxedExtensionSandbox(
+  options: PluginExtensionSandboxOptions = {}
+): PluginExtensionSandbox {
+  const documentRef: PluginExtensionSandboxDocument = options.document || globalThis.document;
   const target = requireDocument(documentRef);
   const MessageChannelConstructor = options.MessageChannel || globalThis.MessageChannel;
   if (typeof MessageChannelConstructor !== 'function') {
@@ -835,79 +856,120 @@ export function createSandboxedExtensionSandbox(options = {}) {
   const iframe = documentRef.createElement('iframe');
   const channel = new MessageChannelConstructor();
   let disposed = false;
-  let connected = false;
-  let timeout = null;
-  let resolveReady;
-  let rejectReady;
-  const ready = new Promise((resolve, reject) => {
+  let readySettled = false;
+  let timeout: number | null = null;
+  let resolveReady!: () => void;
+  let rejectReady!: (reason?: unknown) => void;
+  const ready = new Promise<void>((resolve, reject) => {
     resolveReady = resolve;
     rejectReady = reject;
   });
 
-  function reportFatal(error) {
+  function clearConnectionTimeout(): void {
+    if (timeout === null) return;
+    clearTimeout(timeout);
+    timeout = null;
+  }
+
+  function reportFatal(error: unknown): void {
     if (typeof options.onFatal === 'function') options.onFatal(error);
   }
 
-  function rejectConnection(error) {
-    if (connected || disposed) return;
-    connected = true;
-    clearTimeout(timeout);
+  function rejectConnection(error: unknown): void {
+    if (readySettled || disposed) return;
+    readySettled = true;
+    clearConnectionTimeout();
     rejectReady(error);
     reportFatal(error);
   }
 
-  function connect() {
-    if (disposed || connected) return;
+  function connect(): void {
+    if (disposed || readySettled) return;
     try {
-      iframe.contentWindow.postMessage({
+      const contentWindow = iframe.contentWindow;
+      if (!contentWindow) {
+        throw createExtensionError(
+          ExtensionErrorCode.UNAVAILABLE,
+          'Extension sandbox content window is unavailable.'
+        );
+      }
+      contentWindow.postMessage({
         type: ExtensionMessageType.CONNECT,
         protocolVersion: EXTENSION_PROTOCOL_VERSION
       }, '*', [channel.port2]);
-      connected = true;
-      clearTimeout(timeout);
+      readySettled = true;
+      clearConnectionTimeout();
       resolveReady();
     } catch (error) {
       rejectConnection(error);
     }
   }
 
-  iframe.setAttribute('sandbox', 'allow-scripts');
-  iframe.setAttribute('aria-hidden', 'true');
-  iframe.tabIndex = -1;
-  iframe.referrerPolicy = 'no-referrer';
-  iframe.style.cssText = 'display:none !important;position:absolute;width:0;height:0;border:0;pointer-events:none;';
-  iframe.addEventListener('load', connect, { once: true });
-  iframe.addEventListener('error', () => {
+  function handleLoadError(): void {
     rejectConnection(createExtensionError(ExtensionErrorCode.UNAVAILABLE, 'Extension sandbox failed to load.'));
-  }, { once: true });
-  channel.port1.onmessage = (event) => {
-    if (disposed || typeof options.onMessage !== 'function') return;
-    options.onMessage(event.data);
-  };
-  channel.port1.onmessageerror = () => {
-    reportFatal(createExtensionError(ExtensionErrorCode.PROTOCOL, 'Extension sandbox message channel failed.'));
-  };
-  if (typeof channel.port1.start === 'function') channel.port1.start();
-  iframe.srcdoc = buildExtensionSandboxDocument();
-  target.appendChild(iframe);
-  timeout = setTimeout(() => {
-    rejectConnection(createExtensionError(ExtensionErrorCode.TIMEOUT, 'Extension sandbox connection timed out.'));
-  }, Number.isFinite(options.connectTimeoutMs) ? options.connectTimeoutMs : CONNECT_TIMEOUT_MS);
+  }
+
+  function cleanupTransport(): void {
+    clearConnectionTimeout();
+    try { iframe.removeEventListener('load', connect); } catch (_) {}
+    try { iframe.removeEventListener('error', handleLoadError); } catch (_) {}
+    try { channel.port1.onmessage = null; } catch (_) {}
+    try { channel.port1.onmessageerror = null; } catch (_) {}
+    try { channel.port1.close(); } catch (_) {}
+    try { channel.port2.close(); } catch (_) {}
+    try { iframe.remove(); } catch (_) {
+      try {
+        if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      } catch (_) {}
+    }
+  }
+
+  try {
+    iframe.setAttribute('sandbox', 'allow-scripts');
+    iframe.setAttribute('aria-hidden', 'true');
+    iframe.tabIndex = -1;
+    iframe.referrerPolicy = 'no-referrer';
+    iframe.style.cssText = 'display:none !important;position:absolute;width:0;height:0;border:0;pointer-events:none;';
+    iframe.addEventListener('load', connect, { once: true });
+    iframe.addEventListener('error', handleLoadError, { once: true });
+    channel.port1.onmessage = (event: MessageEvent<unknown>) => {
+      if (disposed || typeof options.onMessage !== 'function') return;
+      options.onMessage(event.data);
+    };
+    channel.port1.onmessageerror = () => {
+      if (disposed) return;
+      reportFatal(createExtensionError(ExtensionErrorCode.PROTOCOL, 'Extension sandbox message channel failed.'));
+    };
+    if (typeof channel.port1.start === 'function') channel.port1.start();
+    iframe.srcdoc = buildExtensionSandboxDocument();
+    target.appendChild(iframe);
+  } catch (error) {
+    disposed = true;
+    cleanupTransport();
+    throw error;
+  }
+  if (!readySettled && !disposed) {
+    timeout = setTimeout(() => {
+      rejectConnection(createExtensionError(ExtensionErrorCode.TIMEOUT, 'Extension sandbox connection timed out.'));
+    }, typeof options.connectTimeoutMs === 'number' && Number.isFinite(options.connectTimeoutMs)
+      ? options.connectTimeoutMs
+      : CONNECT_TIMEOUT_MS);
+  }
 
   return Object.freeze({
     ready,
-    postMessage(message) {
+    postMessage(message: unknown): void {
       if (disposed) throw createExtensionError(ExtensionErrorCode.CANCELLED, 'Extension sandbox has been disposed.');
       channel.port1.postMessage(message);
     },
-    dispose() {
+    dispose(): void {
       if (disposed) return;
-      disposed = true;
-      clearTimeout(timeout);
-      try { channel.port1.close(); } catch (_) {}
-      try { iframe.remove(); } catch (_) {
-        if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      if (!readySettled) {
+        readySettled = true;
+        rejectReady(createExtensionError(ExtensionErrorCode.CANCELLED, 'Extension sandbox has been disposed.'));
       }
+      disposed = true;
+      cleanupTransport();
     }
   });
 }

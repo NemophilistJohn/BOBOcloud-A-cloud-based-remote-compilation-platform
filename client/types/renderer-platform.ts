@@ -252,6 +252,13 @@ export type {
   PluginRuntimeSubscriptions
 } from './plugin-runtime';
 export type {
+  PluginExtensionSandbox,
+  PluginExtensionSandboxDocument,
+  PluginExtensionSandboxFactory,
+  PluginExtensionSandboxMountTarget,
+  PluginExtensionSandboxOptions
+} from './plugin-extension-sandbox';
+export type {
   AgentAccessModeDto,
   AgentActiveSessionDto,
   AgentActiveSessionRegistrationDto,

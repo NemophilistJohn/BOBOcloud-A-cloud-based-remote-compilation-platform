@@ -1234,6 +1234,7 @@ test('extension sandbox keeps downloaded source out of the renderer document and
   assert.match(core.EXTENSION_SANDBOX_CSP, /connect-src 'none'/);
   assert.match(core.EXTENSION_SANDBOX_CSP, /worker-src blob:/);
   assert.match(documentSource, /new Worker\(/);
+  assert.match(documentSource, /event\.source !== window\.parent/);
   assert.match(documentSource, /safeDefineProperty\(self, name/);
   assert.doesNotMatch(documentSource, /window\.api/);
   assert.doesNotMatch(documentSource, /window\.BOBO/);
@@ -1250,6 +1251,123 @@ test('extension sandbox keeps downloaded source out of the renderer document and
   assert.match(documentSource, /clone: \(args\) => scmRequest\('clone', args\)/);
   assert.match(documentSource, /deleteBranch: \(args\) => scmRequest\('deleteBranch', args\)/);
   assert.doesNotMatch(documentSource, /operation: 'detect', args: args \|\| \{\}/);
+});
+
+test('extension sandbox disposal settles readiness and closes both transport ports', async () => {
+  const channels = [];
+  const fatalErrors = [];
+  const listeners = new Map();
+  const iframe = {
+    contentWindow: { postMessage() {} },
+    parentNode: null,
+    referrerPolicy: '',
+    srcdoc: '',
+    style: { cssText: '' },
+    tabIndex: 0,
+    addEventListener(type, listener) { listeners.set(type, listener); },
+    removeEventListener(type) { listeners.delete(type); },
+    remove() { this.removed = true; },
+    setAttribute() {}
+  };
+  class FakePort {
+    constructor() {
+      this.closed = false;
+      this.onmessage = null;
+      this.onmessageerror = null;
+    }
+    close() { this.closed = true; }
+    postMessage() {}
+    start() {}
+  }
+  class FakeMessageChannel {
+    constructor() {
+      this.port1 = new FakePort();
+      this.port2 = new FakePort();
+      channels.push(this);
+    }
+  }
+  const sandbox = core.createSandboxedExtensionSandbox({
+    document: {
+      body: { appendChild() {} },
+      documentElement: null,
+      createElement() { return iframe; }
+    },
+    MessageChannel: FakeMessageChannel,
+    connectTimeoutMs: 60_000,
+    onFatal(error) { fatalErrors.push(error); }
+  });
+  const readiness = assert.rejects(sandbox.ready, (error) => {
+    assert.equal(error.code, core.ExtensionErrorCode.CANCELLED);
+    return true;
+  });
+
+  sandbox.dispose();
+  await readiness;
+
+  assert.equal(channels.length, 1);
+  assert.equal(channels[0].port1.closed, true);
+  assert.equal(channels[0].port2.closed, true);
+  assert.equal(channels[0].port1.onmessage, null);
+  assert.equal(channels[0].port1.onmessageerror, null);
+  assert.equal(iframe.removed, true);
+  assert.deepEqual(fatalErrors, []);
+  assert.throws(
+    () => sandbox.postMessage({ type: 'late' }),
+    (error) => error.code === core.ExtensionErrorCode.CANCELLED
+  );
+  sandbox.dispose();
+});
+
+test('extension sandbox cleans transport resources when mounting fails', () => {
+  const channels = [];
+  const listeners = new Map();
+  const iframe = {
+    contentWindow: { postMessage() {} },
+    parentNode: null,
+    referrerPolicy: '',
+    srcdoc: '',
+    style: { cssText: '' },
+    tabIndex: 0,
+    addEventListener(type, listener) { listeners.set(type, listener); },
+    removeEventListener(type) { listeners.delete(type); },
+    remove() { this.removed = true; },
+    setAttribute() {}
+  };
+  class FakePort {
+    constructor() {
+      this.closed = false;
+      this.onmessage = null;
+      this.onmessageerror = null;
+    }
+    close() { this.closed = true; }
+    postMessage() {}
+    start() {}
+  }
+  class FakeMessageChannel {
+    constructor() {
+      this.port1 = new FakePort();
+      this.port2 = new FakePort();
+      channels.push(this);
+    }
+  }
+  const mountError = new Error('mount failed');
+
+  assert.throws(() => core.createSandboxedExtensionSandbox({
+    document: {
+      body: { appendChild() { throw mountError; } },
+      documentElement: null,
+      createElement() { return iframe; }
+    },
+    MessageChannel: FakeMessageChannel
+  }), (error) => error === mountError);
+
+  assert.equal(channels.length, 1);
+  assert.equal(channels[0].port1.closed, true);
+  assert.equal(channels[0].port2.closed, true);
+  assert.equal(channels[0].port1.onmessage, null);
+  assert.equal(channels[0].port1.onmessageerror, null);
+  assert.equal(listeners.size, 0);
+  assert.equal(iframe.removed, true);
 });
 
 test('extension host silently ignores valid messages that arrive after cleanup', async () => {
