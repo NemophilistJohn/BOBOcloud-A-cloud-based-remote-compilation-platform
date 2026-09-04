@@ -149,10 +149,13 @@ test('production renderer build is minified, source-mapped and records ordered m
 
   assert.match(bundle, /sourceMappingURL=bobo-renderer\.js\.map/);
   assert.match(bundle, /window\.BOBO/);
-  const sourceBytes = EXPECTED_MODULES.reduce((total, modulePath) => (
-    total + fs.statSync(path.resolve(ROOT, 'renderer', modulePath)).size
-  ), 0);
-  assert.ok(bundle.length < sourceBytes * 0.75);
+  const developmentBuilt = await buildRenderer({
+    mode: 'development',
+    outputDirectory: path.join(directory, 'development'),
+    logLevel: 'silent'
+  });
+  const developmentBytes = (await fsp.stat(developmentBuilt.outputFile)).size;
+  assert.ok(Buffer.byteLength(bundle) < developmentBytes * 0.75);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/app.js')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-runtime.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-runtime.js')), false);
