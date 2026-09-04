@@ -33,7 +33,7 @@ const EXPECTED_MODULES = [
   './compat/diagnostics-settings-adapter.ts',
   '../src/workspace-launch.js',
   '../src/icons.js',
-  '../src/confirm-dialog.js',
+  './compat/confirm-dialog-adapter.ts',
   '../src/toast.js',
   './compat/command-palette-adapter.ts',
   './core/plugin-extension-bootstrap.ts',
@@ -198,6 +198,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/theme-manager.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/theme-manager-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/theme-manager-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/confirm-dialog.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/confirm-dialog.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/confirm-dialog-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/confirm-dialog-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/file-icons.ts')));

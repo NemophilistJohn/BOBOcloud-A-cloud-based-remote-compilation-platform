@@ -63,6 +63,13 @@ surface. The installed extension host resolves the service through the typed
 registry, so typed core code no longer reaches back through the compatibility
 namespace.
 
+Confirmation dialogs use a private typed service with lazy DOM ownership,
+FIFO request ordering, discriminated boolean/details results, and deterministic
+timer cleanup. `compat/confirm-dialog-adapter.ts` registers
+`workbench.confirm` for the trusted workbench and projects only the callable
+`BOBO.confirm` facade; service disposal is not exposed to legacy consumers or
+downloaded plugins.
+
 Document Views use the same vertical boundary. `core/document-view.ts` owns
 descriptor validation and selection, `core/document-view-sandbox.ts` owns the
 bounded opaque-frame protocol, and `src/document-views.ts` owns injected

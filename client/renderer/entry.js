@@ -27,7 +27,7 @@ import './compat/i18n-adapter.ts';
 import './compat/diagnostics-settings-adapter.ts';
 import '../src/workspace-launch.js';
 import '../src/icons.js';
-import '../src/confirm-dialog.js';
+import './compat/confirm-dialog-adapter.ts';
 import '../src/toast.js';
 import './compat/command-palette-adapter.ts';
 import './core/plugin-extension-bootstrap.ts';

@@ -1,5 +1,6 @@
 import type { RcloneClient, RcloneSettingsService } from './rclone';
 import type { CommandPaletteService } from './command-palette';
+import type { ConfirmService } from './confirm-dialog';
 import type { DiagnosticsHost, DiagnosticsSettingsService } from './diagnostics';
 import type {
   ProjectTasksHost,
@@ -60,6 +61,7 @@ export interface RendererServiceMap {
   readonly 'host.pluginExtensions': Readonly<PluginExtensionNativeHost>;
   readonly 'host.projectTasks': Readonly<ProjectTasksHost>;
   readonly 'host.rclone': Readonly<RcloneNativeHost>;
+  readonly 'workbench.confirm': ConfirmService;
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
   readonly 'workbench.documentViews': DocumentViewService;
   readonly 'workbench.fileDecorations': FileDecorationService;
@@ -114,6 +116,14 @@ export type {
   CommandPaletteRegistrationPort,
   CommandPaletteService
 } from './command-palette';
+export type {
+  ConfirmDependencies,
+  ConfirmDetailsOptions,
+  ConfirmDetailsResultDto,
+  ConfirmFacade,
+  ConfirmOptions,
+  ConfirmService
+} from './confirm-dialog';
 export type {
   FileIconLookupService,
   FileIconNameMap,
