@@ -42,7 +42,7 @@ const EXPECTED_MODULES = [
   '../src/file-search.js',
   '../src/settings.js',
   './compat/plugin-manager-ui-adapter.ts',
-  '../src/language-packs-panel.js',
+  './compat/language-packs-panel-adapter.ts',
   '../src/utils.js',
   './compat/server-transport-adapter.ts',
   '../src/server-comm.js',
@@ -215,6 +215,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/plugin-manager-ui.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/plugin-manager-ui-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/plugin-manager-ui-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/language-packs-panel.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/language-packs-panel.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/language-packs-panel-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/language-packs-panel-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/plugin-details.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/plugin-details.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/plugin-details-adapter.ts')));

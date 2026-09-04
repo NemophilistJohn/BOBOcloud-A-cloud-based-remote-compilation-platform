@@ -189,7 +189,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'src/settings.js',
   'src/plugin-manager-ui.ts',
   'renderer/compat/plugin-manager-ui-adapter.ts',
-  'src/language-packs-panel.js',
+  'src/language-packs-panel.ts',
+  'renderer/compat/language-packs-panel-adapter.ts',
   'src/utils.js',
   'src/server-transport.ts',
   'renderer/compat/server-transport-adapter.ts',
@@ -341,6 +342,8 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'renderer/compat/command-palette-adapter.js',
     'src/plugin-manager-ui.js',
     'renderer/compat/plugin-manager-ui-adapter.js',
+    'src/language-packs-panel.js',
+    'renderer/compat/language-packs-panel-adapter.js',
     'src/plugin-details.js',
     'renderer/compat/plugin-details-adapter.js'
   ]) {

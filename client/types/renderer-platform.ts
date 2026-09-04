@@ -35,6 +35,7 @@ import type {
   DocumentViewService
 } from './document-view';
 import type { I18nService, LanguagePacksHost } from './i18n';
+import type { LanguagePacksPanelService } from './language-packs-panel';
 import type {
   PluginDetailsService,
   PluginManagementHost,
@@ -63,6 +64,7 @@ export interface RendererServiceMap {
   readonly 'workbench.fileDecorations': FileDecorationService;
   readonly 'workbench.fileIcons': FileIconService;
   readonly 'workbench.i18n': I18nService;
+  readonly 'workbench.languagePacksPanel': LanguagePacksPanelService;
   readonly 'workbench.pluginDetails': PluginDetailsService;
   readonly 'workbench.pluginManagerUI': PluginManagerUIService;
   readonly 'workbench.projectTasks': ProjectTasksService;
@@ -229,6 +231,14 @@ export type {
   LanguagePackSourceDto,
   LanguagePackSummaryDto
 } from './i18n';
+export type {
+  LanguagePackPanelViewDto,
+  LanguagePacksPanelDependencies,
+  LanguagePacksPanelFacade,
+  LanguagePacksPanelI18n,
+  LanguagePacksPanelRenderOptions,
+  LanguagePacksPanelService
+} from './language-packs-panel';
 export type {
   PluginConfirm,
   PluginConfirmOptions,

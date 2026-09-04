@@ -36,7 +36,7 @@ import './compat/source-control-view-adapter.ts';
 import '../src/file-search.js';
 import '../src/settings.js';
 import './compat/plugin-manager-ui-adapter.ts';
-import '../src/language-packs-panel.js';
+import './compat/language-packs-panel-adapter.ts';
 import '../src/utils.js';
 import './compat/server-transport-adapter.ts';
 import '../src/server-comm.js';

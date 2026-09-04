@@ -50,6 +50,10 @@ const MIGRATED_I18N_MODULES = Object.freeze([
   'renderer/compat/i18n-adapter.ts',
   'src/i18n.ts'
 ]);
+const MIGRATED_LANGUAGE_PACKS_PANEL_MODULES = Object.freeze([
+  'renderer/compat/language-packs-panel-adapter.ts',
+  'src/language-packs-panel.ts'
+]);
 const MIGRATED_COMMAND_PALETTE_MODULES = Object.freeze([
   'renderer/compat/command-palette-adapter.ts',
   'src/command-palette.ts'
@@ -154,6 +158,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated i18n slice must not regain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_LANGUAGE_PACKS_PANEL_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated language packs panel must not regain a direct preload dependency: ${file}`);
+  }
   for (const file of MIGRATED_COMMAND_PALETTE_MODULES) {
     assert.equal(actual.has(file), false,
       `the migrated command palette must not gain a direct preload dependency: ${file}`);
@@ -183,6 +191,14 @@ test('native host services remain private to the workbench', () => {
   );
   const i18nAdapter = fs.readFileSync(
     path.join(ROOT, 'renderer/compat/i18n-adapter.ts'),
+    'utf8'
+  );
+  const languagePacksPanel = fs.readFileSync(
+    path.join(ROOT, 'src/language-packs-panel.ts'),
+    'utf8'
+  );
+  const languagePacksPanelAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/language-packs-panel-adapter.ts'),
     'utf8'
   );
   const commandPaletteAdapter = fs.readFileSync(
@@ -225,6 +241,13 @@ test('native host services remain private to the workbench', () => {
   assert.match(i18nAdapter, /I18N_SERVICE_ID\s*=\s*['"]workbench\.i18n['"]/);
   assert.match(i18nAdapter, /exposeToPlugins:\s*false/);
   assert.doesNotMatch(i18nAdapter, /pluginView\s*:/);
+  assert.match(languagePacksPanel,
+    /LANGUAGE_PACKS_PANEL_SERVICE_ID\s*=\s*['"]workbench\.languagePacksPanel['"]/);
+  assert.match(languagePacksPanelAdapter, /LANGUAGE_PACKS_PANEL_SERVICE_ID/);
+  assert.match(languagePacksPanelAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(languagePacksPanelAdapter, /pluginView\s*:/);
+  assert.match(languagePacksPanelAdapter,
+    /BOBO\.languagePacksPanel\s*=\s*\{\s*init:\s*languagePacksPanel\.init,\s*render:\s*languagePacksPanel\.render,\s*refresh:\s*languagePacksPanel\.refresh\s*\}/);
   assert.match(commandPalette,
     /COMMAND_PALETTE_SERVICE_ID\s*=\s*['"]workbench\.commandPalette['"]/);
   assert.match(commandPaletteAdapter, /COMMAND_PALETTE_SERVICE_ID/);
