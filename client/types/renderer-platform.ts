@@ -36,6 +36,11 @@ import type {
 } from './document-view';
 import type { I18nService, LanguagePacksHost } from './i18n';
 import type {
+  PluginDetailsService,
+  PluginManagementHost,
+  PluginManagerUIService
+} from './plugin-management';
+import type {
   RendererOpaqueContributionDto,
   SourceControlDescriptorDto
 } from './contributions';
@@ -49,6 +54,7 @@ export interface RendererServiceMap {
   readonly 'host.diagnostics': Readonly<DiagnosticsHost>;
   readonly 'host.documentViews': Readonly<DocumentViewHost>;
   readonly 'host.languagePacks': Readonly<LanguagePacksHost>;
+  readonly 'host.pluginManagement': Readonly<PluginManagementHost>;
   readonly 'host.pluginExtensions': Readonly<PluginExtensionNativeHost>;
   readonly 'host.projectTasks': Readonly<ProjectTasksHost>;
   readonly 'host.rclone': Readonly<RcloneNativeHost>;
@@ -57,6 +63,8 @@ export interface RendererServiceMap {
   readonly 'workbench.fileDecorations': FileDecorationService;
   readonly 'workbench.fileIcons': FileIconService;
   readonly 'workbench.i18n': I18nService;
+  readonly 'workbench.pluginDetails': PluginDetailsService;
+  readonly 'workbench.pluginManagerUI': PluginManagerUIService;
   readonly 'workbench.projectTasks': ProjectTasksService;
   readonly 'workbench.rclone': RcloneClient;
   readonly 'workbench.serverTransport': Readonly<ServerTransportService>;
@@ -221,6 +229,54 @@ export type {
   LanguagePackSourceDto,
   LanguagePackSummaryDto
 } from './i18n';
+export type {
+  PluginConfirm,
+  PluginConfirmOptions,
+  PluginDetailsDependencies,
+  PluginDetailsDocumentViews,
+  PluginDetailsDto,
+  PluginDetailsFacade,
+  PluginDetailsOpenPort,
+  PluginDetailsService,
+  PluginDetailsState,
+  PluginDetailsStateFileTab,
+  PluginDetailsTab,
+  PluginDetailsTabProvider,
+  PluginDetailsViews,
+  PluginDetailsViewSnapshot,
+  PluginDetailsWorkbenchTabDto,
+  PluginDetailsWorkspace,
+  PluginInstalledStatusDto,
+  PluginIntegrityDto,
+  PluginLocalizedTextDto,
+  PluginManagementChangedDto,
+  PluginManagementEnginesDto,
+  PluginManagementHost,
+  PluginManagementManifestDto,
+  PluginManagerDependencies,
+  PluginManagerI18n,
+  PluginManagerPluginViewDto,
+  PluginManagerRefreshOptions,
+  PluginManagerUIFacade,
+  PluginManagerUIService,
+  PluginManagerViewDto,
+  PluginManagerWorkbench,
+  PluginMarketplaceEntryViewDto,
+  PluginMarketplaceHost,
+  PluginMarketplaceInstallRequestDto,
+  PluginMarketplaceInstalledStatusDto,
+  PluginMarketplacePackageDto,
+  PluginMarketplaceProvenanceDto,
+  PluginMarketplaceRefreshOptions,
+  PluginMarketplaceSnapshotDto,
+  PluginMarketplaceSourceDto,
+  PluginMarketplaceVersionDto,
+  PluginMarketplaceVersionViewDto,
+  PluginOpenFolderResultDto,
+  PluginPermissionRequestDto,
+  PluginStatusDto,
+  PluginUninstallResultDto
+} from './plugin-management';
 export type {
   PluginApiVersionDto,
   PluginManifestDto,

@@ -187,6 +187,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/compat/source-control-view-adapter.ts',
   'src/file-search.js',
   'src/settings.js',
+  'src/plugin-manager-ui.ts',
+  'renderer/compat/plugin-manager-ui-adapter.ts',
   'src/language-packs-panel.js',
   'src/utils.js',
   'src/server-transport.ts',
@@ -206,7 +208,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/compat/document-views-adapter.ts',
   'src/workspace.js',
   'src/agent-workbench.js',
-  'src/plugin-details.js',
+  'src/plugin-details.ts',
+  'renderer/compat/plugin-details-adapter.ts',
   'src/run-config.js',
   'src/runner.js',
   'src/project-tasks.ts',
@@ -335,7 +338,11 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'src/i18n.js',
     'renderer/compat/i18n-adapter.js',
     'src/command-palette.js',
-    'renderer/compat/command-palette-adapter.js'
+    'renderer/compat/command-palette-adapter.js',
+    'src/plugin-manager-ui.js',
+    'renderer/compat/plugin-manager-ui-adapter.js',
+    'src/plugin-details.js',
+    'renderer/compat/plugin-details-adapter.js'
   ]) {
     assert.equal(
       fs.existsSync(path.join(ROOT, legacyModule)),
@@ -409,8 +416,10 @@ test('release packaging always rebuilds a production renderer and packages only 
 test('extensions remain a primary workbench surface while detail pages use the tab-provider boundary', () => {
   const html = read('index.html');
   const layout = read('src/workbench-layout.js');
-  const sidebar = read('src/plugin-manager-ui.js');
-  const details = read('src/plugin-details.js');
+  const sidebar = read('src/plugin-manager-ui.ts');
+  const sidebarAdapter = read('renderer/compat/plugin-manager-ui-adapter.ts');
+  const details = read('src/plugin-details.ts');
+  const detailsAdapter = read('renderer/compat/plugin-details-adapter.ts');
 
   assert.match(html, /id="activity-extensions"[^>]*data-workbench-view="extensions"/);
   assert.match(html, /id="extensions-sidebar"[^>]*data-sidebar-view="extensions"/);
@@ -418,7 +427,10 @@ test('extensions remain a primary workbench surface while detail pages use the t
   assert.match(html, /id="extensions-installed-view"/);
   assert.doesNotMatch(html, /settings-plugins-tab|data-spane="plugins"|data-sfoot="plugins"/);
   assert.match(layout, /'extensions'/);
-  assert.match(sidebar, /BOBO\.pluginDetails\.open\(pluginId\)/);
+  assert.match(sidebar, /dependencies\.getPluginDetails\(\)/);
   assert.match(sidebar, /bobo:open-plugin-details/);
   assert.match(details, /registerWorkbenchTabProvider\('plugin-details'/);
+  assert.match(sidebarAdapter, /PLUGIN_MANAGER_UI_SERVICE_ID/);
+  assert.match(sidebarAdapter, /BOBO\.pluginManagerUI\s*=\s*\{\s*init:\s*pluginManagerUI\.init,\s*open:\s*pluginManagerUI\.open,\s*refresh:\s*pluginManagerUI\.refresh,\s*refreshMarketplace:\s*pluginManagerUI\.refreshMarketplace,\s*getPlugins:\s*pluginManagerUI\.getPlugins,\s*getMarketplace:\s*pluginManagerUI\.getMarketplace\s*\}/);
+  assert.match(detailsAdapter, /BOBO\.pluginDetails\s*=\s*Object\.freeze\(\{\s*open:\s*pluginDetails\.open\s*\}\)/);
 });

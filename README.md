@@ -325,6 +325,8 @@ The renderer is not a privilege boundary. Privileged filesystem, child-process, 
 
 Renderer localization is a typed, lifecycle-owned service. Only the native host adapter reads the preload bridge and exposes a private `host.languagePacks` capability; the compatibility adapter registers private `workbench.i18n` and projects that same instance to `BOBO.i18n` for existing modules. Language-pack DTOs are normalized at the renderer boundary, host change events are treated only as invalidation hints, and locale changes use latest-wins commits so disposed or superseded requests cannot update the DOM.
 
+Plugin installation and Marketplace administration use a separate private `host.pluginManagement` capability. It carries the sanitized main-process DTOs and disposable change/menu subscriptions, while `host.pluginExtensions` remains limited to isolated extension-runtime startup and RPC. The renderer registers lifecycle-owned `workbench.pluginManagerUI` and `workbench.pluginDetails` services and exposes only their historical, narrower `BOBO` compatibility facades; downloaded plugins receive none of these management services.
+
 The service validates authenticated owner, logical project, runtime, paths, limits, and operation identity before execution. Project workspaces are isolated copies; published dependency generations are read-only. LSP and DAP can read the same generation through separate leases, but they never share sessions, transports, analysis/debug caches, or protocol policy.
 
 When TLS is enabled, all configured HTTP/WebSocket listeners require TLS 1.3 or later. Do not expose the Docker socket, toolkit ports, Bolt files, dependency trees, or service data directory to clients.

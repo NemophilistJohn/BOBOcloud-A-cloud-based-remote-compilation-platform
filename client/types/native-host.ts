@@ -17,6 +17,14 @@ import type {
   LoadedDocumentViewDto
 } from './document-view';
 import type { LanguagePacksChangedListener } from './i18n';
+import type {
+  PluginManagementChangedDto,
+  PluginMarketplaceSnapshotDto,
+  PluginOpenFolderResultDto,
+  PluginStatusDto,
+  PluginUninstallResultDto
+} from './plugin-management';
+import type { PluginPermissionDto } from './plugin-runtime';
 
 export interface WorkspaceTextFileWrite {
   readonly content: string;
@@ -30,22 +38,22 @@ export interface NativeHostPluginDocuments {
 }
 
 export interface NativeHostPluginMarketplace {
-  list(): Promise<unknown>;
-  refresh(): Promise<unknown>;
-  install(id: string): Promise<unknown>;
+  list(): Promise<PluginMarketplaceSnapshotDto>;
+  refresh(): Promise<PluginMarketplaceSnapshotDto>;
+  install(id: string): Promise<PluginStatusDto>;
 }
 
 export interface NativeHostPlugins {
-  list(): Promise<unknown>;
-  get(id: string): Promise<unknown>;
-  install(): Promise<unknown>;
-  enable(id: string): Promise<unknown>;
-  disable(id: string): Promise<unknown>;
-  uninstall(id: string): Promise<unknown>;
-  grant(id: string, permission: string): Promise<unknown>;
-  revoke(id: string, permission: string): Promise<unknown>;
-  refresh(): Promise<unknown>;
-  openFolder(): Promise<unknown>;
+  list(): Promise<readonly PluginStatusDto[]>;
+  get(id: string): Promise<PluginStatusDto | null>;
+  install(): Promise<PluginStatusDto | null>;
+  enable(id: string): Promise<PluginStatusDto>;
+  disable(id: string): Promise<PluginStatusDto>;
+  uninstall(id: string): Promise<PluginUninstallResultDto>;
+  grant(id: string, permission: PluginPermissionDto): Promise<PluginStatusDto>;
+  revoke(id: string, permission: PluginPermissionDto): Promise<PluginStatusDto>;
+  refresh(): Promise<readonly PluginStatusDto[]>;
+  openFolder(): Promise<PluginOpenFolderResultDto>;
   runtimeDescriptors(): Promise<unknown>;
   loadEntry(id: string): Promise<unknown>;
   loadLocalization(id: string, locale: string): Promise<DocumentViewLocalizationDto>;
@@ -54,7 +62,7 @@ export interface NativeHostPlugins {
   readonly marketplace: NativeHostPluginMarketplace;
   rpc(pluginId: string, method: string, args: unknown): Promise<unknown>;
   onAgentModelEvent: Subscribe<'plugins:agent-model-event'>;
-  onChanged: Subscribe<'plugins:changed'>;
+  onChanged(listener: (payload: PluginManagementChangedDto) => void): Dispose;
 }
 
 export interface RcloneProgressPayload {

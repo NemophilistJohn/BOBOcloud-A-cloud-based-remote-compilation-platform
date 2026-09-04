@@ -30,6 +30,15 @@ import type {
   LanguagePacksListDto,
   LanguagePacksStartupDto
 } from './i18n';
+import type {
+  PluginManagementChangedDto,
+  PluginMarketplaceInstallRequestDto,
+  PluginMarketplaceSnapshotDto,
+  PluginOpenFolderResultDto,
+  PluginPermissionRequestDto,
+  PluginStatusDto,
+  PluginUninstallResultDto
+} from './plugin-management';
 
 export type { Dispose } from './lifecycle';
 
@@ -124,16 +133,16 @@ export interface IpcInvokeContracts {
   'language-packs:remove': IpcInvokeContract<[id: string], LanguagePacksStartupDto>;
   'language-packs:open-folder': IpcInvokeContract<[], LanguagePackOpenFolderResultDto>;
   'language-packs:refresh': IpcInvokeContract<[], LanguagePacksStartupDto>;
-  'plugins:list': IpcInvokeContract;
-  'plugins:get': IpcInvokeContract<[id: string]>;
-  'plugins:install': IpcInvokeContract;
-  'plugins:enable': IpcInvokeContract<[id: string]>;
-  'plugins:disable': IpcInvokeContract<[id: string]>;
-  'plugins:uninstall': IpcInvokeContract<[id: string]>;
-  'plugins:grant': IpcInvokeContract<[request: unknown]>;
-  'plugins:revoke': IpcInvokeContract<[request: unknown]>;
-  'plugins:refresh': IpcInvokeContract;
-  'plugins:open-folder': IpcInvokeContract;
+  'plugins:list': IpcInvokeContract<[], readonly PluginStatusDto[]>;
+  'plugins:get': IpcInvokeContract<[id: string], PluginStatusDto | null>;
+  'plugins:install': IpcInvokeContract<[], PluginStatusDto | null>;
+  'plugins:enable': IpcInvokeContract<[id: string], PluginStatusDto>;
+  'plugins:disable': IpcInvokeContract<[id: string], PluginStatusDto>;
+  'plugins:uninstall': IpcInvokeContract<[id: string], PluginUninstallResultDto>;
+  'plugins:grant': IpcInvokeContract<[request: PluginPermissionRequestDto], PluginStatusDto>;
+  'plugins:revoke': IpcInvokeContract<[request: PluginPermissionRequestDto], PluginStatusDto>;
+  'plugins:refresh': IpcInvokeContract<[], readonly PluginStatusDto[]>;
+  'plugins:open-folder': IpcInvokeContract<[], PluginOpenFolderResultDto>;
   'plugins:runtime-descriptors': IpcInvokeContract;
   'plugins:load-entry': IpcInvokeContract<[id: string]>;
   'plugins:load-localization': IpcInvokeContract<[
@@ -151,9 +160,12 @@ export interface IpcInvokeContracts {
   'plugins:document-close': IpcInvokeContract<[
     request: { readonly documentId: string }
   ], DocumentCloseResultDto>;
-  'plugins:marketplace-list': IpcInvokeContract;
-  'plugins:marketplace-refresh': IpcInvokeContract;
-  'plugins:marketplace-install': IpcInvokeContract<[request: unknown]>;
+  'plugins:marketplace-list': IpcInvokeContract<[], PluginMarketplaceSnapshotDto>;
+  'plugins:marketplace-refresh': IpcInvokeContract<[], PluginMarketplaceSnapshotDto>;
+  'plugins:marketplace-install': IpcInvokeContract<
+    [request: PluginMarketplaceInstallRequestDto],
+    PluginStatusDto
+  >;
   'plugins:rpc': IpcInvokeContract<[request: unknown]>;
   'plugins:agent-approval-describe': IpcInvokeContract<[payload: unknown]>;
   'plugins:agent-approval-decide': IpcInvokeContract<[payload: unknown]>;
@@ -208,7 +220,7 @@ export interface IpcEventContracts {
   'menu-save': IpcEventContract;
   'language-packs:changed': IpcEventContract<[payload: LanguagePacksChangedDto]>;
   'plugins:agent-model-event': IpcEventContract<[payload: unknown]>;
-  'plugins:changed': IpcEventContract<[payload: unknown]>;
+  'plugins:changed': IpcEventContract<[payload: PluginManagementChangedDto]>;
   'open-plugin-manager': IpcEventContract;
   'ai-chunk': IpcEventContract<[payload: unknown]>;
   'ai-stream-end': IpcEventContract<[payload: unknown]>;

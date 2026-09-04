@@ -18,6 +18,11 @@ import type {
 import type { Disposable } from '../../types/lifecycle';
 import type { NativeHost, RcloneNativeHost, RcloneProgressListener } from '../../types/native-host';
 import type { PluginExtensionNativeHost } from '../../types/plugin-extension-bootstrap';
+import type {
+  PluginManagementChangedDto,
+  PluginManagementHost
+} from '../../types/plugin-management';
+import type { PluginPermissionDto } from '../../types/plugin-runtime';
 import { toDisposable } from './disposable.js';
 import { rendererPlatform } from './bootstrap';
 import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
@@ -25,6 +30,7 @@ import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
 export const DIAGNOSTICS_HOST_SERVICE_ID = 'host.diagnostics';
 export const DOCUMENT_VIEWS_HOST_SERVICE_ID = 'host.documentViews';
 export const LANGUAGE_PACKS_HOST_SERVICE_ID = 'host.languagePacks';
+export const PLUGIN_MANAGEMENT_HOST_SERVICE_ID = 'host.pluginManagement';
 export const PLUGIN_EXTENSIONS_HOST_SERVICE_ID = 'host.pluginExtensions';
 export const PROJECT_TASKS_HOST_SERVICE_ID = 'host.projectTasks';
 export const RCLONE_HOST_SERVICE_ID = 'host.rclone';
@@ -122,6 +128,54 @@ function createPluginExtensionNativeHost(
   });
 }
 
+function createPluginManagementHost(
+  host: NativeHost
+): Readonly<PluginManagementHost> | null {
+  const plugins = host.plugins;
+  if (!plugins || typeof plugins !== 'object' ||
+      typeof plugins.list !== 'function' ||
+      typeof plugins.get !== 'function' ||
+      typeof plugins.install !== 'function' ||
+      typeof plugins.enable !== 'function' ||
+      typeof plugins.disable !== 'function' ||
+      typeof plugins.uninstall !== 'function' ||
+      typeof plugins.grant !== 'function' ||
+      typeof plugins.revoke !== 'function' ||
+      typeof plugins.refresh !== 'function' ||
+      typeof plugins.openFolder !== 'function' ||
+      typeof plugins.onChanged !== 'function' ||
+      typeof host.onOpenPluginManager !== 'function') return null;
+  const marketplace = plugins.marketplace && typeof plugins.marketplace === 'object' &&
+    typeof plugins.marketplace.list === 'function' &&
+    typeof plugins.marketplace.refresh === 'function' &&
+    typeof plugins.marketplace.install === 'function'
+    ? Object.freeze({
+        list: () => plugins.marketplace.list(),
+        refresh: () => plugins.marketplace.refresh(),
+        install: (id: string) => plugins.marketplace.install(id)
+      })
+    : null;
+  return Object.freeze({
+    list: () => plugins.list(),
+    get: (id: string) => plugins.get(id),
+    install: () => plugins.install(),
+    enable: (id: string) => plugins.enable(id),
+    disable: (id: string) => plugins.disable(id),
+    uninstall: (id: string) => plugins.uninstall(id),
+    grant: (id: string, permission: PluginPermissionDto) => plugins.grant(id, permission),
+    revoke: (id: string, permission: PluginPermissionDto) => plugins.revoke(id, permission),
+    refresh: () => plugins.refresh(),
+    openFolder: () => plugins.openFolder(),
+    marketplace,
+    onDidChange: (listener: (change: PluginManagementChangedDto) => void) => toDisposable(
+      plugins.onChanged((payload) => listener(payload))
+    ),
+    onOpenManager: (listener: () => void) => toDisposable(
+      host.onOpenPluginManager(() => listener())
+    )
+  });
+}
+
 function createRcloneNativeHost(host: NativeHost): Readonly<RcloneNativeHost> {
   return Object.freeze({
     rclonePrepareRemote: (payload: unknown) => host.rclonePrepareRemote(payload),
@@ -189,6 +243,16 @@ const languagePacksRegistration = rendererPlatform.services.register(
   { owner: 'core', exposeToPlugins: false }
 );
 rendererPlatform.lifecycle.add(languagePacksRegistration);
+
+const pluginManagementHost = createPluginManagementHost(nativeHost);
+if (pluginManagementHost) {
+  const pluginManagementRegistration = rendererPlatform.services.register(
+    PLUGIN_MANAGEMENT_HOST_SERVICE_ID,
+    pluginManagementHost,
+    { owner: 'core', exposeToPlugins: false }
+  );
+  rendererPlatform.lifecycle.add(pluginManagementRegistration);
+}
 
 const pluginExtensionsHost = createPluginExtensionNativeHost(nativeHost);
 if (pluginExtensionsHost) {

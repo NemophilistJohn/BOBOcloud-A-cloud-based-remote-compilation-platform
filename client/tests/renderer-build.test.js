@@ -41,7 +41,7 @@ const EXPECTED_MODULES = [
   './compat/source-control-view-adapter.ts',
   '../src/file-search.js',
   '../src/settings.js',
-  '../src/plugin-manager-ui.js',
+  './compat/plugin-manager-ui-adapter.ts',
   '../src/language-packs-panel.js',
   '../src/utils.js',
   './compat/server-transport-adapter.ts',
@@ -60,7 +60,7 @@ const EXPECTED_MODULES = [
   './compat/document-views-adapter.ts',
   '../src/workspace.js',
   '../src/agent-workbench.js',
-  '../src/plugin-details.js',
+  './compat/plugin-details-adapter.ts',
   './compat/rclone-client-adapter.ts',
   '../src/rclone-settings.js',
   '../src/run-config.js',
@@ -208,6 +208,14 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/command-palette.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/command-palette-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/command-palette-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/plugin-manager-ui.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/plugin-manager-ui.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/plugin-manager-ui-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/plugin-manager-ui-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/plugin-details.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/plugin-details.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/plugin-details-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/plugin-details-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/project-tasks.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/project-tasks-adapter.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/source-control-view.ts')));
