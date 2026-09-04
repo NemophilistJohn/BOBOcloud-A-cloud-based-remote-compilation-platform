@@ -594,6 +594,12 @@ export type {
   ThemeMonacoTokenRuleDto,
   ThemeService
 } from './theme';
+export type {
+  DetectedLanguageIdDto,
+  LocalPathSeparatorDto,
+  ProjectKeyDto,
+  RendererUtilitiesFacade
+} from './utils';
 
 export interface RendererPlatform {
   readonly apiVersion: PluginApiVersionDto;

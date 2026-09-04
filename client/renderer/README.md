@@ -18,6 +18,13 @@ module is `src/file-icons.ts`: it exports an injected service factory,
 same instance through `BOBO.fileIcons`. Follow that pattern one low-coupling
 module at a time; do not move a feature and all of its consumers in one change.
 
+Pure renderer utilities deliberately stay outside the service registry because
+they own no state, resources, host authority, or lifecycle. `src/utils.ts`
+exports six typed functions for direct imports, while
+`compat/utils-adapter.ts` is their sole writable `BOBO` projection for legacy
+callers. Static lookup data is allocated once, and language display lookup uses
+own properties so prototype-shaped unknown language ids remain ordinary ids.
+
 Theme selection follows that boundary without adding a native capability.
 `src/theme-manager.ts` owns the synchronous, injectable theme service, while
 `compat/theme-manager-adapter.ts` registers the private `workbench.theme`

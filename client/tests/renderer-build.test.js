@@ -43,7 +43,7 @@ const EXPECTED_MODULES = [
   '../src/settings.js',
   './compat/plugin-manager-ui-adapter.ts',
   './compat/language-packs-panel-adapter.ts',
-  '../src/utils.js',
+  './compat/utils-adapter.ts',
   './compat/server-transport-adapter.ts',
   '../src/server-comm.js',
   '../src/run-output.js',
@@ -202,6 +202,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/confirm-dialog.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/confirm-dialog-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/confirm-dialog-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/utils.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/utils.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/utils-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/utils-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/file-icons.ts')));

@@ -37,7 +37,7 @@ import '../src/file-search.js';
 import '../src/settings.js';
 import './compat/plugin-manager-ui-adapter.ts';
 import './compat/language-packs-panel-adapter.ts';
-import '../src/utils.js';
+import './compat/utils-adapter.ts';
 import './compat/server-transport-adapter.ts';
 import '../src/server-comm.js';
 import '../src/run-output.js';
