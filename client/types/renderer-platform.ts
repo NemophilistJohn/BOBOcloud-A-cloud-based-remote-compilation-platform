@@ -1,4 +1,4 @@
-import type { RcloneClient } from '../src/rclone-client';
+import type { RcloneClient, RcloneSettingsService } from './rclone';
 import type { CommandPaletteService } from './command-palette';
 import type { DiagnosticsHost, DiagnosticsSettingsService } from './diagnostics';
 import type {
@@ -69,6 +69,7 @@ export interface RendererServiceMap {
   readonly 'workbench.pluginManagerUI': PluginManagerUIService;
   readonly 'workbench.projectTasks': ProjectTasksService;
   readonly 'workbench.rclone': RcloneClient;
+  readonly 'workbench.rcloneSettings': RcloneSettingsService;
   readonly 'workbench.serverTransport': Readonly<ServerTransportService>;
   readonly 'workbench.serverCapabilities': ServerCapabilityService;
   readonly 'workbench.cloudFeaturePolicy': Readonly<CloudFeaturePolicyService>;
@@ -539,6 +540,36 @@ export type {
   ScmGitRequestRegistrationDto,
   ScmGitWriteOperationDto
 } from './scm';
+export type {
+  RcloneAvailableVersionDto,
+  RcloneBinaryCandidateDto,
+  RcloneBinaryScanDto,
+  RcloneBinarySourceDto,
+  RcloneBundledCandidateDto,
+  RcloneBundledSelectionDto,
+  RcloneClient,
+  RcloneConnectionErrorDto,
+  RcloneConnectionFailureDto,
+  RcloneConnectionResultDto,
+  RcloneConnectionSuccessDto,
+  RcloneOperationOptions,
+  RcloneRendererState,
+  RcloneSelectionDto,
+  RcloneSelectBinaryCancelledDto,
+  RcloneSelectBinaryRequestDto,
+  RcloneSelectBinaryResultDto,
+  RcloneSelectBinarySuccessDto,
+  RcloneSettingsClientPort,
+  RcloneSettingsDependencies,
+  RcloneSettingsFacade,
+  RcloneSettingsI18n,
+  RcloneSettingsService,
+  RcloneSettingsWindow,
+  RcloneSystemCandidateDto,
+  RcloneSystemSelectionDto,
+  RcloneUnavailableVersionDto,
+  RcloneVersionResultDto
+} from './rclone';
 
 export interface RendererPlatform {
   readonly apiVersion: PluginApiVersionDto;

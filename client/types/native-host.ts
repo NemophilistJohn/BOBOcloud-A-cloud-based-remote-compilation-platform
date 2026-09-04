@@ -25,6 +25,14 @@ import type {
   PluginUninstallResultDto
 } from './plugin-management';
 import type { PluginPermissionDto } from './plugin-runtime';
+import type {
+  RcloneBinaryScanDto,
+  RcloneConnectionResultDto,
+  RcloneSelectionDto,
+  RcloneSelectBinaryRequestDto,
+  RcloneSelectBinaryResultDto,
+  RcloneVersionResultDto
+} from './rclone';
 
 export interface WorkspaceTextFileWrite {
   readonly content: string;
@@ -79,11 +87,11 @@ export interface RcloneNativeHost {
   rclonePull(payload: unknown): Promise<unknown>;
   rcloneCancel(operationId: string): Promise<unknown>;
   rcloneCancelAll(reason: unknown): Promise<unknown>;
-  rcloneListBinaries(): Promise<unknown>;
-  rcloneGetSelection(): Promise<unknown>;
-  rcloneSelectBinary(payload: unknown): Promise<unknown>;
-  rcloneCheckVersion(): Promise<unknown>;
-  rcloneValidateConnection(): Promise<unknown>;
+  rcloneListBinaries(): Promise<RcloneBinaryScanDto>;
+  rcloneGetSelection(): Promise<RcloneSelectionDto>;
+  rcloneSelectBinary(payload: RcloneSelectBinaryRequestDto): Promise<RcloneSelectBinaryResultDto>;
+  rcloneCheckVersion(): Promise<RcloneVersionResultDto>;
+  rcloneValidateConnection(): Promise<RcloneConnectionResultDto>;
   onRcloneProgress(operationId: string, listener: RcloneProgressListener): Dispose;
 }
 

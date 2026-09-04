@@ -68,10 +68,13 @@ available through the plugin service map.
 
 `core/native-host-adapter.ts` is the only new-code entrypoint to the preload
 bridge. It projects narrow, host-only domain services into the service registry;
-feature modules consume those services through injection. The rclone renderer
-facade is the first TypeScript vertical slice using this boundary, while
-`compat/rclone-client-adapter.ts` preserves the existing `BOBO.rclone` contract.
-The direct-access contract test ratchets the remaining JavaScript callers down
+feature modules consume those services through injection. The typed rclone
+client and lifecycle-owned settings selector use the private `host.rclone`,
+`workbench.rclone`, and `workbench.rcloneSettings` contracts. Their two adapters
+preserve the mutable `BOBO.rclone` client and historical four-method
+`BOBO.rcloneSettings` facade for legacy callers. Selection requests send only
+opaque scan and candidate ids; executable confirmation and trust remain in
+Electron main. The direct-access contract test ratchets remaining JavaScript callers down
 and rejects bridge access from any other TypeScript module.
 
 `types/renderer-platform.ts` is the compile-time service map over that existing

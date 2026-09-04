@@ -323,6 +323,8 @@ flowchart LR
 
 Renderer 不是权限边界。特权文件系统、子进程、网络、rclone、依赖事务和插件安装操作都留在 Electron 主进程，并通过显式且绑定发送者的 IPC 提供。主进程负责持久化凭据并在传输时使用，但可信应用 Renderer 当前会读取部分已配置凭据；下载插件 Worker 不会获得它们。应用启用 `contextIsolation`、关闭 Node integration，拒绝新窗口/webview/权限请求，并把外部 HTTP(S) 链接交给操作系统。
 
+rclone 选择器是带类型且由生命周期托管的私有工作台服务。Renderer 发出的选择请求只传递与发送者绑定的扫描 ID 和不透明候选 ID；原生确认、可执行文件身份复核、按内容寻址复制与激活仍由 Electron 主进程负责。扫描与状态刷新分别使用 latest-wins epoch，平台销毁时会释放 DOM 与本地化监听，窗口尺寸变化的菜单定位按动画帧合并，并且不会缓存可执行文件扫描结果。
+
 服务端在执行前校验认证 owner、逻辑项目、运行时、路径、限制和 operation 身份。项目工作区是隔离副本，已发布依赖代只读。LSP 与 DAP 可以用各自租约读取同一依赖代，但会话、传输、分析/调试缓存和协议策略绝不共享。
 
 启用 TLS 后，所有配置的 HTTP/WebSocket listener 最低使用 TLS 1.3。不要向客户端公开 Docker socket、toolkit 内部端口、Bolt 文件、依赖目录或服务端数据目录。

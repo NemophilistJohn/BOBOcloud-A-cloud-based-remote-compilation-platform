@@ -134,7 +134,7 @@ function createRcloneBinaryManager(options) {
         source: 'system',
         path: selected.sourcePath,
         version: selected.version,
-        confirmedAt: selected.confirmedAt || null
+        confirmedAt: Number.isFinite(selected.confirmedAt) ? selected.confirmedAt : null
       };
     }
     return { source: 'bundled', path: null, version: null };

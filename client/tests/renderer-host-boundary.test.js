@@ -64,6 +64,10 @@ const MIGRATED_PLUGIN_MANAGEMENT_MODULES = Object.freeze([
   'src/plugin-manager-ui.ts',
   'src/plugin-details.ts'
 ]);
+const MIGRATED_RCLONE_SETTINGS_MODULES = Object.freeze([
+  'renderer/compat/rclone-settings-adapter.ts',
+  'src/rclone-settings.ts'
+]);
 
 function sourceFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -170,6 +174,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated plugin management slice must not regain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_RCLONE_SETTINGS_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated rclone settings slice must not regain a direct preload dependency: ${file}`);
+  }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],
     'tasksResolve must remain a unique native-adapter bridge capability');
@@ -221,6 +229,14 @@ test('native host services remain private to the workbench', () => {
     path.join(ROOT, 'renderer/compat/plugin-details-adapter.ts'),
     'utf8'
   );
+  const rcloneSettings = fs.readFileSync(
+    path.join(ROOT, 'src/rclone-settings.ts'),
+    'utf8'
+  );
+  const rcloneSettingsAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/rclone-settings-adapter.ts'),
+    'utf8'
+  );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
   assert.match(adapter, /PROJECT_TASKS_HOST_SERVICE_ID\s*=\s*['"]host\.projectTasks['"]/);
   assert.match(adapter, /RCLONE_HOST_SERVICE_ID\s*=\s*['"]host\.rclone['"]/);
@@ -262,4 +278,13 @@ test('native host services remain private to the workbench', () => {
     /PLUGIN_DETAILS_SERVICE_ID\s*=\s*['"]workbench\.pluginDetails['"]/);
   assert.match(pluginDetailsAdapter, /exposeToPlugins:\s*false/);
   assert.doesNotMatch(pluginDetailsAdapter, /pluginView\s*:/);
+  assert.match(rcloneSettings,
+    /RCLONE_SETTINGS_SERVICE_ID\s*=\s*['"]workbench\.rcloneSettings['"]/);
+  assert.match(rcloneSettingsAdapter, /RCLONE_SETTINGS_SERVICE_ID/);
+  assert.match(rcloneSettingsAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(rcloneSettingsAdapter, /pluginView\s*:/);
+  assert.match(rcloneSettingsAdapter,
+    /BOBO\.rcloneSettings\s*=\s*\{\s*initialize:\s*rcloneSettings\.initialize,\s*open:\s*rcloneSettings\.open,\s*close:\s*rcloneSettings\.close,\s*refreshStatus:\s*rcloneSettings\.refreshStatus\s*\}/);
+  assert.match(rcloneSettingsAdapter,
+    /BOBO\.rclone\.refreshStatus\s*=\s*rcloneSettings\.refreshStatus/);
 });

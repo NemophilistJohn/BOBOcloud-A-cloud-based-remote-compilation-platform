@@ -1,38 +1,21 @@
 import type { RcloneNativeHost } from '../types/native-host';
+import type {
+  RcloneClient,
+  RcloneOperationOptions,
+  RcloneRendererState
+} from '../types/rclone';
 
-export interface RcloneRendererState {
-  workspaceRoot?: string;
-  workspaceIdentity?: unknown;
-}
-
-export interface RcloneOperationOptions {
-  src?: string;
-  dest?: string;
-  localGrant?: string;
-  remoteGrantId?: string;
-  onProgress?: (line: unknown) => void;
-}
+export type {
+  RcloneClient,
+  RcloneOperationOptions,
+  RcloneRendererState
+} from '../types/rclone';
 
 export interface RcloneClientOptions {
   host: RcloneNativeHost;
   state: RcloneRendererState;
   randomUUID?: () => string;
   now?: () => number;
-}
-
-export interface RcloneClient {
-  prepareWorkspace(request?: unknown, options?: RcloneOperationOptions | null): Promise<unknown>;
-  prepareTeamPull(request?: unknown, options?: RcloneOperationOptions | null): Promise<unknown>;
-  sync(options?: RcloneOperationOptions | null): Promise<unknown>;
-  pull(options?: RcloneOperationOptions | null): Promise<unknown>;
-  cancel(operationId: string): Promise<unknown>;
-  cancelAll(reason?: string): Promise<unknown>;
-  listBinaries(): Promise<unknown>;
-  getSelection(): Promise<unknown>;
-  selectBinary(scanId: string, candidateId: string): Promise<unknown>;
-  checkVersion(): Promise<unknown>;
-  validateConnection(): Promise<unknown>;
-  refreshStatus?: () => unknown;
 }
 
 interface WorkspaceLocalScope {

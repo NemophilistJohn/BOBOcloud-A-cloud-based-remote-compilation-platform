@@ -105,11 +105,15 @@ test('confirmed external rclone is copied, hashed and only the managed copy is p
   const persisted = JSON.parse(fs.readFileSync(value.manager.paths.state, 'utf8'));
   assert.equal(persisted.mode, 'external');
   assert.match(persisted.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(Number.isFinite(persisted.confirmedAt), true);
+  persisted.confirmedAt = 'legacy-invalid-timestamp';
+  fs.writeFileSync(value.manager.paths.state, JSON.stringify(persisted));
 
   const restarted = createRcloneBinaryManager(value.options);
   const execution = await restarted.getExecutionDescriptor();
   assert.equal(execution.source, 'system');
   assert.equal(execution.path, selectedExecution.path);
+  assert.equal((await restarted.getSelection()).confirmedAt, null);
 
   const resetScan = await value.manager.listCandidates(11);
   await value.manager.selectCandidate(11, {

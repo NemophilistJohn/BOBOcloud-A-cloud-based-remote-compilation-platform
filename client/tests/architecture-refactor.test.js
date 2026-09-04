@@ -211,6 +211,10 @@ const REQUIRED_RENDERER_INPUTS = [
   'src/agent-workbench.js',
   'src/plugin-details.ts',
   'renderer/compat/plugin-details-adapter.ts',
+  'src/rclone-client.ts',
+  'renderer/compat/rclone-client-adapter.ts',
+  'src/rclone-settings.ts',
+  'renderer/compat/rclone-settings-adapter.ts',
   'src/run-config.js',
   'src/runner.js',
   'src/project-tasks.ts',
@@ -345,7 +349,11 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'src/language-packs-panel.js',
     'renderer/compat/language-packs-panel-adapter.js',
     'src/plugin-details.js',
-    'renderer/compat/plugin-details-adapter.js'
+    'renderer/compat/plugin-details-adapter.js',
+    'src/rclone-client.js',
+    'renderer/compat/rclone-client-adapter.js',
+    'src/rclone-settings.js',
+    'renderer/compat/rclone-settings-adapter.js'
   ]) {
     assert.equal(
       fs.existsSync(path.join(ROOT, legacyModule)),

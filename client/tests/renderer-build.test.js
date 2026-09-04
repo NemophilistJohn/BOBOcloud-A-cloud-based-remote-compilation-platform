@@ -62,7 +62,7 @@ const EXPECTED_MODULES = [
   '../src/agent-workbench.js',
   './compat/plugin-details-adapter.ts',
   './compat/rclone-client-adapter.ts',
-  '../src/rclone-settings.js',
+  './compat/rclone-settings-adapter.ts',
   '../src/run-config.js',
   '../src/task-problem-matcher.js',
   '../src/runner.js',
@@ -223,6 +223,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/plugin-details.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/plugin-details-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/plugin-details-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/rclone-settings.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/rclone-settings.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/rclone-settings-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/rclone-settings-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/project-tasks.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/project-tasks-adapter.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/source-control-view.ts')));

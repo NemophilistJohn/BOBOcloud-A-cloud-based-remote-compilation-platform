@@ -1,10 +1,12 @@
 import { RCLONE_HOST_SERVICE_ID } from '../core/native-host-adapter';
 import { rendererPlatform } from '../core/bootstrap';
 import {
-  createRcloneClient,
-  type RcloneClient,
-  type RcloneRendererState
+  createRcloneClient
 } from '../../src/rclone-client';
+import type {
+  RcloneClient,
+  RcloneRendererState
+} from '../../types/rclone';
 
 interface LegacyBobo {
   state?: RcloneRendererState;
@@ -25,6 +27,6 @@ const registration = rendererPlatform.services.register('workbench.rclone', rclo
 });
 rendererPlatform.lifecycle.add(registration);
 
-// Existing host modules retain the same mutable facade. rclone-settings adds
-// refreshStatus after its own initialization, so this projection cannot freeze.
+// Legacy modules and UI contracts replace methods at runtime. The settings
+// adapter also adds refreshStatus, so this compatibility projection stays mutable.
 BOBO.rclone = rcloneClient;

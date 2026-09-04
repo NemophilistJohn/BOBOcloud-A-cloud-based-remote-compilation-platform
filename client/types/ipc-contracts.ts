@@ -39,6 +39,14 @@ import type {
   PluginStatusDto,
   PluginUninstallResultDto
 } from './plugin-management';
+import type {
+  RcloneBinaryScanDto,
+  RcloneConnectionResultDto,
+  RcloneSelectionDto,
+  RcloneSelectBinaryRequestDto,
+  RcloneSelectBinaryResultDto,
+  RcloneVersionResultDto
+} from './rclone';
 
 export type { Dispose } from './lifecycle';
 
@@ -117,11 +125,14 @@ export interface IpcInvokeContracts {
   'rclone:pull': IpcInvokeContract<[payload: unknown]>;
   'rclone:cancel': IpcInvokeContract<[request: unknown]>;
   'rclone:cancel-all': IpcInvokeContract<[request: unknown]>;
-  'rclone:list-binaries': IpcInvokeContract;
-  'rclone:get-selection': IpcInvokeContract;
-  'rclone:select-binary': IpcInvokeContract<[payload: unknown]>;
-  'rclone:check-version': IpcInvokeContract;
-  'rclone:validate-connection': IpcInvokeContract;
+  'rclone:list-binaries': IpcInvokeContract<[], RcloneBinaryScanDto>;
+  'rclone:get-selection': IpcInvokeContract<[], RcloneSelectionDto>;
+  'rclone:select-binary': IpcInvokeContract<
+    [payload: RcloneSelectBinaryRequestDto],
+    RcloneSelectBinaryResultDto
+  >;
+  'rclone:check-version': IpcInvokeContract<[], RcloneVersionResultDto>;
+  'rclone:validate-connection': IpcInvokeContract<[], RcloneConnectionResultDto>;
   'pick-local-mapping': IpcInvokeContract;
   'local-path-info': IpcInvokeContract<[request: unknown]>;
   'write-team-mapping': IpcInvokeContract<[payload: unknown]>;

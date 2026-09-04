@@ -23,6 +23,7 @@ import type {
   PluginManagementHost
 } from '../../types/plugin-management';
 import type { PluginPermissionDto } from '../../types/plugin-runtime';
+import type { RcloneSelectBinaryRequestDto } from '../../types/rclone';
 import { toDisposable } from './disposable.js';
 import { rendererPlatform } from './bootstrap';
 import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
@@ -185,7 +186,7 @@ function createRcloneNativeHost(host: NativeHost): Readonly<RcloneNativeHost> {
     rcloneCancelAll: (reason: unknown) => host.rcloneCancelAll(reason),
     rcloneListBinaries: () => host.rcloneListBinaries(),
     rcloneGetSelection: () => host.rcloneGetSelection(),
-    rcloneSelectBinary: (payload: unknown) => host.rcloneSelectBinary(payload),
+    rcloneSelectBinary: (payload: RcloneSelectBinaryRequestDto) => host.rcloneSelectBinary(payload),
     rcloneCheckVersion: () => host.rcloneCheckVersion(),
     rcloneValidateConnection: () => host.rcloneValidateConnection(),
     onRcloneProgress: (operationId: string, listener: RcloneProgressListener) => (
