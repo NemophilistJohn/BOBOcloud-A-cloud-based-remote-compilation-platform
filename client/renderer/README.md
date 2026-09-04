@@ -18,6 +18,13 @@ module is `src/file-icons.ts`: it exports an injected service factory,
 same instance through `BOBO.fileIcons`. Follow that pattern one low-coupling
 module at a time; do not move a feature and all of its consumers in one change.
 
+Theme selection follows that boundary without adding a native capability.
+`src/theme-manager.ts` owns the synchronous, injectable theme service, while
+`compat/theme-manager-adapter.ts` registers the private `workbench.theme`
+service and projects the exact seven-method `window.themeManager` facade.
+Listeners and the service share the disposable lifecycle contract; downloaded
+plugins receive no theme service.
+
 Installed extensions cross a separate typed wire boundary in
 `core/plugin-extension-protocol.ts`. Its DTOs keep request arguments and
 successful response values untrusted until the host method validates them, and

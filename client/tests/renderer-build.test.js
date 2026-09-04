@@ -16,7 +16,7 @@ const EXPECTED_MODULES = [
   './core/bootstrap.ts',
   './core/native-host-adapter.ts',
   './compat/platform-adapter.ts',
-  '../theme-manager.js',
+  './compat/theme-manager-adapter.ts',
   '../editor-rules/completion-engine.js',
   '../completion-rules.js',
   '../editor-rules/symbol-extractor.js',
@@ -194,6 +194,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/bootstrap.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/platform-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/platform-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/theme-manager.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/theme-manager.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/theme-manager-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/theme-manager-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/file-icons.ts')));

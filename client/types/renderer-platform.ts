@@ -45,6 +45,7 @@ import type {
   RendererOpaqueContributionDto,
   SourceControlDescriptorDto
 } from './contributions';
+import type { ThemeService } from './theme';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -75,6 +76,7 @@ export interface RendererServiceMap {
   readonly 'workbench.cloudFeaturePolicy': Readonly<CloudFeaturePolicyService>;
   readonly 'workbench.commandPalette': CommandPaletteService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
+  readonly 'workbench.theme': ThemeService;
 }
 
 export interface RendererPluginServiceMap {
@@ -570,6 +572,18 @@ export type {
   RcloneUnavailableVersionDto,
   RcloneVersionResultDto
 } from './rclone';
+export type {
+  BuiltinThemeId,
+  ThemeChangeListener,
+  ThemeDependencies,
+  ThemeDescriptorDto,
+  ThemeManagerFacade,
+  ThemeMonaco,
+  ThemeMonacoDataDto,
+  ThemeMonacoEditorPort,
+  ThemeMonacoTokenRuleDto,
+  ThemeService
+} from './theme';
 
 export interface RendererPlatform {
   readonly apiVersion: PluginApiVersionDto;

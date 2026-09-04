@@ -4,21 +4,16 @@ import type {
   DocumentViewI18n,
   DocumentViewService,
   DocumentViewState,
-  DocumentViewSubscription,
   DocumentViewThemeDto,
   DocumentViewViewsPort,
   DocumentViewWorkspacePort
 } from '../../types/document-view';
+import { THEME_SERVICE_ID } from '../../src/theme-manager';
 import { rendererPlatform } from '../core/bootstrap';
 import { ContributionPoint } from '../core/contribution-registry';
 import { DOCUMENT_VIEWS_HOST_SERVICE_ID } from '../core/native-host-adapter';
 
 export const DOCUMENT_VIEWS_SERVICE_ID = 'workbench.documentViews';
-
-interface LegacyThemeManager {
-  getCurrentTheme?(): string;
-  onChange?(listener: () => void): DocumentViewSubscription;
-}
 
 interface LegacyBobo {
   state?: DocumentViewState;
@@ -30,20 +25,20 @@ interface LegacyBobo {
 
 type DocumentViewsWindow = Window & {
   BOBO?: LegacyBobo;
-  themeManager?: LegacyThemeManager;
 };
 
 const legacyWindow = window as DocumentViewsWindow;
 const BOBO = legacyWindow.BOBO = legacyWindow.BOBO || {};
 if (!BOBO.state) throw new Error('Document Views requires renderer state.');
 if (!BOBO.i18n) throw new Error('Document Views requires the renderer i18n service.');
+const theme = rendererPlatform.services.require(THEME_SERVICE_ID);
 
 function themeSnapshot(): DocumentViewThemeDto {
   const styles = legacyWindow.getComputedStyle(document.documentElement);
   const value = (name: string, fallback: string): string => (
     styles.getPropertyValue(name).trim() || fallback
   );
-  const activeTheme = legacyWindow.themeManager?.getCurrentTheme?.();
+  const activeTheme = theme.getCurrentTheme();
   return Object.freeze({
     kind: activeTheme === 'light' ||
       document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
@@ -65,7 +60,7 @@ const documentViews = createDocumentViewService({
   i18n: BOBO.i18n,
   theme: Object.freeze({
     snapshot: themeSnapshot,
-    onChange: (listener: () => void) => legacyWindow.themeManager?.onChange?.(listener)
+    onChange: (listener: () => void) => theme.onChange(listener)
   }),
   views: Object.freeze({
     closeSplit: () => BOBO.views?.closeSplit?.(),

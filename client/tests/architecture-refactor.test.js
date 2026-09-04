@@ -161,7 +161,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/core/plugin-extension-bootstrap.ts',
   'renderer/compat/platform-adapter.ts',
   'renderer/compat/file-decoration-adapter.ts',
-  'theme-manager.js',
+  'src/theme-manager.ts',
+  'renderer/compat/theme-manager-adapter.ts',
   'editor-rules/completion-engine.js',
   'completion-rules.js',
   'editor-rules/symbol-extractor.js',
@@ -333,6 +334,9 @@ test('HTML has at most two startup scripts and the renderer build covers every f
   }
   for (const legacyModule of [
     'renderer/compat/platform-adapter.js',
+    'theme-manager.js',
+    'src/theme-manager.js',
+    'renderer/compat/theme-manager-adapter.js',
     'src/file-icons.js',
     'renderer/compat/file-icons-adapter.js',
     'renderer/compat/file-decoration-adapter.js',
@@ -361,6 +365,10 @@ test('HTML has at most two startup scripts and the renderer build covers every f
       'legacy renderer module must not coexist with the TypeScript implementation: ' + legacyModule
     );
   }
+
+  const documentViewsAdapter = read('renderer/compat/document-views-adapter.ts');
+  assert.match(documentViewsAdapter, /services\.require\(THEME_SERVICE_ID\)/);
+  assert.doesNotMatch(documentViewsAdapter, /themeManager/);
 
   const metadata = JSON.parse(read('renderer-dist/bobo-renderer.meta.json'));
   const inputs = new Set(
