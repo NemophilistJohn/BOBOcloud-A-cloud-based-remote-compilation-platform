@@ -600,6 +600,29 @@ export type {
   ProjectKeyDto,
   RendererUtilitiesFacade
 } from './utils';
+export type {
+  CacheCapabilitiesDto,
+  CacheCategoryDto,
+  CacheCategoryGroupDto,
+  CacheEntryDto,
+  CacheEntryWireDto,
+  CacheGroupInventoryOptionsDto,
+  CacheHistoryStateDto,
+  CacheHistoryStatesDto,
+  CacheInventoryDto,
+  CacheInventoryFilterScopeDto,
+  CacheInventoryFiltersDto,
+  CacheInventoryGroupsDto,
+  CacheInventoryProtocolError,
+  CacheInventoryTotalsDto,
+  CacheInventoryWireDto,
+  CacheModelFacade,
+  CacheProjectGroupDto,
+  CacheProjectNamesDto,
+  CacheRawObjectDto,
+  CacheStateDto,
+  CacheWorkspaceContextDto
+} from './cache-model';
 
 export interface RendererPlatform {
   readonly apiVersion: PluginApiVersionDto;

@@ -25,6 +25,15 @@ exports six typed functions for direct imports, while
 callers. Static lookup data is allocated once, and language display lookup uses
 own properties so prototype-shaped unknown language ids remain ordinary ids.
 
+Cache inventory normalization follows the same pure-module boundary.
+`src/cache-model.ts` owns the typed v2 DTO normalization, matching, sorting, and
+grouping functions, while `compat/cache-model-adapter.ts` projects the exact
+legacy `BOBO.cacheModel` facade. Internal category ranking is immutable and
+precomputed; the facade receives its own writable category-order copy, so
+legacy customization cannot change typed core sorting. Capability metadata is
+copied through own enumerable string and symbol properties without granting
+prototype-shaped keys special behavior.
+
 Theme selection follows that boundary without adding a native capability.
 `src/theme-manager.ts` owns the synchronous, injectable theme service, while
 `compat/theme-manager-adapter.ts` registers the private `workbench.theme`
