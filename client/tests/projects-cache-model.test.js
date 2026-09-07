@@ -121,8 +121,11 @@ test('normalization preserves coercion, identity, and safe shallow capability co
   const symbolCapability = Symbol('capability');
   Object.defineProperties(capabilities, {
     supported: { enumerable: true, value: nestedCapability },
-    hidden: { enumerable: false, value: true },
-    __proto__: { enumerable: true, value: prototypePayload }
+    hidden: { enumerable: false, value: true }
+  });
+  Object.defineProperty(capabilities, '__proto__', {
+    enumerable: true,
+    value: prototypePayload
   });
   capabilities[symbolCapability] = 'symbol-value';
   const raw = {
