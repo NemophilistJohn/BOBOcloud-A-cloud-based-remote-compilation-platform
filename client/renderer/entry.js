@@ -63,7 +63,7 @@ import '../src/runner.js';
 import './compat/project-tasks-adapter.ts';
 import '../src/dap-client.js';
 import './compat/dap-adapter.js';
-import '../src/environment-activity.js';
+import './compat/environment-activity-adapter.ts';
 import './compat/cache-model-adapter.ts';
 import '../src/cache-store.js';
 import '../src/cache-center.js';

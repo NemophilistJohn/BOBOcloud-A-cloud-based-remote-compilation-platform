@@ -47,6 +47,7 @@ import type {
   SourceControlDescriptorDto
 } from './contributions';
 import type { ThemeService } from './theme';
+import type { EnvironmentActivityService } from './environment-activity';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -64,6 +65,7 @@ export interface RendererServiceMap {
   readonly 'workbench.confirm': ConfirmService;
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
   readonly 'workbench.documentViews': DocumentViewService;
+  readonly 'workbench.environmentActivity': EnvironmentActivityService;
   readonly 'workbench.fileDecorations': FileDecorationService;
   readonly 'workbench.fileIcons': FileIconService;
   readonly 'workbench.i18n': I18nService;
@@ -594,6 +596,32 @@ export type {
   ThemeMonacoTokenRuleDto,
   ThemeService
 } from './theme';
+export type {
+  EnvironmentActivityActionDto,
+  EnvironmentActivityDependencies,
+  EnvironmentActivityEditor,
+  EnvironmentActivityEditorModel,
+  EnvironmentActivityEventDetailDto,
+  EnvironmentActivityEventDto,
+  EnvironmentActivityEventKindDto,
+  EnvironmentActivityFacade,
+  EnvironmentActivityListener,
+  EnvironmentActivityOperations,
+  EnvironmentActivityOutcomeDto,
+  EnvironmentActivityPersonalWorkspaceDto,
+  EnvironmentActivityRecordDetailDto,
+  EnvironmentActivityRecordDto,
+  EnvironmentActivityRendererState,
+  EnvironmentActivityScopeDto,
+  EnvironmentActivityScopeKeyDto,
+  EnvironmentActivityScopeOverridesDto,
+  EnvironmentActivityService,
+  EnvironmentActivityStorage,
+  EnvironmentActivityTabDto,
+  EnvironmentActivityTeamWorkspaceDto,
+  EnvironmentActivityUserDto,
+  EnvironmentActivityWorkspaceDto
+} from './environment-activity';
 export type {
   DetectedLanguageIdDto,
   LocalPathSeparatorDto,

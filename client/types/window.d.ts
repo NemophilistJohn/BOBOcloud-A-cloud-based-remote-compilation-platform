@@ -1,5 +1,6 @@
 import type { NativeHost } from './native-host';
 import type { I18nChangeEvent } from './i18n';
+import type { EnvironmentActivityEventDto } from './environment-activity';
 
 declare global {
   interface Window {
@@ -10,6 +11,7 @@ declare global {
   interface WindowEventMap {
     'bobo:ready': Event;
     'bobo:language-changed': CustomEvent<I18nChangeEvent>;
+    'bobo:environment-activity': CustomEvent<EnvironmentActivityEventDto>;
   }
 }
 

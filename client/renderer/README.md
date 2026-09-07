@@ -34,6 +34,14 @@ legacy customization cannot change typed core sorting. Capability metadata is
 copied through own enumerable string and symbol properties without granting
 prototype-shaped keys special behavior.
 
+Environment activity is a private, lifecycle-owned workbench service.
+`src/environment-activity.ts` owns its typed scoped ledger and event DTOs, while
+`compat/environment-activity-adapter.ts` captures the established renderer state
+reference, resolves the current legacy `projectKey` function for each scope, and
+projects the exact writable seven-key `BOBO.environmentActivity` facade. The
+service is not exposed to downloaded plugins; registry disposal clears its
+subscriptions without adding disposal authority to the compatibility surface.
+
 Theme selection follows that boundary without adding a native capability.
 `src/theme-manager.ts` owns the synchronous, injectable theme service, while
 `compat/theme-manager-adapter.ts` registers the private `workbench.theme`

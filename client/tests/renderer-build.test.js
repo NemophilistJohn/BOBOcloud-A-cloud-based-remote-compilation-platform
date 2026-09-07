@@ -69,7 +69,7 @@ const EXPECTED_MODULES = [
   './compat/project-tasks-adapter.ts',
   '../src/dap-client.js',
   './compat/dap-adapter.js',
-  '../src/environment-activity.js',
+  './compat/environment-activity-adapter.ts',
   './compat/cache-model-adapter.ts',
   '../src/cache-store.js',
   '../src/cache-center.js',
@@ -210,6 +210,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/cache-model.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/cache-model-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/cache-model-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/environment-activity.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/environment-activity.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/environment-activity-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/environment-activity-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/file-icons.ts')));
