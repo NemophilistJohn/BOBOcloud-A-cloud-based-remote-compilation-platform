@@ -1,6 +1,7 @@
 import type { NativeHost } from './native-host';
 import type { I18nChangeEvent } from './i18n';
 import type { EnvironmentActivityEventDto } from './environment-activity';
+import type { CacheStoreInvalidationDto } from './cache-store';
 
 declare global {
   interface Window {
@@ -12,6 +13,7 @@ declare global {
     'bobo:ready': Event;
     'bobo:language-changed': CustomEvent<I18nChangeEvent>;
     'bobo:environment-activity': CustomEvent<EnvironmentActivityEventDto>;
+    'bobo:cache-changed': CustomEvent<CacheStoreInvalidationDto>;
   }
 }
 

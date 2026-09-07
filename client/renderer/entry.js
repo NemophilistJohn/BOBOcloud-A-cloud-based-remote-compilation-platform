@@ -65,7 +65,7 @@ import '../src/dap-client.js';
 import './compat/dap-adapter.js';
 import './compat/environment-activity-adapter.ts';
 import './compat/cache-model-adapter.ts';
-import '../src/cache-store.js';
+import './compat/cache-store-adapter.ts';
 import '../src/cache-center.js';
 import '../src/environment-center.js';
 import '../src/package-center.js';

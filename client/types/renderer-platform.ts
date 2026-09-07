@@ -48,6 +48,7 @@ import type {
 } from './contributions';
 import type { ThemeService } from './theme';
 import type { EnvironmentActivityService } from './environment-activity';
+import type { CacheStoreService } from './cache-store';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -66,6 +67,7 @@ export interface RendererServiceMap {
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
   readonly 'workbench.documentViews': DocumentViewService;
   readonly 'workbench.environmentActivity': EnvironmentActivityService;
+  readonly 'workbench.cacheStore': CacheStoreService;
   readonly 'workbench.fileDecorations': FileDecorationService;
   readonly 'workbench.fileIcons': FileIconService;
   readonly 'workbench.i18n': I18nService;
@@ -651,6 +653,39 @@ export type {
   CacheStateDto,
   CacheWorkspaceContextDto
 } from './cache-model';
+export type {
+  CacheStoreAbortController,
+  CacheStoreActionDto,
+  CacheStoreClearRequestDto,
+  CacheStoreClearScopeDto,
+  CacheStoreClearScopeRequestDto,
+  CacheStoreDeleteRequestDto,
+  CacheStoreDependencies,
+  CacheStoreEntryRequestDto,
+  CacheStoreFacade,
+  CacheStoreFactoryFacade,
+  CacheStoreIdentityUserDto,
+  CacheStoreInvalidationDto,
+  CacheStoreInventoryRequestDto,
+  CacheStoreInventoryTransportOptions,
+  CacheStoreListener,
+  CacheStoreLoadOptionsDto,
+  CacheStoreModel,
+  CacheStoreMutationMapDto,
+  CacheStoreMutationTransportOptions,
+  CacheStoreOperations,
+  CacheStoreRendererState,
+  CacheStoreRequestMap,
+  CacheStoreResponseEnvelopeDto,
+  CacheStoreSendToServer,
+  CacheStoreService,
+  CacheStoreSnapshotDto,
+  CacheStoreStatusDto,
+  CacheStoreTransportOptions,
+  CacheStoreTransportOptionsMap,
+  CacheStoreEntryTransportOptions,
+  LegacyCacheStoreFactoryOptions
+} from './cache-store';
 
 export interface RendererPlatform {
   readonly apiVersion: PluginApiVersionDto;

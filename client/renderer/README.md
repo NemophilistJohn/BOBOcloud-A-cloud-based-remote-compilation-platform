@@ -42,6 +42,15 @@ projects the exact writable seven-key `BOBO.environmentActivity` facade. The
 service is not exposed to downloaded plugins; registry disposal clears its
 subscriptions without adding disposal authority to the compatibility surface.
 
+Cache Inventory state and mutations are likewise owned by a private typed
+service. `src/cache-store.ts` injects the dynamic renderer identity, transport,
+abort-controller, and cache model boundaries; `compat/cache-store-adapter.ts`
+is the only `BOBO.cacheStore` and `BOBO.cacheStoreFactory` projection. Inventory
+reads are single-flight per identity, invalidations coalesce into a trailing
+refresh, and context epochs prevent reset, disposal, or identity changes from
+letting late reads and mutations repopulate another account's state. The
+service is lifecycle-disposable and is not exposed to downloaded plugins.
+
 Theme selection follows that boundary without adding a native capability.
 `src/theme-manager.ts` owns the synchronous, injectable theme service, while
 `compat/theme-manager-adapter.ts` registers the private `workbench.theme`
