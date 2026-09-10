@@ -780,6 +780,11 @@ export type {
   TabOrderTab
 } from './tab-order';
 export type {
+  IconName,
+  RendererIconsFacade,
+  RendererIconsSnapshot
+} from './icons';
+export type {
   ToastDependencies,
   ToastFacade,
   ToastIconPort,
