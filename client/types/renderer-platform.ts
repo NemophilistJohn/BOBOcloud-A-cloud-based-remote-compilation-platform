@@ -60,6 +60,7 @@ import type {
   ProjectsHost
 } from './projects';
 import type { RuntimeService } from './runtime';
+import type { RunConfigService } from './run-config';
 import type { RunOutputService } from './run-output';
 import type { TabOrderService } from './tab-order';
 import type { ToastService } from './toast';
@@ -95,6 +96,7 @@ export interface RendererServiceMap {
   readonly 'workbench.pluginManagerUI': PluginManagerUIService;
   readonly 'workbench.projectTasks': ProjectTasksService;
   readonly 'workbench.projects': ProjectsService;
+  readonly 'workbench.runConfig': RunConfigService;
   readonly 'workbench.runtime': RuntimeService;
   readonly 'workbench.runOutput': RunOutputService;
   readonly 'workbench.tabOrder': TabOrderService;
@@ -775,6 +777,25 @@ export type {
   RuntimeTabDto,
   RuntimeToastPort
 } from './runtime';
+export type {
+  RunConfigActionDto,
+  RunConfigArgsDto,
+  RunConfigDependencies,
+  RunConfigFacade,
+  RunConfigI18nPort,
+  RunConfigRawDto,
+  RunConfigRendererState,
+  RunConfigRequestMap,
+  RunConfigResponseMap,
+  RunConfigSendToServer,
+  RunConfigService,
+  RunConfigStoragePort,
+  RunConfigTabDto,
+  RunConfigTargetDto,
+  RunConfigTargetListResponseDto,
+  RunConfigTargetMetaDto,
+  RunConfigWindowPort
+} from './run-config';
 export type {
   RunOutputBeginOptionsDto,
   RunOutputDependencies,

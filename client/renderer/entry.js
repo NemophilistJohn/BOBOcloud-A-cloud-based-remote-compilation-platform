@@ -57,7 +57,7 @@ import '../src/agent-workbench.js';
 import './compat/plugin-details-adapter.ts';
 import './compat/rclone-client-adapter.ts';
 import './compat/rclone-settings-adapter.ts';
-import '../src/run-config.js';
+import './compat/run-config-adapter.ts';
 import '../src/task-problem-matcher.js';
 import '../src/runner.js';
 import './compat/project-tasks-adapter.ts';

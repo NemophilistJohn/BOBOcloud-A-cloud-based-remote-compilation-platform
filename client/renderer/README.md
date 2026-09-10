@@ -115,6 +115,13 @@ historical `BOBO.runOutput` facade. The service is registered as private
 `workbench.runOutput`, so disposal removes its locale listener without creating
 a second output-authority path for plugins.
 
+Run configuration is now a private typed service too. `src/run-config.ts`
+normalizes per-workspace argument and build-target DTOs, preserves the v1/v2
+storage migration and target cache, and owns the popover, outside-pointer,
+locale, and in-flight request cleanup. `compat/run-config-adapter.ts` injects
+the legacy state/storage/server ports and projects the historical seven-method
+`BOBO.runConfig` facade without exposing run configuration to plugins.
+
 Theme selection follows that boundary without adding a native capability.
 `src/theme-manager.ts` owns the synchronous, injectable theme service, while
 `compat/theme-manager-adapter.ts` registers the private `workbench.theme`
