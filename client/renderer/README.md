@@ -107,6 +107,14 @@ epoch prevents late catalog reads from repopulating a disposed selector. The
 service owns its button, outside-click, and deferred-listener lifecycle and is
 not available to downloaded plugins.
 
+Structured run presentation now follows the same boundary. `src/run-output.ts`
+owns the lifecycle summary, phase/status DTOs, session fencing, detail-count
+state, and locale refresh behavior; `compat/run-output-adapter.ts` injects the
+existing bounded transcript writer from `server-comm.js` and preserves the
+historical `BOBO.runOutput` facade. The service is registered as private
+`workbench.runOutput`, so disposal removes its locale listener without creating
+a second output-authority path for plugins.
+
 Theme selection follows that boundary without adding a native capability.
 `src/theme-manager.ts` owns the synchronous, injectable theme service, while
 `compat/theme-manager-adapter.ts` registers the private `workbench.theme`

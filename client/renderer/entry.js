@@ -40,7 +40,7 @@ import './compat/language-packs-panel-adapter.ts';
 import './compat/utils-adapter.ts';
 import './compat/server-transport-adapter.ts';
 import '../src/server-comm.js';
-import '../src/run-output.js';
+import './compat/run-output-adapter.ts';
 import './compat/server-capabilities-adapter.ts';
 import './compat/cloud-feature-policy-adapter.ts';
 import '../src/lsp-client.js';

@@ -60,6 +60,7 @@ import type {
   ProjectsHost
 } from './projects';
 import type { RuntimeService } from './runtime';
+import type { RunOutputService } from './run-output';
 import type { TabOrderService } from './tab-order';
 import type { ToastService } from './toast';
 
@@ -95,6 +96,7 @@ export interface RendererServiceMap {
   readonly 'workbench.projectTasks': ProjectTasksService;
   readonly 'workbench.projects': ProjectsService;
   readonly 'workbench.runtime': RuntimeService;
+  readonly 'workbench.runOutput': RunOutputService;
   readonly 'workbench.tabOrder': TabOrderService;
   readonly 'workbench.toast': ToastService;
   readonly 'workbench.rclone': RcloneClient;
@@ -773,6 +775,21 @@ export type {
   RuntimeTabDto,
   RuntimeToastPort
 } from './runtime';
+export type {
+  RunOutputBeginOptionsDto,
+  RunOutputDependencies,
+  RunOutputDetailOptionsDto,
+  RunOutputFacade,
+  RunOutputFinishOptionsDto,
+  RunOutputI18nPort,
+  RunOutputKnownPhase,
+  RunOutputOutputPort,
+  RunOutputPhase,
+  RunOutputService,
+  RunOutputState,
+  RunOutputStatusDto,
+  RunOutputUpdateOptionsDto
+} from './run-output';
 export type {
   TabOrderFacade,
   TabOrderPosition,

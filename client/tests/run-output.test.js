@@ -5,8 +5,30 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const esbuild = require('esbuild');
 
 const projectRoot = path.resolve(__dirname, '..');
+
+function loadRunOutputService() {
+  const bundled = esbuild.buildSync({
+    absWorkingDir: projectRoot,
+    stdin: {
+      contents: "export { createRunOutputService } from './src/run-output.ts';",
+      resolveDir: projectRoot,
+      sourcefile: 'run-output-test-entry.ts'
+    },
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    write: false,
+    logLevel: 'silent'
+  }).outputFiles[0].text;
+  const loaded = { exports: {} };
+  new Function('require', 'module', 'exports', bundled)(require, loaded, loaded.exports);
+  return loaded.exports.createRunOutputService;
+}
+
+const createRunOutputService = loadRunOutputService();
 
 function classListFor(element) {
   return {
@@ -63,6 +85,9 @@ function createElement(tagName) {
       return child;
     },
     addEventListener(type, callback) { listeners.set(type, callback); },
+    removeEventListener(type, callback) {
+      if (listeners.get(type) === callback) listeners.delete(type);
+    },
     click() { const callback = listeners.get('click'); if (callback) callback({ currentTarget: this }); },
     setAttribute(name, value) {
       this.attributes[name] = String(value);
@@ -137,9 +162,25 @@ function createFixture(options = {}) {
     setTimeout,
     clearTimeout
   });
-  for (const relative of ['src/server-comm.js', 'src/run-output.js']) {
-    vm.runInContext(fs.readFileSync(path.join(projectRoot, relative), 'utf8'), context, { filename: relative });
-  }
+  vm.runInContext(fs.readFileSync(path.join(projectRoot, 'src/server-comm.js'), 'utf8'), context, {
+    filename: 'src/server-comm.js'
+  });
+  const runOutput = createRunOutputService({
+    document,
+    output: {
+      updateRunOutput(message, outputOptions) {
+        windowObject.BOBO.updateRunOutput(message, outputOptions);
+      },
+      clearRunOutputDetails() {
+        windowObject.BOBO.clearRunOutputDetails();
+      },
+      refreshRunOutputOmission() {
+        windowObject.BOBO.refreshRunOutputOmission();
+      }
+    },
+    getI18n: () => windowObject.BOBO.i18n
+  });
+  windowObject.BOBO.runOutput = runOutput;
   windowObject.BOBO.runOutput.init();
   return {
     windowObject,
