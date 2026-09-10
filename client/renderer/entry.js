@@ -46,7 +46,7 @@ import './compat/cloud-feature-policy-adapter.ts';
 import '../src/lsp-client.js';
 import '../src/output-panel.js';
 import '../src/terminal.js';
-import '../src/runtime.js';
+import './compat/runtime-adapter.ts';
 import './compat/file-icons-adapter.ts';
 import '../src/workspace-sync-status.js';
 import '../src/workspace-settings.js';

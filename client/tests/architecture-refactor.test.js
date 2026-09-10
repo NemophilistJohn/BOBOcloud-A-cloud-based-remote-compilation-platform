@@ -206,7 +206,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'src/lsp-client.js',
   'src/output-panel.js',
   'src/terminal.js',
-  'src/runtime.js',
+  'src/runtime.ts',
+  'renderer/compat/runtime-adapter.ts',
   'src/file-icons.ts',
   'src/editor-core.js',
   'src/document-views.ts',
@@ -390,7 +391,9 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'src/rclone-settings.js',
     'renderer/compat/rclone-settings-adapter.js',
     'src/projects.js',
-    'renderer/compat/projects-adapter.js'
+    'renderer/compat/projects-adapter.js',
+    'src/runtime.js',
+    'renderer/compat/runtime-adapter.js'
   ]) {
     assert.equal(
       fs.existsSync(path.join(ROOT, legacyModule)),

@@ -78,6 +78,10 @@ const MIGRATED_PROJECTS_MODULES = Object.freeze([
   'renderer/compat/projects-adapter.ts',
   'src/projects.ts'
 ]);
+const MIGRATED_RUNTIME_MODULES = Object.freeze([
+  'renderer/compat/runtime-adapter.ts',
+  'src/runtime.ts'
+]);
 
 function sourceFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -199,6 +203,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
   for (const file of MIGRATED_PROJECTS_MODULES) {
     assert.equal(actual.has(file), false,
       `the migrated projects slice must not regain a direct preload dependency: ${file}`);
+  }
+  for (const file of MIGRATED_RUNTIME_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated runtime slice must not regain a direct preload dependency: ${file}`);
   }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],

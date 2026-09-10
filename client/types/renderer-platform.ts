@@ -59,6 +59,7 @@ import type {
   ProjectsService,
   ProjectsHost
 } from './projects';
+import type { RuntimeService } from './runtime';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -91,6 +92,7 @@ export interface RendererServiceMap {
   readonly 'workbench.pluginManagerUI': PluginManagerUIService;
   readonly 'workbench.projectTasks': ProjectTasksService;
   readonly 'workbench.projects': ProjectsService;
+  readonly 'workbench.runtime': RuntimeService;
   readonly 'workbench.rclone': RcloneClient;
   readonly 'workbench.rcloneSettings': RcloneSettingsService;
   readonly 'workbench.serverTransport': Readonly<ServerTransportService>;
@@ -746,6 +748,27 @@ export type {
   ProjectsStorageInfoDto,
   ProjectsStorageInfoWireDto
 } from './projects';
+export type {
+  RuntimeActionDto,
+  RuntimeDefinitionDto,
+  RuntimeDependencies,
+  RuntimeEnvironmentActivityPort,
+  RuntimeFacade,
+  RuntimeHelpersFacade,
+  RuntimeI18nPort,
+  RuntimeListResponseWireDto,
+  RuntimeLspPort,
+  RuntimeRendererState,
+  RuntimeRequestMap,
+  RuntimeResponseMap,
+  RuntimeRunConfigPort,
+  RuntimeSelectionResultDto,
+  RuntimeSendToServer,
+  RuntimeService,
+  RuntimeStoragePort,
+  RuntimeTabDto,
+  RuntimeToastPort
+} from './runtime';
 export type {
   DetectedLanguageIdDto,
   LocalPathSeparatorDto,

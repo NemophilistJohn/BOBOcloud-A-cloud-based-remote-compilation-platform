@@ -1,12 +1,11 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const vm = require('node:vm');
+const esbuild = require('esbuild');
 
-const source = fs.readFileSync(path.resolve(__dirname, '../src/runtime.js'), 'utf8');
+const ROOT = path.resolve(__dirname, '..');
 const RUNTIME_KEY = 'bobocloud.runtime';
 const LANGUAGE_PREFERENCE_KEY = 'bobocloud.runtime.language-preferences.v1';
 
@@ -27,6 +26,27 @@ function createStorage(entries) {
     values
   };
 }
+
+function loadRuntimeModule() {
+  const bundled = esbuild.buildSync({
+    absWorkingDir: ROOT,
+    stdin: {
+      contents: "export { createRuntimeService } from './src/runtime.ts';",
+      resolveDir: ROOT,
+      sourcefile: 'runtime-auto-selection-test-entry.ts'
+    },
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    write: false,
+    logLevel: 'silent'
+  }).outputFiles[0].text;
+  const loaded = { exports: {} };
+  new Function('require', 'module', 'exports', bundled)(require, loaded, loaded.exports);
+  return loaded.exports;
+}
+
+const { createRuntimeService } = loadRuntimeModule();
 
 function loadRuntime(options) {
   options = options || {};
@@ -62,23 +82,30 @@ function loadRuntime(options) {
     environmentActivity: { contextChanged(reason) { events.push(['environment', reason]); } },
     sendToServer: options.sendToServer
   };
-  const window = { BOBO };
-  vm.runInNewContext(source, {
-    window,
+  const service = createRuntimeService({
     document,
-    localStorage: storage,
-    JSON,
-    Object,
-    Array,
-    String,
-    Number,
-    RegExp,
-    Math,
-    Promise,
-    setTimeout,
-    clearTimeout
-  }, { filename: 'src/runtime.js' });
-  return { BOBO: window.BOBO, state, storage, notifications, events };
+    storage,
+    state,
+    sendToServer: BOBO.sendToServer || (async () => ({ success: false })),
+    getI18n: () => BOBO.i18n,
+    getLanguageDisplayName: () => undefined,
+    getLsp: () => BOBO.lsp,
+    getRunConfig: () => BOBO.runConfig,
+    getEnvironmentActivity: () => BOBO.environmentActivity,
+    getToast: () => BOBO.toast,
+    updateRunOutput: (message) => BOBO.updateRunOutput(message),
+    setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimer: (timer) => clearTimeout(timer)
+  });
+  BOBO.runtime = {
+    init: service.init,
+    fetchRuntimes: service.fetchRuntimes,
+    selectRuntime: service.selectRuntime,
+    autoSelectForLanguage: service.autoSelectForLanguage,
+    autoSelectForActiveFile: service.autoSelectForActiveFile,
+    _helpers: service._helpers
+  };
+  return { BOBO, state, storage, notifications, events };
 }
 
 function preferences(fixture) {

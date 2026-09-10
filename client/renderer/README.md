@@ -89,6 +89,16 @@ kept out of the downloaded-plugin service map. The cache center remains a
 separate service injected through a narrow port, so the existing Projects/cache
 tab behavior does not acquire a second lifecycle or authority path.
 
+Runtime selection is now a private typed workbench service as well.
+`src/runtime.ts` keeps the Local-versus-Docker choice, per-language preferences,
+numeric version ordering, menu behavior, and automatic active-file selection;
+`compat/runtime-adapter.ts` preserves the exact six-key `BOBO.runtime` facade,
+including its helper bundle. Storage and legacy workbench collaborators are
+injected ports, catalog responses cross an explicit DTO boundary, and a request
+epoch prevents late catalog reads from repopulating a disposed selector. The
+service owns its button, outside-click, and deferred-listener lifecycle and is
+not available to downloaded plugins.
+
 Theme selection follows that boundary without adding a native capability.
 `src/theme-manager.ts` owns the synchronous, injectable theme service, while
 `compat/theme-manager-adapter.ts` registers the private `workbench.theme`
