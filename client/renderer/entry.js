@@ -69,7 +69,7 @@ import './compat/cache-store-adapter.ts';
 import './compat/cache-center-adapter.ts';
 import './compat/environment-center-adapter.ts';
 import '../src/package-center.js';
-import '../src/views.js';
+import './compat/views-adapter.ts';
 import '../src/auth.js';
 import '../src/projects.js';
 import '../src/collaboration.js';

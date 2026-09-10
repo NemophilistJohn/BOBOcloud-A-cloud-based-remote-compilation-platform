@@ -54,6 +54,7 @@ import type {
   EnvironmentCenterNativeHostPort,
   EnvironmentCenterService
 } from './environment-center';
+import type { ViewsHost, ViewsService } from './views';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -69,6 +70,7 @@ export interface RendererServiceMap {
   readonly 'host.pluginExtensions': Readonly<PluginExtensionNativeHost>;
   readonly 'host.projectTasks': Readonly<ProjectTasksHost>;
   readonly 'host.rclone': Readonly<RcloneNativeHost>;
+  readonly 'host.views': Readonly<ViewsHost>;
   readonly 'workbench.confirm': ConfirmService;
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
   readonly 'workbench.documentViews': DocumentViewService;
@@ -91,6 +93,7 @@ export interface RendererServiceMap {
   readonly 'workbench.commandPalette': CommandPaletteService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
+  readonly 'workbench.views': ViewsService;
 }
 
 export interface RendererPluginServiceMap {
@@ -689,6 +692,29 @@ export type {
   ProjectEnvironmentWireManifestDto,
   ProjectEnvironmentWorkspaceDto
 } from './environment-center';
+export type {
+  ViewsCodeEditorPort,
+  ViewsCollaborationPort,
+  ViewsDependencies,
+  ViewsDiffEditorPort,
+  ViewsDiffModelDto,
+  ViewsDiffPathsDto,
+  ViewsEditorCorePort,
+  ViewsFacade,
+  ViewsHost,
+  ViewsMonacoEditorPort,
+  ViewsMonacoPort,
+  ViewsRendererState,
+  ViewsService,
+  ViewsSettingsPort,
+  ViewsSplitEditorPort,
+  ViewsTabDto,
+  ViewsTextModelPort,
+  ViewsThemePort,
+  ViewsUriPort,
+  ViewsWorkspaceSettingsPort,
+  WorkbenchEditorViewModeDto
+} from './views';
 export type {
   DetectedLanguageIdDto,
   LocalPathSeparatorDto,

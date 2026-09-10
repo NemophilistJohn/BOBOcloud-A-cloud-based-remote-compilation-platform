@@ -68,6 +68,16 @@ while registry disposal removes every DOM, workbench, activity, marker, file,
 and timer subscription. Its `readTree` and file-event authority comes only
 through the narrow private service created by `core/native-host-adapter.ts`.
 
+The editor views slice follows the same boundary. `src/views.ts` owns split,
+diff, image-preview, and theme-picker behavior through typed state, Monaco, and
+host ports; `compat/views-adapter.ts` is the sole writable `BOBO.views`
+projection with the historical eight methods and order. Diff request epochs
+prevent late file reads from replacing a newer view, while split listeners,
+debounce timers, Monaco models, and DOM handlers are released through the
+shared disposable lifecycle. File reads use the private `host.views` capability
+from `core/native-host-adapter.ts`, and neither views service is exposed to
+downloaded plugins.
+
 Theme selection follows that boundary without adding a native capability.
 `src/theme-manager.ts` owns the synchronous, injectable theme service, while
 `compat/theme-manager-adapter.ts` registers the private `workbench.theme`

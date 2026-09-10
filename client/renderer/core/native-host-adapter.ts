@@ -25,6 +25,7 @@ import type {
 } from '../../types/plugin-management';
 import type { PluginPermissionDto } from '../../types/plugin-runtime';
 import type { RcloneSelectBinaryRequestDto } from '../../types/rclone';
+import type { ViewsHost } from '../../types/views';
 import { toDisposable } from './disposable.js';
 import { rendererPlatform } from './bootstrap';
 import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
@@ -37,6 +38,7 @@ export const PLUGIN_MANAGEMENT_HOST_SERVICE_ID = 'host.pluginManagement';
 export const PLUGIN_EXTENSIONS_HOST_SERVICE_ID = 'host.pluginExtensions';
 export const PROJECT_TASKS_HOST_SERVICE_ID = 'host.projectTasks';
 export const RCLONE_HOST_SERVICE_ID = 'host.rclone';
+export const VIEWS_HOST_SERVICE_ID = 'host.views';
 
 function optionalDisposable(candidate: unknown): Disposable | null {
   return typeof candidate === 'function'
@@ -80,6 +82,12 @@ function createEnvironmentCenterHost(
     onFileEvent: (listener: (event: unknown) => void) => (
       host.onFileEvent((event) => listener(event))
     )
+  });
+}
+
+function createViewsHost(host: NativeHost): Readonly<ViewsHost> {
+  return Object.freeze({
+    readFile: (filePath: string) => host.readFile(filePath)
   });
 }
 
@@ -257,6 +265,13 @@ const environmentCenterRegistration = rendererPlatform.services.register(
   { owner: 'core', exposeToPlugins: false }
 );
 rendererPlatform.lifecycle.add(environmentCenterRegistration);
+
+const viewsRegistration = rendererPlatform.services.register(
+  VIEWS_HOST_SERVICE_ID,
+  createViewsHost(nativeHost),
+  { owner: 'core', exposeToPlugins: false }
+);
+rendererPlatform.lifecycle.add(viewsRegistration);
 
 const languagePacksRegistration = rendererPlatform.services.register(
   LANGUAGE_PACKS_HOST_SERVICE_ID,

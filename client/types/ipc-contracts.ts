@@ -87,7 +87,7 @@ export interface IpcInvokeContracts {
   'terminal:stop': IpcInvokeContract<[reason: unknown]>;
   'terminal:status': IpcInvokeContract;
   'refresh-workspace': IpcInvokeContract;
-  'read-file': IpcInvokeContract<[filePath: string]>;
+  'read-file': IpcInvokeContract<[filePath: string], string>;
   'save-file': IpcInvokeContract<[payload: unknown]>;
   'save-binary-file': IpcInvokeContract<[payload: unknown]>;
   'save-artifact': IpcInvokeContract<[payload: unknown]>;
