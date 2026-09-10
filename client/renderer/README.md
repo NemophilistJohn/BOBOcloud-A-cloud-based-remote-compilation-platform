@@ -58,6 +58,16 @@ injected typed ports, while `compat/cache-center-adapter.ts` is the sole
 adapter preserves dynamic legacy collaborators without exposing Cache Center
 or its cache mutation controls to downloaded plugins.
 
+The Environment Center is also a private vertical service.
+`src/environment-center-model.ts` owns the pure manifest, health, package, and
+server-snapshot transforms; `src/environment-center.ts` owns rendering and the
+diagnose/plan/confirm/apply workflow through typed DTOs and injected ports.
+`compat/environment-center-adapter.ts` is the sole `BOBO.environmentCenter`
+projection. Workspace and identity epochs fence late refreshes and actions,
+while registry disposal removes every DOM, workbench, activity, marker, file,
+and timer subscription. Its `readTree` and file-event authority comes only
+through the narrow private service created by `core/native-host-adapter.ts`.
+
 Theme selection follows that boundary without adding a native capability.
 `src/theme-manager.ts` owns the synchronous, injectable theme service, while
 `compat/theme-manager-adapter.ts` registers the private `workbench.theme`

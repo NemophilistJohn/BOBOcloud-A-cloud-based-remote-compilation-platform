@@ -19,7 +19,6 @@ const LEGACY_DIRECT_ACCESS_LIMITS = new Map([
   ['src/auth.js', 16],
   ['src/collaboration.js', 6],
   ['src/dap-client.js', 27],
-  ['src/environment-center.js', 6],
   ['src/lsp-client.js', 56],
   ['src/package-center.js', 1],
   ['src/projects.js', 5],
@@ -67,6 +66,11 @@ const MIGRATED_PLUGIN_MANAGEMENT_MODULES = Object.freeze([
 const MIGRATED_RCLONE_SETTINGS_MODULES = Object.freeze([
   'renderer/compat/rclone-settings-adapter.ts',
   'src/rclone-settings.ts'
+]);
+const MIGRATED_ENVIRONMENT_CENTER_MODULES = Object.freeze([
+  'renderer/compat/environment-center-adapter.ts',
+  'src/environment-center-model.ts',
+  'src/environment-center.ts'
 ]);
 
 function sourceFiles(directory) {
@@ -178,6 +182,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated rclone settings slice must not regain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_ENVIRONMENT_CENTER_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated environment center slice must not regain a direct preload dependency: ${file}`);
+  }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],
     'tasksResolve must remain a unique native-adapter bridge capability');
@@ -237,6 +245,10 @@ test('native host services remain private to the workbench', () => {
     path.join(ROOT, 'renderer/compat/rclone-settings-adapter.ts'),
     'utf8'
   );
+  const environmentCenterAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/environment-center-adapter.ts'),
+    'utf8'
+  );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
   assert.match(adapter, /PROJECT_TASKS_HOST_SERVICE_ID\s*=\s*['"]host\.projectTasks['"]/);
   assert.match(adapter, /RCLONE_HOST_SERVICE_ID\s*=\s*['"]host\.rclone['"]/);
@@ -244,7 +256,8 @@ test('native host services remain private to the workbench', () => {
   assert.match(adapter, /LANGUAGE_PACKS_HOST_SERVICE_ID\s*=\s*['"]host\.languagePacks['"]/);
   assert.match(adapter, /PLUGIN_MANAGEMENT_HOST_SERVICE_ID\s*=\s*['"]host\.pluginManagement['"]/);
   assert.match(adapter, /PLUGIN_EXTENSIONS_HOST_SERVICE_ID\s*=\s*['"]host\.pluginExtensions['"]/);
-  assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 7);
+  assert.match(adapter, /ENVIRONMENT_CENTER_HOST_SERVICE_ID\s*=\s*['"]host\.environmentCenter['"]/);
+  assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 8);
   assert.doesNotMatch(adapter, /pluginView\s*:/);
   assert.match(diagnosticsAdapter,
     /DIAGNOSTICS_SETTINGS_SERVICE_ID\s*=\s*['"]workbench\.diagnosticsSettings['"]/);
@@ -287,4 +300,7 @@ test('native host services remain private to the workbench', () => {
     /BOBO\.rcloneSettings\s*=\s*\{\s*initialize:\s*rcloneSettings\.initialize,\s*open:\s*rcloneSettings\.open,\s*close:\s*rcloneSettings\.close,\s*refreshStatus:\s*rcloneSettings\.refreshStatus\s*\}/);
   assert.match(rcloneSettingsAdapter,
     /BOBO\.rclone\.refreshStatus\s*=\s*rcloneSettings\.refreshStatus/);
+  assert.match(environmentCenterAdapter, /ENVIRONMENT_CENTER_SERVICE_ID/);
+  assert.match(environmentCenterAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(environmentCenterAdapter, /pluginView\s*:/);
 });

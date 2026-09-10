@@ -10,6 +10,7 @@ import type {
   ProjectTasksWorkspaceOpenedListener
 } from '../../types/project-tasks';
 import type { DocumentViewHost } from '../../types/document-view';
+import type { EnvironmentCenterNativeHostPort } from '../../types/environment-center';
 import type {
   LanguagePacksHost,
   LanguagePacksInvalidationHint,
@@ -30,6 +31,7 @@ import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
 
 export const DIAGNOSTICS_HOST_SERVICE_ID = 'host.diagnostics';
 export const DOCUMENT_VIEWS_HOST_SERVICE_ID = 'host.documentViews';
+export const ENVIRONMENT_CENTER_HOST_SERVICE_ID = 'host.environmentCenter';
 export const LANGUAGE_PACKS_HOST_SERVICE_ID = 'host.languagePacks';
 export const PLUGIN_MANAGEMENT_HOST_SERVICE_ID = 'host.pluginManagement';
 export const PLUGIN_EXTENSIONS_HOST_SERVICE_ID = 'host.pluginExtensions';
@@ -67,6 +69,17 @@ function createDocumentViewsHost(host: NativeHost): Readonly<DocumentViewHost> {
       host.plugins.documents.read(documentId, offset, length)
     ),
     closeDocument: (documentId: string) => host.plugins.documents.close(documentId)
+  });
+}
+
+function createEnvironmentCenterHost(
+  host: NativeHost
+): Readonly<EnvironmentCenterNativeHostPort> {
+  return Object.freeze({
+    readTree: (workspaceRoot: string) => host.readTree(workspaceRoot),
+    onFileEvent: (listener: (event: unknown) => void) => (
+      host.onFileEvent((event) => listener(event))
+    )
   });
 }
 
@@ -237,6 +250,13 @@ const documentViewsRegistration = rendererPlatform.services.register(
   { owner: 'core', exposeToPlugins: false }
 );
 rendererPlatform.lifecycle.add(documentViewsRegistration);
+
+const environmentCenterRegistration = rendererPlatform.services.register(
+  ENVIRONMENT_CENTER_HOST_SERVICE_ID,
+  createEnvironmentCenterHost(nativeHost),
+  { owner: 'core', exposeToPlugins: false }
+);
+rendererPlatform.lifecycle.add(environmentCenterRegistration);
 
 const languagePacksRegistration = rendererPlatform.services.register(
   LANGUAGE_PACKS_HOST_SERVICE_ID,

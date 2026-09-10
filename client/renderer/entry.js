@@ -67,7 +67,7 @@ import './compat/environment-activity-adapter.ts';
 import './compat/cache-model-adapter.ts';
 import './compat/cache-store-adapter.ts';
 import './compat/cache-center-adapter.ts';
-import '../src/environment-center.js';
+import './compat/environment-center-adapter.ts';
 import '../src/package-center.js';
 import '../src/views.js';
 import '../src/auth.js';

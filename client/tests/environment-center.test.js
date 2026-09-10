@@ -2,6 +2,28 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
+const esbuild = require('esbuild');
+
+const ROOT = path.resolve(__dirname, '..');
+
+function loadTypeScriptModule(entryPoint) {
+  const build = esbuild.buildSync({
+    absWorkingDir: ROOT,
+    entryPoints: [entryPoint],
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: ['node20'],
+    write: false,
+    logLevel: 'silent'
+  });
+  const loaded = { exports: {} };
+  const evaluate = new Function('require', 'module', 'exports', build.outputFiles[0].text);
+  evaluate(require, loaded, loaded.exports);
+  return loaded.exports;
+}
+
 const {
   canonicalLanguage,
   recognizeManifests,
@@ -15,7 +37,7 @@ const {
   localizedDynamicText,
   healthFallbackDetail,
   localizedDependencyReason
-} = require('../src/environment-center');
+} = loadTypeScriptModule('src/environment-center.ts');
 
 test('recognizes project dependency files while skipping generated dependency trees', () => {
   const root = 'C:\\work\\demo';
@@ -284,24 +306,19 @@ test('supplemental LSP evidence changes overall health without downgrading healt
 });
 
 test('non-English environment details use localized structured fallbacks', () => {
-  const originalI18n = globalThis.BOBO.i18n;
   const translations = {
     'Installed library state still needs verification.': '已安装库状态仍需验证。',
     'Missing from the verified project environment.': '已验证项目环境中缺少此库。'
   };
-  globalThis.BOBO.i18n = {
+  const i18n = {
     getActive: () => 'zh-CN',
     t: (key) => translations[key] || key
   };
-  try {
-    assert.equal(localizedDynamicText('Installed state is not trustworthy for runtime python:3.10', '已安装库状态仍需验证。'), '已安装库状态仍需验证。');
-    assert.equal(localizedDynamicText('已检测到 1 个缺失导入', '回退'), '已检测到 1 个缺失导入');
-    assert.equal(healthFallbackDetail('dependencies', 'warning', ''), '已安装库状态仍需验证。');
-    assert.equal(localizedDependencyReason({ _status: 'warning', reason: 'Installed state is not trustworthy' }), '已安装库状态仍需验证。');
-    assert.equal(localizedDependencyReason({ _status: 'missing', reason: 'Missing from exact inventory' }), '已验证项目环境中缺少此库。');
-  } finally {
-    globalThis.BOBO.i18n = originalI18n;
-  }
+  assert.equal(localizedDynamicText('Installed state is not trustworthy for runtime python:3.10', '已安装库状态仍需验证。', i18n), '已安装库状态仍需验证。');
+  assert.equal(localizedDynamicText('已检测到 1 个缺失导入', '回退', i18n), '已检测到 1 个缺失导入');
+  assert.equal(healthFallbackDetail('dependencies', 'warning', '', i18n), '已安装库状态仍需验证。');
+  assert.equal(localizedDependencyReason({ _status: 'warning', reason: 'Installed state is not trustworthy' }, i18n), '已安装库状态仍需验证。');
+  assert.equal(localizedDependencyReason({ _status: 'missing', reason: 'Missing from exact inventory' }, i18n), '已验证项目环境中缺少此库。');
 });
 
 test('Python import diagnostics require a real unresolved-import signal', () => {

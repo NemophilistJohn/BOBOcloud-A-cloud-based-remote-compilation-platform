@@ -50,6 +50,10 @@ import type { ThemeService } from './theme';
 import type { EnvironmentActivityService } from './environment-activity';
 import type { CacheStoreService } from './cache-store';
 import type { CacheCenterService } from './cache-center';
+import type {
+  EnvironmentCenterNativeHostPort,
+  EnvironmentCenterService
+} from './environment-center';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -59,6 +63,7 @@ export interface RendererCommandMap {
 export interface RendererServiceMap {
   readonly 'host.diagnostics': Readonly<DiagnosticsHost>;
   readonly 'host.documentViews': Readonly<DocumentViewHost>;
+  readonly 'host.environmentCenter': Readonly<EnvironmentCenterNativeHostPort>;
   readonly 'host.languagePacks': Readonly<LanguagePacksHost>;
   readonly 'host.pluginManagement': Readonly<PluginManagementHost>;
   readonly 'host.pluginExtensions': Readonly<PluginExtensionNativeHost>;
@@ -68,6 +73,7 @@ export interface RendererServiceMap {
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
   readonly 'workbench.documentViews': DocumentViewService;
   readonly 'workbench.environmentActivity': EnvironmentActivityService;
+  readonly 'workbench.environmentCenter': EnvironmentCenterService;
   readonly 'workbench.cacheStore': CacheStoreService;
   readonly 'workbench.cacheCenter': CacheCenterService;
   readonly 'workbench.fileDecorations': FileDecorationService;
@@ -626,6 +632,63 @@ export type {
   EnvironmentActivityUserDto,
   EnvironmentActivityWorkspaceDto
 } from './environment-activity';
+export type {
+  EnvironmentCenterActionDto,
+  EnvironmentCenterActivityPort,
+  EnvironmentCenterConfirmPort,
+  EnvironmentCenterDependencies,
+  EnvironmentCenterEditorModelPort,
+  EnvironmentCenterEditorPort,
+  EnvironmentCenterFacade,
+  EnvironmentCenterI18nPort,
+  EnvironmentCenterLocalizationPort,
+  EnvironmentCenterLspPort,
+  EnvironmentCenterLspStatusDto,
+  EnvironmentCenterMarkerPort,
+  EnvironmentCenterMergePorts,
+  EnvironmentCenterNativeHostPort,
+  EnvironmentCenterPackageCenterPort,
+  EnvironmentCenterProblemDto,
+  EnvironmentCenterProblemMatcherPort,
+  EnvironmentCenterRefreshOptionsDto,
+  EnvironmentCenterRendererState,
+  EnvironmentCenterRuntimeDefinitionDto,
+  EnvironmentCenterServerActionDto,
+  EnvironmentCenterServerRequestMap,
+  EnvironmentCenterServerResponseMap,
+  EnvironmentCenterService,
+  EnvironmentCenterTabDto,
+  EnvironmentCenterToastPort,
+  EnvironmentCenterWorkbenchPort,
+  EnvironmentCenterWorkspacePort,
+  EnvironmentHealthDto,
+  EnvironmentIssueStatusDto,
+  EnvironmentServerEnvelopeDto,
+  EnvironmentTreeNodeDto,
+  EnvironmentViewStateDto,
+  ProjectEnvironmentActionDto,
+  ProjectEnvironmentActionRequestDto,
+  ProjectEnvironmentActionResultDto,
+  ProjectEnvironmentActionsDto,
+  ProjectEnvironmentActivityDto,
+  ProjectEnvironmentCapabilityDto,
+  ProjectEnvironmentCheckDto,
+  ProjectEnvironmentConsistencyDto,
+  ProjectEnvironmentDependencyCacheDto,
+  ProjectEnvironmentIssueDto,
+  ProjectEnvironmentLanguageDto,
+  ProjectEnvironmentManifestDto,
+  ProjectEnvironmentPackageDto,
+  ProjectEnvironmentPackagesDto,
+  ProjectEnvironmentRepairPlanDto,
+  ProjectEnvironmentRepairStepDto,
+  ProjectEnvironmentRequestContextDto,
+  ProjectEnvironmentRuntimeDto,
+  ProjectEnvironmentSnapshotDto,
+  ProjectEnvironmentWireDto,
+  ProjectEnvironmentWireManifestDto,
+  ProjectEnvironmentWorkspaceDto
+} from './environment-center';
 export type {
   DetectedLanguageIdDto,
   LocalPathSeparatorDto,
