@@ -836,6 +836,12 @@ export type {
   RendererUtilitiesFacade
 } from './utils';
 export type {
+  StreamRenderScheduler,
+  StreamRenderSchedulerFactory,
+  StreamRenderSchedulerFacade,
+  StreamRenderSchedulerOptions
+} from './stream-render-scheduler';
+export type {
   CacheCapabilitiesDto,
   CacheCategoryDto,
   CacheCategoryGroupDto,

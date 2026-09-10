@@ -25,6 +25,13 @@ exports six typed functions for direct imports, while
 callers. Static lookup data is allocated once, and language display lookup uses
 own properties so prototype-shaped unknown language ids remain ordinary ids.
 
+The lazy AI presentation bundle uses the same pure boundary for streaming
+render scheduling. `src/stream-render-scheduler.ts` owns the typed timer/frame
+ports and the four-method batching contract; `compat/stream-render-scheduler-adapter.ts`
+is the only place that projects `BOBO.createStreamRenderScheduler`. The
+scheduler coalesces burst chunks, supports an immediate final flush, and clears
+an optional animation-frame handle even when a host omits cancellation support.
+
 The small renderer primitives now use the same typed boundary. `src/icons.ts`
 owns the immutable SVG catalog and `compat/icons-adapter.ts` gives legacy code a
 writable copy. `src/tab-order.ts` keeps reorder semantics pure while its private

@@ -1,8 +1,28 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const path = require('node:path');
 const test = require('node:test');
-const createStreamRenderScheduler = require('../src/stream-render-scheduler');
+const esbuild = require('esbuild');
+
+const ROOT = path.resolve(__dirname, '..');
+const BUNDLE = esbuild.buildSync({
+  absWorkingDir: ROOT,
+  stdin: {
+    contents: "export { default as createStreamRenderScheduler } from './src/stream-render-scheduler.ts';",
+    resolveDir: ROOT,
+    sourcefile: 'stream-render-scheduler-test-entry.ts'
+  },
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  write: false,
+  logLevel: 'silent'
+}).outputFiles[0].text;
+
+const loaded = { exports: {} };
+new Function('require', 'module', 'exports', BUNDLE)(require, loaded, loaded.exports);
+const { createStreamRenderScheduler } = loaded.exports;
 
 function harness() {
   const timers = new Map();

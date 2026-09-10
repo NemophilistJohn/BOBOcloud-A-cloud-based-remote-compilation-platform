@@ -3,5 +3,5 @@
 import '../src/ai-settings-center.js';
 import './temml-runtime.js';
 import '../src/ai-markdown.js';
-import '../src/stream-render-scheduler.js';
+import './compat/stream-render-scheduler-adapter.ts';
 import '../src/ai-chat-panel.js';
