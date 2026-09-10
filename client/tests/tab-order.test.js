@@ -1,18 +1,26 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const vm = require('node:vm');
+const esbuild = require('esbuild');
 
 function loadTabOrder() {
-  const sandbox = {};
-  sandbox.window = sandbox;
-  vm.runInNewContext(
-    fs.readFileSync(path.join(__dirname, '..', 'src', 'tab-order.js'), 'utf8'),
-    sandbox,
-    { filename: 'src/tab-order.js' }
-  );
-  return sandbox.BOBO.tabOrder;
+  const root = path.resolve(__dirname, '..');
+  const bundled = esbuild.buildSync({
+    absWorkingDir: root,
+    stdin: {
+      contents: "export { createTabOrderService } from './src/tab-order.ts';",
+      resolveDir: root,
+      sourcefile: 'tab-order-test-entry.ts'
+    },
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    write: false,
+    logLevel: 'silent'
+  }).outputFiles[0].text;
+  const loaded = { exports: {} };
+  new Function('require', 'module', 'exports', bundled)(require, loaded, loaded.exports);
+  return loaded.exports.createTabOrderService();
 }
 
 test('tab order supports precise before and after insertion while preserving tab objects', () => {

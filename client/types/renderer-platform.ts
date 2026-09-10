@@ -60,6 +60,8 @@ import type {
   ProjectsHost
 } from './projects';
 import type { RuntimeService } from './runtime';
+import type { TabOrderService } from './tab-order';
+import type { ToastService } from './toast';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -93,6 +95,8 @@ export interface RendererServiceMap {
   readonly 'workbench.projectTasks': ProjectTasksService;
   readonly 'workbench.projects': ProjectsService;
   readonly 'workbench.runtime': RuntimeService;
+  readonly 'workbench.tabOrder': TabOrderService;
+  readonly 'workbench.toast': ToastService;
   readonly 'workbench.rclone': RcloneClient;
   readonly 'workbench.rcloneSettings': RcloneSettingsService;
   readonly 'workbench.serverTransport': Readonly<ServerTransportService>;
@@ -769,6 +773,19 @@ export type {
   RuntimeTabDto,
   RuntimeToastPort
 } from './runtime';
+export type {
+  TabOrderFacade,
+  TabOrderPosition,
+  TabOrderService,
+  TabOrderTab
+} from './tab-order';
+export type {
+  ToastDependencies,
+  ToastFacade,
+  ToastIconPort,
+  ToastKind,
+  ToastService
+} from './toast';
 export type {
   DetectedLanguageIdDto,
   LocalPathSeparatorDto,

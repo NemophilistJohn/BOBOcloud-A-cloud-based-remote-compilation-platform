@@ -22,13 +22,13 @@ import '../editor-rules/plugins/rust.js';
 
 // Workbench modules.
 import '../src/state.js';
-import '../src/tab-order.js';
+import './compat/tab-order-adapter.ts';
 import './compat/i18n-adapter.ts';
 import './compat/diagnostics-settings-adapter.ts';
 import '../src/workspace-launch.js';
-import '../src/icons.js';
+import './compat/icons-adapter.ts';
 import './compat/confirm-dialog-adapter.ts';
-import '../src/toast.js';
+import './compat/toast-adapter.ts';
 import './compat/command-palette-adapter.ts';
 import './core/plugin-extension-bootstrap.ts';
 import '../src/workbench-layout.js';

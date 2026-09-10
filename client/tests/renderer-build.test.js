@@ -28,13 +28,13 @@ const EXPECTED_MODULES = [
   '../editor-rules/plugins/go.js',
   '../editor-rules/plugins/rust.js',
   '../src/state.js',
-  '../src/tab-order.js',
+  './compat/tab-order-adapter.ts',
   './compat/i18n-adapter.ts',
   './compat/diagnostics-settings-adapter.ts',
   '../src/workspace-launch.js',
-  '../src/icons.js',
+  './compat/icons-adapter.ts',
   './compat/confirm-dialog-adapter.ts',
-  '../src/toast.js',
+  './compat/toast-adapter.ts',
   './compat/command-palette-adapter.ts',
   './core/plugin-extension-bootstrap.ts',
   '../src/workbench-layout.js',
@@ -239,6 +239,18 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/runtime.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/runtime-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/runtime-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/icons.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/icons.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/icons-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/icons-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/tab-order.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/tab-order.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/tab-order-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/tab-order-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/toast.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/toast.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/toast-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/toast-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-icons-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/file-icons.ts')));

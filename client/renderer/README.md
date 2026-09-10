@@ -25,6 +25,14 @@ exports six typed functions for direct imports, while
 callers. Static lookup data is allocated once, and language display lookup uses
 own properties so prototype-shaped unknown language ids remain ordinary ids.
 
+The small renderer primitives now use the same typed boundary. `src/icons.ts`
+owns the immutable SVG catalog and `compat/icons-adapter.ts` gives legacy code a
+writable copy. `src/tab-order.ts` keeps reorder semantics pure while its private
+service adapter preserves `BOBO.tabOrder`. `src/toast.ts` owns the notification
+DOM and all timeout/click cleanup; `compat/toast-adapter.ts` preserves the
+historical three-method facade without exposing the service to downloaded
+plugins.
+
 Cache inventory normalization follows the same pure-module boundary.
 `src/cache-model.ts` owns the typed v2 DTO normalization, matching, sorting, and
 grouping functions, while `compat/cache-model-adapter.ts` projects the exact

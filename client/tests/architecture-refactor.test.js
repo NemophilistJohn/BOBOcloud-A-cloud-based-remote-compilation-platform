@@ -179,10 +179,14 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/compat/i18n-adapter.ts',
   'src/diagnostics-settings.ts',
   'renderer/compat/diagnostics-settings-adapter.ts',
-  'src/icons.js',
+  'src/icons.ts',
+  'renderer/compat/icons-adapter.ts',
+  'src/tab-order.ts',
+  'renderer/compat/tab-order-adapter.ts',
   'src/confirm-dialog.ts',
   'renderer/compat/confirm-dialog-adapter.ts',
-  'src/toast.js',
+  'src/toast.ts',
+  'renderer/compat/toast-adapter.ts',
   'src/command-palette.ts',
   'renderer/compat/command-palette-adapter.ts',
   'src/workbench-layout.js',
@@ -393,7 +397,13 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'src/projects.js',
     'renderer/compat/projects-adapter.js',
     'src/runtime.js',
-    'renderer/compat/runtime-adapter.js'
+    'renderer/compat/runtime-adapter.js',
+    'src/icons.js',
+    'renderer/compat/icons-adapter.js',
+    'src/tab-order.js',
+    'renderer/compat/tab-order-adapter.js',
+    'src/toast.js',
+    'renderer/compat/toast-adapter.js'
   ]) {
     assert.equal(
       fs.existsSync(path.join(ROOT, legacyModule)),
