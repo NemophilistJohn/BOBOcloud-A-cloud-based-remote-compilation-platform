@@ -558,7 +558,7 @@ test('project-name snapshots copy only own enumerable data properties into a nul
   const names = Object.create({ inherited: 'Inherited project' });
   let getterCalls = 0;
   Object.defineProperties(names, {
-    __proto__: { enumerable: true, configurable: true, writable: true, value: 'Own proto' },
+    ['__proto__']: { enumerable: true, configurable: true, writable: true, value: 'Own proto' },
     constructor: { enumerable: true, configurable: true, writable: true, value: 'Own constructor' },
     toString: { enumerable: true, configurable: true, writable: true, value: 'Own toString' },
     dangerous: {
