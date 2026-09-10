@@ -78,6 +78,17 @@ shared disposable lifecycle. File reads use the private `host.views` capability
 from `core/native-host-adapter.ts`, and neither views service is exposed to
 downloaded plugins.
 
+The Projects and cache-management panel now follows the same vertical split.
+`src/projects.ts` owns the server-project DTO normalization, quota/project
+rendering, identity fences, delegated delete handling, and DOM/preload
+subscription cleanup. `compat/projects-adapter.ts` is the only writable
+`BOBO.projects` projection and preserves its historical six methods and order.
+Local project-name persistence and the `open-server-projects` event are exposed
+only through the private `host.projects` capability; the workbench service is
+kept out of the downloaded-plugin service map. The cache center remains a
+separate service injected through a narrow port, so the existing Projects/cache
+tab behavior does not acquire a second lifecycle or authority path.
+
 Theme selection follows that boundary without adding a native capability.
 `src/theme-manager.ts` owns the synchronous, injectable theme service, while
 `compat/theme-manager-adapter.ts` registers the private `workbench.theme`

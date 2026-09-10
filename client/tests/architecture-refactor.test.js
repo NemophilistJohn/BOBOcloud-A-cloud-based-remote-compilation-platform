@@ -240,7 +240,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'src/views.ts',
   'renderer/compat/views-adapter.ts',
   'src/auth.js',
-  'src/projects.js',
+  'src/projects.ts',
+  'renderer/compat/projects-adapter.ts',
   'src/collaboration.js',
   'src/account-profile.js',
   'src/ai-settings-schema.js',
@@ -387,7 +388,9 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'src/rclone-client.js',
     'renderer/compat/rclone-client-adapter.js',
     'src/rclone-settings.js',
-    'renderer/compat/rclone-settings-adapter.js'
+    'renderer/compat/rclone-settings-adapter.js',
+    'src/projects.js',
+    'renderer/compat/projects-adapter.js'
   ]) {
     assert.equal(
       fs.existsSync(path.join(ROOT, legacyModule)),

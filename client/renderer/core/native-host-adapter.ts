@@ -24,6 +24,7 @@ import type {
   PluginManagementHost
 } from '../../types/plugin-management';
 import type { PluginPermissionDto } from '../../types/plugin-runtime';
+import type { ProjectsHost, ProjectsProjectNamesDto } from '../../types/projects';
 import type { RcloneSelectBinaryRequestDto } from '../../types/rclone';
 import type { ViewsHost } from '../../types/views';
 import { toDisposable } from './disposable.js';
@@ -37,6 +38,7 @@ export const LANGUAGE_PACKS_HOST_SERVICE_ID = 'host.languagePacks';
 export const PLUGIN_MANAGEMENT_HOST_SERVICE_ID = 'host.pluginManagement';
 export const PLUGIN_EXTENSIONS_HOST_SERVICE_ID = 'host.pluginExtensions';
 export const PROJECT_TASKS_HOST_SERVICE_ID = 'host.projectTasks';
+export const PROJECTS_HOST_SERVICE_ID = 'host.projects';
 export const RCLONE_HOST_SERVICE_ID = 'host.rclone';
 export const VIEWS_HOST_SERVICE_ID = 'host.views';
 
@@ -238,6 +240,26 @@ function createProjectTasksHost(host: NativeHost): Readonly<ProjectTasksHost> {
   });
 }
 
+function createProjectsHost(host: NativeHost): Readonly<ProjectsHost> {
+  return Object.freeze({
+    onOpenServerProjects: (listener: () => void) => {
+      if (typeof host.onOpenServerProjects !== 'function') return toDisposable(() => {});
+      const dispose = host.onOpenServerProjects(() => listener());
+      return toDisposable(typeof dispose === 'function' ? dispose : () => {});
+    },
+    readProjectNames: () => {
+      if (typeof host.readProjectNames !== 'function') {
+        return Promise.resolve(Object.freeze(Object.create(null)) as ProjectsProjectNamesDto);
+      }
+      return host.readProjectNames();
+    },
+    saveProjectName: (key: string, name: string) => {
+      if (typeof host.saveProjectName !== 'function') return Promise.resolve(false);
+      return host.saveProjectName(key, name);
+    }
+  });
+}
+
 // This is the only new renderer module allowed to read the preload global.
 // Domain services below it expose narrower capabilities and remain host-only.
 const nativeHost = window.api;
@@ -306,6 +328,13 @@ const projectTasksRegistration = rendererPlatform.services.register(
   { owner: 'core', exposeToPlugins: false }
 );
 rendererPlatform.lifecycle.add(projectTasksRegistration);
+
+const projectsHostRegistration = rendererPlatform.services.register(
+  PROJECTS_HOST_SERVICE_ID,
+  createProjectsHost(nativeHost),
+  { owner: 'core', exposeToPlugins: false }
+);
+rendererPlatform.lifecycle.add(projectsHostRegistration);
 
 const rcloneRegistration = rendererPlatform.services.register(
   RCLONE_HOST_SERVICE_ID,

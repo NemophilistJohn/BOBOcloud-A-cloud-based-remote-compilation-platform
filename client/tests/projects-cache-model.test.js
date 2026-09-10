@@ -6,8 +6,6 @@ const test = require('node:test');
 const vm = require('node:vm');
 const esbuild = require('esbuild');
 
-const { resolveProjectDisplayName } = require('../src/projects.js');
-
 const ROOT = path.resolve(__dirname, '..');
 const CACHE_MODEL_KEYS = Object.freeze([
   'SCHEMA_VERSION',
@@ -33,6 +31,18 @@ function buildTypeScriptBundle(entryPoint, options = {}) {
     logLevel: 'silent'
   }).outputFiles[0].text;
 }
+
+function loadProjectsModule() {
+  const loaded = { exports: {} };
+  const evaluate = new Function(
+    'require', 'module', 'exports',
+    buildTypeScriptBundle('src/projects.ts')
+  );
+  evaluate(require, loaded, loaded.exports);
+  return loaded.exports;
+}
+
+const { resolveProjectDisplayName } = loadProjectsModule();
 
 function loadCacheModel() {
   const loaded = { exports: {} };

@@ -71,7 +71,7 @@ import './compat/environment-center-adapter.ts';
 import '../src/package-center.js';
 import './compat/views-adapter.ts';
 import '../src/auth.js';
-import '../src/projects.js';
+import './compat/projects-adapter.ts';
 import '../src/collaboration.js';
 import '../src/account-profile.js';
 

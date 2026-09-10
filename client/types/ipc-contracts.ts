@@ -47,6 +47,10 @@ import type {
   RcloneSelectBinaryResultDto,
   RcloneVersionResultDto
 } from './rclone';
+import type {
+  ProjectsProjectNamesDto,
+  ProjectsSaveProjectNameRequestDto
+} from './projects';
 
 export type { Dispose } from './lifecycle';
 
@@ -116,8 +120,8 @@ export interface IpcInvokeContracts {
   'lsp:cancel': IpcInvokeContract<[requestKey: unknown]>;
   'lsp:control': IpcInvokeContract<[payload: unknown]>;
   'lsp:status': IpcInvokeContract;
-  'read-project-names': IpcInvokeContract;
-  'save-project-name': IpcInvokeContract<[request: unknown]>;
+  'read-project-names': IpcInvokeContract<[], ProjectsProjectNamesDto>;
+  'save-project-name': IpcInvokeContract<[request: ProjectsSaveProjectNameRequestDto], boolean>;
   'read-server-settings': IpcInvokeContract;
   'write-server-settings': IpcInvokeContract<[settings: unknown]>;
   'rclone:prepare-remote': IpcInvokeContract<[payload: unknown]>;

@@ -191,7 +191,7 @@ export interface NativeHost {
 
   onOpenServerProjects: Subscribe<'open-server-projects'>;
   readProjectNames: Invoke<'read-project-names'>;
-  saveProjectName(key: string, name: string): Promise<unknown>;
+  saveProjectName(key: string, name: string): Promise<boolean>;
   readServerSettings: Invoke<'read-server-settings'>;
   writeServerSettings: Invoke<'write-server-settings'>;
   commitServerSettings(): Promise<unknown>;

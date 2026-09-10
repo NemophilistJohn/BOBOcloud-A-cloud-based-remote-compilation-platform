@@ -55,6 +55,10 @@ import type {
   EnvironmentCenterService
 } from './environment-center';
 import type { ViewsHost, ViewsService } from './views';
+import type {
+  ProjectsService,
+  ProjectsHost
+} from './projects';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -69,6 +73,7 @@ export interface RendererServiceMap {
   readonly 'host.pluginManagement': Readonly<PluginManagementHost>;
   readonly 'host.pluginExtensions': Readonly<PluginExtensionNativeHost>;
   readonly 'host.projectTasks': Readonly<ProjectTasksHost>;
+  readonly 'host.projects': Readonly<ProjectsHost>;
   readonly 'host.rclone': Readonly<RcloneNativeHost>;
   readonly 'host.views': Readonly<ViewsHost>;
   readonly 'workbench.confirm': ConfirmService;
@@ -85,6 +90,7 @@ export interface RendererServiceMap {
   readonly 'workbench.pluginDetails': PluginDetailsService;
   readonly 'workbench.pluginManagerUI': PluginManagerUIService;
   readonly 'workbench.projectTasks': ProjectTasksService;
+  readonly 'workbench.projects': ProjectsService;
   readonly 'workbench.rclone': RcloneClient;
   readonly 'workbench.rcloneSettings': RcloneSettingsService;
   readonly 'workbench.serverTransport': Readonly<ServerTransportService>;
@@ -715,6 +721,31 @@ export type {
   ViewsWorkspaceSettingsPort,
   WorkbenchEditorViewModeDto
 } from './views';
+export type {
+  ProjectsCacheCenterPort,
+  ProjectsConfirmPort,
+  ProjectsDependencies,
+  ProjectsDeleteResponseDto,
+  ProjectsDeleteResponseWireDto,
+  ProjectsFacade,
+  ProjectsHost,
+  ProjectsI18nPort,
+  ProjectsListResponseDto,
+  ProjectsListResponseWireDto,
+  ProjectsOpenOptionsDto,
+  ProjectsProjectDto,
+  ProjectsProjectNamesDto,
+  ProjectsProjectWireDto,
+  ProjectsRendererState,
+  ProjectsSaveProjectNameRequestDto,
+  ProjectsSendToServer,
+  ProjectsServerActionDto,
+  ProjectsServerRequestMap,
+  ProjectsServerResponseMap,
+  ProjectsService,
+  ProjectsStorageInfoDto,
+  ProjectsStorageInfoWireDto
+} from './projects';
 export type {
   DetectedLanguageIdDto,
   LocalPathSeparatorDto,
