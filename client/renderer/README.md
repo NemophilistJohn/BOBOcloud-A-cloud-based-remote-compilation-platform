@@ -51,6 +51,13 @@ refresh, and context epochs prevent reset, disposal, or identity changes from
 letting late reads and mutations repopulate another account's state. The
 service is lifecycle-disposable and is not exposed to downloaded plugins.
 
+The Cache Center presentation is a separate private, lifecycle-owned service.
+`src/cache-center.ts` keeps rendering, filtering, and cache actions behind
+injected typed ports, while `compat/cache-center-adapter.ts` is the sole
+`BOBO.cacheCenter` projection for the still-JavaScript Projects view. The
+adapter preserves dynamic legacy collaborators without exposing Cache Center
+or its cache mutation controls to downloaded plugins.
+
 Theme selection follows that boundary without adding a native capability.
 `src/theme-manager.ts` owns the synchronous, injectable theme service, while
 `compat/theme-manager-adapter.ts` registers the private `workbench.theme`

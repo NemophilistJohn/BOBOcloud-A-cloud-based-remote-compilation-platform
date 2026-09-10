@@ -49,6 +49,7 @@ import type {
 import type { ThemeService } from './theme';
 import type { EnvironmentActivityService } from './environment-activity';
 import type { CacheStoreService } from './cache-store';
+import type { CacheCenterService } from './cache-center';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -68,6 +69,7 @@ export interface RendererServiceMap {
   readonly 'workbench.documentViews': DocumentViewService;
   readonly 'workbench.environmentActivity': EnvironmentActivityService;
   readonly 'workbench.cacheStore': CacheStoreService;
+  readonly 'workbench.cacheCenter': CacheCenterService;
   readonly 'workbench.fileDecorations': FileDecorationService;
   readonly 'workbench.fileIcons': FileIconService;
   readonly 'workbench.i18n': I18nService;
@@ -686,6 +688,24 @@ export type {
   CacheStoreEntryTransportOptions,
   LegacyCacheStoreFactoryOptions
 } from './cache-store';
+export type {
+  CacheCenterConfirmPort,
+  CacheCenterDependencies,
+  CacheCenterFacade,
+  CacheCenterFilterScopeDto,
+  CacheCenterFiltersDto,
+  CacheCenterI18nPort,
+  CacheCenterIconPort,
+  CacheCenterModel,
+  CacheCenterPackageCenterPort,
+  CacheCenterPackageOpenOptionsDto,
+  CacheCenterProjectsPort,
+  CacheCenterRendererState,
+  CacheCenterService,
+  CacheCenterStore,
+  CacheCenterToastPort,
+  CacheCenterWorkbenchPort
+} from './cache-center';
 
 export interface RendererPlatform {
   readonly apiVersion: PluginApiVersionDto;
