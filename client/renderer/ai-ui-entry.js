@@ -2,6 +2,6 @@
 // the startup bundle; these DOM-heavy modules load on the first visible AI UI.
 import '../src/ai-settings-center.js';
 import './temml-runtime.js';
-import '../src/ai-markdown.js';
+import './compat/ai-markdown-adapter.ts';
 import './compat/stream-render-scheduler-adapter.ts';
 import '../src/ai-chat-panel.js';

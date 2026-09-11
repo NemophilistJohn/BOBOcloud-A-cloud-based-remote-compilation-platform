@@ -263,7 +263,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'src/stream-render-scheduler.ts',
   'renderer/compat/stream-render-scheduler-adapter.ts',
   'node_modules/temml/dist/temml.mjs',
-  'src/ai-markdown.js',
+  'src/ai-markdown.ts',
+  'renderer/compat/ai-markdown-adapter.ts',
   'src/ai-chat-panel.js',
   'src/ai-inline.js',
   'src/app.js'
@@ -413,6 +414,8 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'renderer/compat/stream-render-scheduler-adapter.js',
     'src/ai-prompts.js',
     'renderer/compat/ai-prompts-adapter.js',
+    'src/ai-markdown.js',
+    'renderer/compat/ai-markdown-adapter.js',
     'src/output-panel.js',
     'renderer/compat/output-panel-adapter.js',
     'src/icons.js',

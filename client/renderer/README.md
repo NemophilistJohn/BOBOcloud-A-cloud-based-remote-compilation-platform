@@ -143,6 +143,12 @@ message builders; `compat/ai-prompts-adapter.ts` is the only legacy
 the existing AI transport and context modules can continue consuming the same
 facade while they are migrated independently.
 
+The lazy Markdown renderer now follows the same explicit presentation boundary.
+`src/ai-markdown.ts` receives typed DOM, Temml, clipboard, icon, i18n, and timer
+ports; `compat/ai-markdown-adapter.ts` alone projects `BOBO.aiMarkdown`. Safe
+link filtering, native MathML fallback, code-copy feedback, and streaming cursor
+rendering remain in the same order and use the existing localized strings.
+
 Theme selection follows that boundary without adding a native capability.
 `src/theme-manager.ts` owns the synchronous, injectable theme service, while
 `compat/theme-manager-adapter.ts` registers the private `workbench.theme`

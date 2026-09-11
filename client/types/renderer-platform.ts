@@ -871,6 +871,16 @@ export type {
   AiPromptsFacade
 } from './ai-prompts';
 export type {
+  AiMarkdownClipboardPort,
+  AiMarkdownDependencies,
+  AiMarkdownFacade,
+  AiMarkdownI18nPort,
+  AiMarkdownIconPort,
+  AiMarkdownRenderOptions,
+  AiMarkdownRenderer,
+  AiMarkdownTemmlPort
+} from './ai-markdown';
+export type {
   CacheCapabilitiesDto,
   CacheCategoryDto,
   CacheCategoryGroupDto,
