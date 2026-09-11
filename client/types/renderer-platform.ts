@@ -67,6 +67,7 @@ import type { ToastService } from './toast';
 import type { OutputPanelService } from './output-panel';
 import type { TaskProblemMatcherService } from './task-problem-matcher';
 import type { WorkspaceSyncStatusService } from './workspace-sync-status';
+import type { WorkspaceSettingsHost, WorkspaceSettingsService } from './workspace-settings';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -84,6 +85,7 @@ export interface RendererServiceMap {
   readonly 'host.projects': Readonly<ProjectsHost>;
   readonly 'host.rclone': Readonly<RcloneNativeHost>;
   readonly 'host.views': Readonly<ViewsHost>;
+  readonly 'host.workspaceSettings': Readonly<WorkspaceSettingsHost>;
   readonly 'workbench.confirm': ConfirmService;
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
   readonly 'workbench.documentViews': DocumentViewService;
@@ -113,6 +115,7 @@ export interface RendererServiceMap {
   readonly 'workbench.outputPanel': OutputPanelService;
   readonly 'workbench.taskProblemMatcher': TaskProblemMatcherService;
   readonly 'workbench.workspaceSyncStatus': WorkspaceSyncStatusService;
+  readonly 'workbench.workspaceSettings': WorkspaceSettingsService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -887,6 +890,47 @@ export type {
   WorkspaceSyncTreeNodeDto,
   WorkspaceSyncWorkspacePort
 } from './workspace-sync-status';
+export type {
+  WorkspaceEditorSettingsDto,
+  WorkspaceSettingsAssociationDto,
+  WorkspaceSettingsChangedListener,
+  WorkspaceSettingsConfigKeyDto,
+  WorkspaceSettingsConfigValueDto,
+  WorkspaceSettingsDependencies,
+  WorkspaceSettingsDetectLanguage,
+  WorkspaceSettingsEditorCorePort,
+  WorkspaceSettingsEditorModelChangeDto,
+  WorkspaceSettingsEditorPort,
+  WorkspaceSettingsEditorRawOptionsDto,
+  WorkspaceSettingsEditorUpdateDto,
+  WorkspaceSettingsEmptySnapshotDto,
+  WorkspaceSettingsEnvironmentActivityPort,
+  WorkspaceSettingsExcludeRuleDto,
+  WorkspaceSettingsFacade,
+  WorkspaceSettingsFileSearchPort,
+  WorkspaceSettingsFilesDto,
+  WorkspaceSettingsHost,
+  WorkspaceSettingsLanguageIdDto,
+  WorkspaceSettingsLoadedSnapshotDto,
+  WorkspaceSettingsLspPort,
+  WorkspaceSettingsModelOptionsDto,
+  WorkspaceSettingsModelPort,
+  WorkspaceSettingsModelUpdateDto,
+  WorkspaceSettingsMonacoPort,
+  WorkspaceSettingsRenderWhitespaceDto,
+  WorkspaceSettingsRendererState,
+  WorkspaceSettingsRequestDto,
+  WorkspaceSettingsRuntimePort,
+  WorkspaceSettingsService,
+  WorkspaceSettingsSnapshotDto,
+  WorkspaceSettingsSplitEditorPort,
+  WorkspaceSettingsTabDto,
+  WorkspaceSettingsTreeNodeDto,
+  WorkspaceSettingsValuesDto,
+  WorkspaceSettingsWarningDto,
+  WorkspaceSettingsWordWrapDto,
+  WorkspaceSettingsWorkspacePort
+} from './workspace-settings';
 export type {
   DetectedLanguageIdDto,
   LocalPathSeparatorDto,

@@ -49,7 +49,7 @@ import '../src/terminal.js';
 import './compat/runtime-adapter.ts';
 import './compat/file-icons-adapter.ts';
 import './compat/workspace-sync-status-adapter.ts';
-import '../src/workspace-settings.js';
+import './compat/workspace-settings-adapter.ts';
 import '../src/editor-core.js';
 import './compat/document-views-adapter.ts';
 import '../src/workspace.js';

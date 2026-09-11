@@ -1,10 +1,59 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const vm = require('node:vm');
+const esbuild = require('esbuild');
+
+const ROOT = path.resolve(__dirname, '..');
+const SERVICE_BUNDLE = esbuild.buildSync({
+  absWorkingDir: ROOT,
+  entryPoints: ['src/workspace-settings.ts'],
+  bundle: true,
+  format: 'cjs',
+  platform: 'node',
+  write: false,
+  logLevel: 'silent'
+}).outputFiles[0].text;
+const SERVICE_MODULE = { exports: {} };
+new Function('require', 'module', 'exports', SERVICE_BUNDLE)(
+  require,
+  SERVICE_MODULE,
+  SERVICE_MODULE.exports
+);
+
+function loadWorkspaceSettings(window) {
+  const BOBO = window.BOBO;
+  const api = window.api || {};
+  const service = SERVICE_MODULE.exports.createWorkspaceSettingsService({
+    state: BOBO.state,
+    host: {
+      read(request) {
+        return typeof api.readWorkspaceSettings === 'function'
+          ? api.readWorkspaceSettings(request)
+          : Promise.reject(new Error('workspace settings host read is unavailable'));
+      },
+      onDidChange(listener) {
+        const dispose = typeof api.onWorkspaceSettingsChanged === 'function'
+          ? api.onWorkspaceSettingsChanged(listener)
+          : null;
+        return { dispose: typeof dispose === 'function' ? dispose : () => {} };
+      }
+    },
+    getDetectLanguage: () => typeof BOBO.detectLanguage === 'function'
+      ? (name, content) => BOBO.detectLanguage(name, content)
+      : null,
+    getEditorCore: () => BOBO.editorCore,
+    getRuntime: () => BOBO.runtime,
+    getLsp: () => BOBO.lsp,
+    getEnvironmentActivity: () => BOBO.environmentActivity,
+    getWorkspace: () => BOBO.workspace,
+    getFileSearch: () => BOBO.fileSearch,
+    reportError: () => {}
+  });
+  BOBO.workspaceSettings = service;
+  return service;
+}
 
 function createModel(filePath, languageId, options) {
   let language = languageId;
@@ -21,7 +70,6 @@ function createModel(filePath, languageId, options) {
 }
 
 test('renderer applies trusted settings to existing models and rejects stale workspace snapshots', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '../src/workspace-settings.js'), 'utf8');
   const root = path.resolve('C:/work/example');
   const model = createModel(path.join(root, 'view.templ'), 'plaintext');
   const splitModel = createModel(path.join(root, 'view.templ-split'), 'plaintext');
@@ -76,9 +124,7 @@ test('renderer applies trusted settings to existing models and rejects stale wor
       editorCore: { updateStatusBar: () => {} }
     }
   };
-  const context = vm.createContext({ window, Set, Map, WeakMap, Object, Array, Number, String, Boolean, RegExp, Math, Promise });
-  vm.runInContext(source, context, { filename: 'workspace-settings.js' });
-  const service = window.BOBO.workspaceSettings;
+  const service = loadWorkspaceSettings(window);
   service.setMonaco(monaco);
   service.attachEditor(editor);
 
@@ -120,7 +166,6 @@ test('renderer applies trusted settings to existing models and rejects stale wor
 });
 
 test('new models inherit editor settings while file associations remain path-only language hints', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '../src/workspace-settings.js'), 'utf8');
   const root = path.resolve('C:/work/new-model');
   const models = [];
   let createdListener = null;
@@ -136,8 +181,7 @@ test('new models inherit editor settings while file associations remain path-onl
       setModelLanguage: (target, languageId) => target.setLanguageId(languageId)
     }
   };
-  vm.runInContext(source, vm.createContext({ window, Set, Map, WeakMap, Object, Array, Number, String, Boolean, RegExp, Math, Promise }));
-  const service = window.BOBO.workspaceSettings;
+  const service = loadWorkspaceSettings(window);
   service.setMonaco(monaco);
   service.applySnapshot({
     schemaVersion: 1,
@@ -160,7 +204,6 @@ test('new models inherit editor settings while file associations remain path-onl
 });
 
 test('uncontrolled indentation survives unrelated settings refreshes', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '../src/workspace-settings.js'), 'utf8');
   const root = path.resolve('C:/work/user-indentation');
   const model = createModel(path.join(root, 'main.js'), 'javascript');
   const state = {
@@ -179,8 +222,7 @@ test('uncontrolled indentation survives unrelated settings refreshes', () => {
       setModelLanguage: () => {}
     }
   };
-  vm.runInContext(source, vm.createContext({ window, Set, Map, WeakMap, WeakSet, Object, Array, Number, String, Boolean, RegExp, Math, Promise }));
-  const service = window.BOBO.workspaceSettings;
+  const service = loadWorkspaceSettings(window);
   service.setMonaco(monaco);
   service.applySnapshot({
     schemaVersion: 1,
@@ -213,7 +255,6 @@ test('uncontrolled indentation survives unrelated settings refreshes', () => {
 });
 
 test('second-phase editor options and file excludes apply live and restore prior editor values', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '../src/workspace-settings.js'), 'utf8');
   const root = path.resolve('C:/work/settings-phase-two');
   const model = createModel(path.join(root, 'src', 'main.js'), 'javascript');
   const rawOptions = {
@@ -276,8 +317,7 @@ test('second-phase editor options and file excludes apply live and restore prior
       setModelLanguage: () => {}
     }
   };
-  vm.runInContext(source, vm.createContext({ window, Set, Map, WeakMap, WeakSet, Object, Array, Number, String, Boolean, RegExp, JSON, Math, Promise }));
-  const service = window.BOBO.workspaceSettings;
+  const service = loadWorkspaceSettings(window);
   service.setMonaco(monaco);
   service.attachEditor(editor);
 
@@ -331,4 +371,69 @@ test('second-phase editor options and file excludes apply live and restore prior
   assert.equal(rawOptions.bracketPairColorization.enabled, false);
   assert.equal(treeRefreshes, 2);
   assert.equal(searchRefreshes, 2);
+});
+
+test('late host reads are fenced and every owned subscription is disposed', async () => {
+  const root = path.resolve('C:/work/disposable-settings');
+  const state = {
+    workspaceRoot: root,
+    workspaceIdentity: 27,
+    workspaceSettings: null,
+    tabs: [],
+    editor: null,
+    splitEditor: null
+  };
+  let resolveRead = null;
+  let changedListener = null;
+  let hostDisposals = 0;
+  let monacoDisposals = 0;
+  let editorDisposals = 0;
+  const window = {
+    api: {
+      readWorkspaceSettings: () => new Promise((resolve) => { resolveRead = resolve; }),
+      onWorkspaceSettingsChanged: (listener) => {
+        changedListener = listener;
+        return () => { hostDisposals += 1; };
+      }
+    },
+    BOBO: { state }
+  };
+  const service = loadWorkspaceSettings(window);
+  service.setMonaco({
+    editor: {
+      getModels: () => [],
+      onDidCreateModel: () => ({ dispose: () => { monacoDisposals += 1; } })
+    }
+  });
+  service.attachEditor({
+    getModel: () => null,
+    getRawOptions: () => ({}),
+    updateOptions: () => {},
+    onDidChangeModel: () => ({ dispose: () => { editorDisposals += 1; } })
+  });
+
+  const pendingRead = service.refreshForWorkspace(root, 27);
+  changedListener({
+    schemaVersion: 1,
+    rootPath: root,
+    workspaceIdentity: 27,
+    settings: { editor: { tabSize: 2 }, languages: {}, associations: [] },
+    warnings: []
+  });
+  resolveRead({
+    schemaVersion: 1,
+    rootPath: root,
+    workspaceIdentity: 27,
+    settings: { editor: { tabSize: 8 }, languages: {}, associations: [] },
+    warnings: []
+  });
+
+  assert.equal(await pendingRead, false);
+  assert.equal(state.workspaceSettings.settings.editor.tabSize, 2);
+  service.dispose();
+  assert.equal(service.disposed, true);
+  assert.deepEqual(
+    { hostDisposals, monacoDisposals, editorDisposals },
+    { hostDisposals: 1, monacoDisposals: 1, editorDisposals: 1 }
+  );
 });

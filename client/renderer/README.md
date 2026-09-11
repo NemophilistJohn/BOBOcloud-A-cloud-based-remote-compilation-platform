@@ -159,6 +159,15 @@ through the typed registry. Registry disposal removes contribution and language
 listeners, while coalesced animation-frame notifications keep large tree
 updates from triggering redundant visible-row refreshes.
 
+Workspace editor settings now follow the same vertical boundary.
+`src/workspace-settings.ts` validates and freezes the supported settings DTOs,
+applies language associations, indentation, editor options, and exclude rules,
+and fences late workspace reads. `compat/workspace-settings-adapter.ts` is the
+sole `BOBO.workspaceSettings` projection; its private host service is the only
+route to preload settings IPC. Registry disposal now removes host, Monaco, and
+editor subscriptions, while a shared empty snapshot avoids repeated fallback
+allocation on model and tree hot paths.
+
 AI prompt assembly is now a typed pure boundary. `src/ai-prompts.ts` owns the
 bounded context/history DTOs, deterministic character budgeting, and inline/chat
 message builders; `compat/ai-prompts-adapter.ts` is the only legacy

@@ -27,6 +27,11 @@ import type { PluginPermissionDto } from '../../types/plugin-runtime';
 import type { ProjectsHost, ProjectsProjectNamesDto } from '../../types/projects';
 import type { RcloneSelectBinaryRequestDto } from '../../types/rclone';
 import type { ViewsHost } from '../../types/views';
+import type {
+  WorkspaceSettingsChangedListener,
+  WorkspaceSettingsHost,
+  WorkspaceSettingsRequestDto
+} from '../../types/workspace-settings';
 import { toDisposable } from './disposable.js';
 import { rendererPlatform } from './bootstrap';
 import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
@@ -41,6 +46,7 @@ export const PROJECT_TASKS_HOST_SERVICE_ID = 'host.projectTasks';
 export const PROJECTS_HOST_SERVICE_ID = 'host.projects';
 export const RCLONE_HOST_SERVICE_ID = 'host.rclone';
 export const VIEWS_HOST_SERVICE_ID = 'host.views';
+export const WORKSPACE_SETTINGS_HOST_SERVICE_ID = 'host.workspaceSettings';
 
 function optionalDisposable(candidate: unknown): Disposable | null {
   return typeof candidate === 'function'
@@ -90,6 +96,15 @@ function createEnvironmentCenterHost(
 function createViewsHost(host: NativeHost): Readonly<ViewsHost> {
   return Object.freeze({
     readFile: (filePath: string) => host.readFile(filePath)
+  });
+}
+
+function createWorkspaceSettingsHost(host: NativeHost): Readonly<WorkspaceSettingsHost> {
+  return Object.freeze({
+    read: (request: WorkspaceSettingsRequestDto) => host.readWorkspaceSettings(request),
+    onDidChange: (listener: WorkspaceSettingsChangedListener) => toDisposable(
+      host.onWorkspaceSettingsChanged((snapshot) => listener(snapshot))
+    )
   });
 }
 
@@ -294,6 +309,13 @@ const viewsRegistration = rendererPlatform.services.register(
   { owner: 'core', exposeToPlugins: false }
 );
 rendererPlatform.lifecycle.add(viewsRegistration);
+
+const workspaceSettingsHostRegistration = rendererPlatform.services.register(
+  WORKSPACE_SETTINGS_HOST_SERVICE_ID,
+  createWorkspaceSettingsHost(nativeHost),
+  { owner: 'core', exposeToPlugins: false }
+);
+rendererPlatform.lifecycle.add(workspaceSettingsHostRegistration);
 
 const languagePacksRegistration = rendererPlatform.services.register(
   LANGUAGE_PACKS_HOST_SERVICE_ID,

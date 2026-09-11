@@ -5,6 +5,8 @@
  * to the state store.
  */
 
+import type { WorkspaceSettingsSnapshotDto } from './workspace-settings';
+
 export interface RendererTabState {
   path?: string | null;
   name?: string;
@@ -162,7 +164,7 @@ export interface RendererState {
   workspaceTransitionLocked: boolean;
   workspaceTransitionToken: unknown;
   workspaceTransitionEditorStates: unknown;
-  workspaceSettings: unknown;
+  workspaceSettings: WorkspaceSettingsSnapshotDto | null;
   expandedPaths: Set<string>;
   ALWAYS_COLLAPSED: Set<string>;
   tabs: RendererTabState[];
@@ -200,4 +202,3 @@ export interface RendererState {
   ai: RendererAiState;
   readonly [key: string]: unknown;
 }
-

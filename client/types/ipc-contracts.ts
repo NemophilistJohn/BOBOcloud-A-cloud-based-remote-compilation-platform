@@ -51,6 +51,7 @@ import type {
   ProjectsProjectNamesDto,
   ProjectsSaveProjectNameRequestDto
 } from './projects';
+import type { WorkspaceSettingsRequestDto } from './workspace-settings';
 
 export type { Dispose } from './lifecycle';
 
@@ -70,7 +71,7 @@ export interface IpcInvokeContracts {
   'read-tree': IpcInvokeContract<[path: string]>;
   'workspace-leave-choice': IpcInvokeContract<[details: unknown]>;
   'workspace-identity': IpcInvokeContract;
-  'workspace-settings-read': IpcInvokeContract<[identity: unknown]>;
+  'workspace-settings-read': IpcInvokeContract<[identity: WorkspaceSettingsRequestDto]>;
   'workspace-switch-applied': IpcInvokeContract<[details: unknown]>;
   'workspace-switch-reject': IpcInvokeContract<[details: unknown]>;
   'artifact-run-context': IpcInvokeContract<[context: unknown]>;
