@@ -138,6 +138,7 @@ export function createWorkbenchLayoutService(
   let editorLayoutTimer: number | null = null;
   let editorFrameOne: number | null = null;
   let editorFrameTwo: number | null = null;
+  let teamRevealFrame: number | null = null;
   let contextObserver: MutationObserver | null = null;
 
   function report(error: unknown): void {
@@ -256,6 +257,10 @@ export function createWorkbenchLayoutService(
     }
     editorFrameOne = null;
     editorFrameTwo = null;
+    if (teamRevealFrame !== null && dependencies.cancelAnimationFrame) {
+      dependencies.cancelAnimationFrame(teamRevealFrame);
+    }
+    teamRevealFrame = null;
     if (editorLayoutTimer !== null) {
       dependencies.clearTimer(editorLayoutTimer);
       editorLayoutTimer = null;
@@ -763,7 +768,12 @@ export function createWorkbenchLayoutService(
         const view = button.getAttribute('data-workbench-view');
         if (view) setPrimaryView(view);
         if (view === 'team') {
-          dependencies.requestAnimationFrame(() => {
+          if (teamRevealFrame !== null && dependencies.cancelAnimationFrame) {
+            dependencies.cancelAnimationFrame(teamRevealFrame);
+          }
+          teamRevealFrame = dependencies.requestAnimationFrame(() => {
+            teamRevealFrame = null;
+            if (disposed) return;
             const sidebar = document.getElementById('sidebar');
             const collaboration = dependencies.getCollaboration();
             if (sidebar && dependencies.getComputedStyle(sidebar).display === 'none') {

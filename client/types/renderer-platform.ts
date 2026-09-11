@@ -971,7 +971,8 @@ export type {
   WorkbenchSettingsPort,
   WorkbenchStoragePort,
   WorkbenchSwitchPanelPort,
-  WorkbenchTerminalPort
+  WorkbenchTerminalPort,
+  WorkbenchResizeKindDto
 } from './workbench-layout';
 export type {
   DetectedLanguageIdDto,
