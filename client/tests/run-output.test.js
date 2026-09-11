@@ -1,11 +1,10 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const vm = require('node:vm');
 const esbuild = require('esbuild');
+const { installServerComm } = require('./support/server-comm-harness');
 
 const projectRoot = path.resolve(__dirname, '..');
 
@@ -151,20 +150,7 @@ function createFixture(options = {}) {
       }
     }
   };
-  const context = vm.createContext({
-    window: windowObject,
-    document,
-    console,
-    Date,
-    Promise,
-    Set,
-    Number,
-    setTimeout,
-    clearTimeout
-  });
-  vm.runInContext(fs.readFileSync(path.join(projectRoot, 'src/server-comm.js'), 'utf8'), context, {
-    filename: 'src/server-comm.js'
-  });
+  installServerComm(windowObject, { document });
   const runOutput = createRunOutputService({
     document,
     output: {

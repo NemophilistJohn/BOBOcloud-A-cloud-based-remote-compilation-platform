@@ -208,7 +208,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/compat/utils-adapter.ts',
   'src/server-transport.ts',
   'renderer/compat/server-transport-adapter.ts',
-  'src/server-comm.js',
+  'src/server-comm.ts',
+  'renderer/compat/server-comm-adapter.ts',
   'src/run-output.ts',
   'renderer/compat/run-output-adapter.ts',
   'src/server-capabilities.ts',
@@ -402,6 +403,8 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'renderer/compat/confirm-dialog-adapter.js',
     'src/utils.js',
     'renderer/compat/utils-adapter.js',
+    'src/server-comm.js',
+    'renderer/compat/server-comm-adapter.js',
     'src/cache-model.js',
     'renderer/compat/cache-model-adapter.js',
     'src/cache-store.js',
@@ -477,6 +480,19 @@ test('HTML has at most two startup scripts and the renderer build covers every f
   assert.doesNotMatch(editorCoreAdapter, /pluginView\s*:/);
   assert.match(editorCoreAdapter,
     /BOBO\.editorCore\s*=\s*\{\s*init:\s*editorCore\.init,[\s\S]*checkActiveOnSave:\s*editorCore\.checkActiveOnSave\s*\}/);
+
+  const serverCommSource = read('src/server-comm.ts');
+  const serverCommAdapter = read('renderer/compat/server-comm-adapter.ts');
+  assert.match(serverCommSource,
+    /SERVER_COMM_SERVICE_ID\s*=\s*['"]workbench\.serverComm['"]/);
+  assert.match(serverCommSource, /createServerCommService\s*\(/);
+  assert.match(serverCommAdapter, /SERVER_COMM_SERVICE_ID/);
+  assert.match(serverCommAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(serverCommAdapter, /pluginView\s*:/);
+  assert.match(serverCommAdapter,
+    /BOBO\.updateRunOutput\s*=\s*serverComm\.updateRunOutput/);
+  assert.match(serverCommAdapter,
+    /BOBO\.sendToServer\s*=\s*serverComm\.sendToServer/);
 
   const metadata = JSON.parse(read('renderer-dist/bobo-renderer.meta.json'));
   const inputs = new Set(

@@ -45,7 +45,7 @@ const EXPECTED_MODULES = [
   './compat/language-packs-panel-adapter.ts',
   './compat/utils-adapter.ts',
   './compat/server-transport-adapter.ts',
-  '../src/server-comm.js',
+  './compat/server-comm-adapter.ts',
   './compat/run-output-adapter.ts',
   './compat/server-capabilities-adapter.ts',
   './compat/cloud-feature-policy-adapter.ts',
@@ -296,6 +296,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/file-icons.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/file-icons.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/server-transport.ts')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/server-comm.ts')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/server-comm-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/server-comm.js')), false);
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/server-comm-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/server-capabilities.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/cloud-feature-policy.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/diagnostics-settings.ts')));

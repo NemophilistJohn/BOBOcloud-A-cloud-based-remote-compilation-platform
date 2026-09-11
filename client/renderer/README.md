@@ -123,10 +123,12 @@ not available to downloaded plugins.
 Structured run presentation now follows the same boundary. `src/run-output.ts`
 owns the lifecycle summary, phase/status DTOs, session fencing, detail-count
 state, and locale refresh behavior; `compat/run-output-adapter.ts` injects the
-existing bounded transcript writer from `server-comm.js` and preserves the
-historical `BOBO.runOutput` facade. The service is registered as private
-`workbench.runOutput`, so disposal removes its locale listener without creating
-a second output-authority path for plugins.
+bounded transcript writer from the private `workbench.serverComm` service and
+preserves the historical `BOBO.runOutput` facade. `src/server-comm.ts` owns the
+typed output/HTTP ports, transcript limits, request cancellation, and exact
+five-key BOBO compatibility projection supplied by
+`compat/server-comm-adapter.ts`. Both services are host-only, so disposal and
+transport state cannot become a second output-authority path for plugins.
 
 Run configuration is now a private typed service too. `src/run-config.ts`
 normalizes per-workspace argument and build-target DTOs, preserves the v1/v2

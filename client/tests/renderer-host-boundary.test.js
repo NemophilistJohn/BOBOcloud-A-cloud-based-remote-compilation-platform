@@ -104,6 +104,10 @@ const MIGRATED_FILE_SEARCH_MODULES = Object.freeze([
   'renderer/compat/file-search-adapter.ts',
   'src/file-search.ts'
 ]);
+const MIGRATED_SERVER_COMM_MODULES = Object.freeze([
+  'renderer/compat/server-comm-adapter.ts',
+  'src/server-comm.ts'
+]);
 
 function sourceFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -254,6 +258,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated file search slice must not regain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_SERVER_COMM_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated server communication slice must not gain a direct preload dependency: ${file}`);
+  }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],
     'tasksResolve must remain a unique native-adapter bridge capability');
@@ -365,6 +373,14 @@ test('native host services remain private to the workbench', () => {
     path.join(ROOT, 'renderer/compat/account-profile-adapter.ts'),
     'utf8'
   );
+  const serverCommSource = fs.readFileSync(
+    path.join(ROOT, 'src/server-comm.ts'),
+    'utf8'
+  );
+  const serverCommAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/server-comm-adapter.ts'),
+    'utf8'
+  );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
   assert.match(adapter, /PROJECT_TASKS_HOST_SERVICE_ID\s*=\s*['"]host\.projectTasks['"]/);
   assert.match(adapter, /RCLONE_HOST_SERVICE_ID\s*=\s*['"]host\.rclone['"]/);
@@ -469,4 +485,19 @@ test('native host services remain private to the workbench', () => {
   assert.doesNotMatch(accountProfileAdapter, /pluginView\s*:/);
   assert.match(accountProfileAdapter,
     /BOBO\.accountProfile\s*=\s*\{\s*init:\s*accountProfile\.init,\s*open:\s*accountProfile\.open,\s*close:\s*accountProfile\.close,\s*reset:\s*accountProfile\.reset,\s*renderActivity:\s*accountProfile\.renderActivity\s*\}/);
+  assert.match(serverCommSource,
+    /SERVER_COMM_SERVICE_ID\s*=\s*['"]workbench\.serverComm['"]/);
+  assert.match(serverCommAdapter, /SERVER_COMM_SERVICE_ID/);
+  assert.match(serverCommAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(serverCommAdapter, /pluginView\s*:/);
+  assert.match(serverCommAdapter,
+    /BOBO\.updateRunOutput\s*=\s*serverComm\.updateRunOutput/);
+  assert.match(serverCommAdapter,
+    /BOBO\.clearRunOutput\s*=\s*serverComm\.clearRunOutput/);
+  assert.match(serverCommAdapter,
+    /BOBO\.clearRunOutputDetails\s*=\s*serverComm\.clearRunOutputDetails/);
+  assert.match(serverCommAdapter,
+    /BOBO\.refreshRunOutputOmission\s*=\s*serverComm\.refreshRunOutputOmission/);
+  assert.match(serverCommAdapter,
+    /BOBO\.sendToServer\s*=\s*serverComm\.sendToServer/);
 });

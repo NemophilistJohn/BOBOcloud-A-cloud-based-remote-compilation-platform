@@ -1,35 +1,25 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
-const vm = require('node:vm');
-
-const ROOT = path.resolve(__dirname, '..');
+const { installServerComm } = require('./support/server-comm-harness');
 
 function loadServerComm(response, options = {}) {
-  const source = fs.readFileSync(path.join(ROOT, 'src', 'server-comm.js'), 'utf8');
   const BOBO = {
     state: { serverSettings: { ip: 'compiler.example' }, auth: {} }
   };
-  const windowObject = { BOBO, AbortController: options.AbortController || globalThis.AbortController };
-  vm.runInNewContext(source, {
-    window: windowObject,
+  const windowObject = {
+    BOBO,
+    AbortController: options.AbortController || globalThis.AbortController,
+    fetch: options.fetch || (() => Promise.resolve(response)),
     document: {
       getElementById() { return null; },
       createDocumentFragment() { return { appendChild() {} }; },
       createElement() { return { appendChild() {} }; },
       createTextNode(value) { return { textContent: String(value) }; }
-    },
-    fetch: options.fetch || (() => Promise.resolve(response)),
-    console,
-    Date,
-    Promise,
-    JSON,
-    setTimeout,
-    clearTimeout
-  }, { filename: 'src/server-comm.js' });
+    }
+  };
+  installServerComm(windowObject, options);
   return BOBO;
 }
 

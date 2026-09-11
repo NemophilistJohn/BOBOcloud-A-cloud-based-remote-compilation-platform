@@ -6,6 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 const esbuild = require('esbuild');
+const { installServerComm } = require('./support/server-comm-harness');
 
 const projectRoot = path.resolve(__dirname, '..');
 const pluginRpcTransport = require('../main/plugin-rpc-transport');
@@ -26,25 +27,6 @@ function loadPreloadApi(ipcRenderer) {
   }, { filename: 'preload.js' });
   assert.ok(exposedApi);
   return exposedApi;
-}
-
-function loadScript(relativePath, windowObject, extras) {
-  const source = fs.readFileSync(path.join(projectRoot, relativePath), 'utf8');
-  const context = vm.createContext(Object.assign({
-    window: windowObject,
-    document: windowObject.document,
-    console,
-    crypto: { randomUUID: (() => {
-      let value = 0;
-      return () => 'uuid-' + (++value);
-    })() },
-    Date,
-    Promise,
-    setTimeout,
-    clearTimeout
-  }, extras || {}));
-  vm.runInContext(source, context, { filename: relativePath });
-  return context;
 }
 
 async function loadTypeScriptModule(relativePath) {
@@ -370,9 +352,7 @@ test('run output appends escaped batches without rewriting existing DOM', async 
     document,
     BOBO: { state: { runLogInitialized: true, showTimestampNextLine: false, autoScrollEnabled: true } }
   };
-  loadScript('src/server-comm.js', windowObject, {
-    fetch: () => { throw new Error('not used'); }
-  });
+  installServerComm(windowObject);
 
   for (let i = 0; i < 50; i++) windowObject.BOBO.updateRunOutput(i === 0 ? '<script>bad()</script>' : 'line-' + i);
   await new Promise(resolve => setTimeout(resolve, 220));
@@ -402,9 +382,7 @@ test('run output keeps escaped Python traceback locations clickable', () => {
     document,
     BOBO: { state: { runLogInitialized: true, showTimestampNextLine: false, autoScrollEnabled: true } }
   };
-  loadScript('src/server-comm.js', windowObject, {
-    fetch: () => { throw new Error('not used'); }
-  });
+  installServerComm(windowObject);
 
   windowObject.BOBO.updateRunOutput('Traceback: File "src/main.py", line 10');
   assert.match(runLog.firstChild.innerHTML, /class="err-link"/);
@@ -420,9 +398,7 @@ test('external output clear discards an older pending batch', async () => {
     document,
     BOBO: { state: { runLogInitialized: true, showTimestampNextLine: false, autoScrollEnabled: true } }
   };
-  loadScript('src/server-comm.js', windowObject, {
-    fetch: () => { throw new Error('not used'); }
-  });
+  installServerComm(windowObject);
 
   for (let i = 0; i < 50; i++) windowObject.BOBO.updateRunOutput('rendered-' + i);
   await new Promise(resolve => setTimeout(resolve, 220));
@@ -446,9 +422,7 @@ test('the first output line is visible immediately and stays cleared', async () 
     document,
     BOBO: { state: { runLogInitialized: true, showTimestampNextLine: false, autoScrollEnabled: true } }
   };
-  loadScript('src/server-comm.js', windowObject, {
-    fetch: () => { throw new Error('not used'); }
-  });
+  installServerComm(windowObject);
 
   windowObject.BOBO.updateRunOutput('first');
   assert.equal(runLog.childNodes.length, 1);
@@ -465,9 +439,7 @@ test('stream fragments append and replace one rendered logical line', async () =
     document,
     BOBO: { state: { runLogInitialized: true, showTimestampNextLine: false, autoScrollEnabled: true } }
   };
-  loadScript('src/server-comm.js', windowObject, {
-    fetch: () => { throw new Error('not used'); }
-  });
+  installServerComm(windowObject);
 
   const first = 'a'.repeat(4096);
   const second = 'b'.repeat(4904);
@@ -503,9 +475,7 @@ test('open stream fragments batch DOM redraws and bound a pathological single li
     document,
     BOBO: { state: { runLogInitialized: true, showTimestampNextLine: false, autoScrollEnabled: true } }
   };
-  loadScript('src/server-comm.js', windowObject, {
-    fetch: () => { throw new Error('not used'); }
-  });
+  installServerComm(windowObject);
 
   windowObject.BOBO.updateRunOutput('head', {
     streamFragment: true, streamKey: 'stdout:batched'
@@ -534,9 +504,7 @@ test('large logical lines share a bounded recent transcript budget', async () =>
     document,
     BOBO: { state: { runLogInitialized: true, showTimestampNextLine: false, autoScrollEnabled: true } }
   };
-  loadScript('src/server-comm.js', windowObject, {
-    fetch: () => { throw new Error('not used'); }
-  });
+  installServerComm(windowObject);
 
   const line = 'x'.repeat(240000);
   for (let index = 0; index < 90; index += 1) {
@@ -566,9 +534,7 @@ test('an already-rendered open stream cannot grow past the transcript budget', a
     document,
     BOBO: { state: { runLogInitialized: true, showTimestampNextLine: false, autoScrollEnabled: true } }
   };
-  loadScript('src/server-comm.js', windowObject, {
-    fetch: () => { throw new Error('not used'); }
-  });
+  installServerComm(windowObject);
 
   const line = 'x'.repeat(240000);
   for (let index = 0; index < 87; index += 1) {
@@ -616,9 +582,7 @@ test('a traceback link remains clickable after fragment continuation', async () 
       workspace: { openFile: async (filePath) => { windowObject.openedPath = filePath; } }
     }
   };
-  loadScript('src/server-comm.js', windowObject, {
-    fetch: () => { throw new Error('not used'); }
-  });
+  installServerComm(windowObject);
 
   windowObject.BOBO.updateRunOutput('Traceback: File "src/ma', {
     streamFragment: true, streamKey: 'stderr:run'

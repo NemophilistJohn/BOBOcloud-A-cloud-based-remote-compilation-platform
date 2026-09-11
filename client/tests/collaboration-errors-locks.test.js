@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const { installServerComm } = require('./support/server-comm-harness');
 
 const projectRoot = path.resolve(__dirname, '..');
 
@@ -73,7 +74,6 @@ function loadCollaboration(options) {
 }
 
 function loadServerComm(responsePayload) {
-  const source = fs.readFileSync(path.join(projectRoot, 'src/server-comm.js'), 'utf8');
   const requests = [];
   const BOBO = {
     state: {
@@ -81,9 +81,8 @@ function loadServerComm(responsePayload) {
       auth: { token: 'session-token' }
     }
   };
-  const windowObject = { BOBO };
-  vm.runInNewContext(source, {
-    window: windowObject,
+  const windowObject = {
+    BOBO,
     document: {
       getElementById() { return null; },
       createDocumentFragment() { return { appendChild() {} }; },
@@ -97,13 +96,9 @@ function loadServerComm(responsePayload) {
         status: 409,
         json() { return Promise.resolve(responsePayload); }
       });
-    },
-    console,
-    Date,
-    Promise,
-    setTimeout,
-    clearTimeout
-  }, { filename: 'src/server-comm.js' });
+    }
+  };
+  installServerComm(windowObject);
   return { BOBO, requests };
 }
 

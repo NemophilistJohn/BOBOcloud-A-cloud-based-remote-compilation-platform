@@ -39,7 +39,7 @@ import './compat/plugin-manager-ui-adapter.ts';
 import './compat/language-packs-panel-adapter.ts';
 import './compat/utils-adapter.ts';
 import './compat/server-transport-adapter.ts';
-import '../src/server-comm.js';
+import './compat/server-comm-adapter.ts';
 import './compat/run-output-adapter.ts';
 import './compat/server-capabilities-adapter.ts';
 import './compat/cloud-feature-policy-adapter.ts';

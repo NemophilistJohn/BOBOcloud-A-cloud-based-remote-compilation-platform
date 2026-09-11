@@ -74,6 +74,7 @@ import type { WorkbenchLayoutService } from './workbench-layout';
 import type { SettingsService } from './settings';
 import type { AccountProfileService } from './account-profile';
 import type { EditorCoreService } from './editor-core';
+import type { ServerCommService } from './server-comm';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -116,6 +117,7 @@ export interface RendererServiceMap {
   readonly 'workbench.rclone': RcloneClient;
   readonly 'workbench.rcloneSettings': RcloneSettingsService;
   readonly 'workbench.serverTransport': Readonly<ServerTransportService>;
+  readonly 'workbench.serverComm': ServerCommService;
   readonly 'workbench.serverCapabilities': ServerCapabilityService;
   readonly 'workbench.cloudFeaturePolicy': Readonly<CloudFeaturePolicyService>;
   readonly 'workbench.commandPalette': CommandPaletteService;
@@ -1056,6 +1058,30 @@ export type {
   EditorCoreWorkspacePort,
   EditorCoreWorkspaceSettingsPort
 } from './editor-core';
+export type {
+  ServerCommAbortController,
+  ServerCommAbortSignal,
+  ServerCommActionDto,
+  ServerCommAuthPort,
+  ServerCommAuthStatePort,
+  ServerCommDependencies,
+  ServerCommFacade,
+  ServerCommFetch,
+  ServerCommFetchInit,
+  ServerCommFetchResponse,
+  ServerCommI18nPort,
+  ServerCommOutputKind,
+  ServerCommOutputUpdateOptionsDto,
+  ServerCommRendererState,
+  ServerCommRequestOptionsDto,
+  ServerCommResponseEnvelopeDto,
+  ServerCommResponseHeaders,
+  ServerCommRunOutputPort,
+  ServerCommServerSettingsDto,
+  ServerCommService,
+  ServerCommTimer,
+  ServerCommWorkspacePort
+} from './server-comm';
 export type {
   SettingsAiFieldOptionDto,
   SettingsAiFieldOptions,
