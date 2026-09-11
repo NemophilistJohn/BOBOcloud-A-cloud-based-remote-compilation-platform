@@ -23,7 +23,6 @@ const LEGACY_DIRECT_ACCESS_LIMITS = new Map([
   ['src/package-center.js', 1],
   ['src/runner.js', 13],
   ['src/terminal.js', 30],
-  ['src/workspace-launch.js', 9],
   ['src/workspace.js', 28]
 ]);
 const MIGRATED_DIAGNOSTICS_MODULES = Object.freeze([
@@ -84,6 +83,10 @@ const MIGRATED_RUNTIME_MODULES = Object.freeze([
 const MIGRATED_WORKSPACE_SETTINGS_MODULES = Object.freeze([
   'renderer/compat/workspace-settings-adapter.ts',
   'src/workspace-settings.ts'
+]);
+const MIGRATED_WORKSPACE_LAUNCH_MODULES = Object.freeze([
+  'renderer/compat/workspace-launch-adapter.ts',
+  'src/workspace-launch.ts'
 ]);
 
 function sourceFiles(directory) {
@@ -215,6 +218,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated workspace settings slice must not regain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_WORKSPACE_LAUNCH_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated workspace launch slice must not regain a direct preload dependency: ${file}`);
+  }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],
     'tasksResolve must remain a unique native-adapter bridge capability');
@@ -290,6 +297,10 @@ test('native host services remain private to the workbench', () => {
     path.join(ROOT, 'renderer/compat/workspace-settings-adapter.ts'),
     'utf8'
   );
+  const workspaceLaunchAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/workspace-launch-adapter.ts'),
+    'utf8'
+  );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
   assert.match(adapter, /PROJECT_TASKS_HOST_SERVICE_ID\s*=\s*['"]host\.projectTasks['"]/);
   assert.match(adapter, /RCLONE_HOST_SERVICE_ID\s*=\s*['"]host\.rclone['"]/);
@@ -302,7 +313,9 @@ test('native host services remain private to the workbench', () => {
   assert.match(adapter, /PROJECTS_HOST_SERVICE_ID\s*=\s*['"]host\.projects['"]/);
   assert.match(adapter,
     /WORKSPACE_SETTINGS_HOST_SERVICE_ID\s*=\s*['"]host\.workspaceSettings['"]/);
-  assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 11);
+  assert.match(adapter,
+    /WORKSPACE_LAUNCH_HOST_SERVICE_ID\s*=\s*['"]host\.workspaceLaunch['"]/);
+  assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 12);
   assert.doesNotMatch(adapter, /pluginView\s*:/);
   assert.match(diagnosticsAdapter,
     /DIAGNOSTICS_SETTINGS_SERVICE_ID\s*=\s*['"]workbench\.diagnosticsSettings['"]/);
@@ -359,4 +372,9 @@ test('native host services remain private to the workbench', () => {
   assert.doesNotMatch(workspaceSettingsAdapter, /pluginView\s*:/);
   assert.match(workspaceSettingsAdapter,
     /BOBO\.workspaceSettings\s*=\s*\{\s*applySnapshot:\s*workspaceSettings\.applySnapshot,\s*refreshForWorkspace:\s*workspaceSettings\.refreshForWorkspace,\s*clear:\s*workspaceSettings\.clear,\s*setMonaco:\s*workspaceSettings\.setMonaco,\s*attachEditor:\s*workspaceSettings\.attachEditor,\s*applyAll:\s*workspaceSettings\.applyAll,\s*applyModel:\s*workspaceSettings\.applyModel,\s*languageForFile:\s*workspaceSettings\.languageForFile,\s*effectiveEditorSettings:\s*workspaceSettings\.effectiveEditorSettings,\s*configValue:\s*workspaceSettings\.configValue,\s*isPathExcluded:\s*workspaceSettings\.isPathExcluded,\s*filterTreeChildren:\s*workspaceSettings\.filterTreeChildren\s*\}/);
+  assert.match(workspaceLaunchAdapter, /WORKSPACE_LAUNCH_SERVICE_ID/);
+  assert.match(workspaceLaunchAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(workspaceLaunchAdapter, /pluginView\s*:/);
+  assert.match(workspaceLaunchAdapter,
+    /BOBO\.workspaceLaunch\s*=\s*\{\s*init:\s*workspaceLaunch\.init,\s*requestOpen:\s*workspaceLaunch\.requestOpen,\s*setConsumer:\s*workspaceLaunch\.setConsumer,\s*whenIdle:\s*workspaceLaunch\.whenIdle\s*\}/);
 });

@@ -52,6 +52,7 @@ import type {
   ProjectsSaveProjectNameRequestDto
 } from './projects';
 import type { WorkspaceSettingsRequestDto } from './workspace-settings';
+import type { WorkspaceLaunchOpenedWorkspaceDto } from './workspace-launch';
 
 export type { Dispose } from './lifecycle';
 
@@ -65,8 +66,11 @@ export interface IpcEventContract<Args extends unknown[] = []> {
 }
 
 export interface IpcInvokeContracts {
-  'pick-workspace': IpcInvokeContract<[dirPath?: string]>;
-  'forget-recent-workspace': IpcInvokeContract<[dirPath: string]>;
+  'pick-workspace': IpcInvokeContract<
+    [dirPath?: string],
+    WorkspaceLaunchOpenedWorkspaceDto | null
+  >;
+  'forget-recent-workspace': IpcInvokeContract<[dirPath: string], boolean>;
   'close-workspace': IpcInvokeContract;
   'read-tree': IpcInvokeContract<[path: string]>;
   'workspace-leave-choice': IpcInvokeContract<[details: unknown]>;

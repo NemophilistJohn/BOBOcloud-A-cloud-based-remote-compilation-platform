@@ -168,6 +168,14 @@ route to preload settings IPC. Registry disposal now removes host, Monaco, and
 editor subscriptions, while a shared empty snapshot avoids repeated fallback
 allocation on model and tree hot paths.
 
+Workspace launch now follows the same private host boundary. The
+`src/workspace-launch.ts` service owns the first-frame picker queue, recent-project persistence,
+single-flight requests, localized controls, and disposable startup listeners;
+`compat/workspace-launch-adapter.ts` is the sole `BOBO.workspaceLaunch`
+projection. Its narrow `host.workspaceLaunch` service keeps picker and recent
+workspace IPC out of the launch state machine and remains unavailable to
+plugins.
+
 AI prompt assembly is now a typed pure boundary. `src/ai-prompts.ts` owns the
 bounded context/history DTOs, deterministic character budgeting, and inline/chat
 message builders; `compat/ai-prompts-adapter.ts` is the only legacy

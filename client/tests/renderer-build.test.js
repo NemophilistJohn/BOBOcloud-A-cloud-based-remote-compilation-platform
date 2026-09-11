@@ -31,7 +31,7 @@ const EXPECTED_MODULES = [
   './compat/tab-order-adapter.ts',
   './compat/i18n-adapter.ts',
   './compat/diagnostics-settings-adapter.ts',
-  '../src/workspace-launch.js',
+  './compat/workspace-launch-adapter.ts',
   './compat/icons-adapter.ts',
   './compat/confirm-dialog-adapter.ts',
   './compat/toast-adapter.ts',
@@ -173,6 +173,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/workspace-settings-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/workspace-settings.js')), false);
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/workspace-settings-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/workspace-launch.ts')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/workspace-launch-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/workspace-launch.js')), false);
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/workspace-launch-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-runtime.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-runtime.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/shared/plugin-semver.js')));

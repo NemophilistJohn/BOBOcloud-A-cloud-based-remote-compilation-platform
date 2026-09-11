@@ -32,6 +32,10 @@ import type {
   WorkspaceSettingsHost,
   WorkspaceSettingsRequestDto
 } from '../../types/workspace-settings';
+import type {
+  WorkspaceLaunchHost,
+  WorkspaceLaunchOpenedListener
+} from '../../types/workspace-launch';
 import { toDisposable } from './disposable.js';
 import { rendererPlatform } from './bootstrap';
 import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
@@ -46,6 +50,7 @@ export const PROJECT_TASKS_HOST_SERVICE_ID = 'host.projectTasks';
 export const PROJECTS_HOST_SERVICE_ID = 'host.projects';
 export const RCLONE_HOST_SERVICE_ID = 'host.rclone';
 export const VIEWS_HOST_SERVICE_ID = 'host.views';
+export const WORKSPACE_LAUNCH_HOST_SERVICE_ID = 'host.workspaceLaunch';
 export const WORKSPACE_SETTINGS_HOST_SERVICE_ID = 'host.workspaceSettings';
 
 function optionalDisposable(candidate: unknown): Disposable | null {
@@ -104,6 +109,16 @@ function createWorkspaceSettingsHost(host: NativeHost): Readonly<WorkspaceSettin
     read: (request: WorkspaceSettingsRequestDto) => host.readWorkspaceSettings(request),
     onDidChange: (listener: WorkspaceSettingsChangedListener) => toDisposable(
       host.onWorkspaceSettingsChanged((snapshot) => listener(snapshot))
+    )
+  });
+}
+
+function createWorkspaceLaunchHost(host: NativeHost): Readonly<WorkspaceLaunchHost> {
+  return Object.freeze({
+    pick: (directoryPath?: string) => host.pickWorkspace(directoryPath),
+    forgetRecent: (directoryPath: string) => host.forgetRecentWorkspace(directoryPath),
+    onDidOpen: (listener: WorkspaceLaunchOpenedListener) => toDisposable(
+      host.onWorkspaceOpened((opened) => listener(opened))
     )
   });
 }
@@ -309,6 +324,13 @@ const viewsRegistration = rendererPlatform.services.register(
   { owner: 'core', exposeToPlugins: false }
 );
 rendererPlatform.lifecycle.add(viewsRegistration);
+
+const workspaceLaunchHostRegistration = rendererPlatform.services.register(
+  WORKSPACE_LAUNCH_HOST_SERVICE_ID,
+  createWorkspaceLaunchHost(nativeHost),
+  { owner: 'core', exposeToPlugins: false }
+);
+rendererPlatform.lifecycle.add(workspaceLaunchHostRegistration);
 
 const workspaceSettingsHostRegistration = rendererPlatform.services.register(
   WORKSPACE_SETTINGS_HOST_SERVICE_ID,

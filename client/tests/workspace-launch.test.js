@@ -1,10 +1,28 @@
+'use strict';
+
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const vm = require('node:vm');
+const esbuild = require('esbuild');
 
 const ROOT = path.resolve(__dirname, '..');
+const SERVICE_BUNDLE = esbuild.buildSync({
+  absWorkingDir: ROOT,
+  entryPoints: ['src/workspace-launch.ts'],
+  bundle: true,
+  format: 'cjs',
+  platform: 'node',
+  target: ['node20'],
+  write: false,
+  logLevel: 'silent'
+}).outputFiles[0].text;
+const SERVICE_MODULE = { exports: {} };
+new Function('require', 'module', 'exports', SERVICE_BUNDLE)(
+  require,
+  SERVICE_MODULE,
+  SERVICE_MODULE.exports
+);
+const { createWorkspaceLaunchService, RECENT_WORKSPACE_STORAGE_KEY } = SERVICE_MODULE.exports;
 
 class FakeButton {
   constructor() {
@@ -19,8 +37,17 @@ class FakeButton {
     this.listeners.set(type, listeners);
   }
 
+  removeEventListener(type, listener) {
+    const listeners = this.listeners.get(type) || [];
+    this.listeners.set(type, listeners.filter((candidate) => candidate !== listener));
+  }
+
   click() {
-    (this.listeners.get('click') || []).forEach(listener => listener({ target: this }));
+    (this.listeners.get('click') || []).forEach((listener) => listener({
+      target: this,
+      preventDefault() {},
+      stopPropagation() {}
+    }));
   }
 
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
@@ -29,8 +56,60 @@ class FakeButton {
 
 function deferred() {
   let resolve;
-  const promise = new Promise(next => { resolve = next; });
+  const promise = new Promise((next) => { resolve = next; });
   return { promise, resolve };
+}
+
+function createDocument(buttons) {
+  return {
+    getElementById: (id) => buttons[id] || null,
+    querySelectorAll: () => []
+  };
+}
+
+function createHost({ pick } = {}) {
+  let listener = null;
+  return {
+    pick: pick || (async () => null),
+    forgetRecent: async () => true,
+    onDidOpen(next) {
+      listener = next;
+      return { dispose() { listener = null; } };
+    },
+    emit(opened) {
+      if (listener) listener(opened);
+    },
+    get listener() { return listener; }
+  };
+}
+
+function createI18n() {
+  const listeners = new Set();
+  return {
+    t(source, replacements) {
+      return replacements && replacements.name
+        ? String(source).replace('{name}', replacements.name)
+        : String(source);
+    },
+    onChange(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    emit() { listeners.forEach((listener) => listener()); },
+    get size() { return listeners.size; }
+  };
+}
+
+function createService({ host, buttons, storage, i18n } = {}) {
+  const service = createWorkspaceLaunchService({
+    document: createDocument(buttons || {}),
+    host: host || createHost(),
+    storage: storage || null,
+    getI18n: () => i18n || null,
+    reportError: () => {}
+  });
+  service.init();
+  return service;
 }
 
 test('workspace launch captures the first-frame click and applies it once services are ready', async () => {
@@ -40,26 +119,13 @@ test('workspace launch captures the first-frame click and applies it once servic
   };
   const picked = deferred();
   const pickArguments = [];
-  let openedListener = null;
-  const sandbox = {
-    api: {
-      pickWorkspace: directoryPath => {
-        pickArguments.push(directoryPath);
-        return picked.promise;
-      },
-      onWorkspaceOpened: listener => { openedListener = listener; }
-    },
-    BOBO: {},
-    console,
-    document: { getElementById: id => buttons[id] || null },
-    Promise,
-    setTimeout,
-    clearTimeout
-  };
-  sandbox.window = sandbox;
-  vm.runInNewContext(fs.readFileSync(path.join(ROOT, 'src', 'workspace-launch.js'), 'utf8'), sandbox, {
-    filename: 'src/workspace-launch.js'
+  const host = createHost({
+    pick: (directoryPath) => {
+      pickArguments.push(directoryPath);
+      return picked.promise;
+    }
   });
+  const service = createService({ host, buttons });
 
   buttons['empty-state-open'].click();
   buttons['open-folder'].click();
@@ -67,58 +133,64 @@ test('workspace launch captures the first-frame click and applies it once servic
   assert.equal(buttons['empty-state-open'].disabled, true);
   assert.equal(buttons['open-folder'].getAttribute('aria-busy'), 'true');
 
-  const firstWorkspace = { rootPath: 'C:\\workspace', tree: { children: [] }, workspaceIdentity: 1 };
+  const firstWorkspace = {
+    rootPath: 'C:\\workspace',
+    tree: { name: 'workspace', path: 'C:\\workspace', type: 'folder', children: [] },
+    workspaceIdentity: 1,
+    leaveToken: null,
+    teamMapping: null
+  };
   picked.resolve(firstWorkspace);
   await picked.promise;
-  await new Promise(resolve => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(buttons['empty-state-open'].disabled, true, 'selection stays busy until the workspace is applied');
   buttons['open-folder'].click();
   assert.deepEqual(pickArguments, [undefined], 'a buffered selection blocks a second picker');
 
   const applied = [];
-  await sandbox.BOBO.workspaceLaunch.setConsumer(async opened => { applied.push(opened); });
+  await service.setConsumer(async (opened) => { applied.push(opened); });
   assert.deepEqual(applied, [firstWorkspace]);
   assert.equal(buttons['empty-state-open'].disabled, false);
 
-  const menuWorkspace = { rootPath: 'C:\\menu-workspace', tree: { children: [] }, workspaceIdentity: 2 };
-  openedListener(menuWorkspace);
-  await sandbox.BOBO.workspaceLaunch.whenIdle();
+  const menuWorkspace = {
+    rootPath: 'C:\\menu-workspace',
+    tree: { name: 'menu-workspace', path: 'C:\\menu-workspace', type: 'folder', children: [] },
+    workspaceIdentity: 2,
+    leaveToken: null,
+    teamMapping: null
+  };
+  host.emit(menuWorkspace);
+  await service.whenIdle();
   assert.deepEqual(applied, [firstWorkspace, menuWorkspace]);
+  service.dispose();
+  assert.equal(host.listener, null, 'registry disposal removes the host listener');
 });
 
 test('workspace launch keeps five successful recent projects in most-recent order', async () => {
   const values = new Map();
   const opened = [];
-  const sandbox = {
-    api: {
-      pickWorkspace: async directoryPath => ({ rootPath: directoryPath, tree: { children: [] }, workspaceIdentity: opened.length + 1 })
-    },
-    BOBO: {},
-    console,
-    document: {
-      getElementById: () => null,
-      querySelectorAll: () => []
-    },
-    localStorage: {
-      getItem: key => values.has(key) ? values.get(key) : null,
-      setItem: (key, value) => values.set(key, value)
-    },
-    Promise,
-    setTimeout,
-    clearTimeout
+  const storage = {
+    getItem: (key) => values.has(key) ? values.get(key) : null,
+    setItem: (key, value) => values.set(key, value)
   };
-  sandbox.window = sandbox;
-  vm.runInNewContext(fs.readFileSync(path.join(ROOT, 'src', 'workspace-launch.js'), 'utf8'), sandbox, {
-    filename: 'src/workspace-launch.js'
+  const host = createHost({
+    pick: async (directoryPath) => ({
+      rootPath: directoryPath,
+      tree: { name: 'workspace', path: directoryPath, type: 'folder', children: [] },
+      workspaceIdentity: opened.length + 1,
+      leaveToken: null,
+      teamMapping: null
+    })
   });
-  await sandbox.BOBO.workspaceLaunch.setConsumer(async workspace => {
+  const service = createService({ host, storage });
+  await service.setConsumer(async (workspace) => {
     opened.push(workspace.rootPath);
     return workspace.rootPath !== 'C:\\rejected';
   });
-  const storedProjects = () => JSON.parse(values.get('bobocloud.recentProjects.v1') || '[]');
+  const storedProjects = () => JSON.parse(values.get(RECENT_WORKSPACE_STORAGE_KEY) || '[]');
 
   for (let index = 1; index <= 6; index += 1) {
-    await sandbox.BOBO.workspaceLaunch.requestOpen(`C:\\projects\\project-${index}\\`);
+    await service.requestOpen(`C:\\projects\\project-${index}\\`);
   }
   assert.deepEqual(storedProjects(), [
     'C:\\projects\\project-6',
@@ -128,7 +200,7 @@ test('workspace launch keeps five successful recent projects in most-recent orde
     'C:\\projects\\project-2'
   ]);
 
-  await sandbox.BOBO.workspaceLaunch.requestOpen('c:\\PROJECTS\\project-4');
+  await service.requestOpen('c:\\PROJECTS\\project-4');
   assert.deepEqual(storedProjects(), [
     'c:\\PROJECTS\\project-4',
     'C:\\projects\\project-6',
@@ -137,6 +209,24 @@ test('workspace launch keeps five successful recent projects in most-recent orde
     'C:\\projects\\project-2'
   ], 'Windows paths are deduplicated case-insensitively and moved to the front');
 
-  await sandbox.BOBO.workspaceLaunch.requestOpen('C:\\rejected');
+  await service.requestOpen('C:\\rejected');
   assert.equal(storedProjects().includes('C:\\rejected'), false);
+});
+
+test('workspace launch refreshes translated recent controls and ignores late events after disposal', async () => {
+  const i18n = createI18n();
+  const host = createHost();
+  const service = createService({ host, i18n });
+  assert.equal(i18n.size, 1);
+  service.dispose();
+  assert.equal(i18n.size, 0);
+  host.emit({
+    rootPath: 'C:\\late',
+    tree: { name: 'late', path: 'C:\\late', type: 'folder' },
+    workspaceIdentity: 3,
+    leaveToken: null,
+    teamMapping: null
+  });
+  await service.whenIdle();
+  assert.equal(service.disposed, true);
 });

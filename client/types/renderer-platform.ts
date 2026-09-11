@@ -67,6 +67,7 @@ import type { ToastService } from './toast';
 import type { OutputPanelService } from './output-panel';
 import type { TaskProblemMatcherService } from './task-problem-matcher';
 import type { WorkspaceSyncStatusService } from './workspace-sync-status';
+import type { WorkspaceLaunchHost, WorkspaceLaunchService } from './workspace-launch';
 import type { WorkspaceSettingsHost, WorkspaceSettingsService } from './workspace-settings';
 
 export interface RendererCommandMap {
@@ -85,6 +86,7 @@ export interface RendererServiceMap {
   readonly 'host.projects': Readonly<ProjectsHost>;
   readonly 'host.rclone': Readonly<RcloneNativeHost>;
   readonly 'host.views': Readonly<ViewsHost>;
+  readonly 'host.workspaceLaunch': Readonly<WorkspaceLaunchHost>;
   readonly 'host.workspaceSettings': Readonly<WorkspaceSettingsHost>;
   readonly 'workbench.confirm': ConfirmService;
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
@@ -115,6 +117,7 @@ export interface RendererServiceMap {
   readonly 'workbench.outputPanel': OutputPanelService;
   readonly 'workbench.taskProblemMatcher': TaskProblemMatcherService;
   readonly 'workbench.workspaceSyncStatus': WorkspaceSyncStatusService;
+  readonly 'workbench.workspaceLaunch': WorkspaceLaunchService;
   readonly 'workbench.workspaceSettings': WorkspaceSettingsService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
@@ -869,6 +872,19 @@ export type {
   TaskProblemSession,
   TaskProblemSeverity
 } from './task-problem-matcher';
+export type {
+  WorkspaceLaunchConsumer,
+  WorkspaceLaunchDependencies,
+  WorkspaceLaunchFacade,
+  WorkspaceLaunchHost,
+  WorkspaceLaunchI18nPort,
+  WorkspaceLaunchOpenedListener,
+  WorkspaceLaunchOpenedWorkspaceDto,
+  WorkspaceLaunchService,
+  WorkspaceLaunchStoragePort,
+  WorkspaceLaunchTeamMappingDto,
+  WorkspaceLaunchTreeNodeDto
+} from './workspace-launch';
 export type {
   WorkspaceSyncBeginOptionsDto,
   WorkspaceSyncChangeListener,

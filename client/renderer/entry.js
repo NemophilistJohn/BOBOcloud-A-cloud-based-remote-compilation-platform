@@ -25,7 +25,7 @@ import './compat/state-adapter.ts';
 import './compat/tab-order-adapter.ts';
 import './compat/i18n-adapter.ts';
 import './compat/diagnostics-settings-adapter.ts';
-import '../src/workspace-launch.js';
+import './compat/workspace-launch-adapter.ts';
 import './compat/icons-adapter.ts';
 import './compat/confirm-dialog-adapter.ts';
 import './compat/toast-adapter.ts';
