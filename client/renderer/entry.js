@@ -31,7 +31,7 @@ import './compat/confirm-dialog-adapter.ts';
 import './compat/toast-adapter.ts';
 import './compat/command-palette-adapter.ts';
 import './core/plugin-extension-bootstrap.ts';
-import '../src/workbench-layout.js';
+import './compat/workbench-layout-adapter.ts';
 import './compat/source-control-view-adapter.ts';
 import '../src/file-search.js';
 import '../src/settings.js';

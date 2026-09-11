@@ -69,6 +69,7 @@ import type { TaskProblemMatcherService } from './task-problem-matcher';
 import type { WorkspaceSyncStatusService } from './workspace-sync-status';
 import type { WorkspaceLaunchHost, WorkspaceLaunchService } from './workspace-launch';
 import type { WorkspaceSettingsHost, WorkspaceSettingsService } from './workspace-settings';
+import type { WorkbenchLayoutService } from './workbench-layout';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -119,6 +120,7 @@ export interface RendererServiceMap {
   readonly 'workbench.workspaceSyncStatus': WorkspaceSyncStatusService;
   readonly 'workbench.workspaceLaunch': WorkspaceLaunchService;
   readonly 'workbench.workspaceSettings': WorkspaceSettingsService;
+  readonly 'workbench.layout': WorkbenchLayoutService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -947,6 +949,30 @@ export type {
   WorkspaceSettingsWordWrapDto,
   WorkspaceSettingsWorkspacePort
 } from './workspace-settings';
+export type {
+  WorkbenchAiAgentButtonPort,
+  WorkbenchAiChatPanelPort,
+  WorkbenchApplyOptionsDto,
+  WorkbenchAuxiliaryOptionsDto,
+  WorkbenchCollaborationCurrentDto,
+  WorkbenchCollaborationPort,
+  WorkbenchCommandsPort,
+  WorkbenchDensityDto,
+  WorkbenchFileSearchPort,
+  WorkbenchLayoutDependencies,
+  WorkbenchLayoutEditorPort,
+  WorkbenchLayoutFacade,
+  WorkbenchLayoutService,
+  WorkbenchPersistentStateDto,
+  WorkbenchLayoutSnapshotDto,
+  WorkbenchLayoutStateDto,
+  WorkbenchPanelPositionDto,
+  WorkbenchProjectsPort,
+  WorkbenchSettingsPort,
+  WorkbenchStoragePort,
+  WorkbenchSwitchPanelPort,
+  WorkbenchTerminalPort
+} from './workbench-layout';
 export type {
   DetectedLanguageIdDto,
   LocalPathSeparatorDto,

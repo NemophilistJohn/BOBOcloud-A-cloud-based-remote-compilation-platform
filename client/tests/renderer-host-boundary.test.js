@@ -88,6 +88,10 @@ const MIGRATED_WORKSPACE_LAUNCH_MODULES = Object.freeze([
   'renderer/compat/workspace-launch-adapter.ts',
   'src/workspace-launch.ts'
 ]);
+const MIGRATED_WORKBENCH_LAYOUT_MODULES = Object.freeze([
+  'renderer/compat/workbench-layout-adapter.ts',
+  'src/workbench-layout.ts'
+]);
 
 function sourceFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -222,6 +226,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated workspace launch slice must not regain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_WORKBENCH_LAYOUT_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated workbench layout slice must not regain a direct preload dependency: ${file}`);
+  }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],
     'tasksResolve must remain a unique native-adapter bridge capability');
@@ -301,6 +309,14 @@ test('native host services remain private to the workbench', () => {
     path.join(ROOT, 'renderer/compat/workspace-launch-adapter.ts'),
     'utf8'
   );
+  const workbenchLayout = fs.readFileSync(
+    path.join(ROOT, 'src/workbench-layout.ts'),
+    'utf8'
+  );
+  const workbenchLayoutAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/workbench-layout-adapter.ts'),
+    'utf8'
+  );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
   assert.match(adapter, /PROJECT_TASKS_HOST_SERVICE_ID\s*=\s*['"]host\.projectTasks['"]/);
   assert.match(adapter, /RCLONE_HOST_SERVICE_ID\s*=\s*['"]host\.rclone['"]/);
@@ -377,4 +393,11 @@ test('native host services remain private to the workbench', () => {
   assert.doesNotMatch(workspaceLaunchAdapter, /pluginView\s*:/);
   assert.match(workspaceLaunchAdapter,
     /BOBO\.workspaceLaunch\s*=\s*\{\s*init:\s*workspaceLaunch\.init,\s*requestOpen:\s*workspaceLaunch\.requestOpen,\s*setConsumer:\s*workspaceLaunch\.setConsumer,\s*whenIdle:\s*workspaceLaunch\.whenIdle\s*\}/);
+  assert.match(workbenchLayout,
+    /WORKBENCH_LAYOUT_SERVICE_ID\s*=\s*['"]workbench\.layout['"]/);
+  assert.match(workbenchLayoutAdapter, /WORKBENCH_LAYOUT_SERVICE_ID/);
+  assert.match(workbenchLayoutAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(workbenchLayoutAdapter, /pluginView\s*:/);
+  assert.match(workbenchLayoutAdapter,
+    /BOBO\.workbench\s*=\s*\{\s*init:\s*workbenchLayout\.init,[\s\S]*reset:\s*workbenchLayout\.reset\s*\}/);
 });

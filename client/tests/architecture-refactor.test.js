@@ -192,7 +192,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/compat/toast-adapter.ts',
   'src/command-palette.ts',
   'renderer/compat/command-palette-adapter.ts',
-  'src/workbench-layout.js',
+  'src/workbench-layout.ts',
+  'renderer/compat/workbench-layout-adapter.ts',
   'src/source-control-view.ts',
   'renderer/compat/source-control-view-adapter.ts',
   'src/file-search.js',
@@ -442,7 +443,9 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'src/workspace-settings.js',
     'renderer/compat/workspace-settings-adapter.js',
     'src/workspace-launch.js',
-    'renderer/compat/workspace-launch-adapter.js'
+    'renderer/compat/workspace-launch-adapter.js',
+    'src/workbench-layout.js',
+    'renderer/compat/workbench-layout-adapter.js'
   ]) {
     assert.equal(
       fs.existsSync(path.join(ROOT, legacyModule)),
@@ -519,7 +522,7 @@ test('release packaging always rebuilds a production renderer and packages only 
 
 test('extensions remain a primary workbench surface while detail pages use the tab-provider boundary', () => {
   const html = read('index.html');
-  const layout = read('src/workbench-layout.js');
+  const layout = read('src/workbench-layout.ts');
   const sidebar = read('src/plugin-manager-ui.ts');
   const sidebarAdapter = read('renderer/compat/plugin-manager-ui-adapter.ts');
   const details = read('src/plugin-details.ts');

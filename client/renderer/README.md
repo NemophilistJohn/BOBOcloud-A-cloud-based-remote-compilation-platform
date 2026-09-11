@@ -176,6 +176,16 @@ projection. Its narrow `host.workspaceLaunch` service keeps picker and recent
 workspace IPC out of the launch state machine and remains unavailable to
 plugins.
 
+The application shell and its region geometry now follow that boundary too.
+`src/workbench-layout.ts` owns the validated layout DTO, viewport clamping,
+resizer/keyboard listeners, editor-layout scheduling, and context refresh
+under one disposable `workbench.layout` service. The service injects storage,
+DOM, timers, animation frames, and legacy collaborators, so no second native
+authority is introduced; `compat/workbench-layout-adapter.ts` is the only
+place that projects the exact historical `BOBO.workbench` facade. The service
+is private to the trusted workbench and registry disposal removes every shell
+listener and deferred callback.
+
 AI prompt assembly is now a typed pure boundary. `src/ai-prompts.ts` owns the
 bounded context/history DTOs, deterministic character budgeting, and inline/chat
 message builders; `compat/ai-prompts-adapter.ts` is the only legacy

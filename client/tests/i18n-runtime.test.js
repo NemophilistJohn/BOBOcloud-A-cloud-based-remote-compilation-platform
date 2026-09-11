@@ -423,7 +423,7 @@ test('dynamic UI translation entry points reference defined English keys', () =>
     assertLiteralCalls(source, fileName, /\b(?:inputField|textareaField|selectField)\(\s*[^,]+,\s*((?:'(?:\\.|[^'\\])*')|(?:"(?:\\.|[^"\\])*"))/g, 1);
   }
 
-  for (const fileName of ['app.js', 'workbench-layout.js']) {
+  for (const fileName of ['app.js', 'workbench-layout.ts']) {
     const source = fs.readFileSync(path.join(ROOT, 'src', fileName), 'utf8');
     for (const match of source.matchAll(/commands\.register\(\s*'[^']+'\s*,\s*'([^']+)'\s*,\s*'[^']*'\s*,\s*'([^']+)'/g)) {
       assert.ok(Object.hasOwn(messages, match[1]), `${fileName} command label is not localized: ${match[1]}`);
