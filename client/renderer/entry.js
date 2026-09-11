@@ -79,7 +79,7 @@ import './compat/account-profile-adapter.ts';
 import '../src/ai-settings-schema.js';
 import './compat/ai-prompts-adapter.ts';
 import '../src/ai-service.js';
-import '../src/ai-context.js';
+import './compat/ai-context-adapter.ts';
 import './ai-ui-loader.js';
 import '../src/ai-agent-button.js';
 import '../src/ai-inline.js';

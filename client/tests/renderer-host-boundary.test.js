@@ -108,6 +108,10 @@ const MIGRATED_SERVER_COMM_MODULES = Object.freeze([
   'renderer/compat/server-comm-adapter.ts',
   'src/server-comm.ts'
 ]);
+const MIGRATED_AI_CONTEXT_MODULES = Object.freeze([
+  'renderer/compat/ai-context-adapter.ts',
+  'src/ai-context.ts'
+]);
 
 function sourceFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -262,6 +266,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated server communication slice must not gain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_AI_CONTEXT_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated AI context slice must not gain a direct preload dependency: ${file}`);
+  }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],
     'tasksResolve must remain a unique native-adapter bridge capability');
@@ -379,6 +387,14 @@ test('native host services remain private to the workbench', () => {
   );
   const serverCommAdapter = fs.readFileSync(
     path.join(ROOT, 'renderer/compat/server-comm-adapter.ts'),
+    'utf8'
+  );
+  const aiContextSource = fs.readFileSync(
+    path.join(ROOT, 'src/ai-context.ts'),
+    'utf8'
+  );
+  const aiContextAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/ai-context-adapter.ts'),
     'utf8'
   );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
@@ -500,4 +516,11 @@ test('native host services remain private to the workbench', () => {
     /BOBO\.refreshRunOutputOmission\s*=\s*serverComm\.refreshRunOutputOmission/);
   assert.match(serverCommAdapter,
     /BOBO\.sendToServer\s*=\s*serverComm\.sendToServer/);
+  assert.match(aiContextSource,
+    /AI_CONTEXT_SERVICE_ID\s*=\s*['"]workbench\.aiContext['"]/);
+  assert.match(aiContextAdapter, /AI_CONTEXT_SERVICE_ID/);
+  assert.match(aiContextAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(aiContextAdapter, /pluginView\s*:/);
+  assert.match(aiContextAdapter,
+    /BOBO\.aiContext\s*=\s*\{\s*getCurrentFileContext:\s*aiContext\.getCurrentFileContext,[\s\S]*getInlineContext:\s*aiContext\.getInlineContext\s*\}/);
 });

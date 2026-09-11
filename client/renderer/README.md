@@ -230,6 +230,15 @@ message builders; `compat/ai-prompts-adapter.ts` is the only legacy
 the existing AI transport and context modules can continue consuming the same
 facade while they are migrated independently.
 
+AI context gathering now follows the same private typed-service boundary.
+`src/ai-context.ts` owns the six historical context methods through narrow state,
+Monaco model/editor, DOM file-tree, and prompt-truncation ports;
+`compat/ai-context-adapter.ts` is the sole writable `BOBO.aiContext` projection
+and registers `workbench.aiContext` privately. Current-file, selection, project
+structure, open-tab, full-context, and inline-context budgets retain their
+existing limits and null/disabled behavior, while service disposal fences later
+reads and the context service grants no host or downloaded-plugin authority.
+
 The lazy Markdown renderer now follows the same explicit presentation boundary.
 `src/ai-markdown.ts` receives typed DOM, Temml, clipboard, icon, i18n, and timer
 ports; `compat/ai-markdown-adapter.ts` alone projects `BOBO.aiMarkdown`. Safe

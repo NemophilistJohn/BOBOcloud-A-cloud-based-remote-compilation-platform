@@ -74,6 +74,7 @@ import type { WorkbenchLayoutService } from './workbench-layout';
 import type { SettingsService } from './settings';
 import type { AccountProfileService } from './account-profile';
 import type { EditorCoreService } from './editor-core';
+import type { AiContextService } from './ai-context';
 import type { ServerCommService } from './server-comm';
 
 export interface RendererCommandMap {
@@ -131,6 +132,7 @@ export interface RendererServiceMap {
   readonly 'workbench.settings': SettingsService;
   readonly 'workbench.accountProfile': AccountProfileService;
   readonly 'workbench.editorCore': EditorCoreService;
+  readonly 'workbench.aiContext': AiContextService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -1082,6 +1084,27 @@ export type {
   ServerCommTimer,
   ServerCommWorkspacePort
 } from './server-comm';
+export type {
+  AiContextActiveTabDto,
+  AiContextAiStateDto,
+  AiContextCurrentFileDto,
+  AiContextDependencies,
+  AiContextEditorPort,
+  AiContextFacade,
+  AiContextFullContextDto,
+  AiContextInlineContextDto,
+  AiContextModelPort,
+  AiContextPolicyDto,
+  AiContextPositionDto,
+  AiContextPromptsPort,
+  AiContextReferencedFileDto,
+  AiContextRendererState,
+  AiContextSelectionDto,
+  AiContextSelectionPort,
+  AiContextService,
+  AiContextSplitEditorPort,
+  AiContextTabDto
+} from './ai-context';
 export type {
   SettingsAiFieldOptionDto,
   SettingsAiFieldOptions,

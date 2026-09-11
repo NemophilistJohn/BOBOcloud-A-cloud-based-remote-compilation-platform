@@ -272,7 +272,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'src/ai-prompts.ts',
   'renderer/compat/ai-prompts-adapter.ts',
   'src/ai-service.js',
-  'src/ai-context.js',
+  'src/ai-context.ts',
+  'renderer/compat/ai-context-adapter.ts',
   'src/ai-settings-center.js',
   'src/ai-agent-button.js',
   'src/stream-render-scheduler.ts',
@@ -439,6 +440,8 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'renderer/compat/stream-render-scheduler-adapter.js',
     'src/ai-prompts.js',
     'renderer/compat/ai-prompts-adapter.js',
+    'src/ai-context.js',
+    'renderer/compat/ai-context-adapter.js',
     'src/ai-markdown.js',
     'renderer/compat/ai-markdown-adapter.js',
     'src/output-panel.js',
@@ -493,6 +496,17 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     /BOBO\.updateRunOutput\s*=\s*serverComm\.updateRunOutput/);
   assert.match(serverCommAdapter,
     /BOBO\.sendToServer\s*=\s*serverComm\.sendToServer/);
+
+  const aiContextSource = read('src/ai-context.ts');
+  const aiContextAdapter = read('renderer/compat/ai-context-adapter.ts');
+  assert.match(aiContextSource,
+    /AI_CONTEXT_SERVICE_ID\s*=\s*['"]workbench\.aiContext['"]/);
+  assert.match(aiContextSource, /createAiContextService\s*\(/);
+  assert.match(aiContextAdapter, /AI_CONTEXT_SERVICE_ID/);
+  assert.match(aiContextAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(aiContextAdapter, /pluginView\s*:/);
+  assert.match(aiContextAdapter,
+    /BOBO\.aiContext\s*=\s*\{\s*getCurrentFileContext:\s*aiContext\.getCurrentFileContext,[\s\S]*getInlineContext:\s*aiContext\.getInlineContext\s*\}/);
 
   const metadata = JSON.parse(read('renderer-dist/bobo-renderer.meta.json'));
   const inputs = new Set(
