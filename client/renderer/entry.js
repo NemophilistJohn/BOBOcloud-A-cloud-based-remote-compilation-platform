@@ -33,7 +33,7 @@ import './compat/command-palette-adapter.ts';
 import './core/plugin-extension-bootstrap.ts';
 import './compat/workbench-layout-adapter.ts';
 import './compat/source-control-view-adapter.ts';
-import '../src/file-search.js';
+import './compat/file-search-adapter.ts';
 import '../src/settings.js';
 import './compat/plugin-manager-ui-adapter.ts';
 import './compat/language-packs-panel-adapter.ts';

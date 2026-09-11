@@ -30,6 +30,7 @@ import type { PluginExtensionNativeHost } from './plugin-extension-bootstrap';
 import type { AgentDescriptorDto, AgentStateStoreContract } from './agent';
 import type { SourceControlStateStoreContract } from './source-control';
 import type { SourceControlViewService } from './source-control-view';
+import type { FileSearchService } from './file-search';
 import type {
   DocumentViewDescriptorDto,
   DocumentViewHost,
@@ -121,6 +122,7 @@ export interface RendererServiceMap {
   readonly 'workbench.workspaceLaunch': WorkspaceLaunchService;
   readonly 'workbench.workspaceSettings': WorkspaceSettingsService;
   readonly 'workbench.layout': WorkbenchLayoutService;
+  readonly 'workbench.fileSearch': FileSearchService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -949,6 +951,24 @@ export type {
   WorkspaceSettingsWordWrapDto,
   WorkspaceSettingsWorkspacePort
 } from './workspace-settings';
+export type {
+  FileSearchDependencies,
+  FileSearchEventTarget,
+  FileSearchFacade,
+  FileSearchFileDto,
+  FileSearchFileIconsPort,
+  FileSearchI18nPort,
+  FileSearchIconsPort,
+  FileSearchService,
+  FileSearchStatePort,
+  FileSearchStoragePort,
+  FileSearchTabDto,
+  FileSearchTreeNodeDto,
+  FileSearchWorkbenchPort,
+  FileSearchWorkspaceLaunchPort,
+  FileSearchWorkspacePort,
+  FileSearchWorkspaceSettingsPort
+} from './file-search';
 export type {
   WorkbenchAiAgentButtonPort,
   WorkbenchAiChatPanelPort,

@@ -186,6 +186,14 @@ place that projects the exact historical `BOBO.workbench` facade. The service
 is private to the trusted workbench and registry disposal removes every shell
 listener and deferred callback.
 
+Quick Open is now a private typed service as well. `src/file-search.ts` owns
+the bounded fuzzy index, history/suggestion DTOs, localized result rendering,
+and keyboard lifecycle through injected state, storage, DOM, and workbench
+ports. `compat/file-search-adapter.ts` is the only `BOBO.fileSearch`
+projection, preserving its writable three-method facade while keeping the
+service out of the downloaded-plugin map. Cache rebuilds stay identity-aware,
+and bounded insertion avoids sorting the complete workspace result set.
+
 AI prompt assembly is now a typed pure boundary. `src/ai-prompts.ts` owns the
 bounded context/history DTOs, deterministic character budgeting, and inline/chat
 message builders; `compat/ai-prompts-adapter.ts` is the only legacy

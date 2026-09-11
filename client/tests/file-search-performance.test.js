@@ -1,12 +1,22 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const esbuild = require('esbuild');
 
 const ROOT = path.resolve(__dirname, '..');
+const FILE_SEARCH_BUNDLE = esbuild.buildSync({
+  absWorkingDir: ROOT,
+  entryPoints: ['src/file-search.ts'],
+  bundle: true,
+  format: 'iife',
+  globalName: 'FileSearchModule',
+  platform: 'browser',
+  write: false,
+  logLevel: 'silent'
+}).outputFiles[0].text;
 
 function classListFor(element) {
   return {
@@ -40,6 +50,10 @@ function createElement(tagName) {
       const callbacks = listeners.get(type) || [];
       callbacks.push(callback);
       listeners.set(type, callbacks);
+    },
+    removeEventListener(type, callback) {
+      const callbacks = listeners.get(type) || [];
+      listeners.set(type, callbacks.filter(entry => entry !== callback));
     },
     dispatch(type, event) {
       (listeners.get(type) || []).forEach(callback => callback(Object.assign({ target: this }, event)));
@@ -163,6 +177,7 @@ function createRuntime(fileCount) {
       removeItem(key) { storage.delete(key); }
     },
     addEventListener() {},
+    removeEventListener() {},
     BOBO: {
       state: {
         workspaceRoot: root,
@@ -184,15 +199,31 @@ function createRuntime(fileCount) {
     'Array.prototype.sort = function() { globalThis.__sortCalls += 1; return nativeSort.apply(this, arguments); };',
     context
   );
-  vm.runInContext(fs.readFileSync(path.join(ROOT, 'src', 'file-search.js'), 'utf8'), context, {
-    filename: 'src/file-search.js'
+  vm.runInContext(FILE_SEARCH_BUNDLE, context, {
+    filename: 'src/file-search.ts'
   });
-  return { sandbox, elements, files, root, tabs };
+  const service = vm.runInContext(`FileSearchModule.createFileSearchService({
+    document,
+    eventTarget: globalThis,
+    state: BOBO.state,
+    storage: localStorage,
+    getI18n: () => BOBO.i18n,
+    getWorkspaceSettings: () => BOBO.workspaceSettings,
+    getFileIcons: () => null,
+    getIcons: () => null,
+    getWorkspaceLaunch: () => null,
+    getWorkspace: () => BOBO.workspace,
+    getWorkbench: () => BOBO.workbench,
+    setTimer: (callback, delay) => setTimeout(callback, delay),
+    clearTimer: (timer) => clearTimeout(timer)
+  })`, context);
+  sandbox.BOBO.fileSearch = service;
+  return { sandbox, elements, files, root, tabs, service };
 }
 
 test('Quick Open keeps legacy ranking while avoiding whole-result sorting', () => {
   const runtime = createRuntime(5000);
-  runtime.sandbox.BOBO.fileSearch.show();
+  runtime.service.show();
   const suggested = runtime.elements['quick-file-search-results']
     .querySelectorAll('.file-search-result')
     .map(element => element.getAttribute('data-path'));
@@ -210,4 +241,5 @@ test('Quick Open keeps legacy ranking while avoiding whole-result sorting', () =
   assert.deepEqual(actual, expected);
   assert.equal(actual.length, 50);
   assert.equal(runtime.sandbox.__sortCalls, 0);
+  runtime.service.dispose();
 });

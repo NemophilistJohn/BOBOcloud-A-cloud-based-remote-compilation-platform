@@ -39,7 +39,7 @@ const EXPECTED_MODULES = [
   './core/plugin-extension-bootstrap.ts',
   './compat/workbench-layout-adapter.ts',
   './compat/source-control-view-adapter.ts',
-  '../src/file-search.js',
+  './compat/file-search-adapter.ts',
   '../src/settings.js',
   './compat/plugin-manager-ui-adapter.ts',
   './compat/language-packs-panel-adapter.ts',
@@ -330,6 +330,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/source-control-view.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/source-control-view-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/source-control-view-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/file-search.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/file-search.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-search-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/file-search-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/document-view.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/document-view.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/document-view-sandbox.ts')));
