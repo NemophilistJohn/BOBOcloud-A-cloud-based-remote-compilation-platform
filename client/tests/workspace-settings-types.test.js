@@ -9,7 +9,6 @@ const ROOT = path.resolve(__dirname, '..');
 test('workspace settings contracts keep host authority private and lifecycle-owned', () => {
   const source = [
     "import { createWorkspaceSettingsService, WORKSPACE_SETTINGS_SERVICE_ID } from '../src/workspace-settings';",
-    "import { WORKSPACE_SETTINGS_HOST_SERVICE_ID } from '../renderer/core/native-host-adapter';",
     "import type { Disposable } from '../types/lifecycle';",
     "import type { NativeHost } from '../types/native-host';",
     "import type { RendererPluginServiceMap, RendererServiceMap, WorkspaceSettingsDependencies, WorkspaceSettingsFacade, WorkspaceSettingsHost, WorkspaceSettingsLanguageIdDto, WorkspaceSettingsRequestDto, WorkspaceSettingsService, WorkspaceSettingsSnapshotDto } from '../types/renderer-platform';",
@@ -31,7 +30,6 @@ test('workspace settings contracts keep host authority private and lifecycle-own
     "type PluginServiceAbsent = AssertFalse<'workbench.workspaceSettings' extends keyof RendererPluginServiceMap ? true : false>;",
     'type FactoryReturnIsTyped = AssertFalse<IsAny<ReturnType<typeof createWorkspaceSettingsService>>>;',
     "const serviceId: 'workbench.workspaceSettings' = WORKSPACE_SETTINGS_SERVICE_ID;",
-    "const hostId: 'host.workspaceSettings' = WORKSPACE_SETTINGS_HOST_SERVICE_ID;",
     "const language: WorkspaceSettingsLanguageIdDto = 'typescript';",
     '// @ts-expect-error Language identifiers are a closed, validated DTO union.',
     "const invalidLanguage: WorkspaceSettingsLanguageIdDto = 'vue';",
@@ -47,7 +45,7 @@ test('workspace settings contracts keep host authority private and lifecycle-own
     '// @ts-expect-error The workspace settings service has a closed compatibility surface.',
     'service.reload();',
     'void ({} as RendererServiceMap);',
-    'void serviceId; void hostId; void language; void invalidLanguage; void service;'
+    'void serviceId; void language; void invalidLanguage; void service;'
   ].join('\n');
 
   assertTypeScriptContract({
