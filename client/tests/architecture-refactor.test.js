@@ -226,7 +226,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/compat/workspace-sync-status-adapter.ts',
   'src/workspace-settings.ts',
   'renderer/compat/workspace-settings-adapter.ts',
-  'src/editor-core.js',
+  'src/editor-core.ts',
+  'renderer/compat/editor-core-adapter.ts',
   'src/document-views.ts',
   'renderer/compat/document-views-adapter.ts',
   'src/workspace.js',
@@ -389,6 +390,8 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'renderer/compat/settings-adapter.js',
     'src/account-profile.js',
     'renderer/compat/account-profile-adapter.js',
+    'src/editor-core.js',
+    'renderer/compat/editor-core-adapter.js',
     'src/document-views.js',
     'renderer/compat/document-views-adapter.js',
     'src/i18n.js',
@@ -466,6 +469,14 @@ test('HTML has at most two startup scripts and the renderer build covers every f
   const documentViewsAdapter = read('renderer/compat/document-views-adapter.ts');
   assert.match(documentViewsAdapter, /services\.require\(THEME_SERVICE_ID\)/);
   assert.doesNotMatch(documentViewsAdapter, /themeManager/);
+  const editorCoreSource = read('src/editor-core.ts');
+  const editorCoreAdapter = read('renderer/compat/editor-core-adapter.ts');
+  assert.match(editorCoreSource, /EDITOR_CORE_SERVICE_ID\s*=\s*['"]workbench\.editorCore['"]/);
+  assert.match(editorCoreAdapter, /EDITOR_CORE_SERVICE_ID/);
+  assert.match(editorCoreAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(editorCoreAdapter, /pluginView\s*:/);
+  assert.match(editorCoreAdapter,
+    /BOBO\.editorCore\s*=\s*\{\s*init:\s*editorCore\.init,[\s\S]*checkActiveOnSave:\s*editorCore\.checkActiveOnSave\s*\}/);
 
   const metadata = JSON.parse(read('renderer-dist/bobo-renderer.meta.json'));
   const inputs = new Set(

@@ -50,7 +50,7 @@ import './compat/runtime-adapter.ts';
 import './compat/file-icons-adapter.ts';
 import './compat/workspace-sync-status-adapter.ts';
 import './compat/workspace-settings-adapter.ts';
-import '../src/editor-core.js';
+import './compat/editor-core-adapter.ts';
 import './compat/document-views-adapter.ts';
 import '../src/workspace.js';
 import '../src/agent-workbench.js';

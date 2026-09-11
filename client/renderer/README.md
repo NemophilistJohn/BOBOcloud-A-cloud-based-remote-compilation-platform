@@ -202,6 +202,15 @@ historical six-method `BOBO.settings` facade. Registry disposal removes the
 static DOM handlers, render-scoped AI handlers, overlays, and deferred focus or
 first-run callbacks; no settings service is exposed to downloaded plugins.
 
+The Monaco editor core now follows the same private typed boundary.
+`src/editor-core.ts` keeps editor creation, keyboard commands, status-bar
+rendering, and debounced syntax diagnostics behind typed Monaco/DOM and
+collaborator ports; `compat/editor-core-adapter.ts` is the sole writable
+`BOBO.editorCore` projection and registers the private `workbench.editorCore`
+service. Monaco model listeners, the expected cancellation filter, and pending
+diagnostic timers are disposed with the service, while the existing AMD
+loading order and legacy command behavior remain unchanged.
+
 The account profile and compile-activity center follows the same boundary.
 `src/account-profile.ts` keeps the profile draft, avatar processing, UTC
 activity heatmap, identity/request generations, and close-confirmation flow

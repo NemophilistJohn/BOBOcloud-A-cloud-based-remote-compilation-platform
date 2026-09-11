@@ -28,7 +28,8 @@ const LEGACY_DIRECT_ACCESS_LIMITS = new Map([
 const MIGRATED_DIAGNOSTICS_MODULES = Object.freeze([
   'renderer/compat/diagnostics-settings-adapter.ts',
   'src/diagnostics-settings.ts',
-  'src/editor-core.js'
+  'src/editor-core.ts',
+  'renderer/compat/editor-core-adapter.ts'
 ]);
 const MIGRATED_SETTINGS_MODULES = Object.freeze([
   'renderer/compat/settings-adapter.ts',

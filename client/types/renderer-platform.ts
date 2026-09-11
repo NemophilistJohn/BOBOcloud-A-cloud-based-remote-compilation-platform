@@ -73,6 +73,7 @@ import type { WorkspaceSettingsHost, WorkspaceSettingsService } from './workspac
 import type { WorkbenchLayoutService } from './workbench-layout';
 import type { SettingsService } from './settings';
 import type { AccountProfileService } from './account-profile';
+import type { EditorCoreService } from './editor-core';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -127,6 +128,7 @@ export interface RendererServiceMap {
   readonly 'workbench.fileSearch': FileSearchService;
   readonly 'workbench.settings': SettingsService;
   readonly 'workbench.accountProfile': AccountProfileService;
+  readonly 'workbench.editorCore': EditorCoreService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -1019,6 +1021,41 @@ export type {
   AccountProfileToastPort,
   AccountProfileUserDto
 } from './account-profile';
+export type {
+  EditorCoreAiInlinePort,
+  EditorCoreCommandsPort,
+  EditorCoreCursorPositionEvent,
+  EditorCoreDapPort,
+  EditorCoreDependencies,
+  EditorCoreDiagnosticsSettingsDto,
+  EditorCoreDiagnosticsSettingsPort,
+  EditorCoreDiagnosticsStateDto,
+  EditorCoreEditorPort,
+  EditorCoreFacade,
+  EditorCoreGlobalEventPort,
+  EditorCoreI18nPort,
+  EditorCoreKeyCodeDto,
+  EditorCoreKeyModDto,
+  EditorCoreMarkerDto,
+  EditorCoreMarkerSeverityDto,
+  EditorCoreModelChangeEvent,
+  EditorCoreModelOptionsDto,
+  EditorCoreModelPort,
+  EditorCoreMonacoEditorPort,
+  EditorCoreMonacoPort,
+  EditorCoreProjectTasksPort,
+  EditorCoreRendererState,
+  EditorCoreRuleRegistryPort,
+  EditorCoreRunnerPort,
+  EditorCoreService,
+  EditorCoreSettingsPort,
+  EditorCoreTabDto,
+  EditorCoreTaskProblemMatcherPort,
+  EditorCoreThemePort,
+  EditorCoreUriPort,
+  EditorCoreWorkspacePort,
+  EditorCoreWorkspaceSettingsPort
+} from './editor-core';
 export type {
   SettingsAiFieldOptionDto,
   SettingsAiFieldOptions,

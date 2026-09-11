@@ -13,7 +13,8 @@ const NATIVE_HOST_ADAPTER = 'renderer/core/native-host-adapter.ts';
 const DIAGNOSTICS_SLICE = Object.freeze([
   'renderer/compat/diagnostics-settings-adapter.ts',
   'src/diagnostics-settings.ts',
-  'src/editor-core.js'
+  'src/editor-core.ts',
+  'renderer/compat/editor-core-adapter.ts'
 ]);
 
 test('diagnostics adapters share one host-only platform service and dispose preload subscriptions once', async () => {

@@ -56,7 +56,7 @@ const EXPECTED_MODULES = [
   './compat/file-icons-adapter.ts',
   './compat/workspace-sync-status-adapter.ts',
   './compat/workspace-settings-adapter.ts',
-  '../src/editor-core.js',
+  './compat/editor-core-adapter.ts',
   './compat/document-views-adapter.ts',
   '../src/workspace.js',
   '../src/agent-workbench.js',
@@ -300,6 +300,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/cloud-feature-policy.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/diagnostics-settings.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/diagnostics-settings-adapter.ts')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/editor-core.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/editor-core.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/editor-core-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/editor-core-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/i18n.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/i18n.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/i18n-adapter.ts')));
