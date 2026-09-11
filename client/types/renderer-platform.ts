@@ -881,6 +881,22 @@ export type {
   AiMarkdownTemmlPort
 } from './ai-markdown';
 export type {
+  RendererAiChatContextState,
+  RendererAiChatState,
+  RendererAiInlineContextState,
+  RendererAiInlineState,
+  RendererAiParametersState,
+  RendererAiState,
+  RendererAuthState,
+  RendererCollaborationState,
+  RendererDapState,
+  RendererDiagnosticsState,
+  RendererLspState,
+  RendererRuntimeState,
+  RendererState,
+  RendererTabState
+} from './state';
+export type {
   CacheCapabilitiesDto,
   CacheCategoryDto,
   CacheCategoryGroupDto,

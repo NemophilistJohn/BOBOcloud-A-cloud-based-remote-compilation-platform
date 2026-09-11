@@ -27,7 +27,7 @@ const EXPECTED_MODULES = [
   '../editor-rules/plugins/java.js',
   '../editor-rules/plugins/go.js',
   '../editor-rules/plugins/rust.js',
-  '../src/state.js',
+  './compat/state-adapter.ts',
   './compat/tab-order-adapter.ts',
   './compat/i18n-adapter.ts',
   './compat/diagnostics-settings-adapter.ts',
@@ -157,6 +157,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   const developmentBytes = (await fsp.stat(developmentBuilt.outputFile)).size;
   assert.ok(Buffer.byteLength(bundle) < developmentBytes * 0.75);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/app.js')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/state.ts')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/state-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/state.js')), false);
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/state-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-runtime.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/core/plugin-runtime.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/shared/plugin-semver.js')));

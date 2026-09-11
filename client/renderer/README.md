@@ -104,6 +104,12 @@ kept out of the downloaded-plugin service map. The cache center remains a
 separate service injected through a narrow port, so the existing Projects/cache
 tab behavior does not acquire a second lifecycle or authority path.
 
+The shared renderer state now has a typed DTO boundary. `src/state.ts` owns the
+eager singleton shape and its stable nested state records, while
+`compat/state-adapter.ts` performs the one legacy `BOBO.state` projection. The
+state remains mutable for the existing workbench modules, but the typed factory
+keeps new code from inventing an unbounded second state shape.
+
 Runtime selection is now a private typed workbench service as well.
 `src/runtime.ts` keeps the Local-versus-Docker choice, per-language preferences,
 numeric version ordering, menu behavior, and automatic active-file selection;

@@ -21,7 +21,7 @@ import '../editor-rules/plugins/go.js';
 import '../editor-rules/plugins/rust.js';
 
 // Workbench modules.
-import '../src/state.js';
+import './compat/state-adapter.ts';
 import './compat/tab-order-adapter.ts';
 import './compat/i18n-adapter.ts';
 import './compat/diagnostics-settings-adapter.ts';
