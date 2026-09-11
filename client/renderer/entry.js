@@ -77,7 +77,7 @@ import '../src/account-profile.js';
 
 // AI modules.
 import '../src/ai-settings-schema.js';
-import '../src/ai-prompts.js';
+import './compat/ai-prompts-adapter.ts';
 import '../src/ai-service.js';
 import '../src/ai-context.js';
 import './ai-ui-loader.js';

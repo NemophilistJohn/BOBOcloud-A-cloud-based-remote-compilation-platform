@@ -855,6 +855,22 @@ export type {
   StreamRenderSchedulerOptions
 } from './stream-render-scheduler';
 export type {
+  AiPromptBuildMetadataDto,
+  AiPromptBuildOptionsDto,
+  AiPromptBuildResultDto,
+  AiPromptChatSettingsDto,
+  AiPromptContextDto,
+  AiPromptCurrentFileDto,
+  AiPromptHistoryMessageDto,
+  AiPromptInlineContextDto,
+  AiPromptKeep,
+  AiPromptMessageDto,
+  AiPromptPolicyDto,
+  AiPromptSelectionDto,
+  AiPromptSettingsDto,
+  AiPromptsFacade
+} from './ai-prompts';
+export type {
   CacheCapabilitiesDto,
   CacheCategoryDto,
   CacheCategoryGroupDto,

@@ -398,7 +398,7 @@ test('dynamic UI translation entry points reference defined English keys', () =>
   const messages = JSON.parse(fs.readFileSync(path.join(ROOT, 'language-packs', 'en', 'messages.json'), 'utf8'));
   const sourceFiles = [
     'ai-agent-button.js', 'ai-chat-panel.js', 'ai-markdown.js', 'ai-settings-center.js',
-    'ai-prompts.js', 'collaboration.js', 'account-profile.js',
+    'ai-prompts.ts', 'collaboration.js', 'account-profile.js',
     'project-tasks.ts', 'workspace-sync-status.js', 'task-problem-matcher.js', 'runner.js', 'run-config.ts', 'runtime.ts', 'dap-client.js', 'terminal.js', 'auth.js', 'plugin-manager-ui.ts', 'plugin-details.ts',
     'source-control-view.ts', 'agent-workbench.js', 'command-palette.ts', 'language-packs-panel.ts', 'file-search.js', 'settings.js', 'workspace-launch.js', 'workspace.js', 'projects.ts', 'cache-center.ts', 'environment-center.ts', 'environment-center-model.ts', 'package-center.js', 'rclone-settings.ts'
   ];

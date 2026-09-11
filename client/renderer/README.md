@@ -136,6 +136,13 @@ and listener disposal through narrow collaborator ports;
 `BOBO.switchToPanel` projection. The service remains host-only and keeps
 terminal, debug, problem, and run-output authorities in their existing modules.
 
+AI prompt assembly is now a typed pure boundary. `src/ai-prompts.ts` owns the
+bounded context/history DTOs, deterministic character budgeting, and inline/chat
+message builders; `compat/ai-prompts-adapter.ts` is the only legacy
+`BOBO.aiPrompts` projection. It adds no host authority or registry exposure, so
+the existing AI transport and context modules can continue consuming the same
+facade while they are migrated independently.
+
 Theme selection follows that boundary without adding a native capability.
 `src/theme-manager.ts` owns the synchronous, injectable theme service, while
 `compat/theme-manager-adapter.ts` registers the private `workbench.theme`

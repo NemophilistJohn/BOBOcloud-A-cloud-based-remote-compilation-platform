@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const esbuild = require('esbuild');
 const { completionMessages, resolveApiContract } = require('../main/ai');
 
 const projectRoot = path.resolve(__dirname, '..');
@@ -84,7 +85,20 @@ function loadAiCore(overrides = {}) {
 
   const window = { api, BOBO: { state: { ai: {} } } };
   const context = vm.createContext({ window, console, Map, Date, Promise, setTimeout, clearTimeout });
-  ['ai-settings-schema.js', 'ai-prompts.js'].forEach(file => {
+  ['ai-settings-schema.js', '../renderer/compat/ai-prompts-adapter.ts'].forEach(file => {
+    if (file.endsWith('.ts')) {
+      const bundled = esbuild.buildSync({
+        absWorkingDir: projectRoot,
+        entryPoints: [file],
+        bundle: true,
+        format: 'iife',
+        platform: 'browser',
+        write: false,
+        logLevel: 'silent'
+      }).outputFiles[0].text;
+      vm.runInContext(bundled, context, { filename: file });
+      return;
+    }
     vm.runInContext(fs.readFileSync(path.join(projectRoot, 'src', file), 'utf8'), context, { filename: `src/${file}` });
   });
   const canonical = window.BOBO.aiSettingsSchema.normalizeSettings(overrides.settings || settings());

@@ -81,7 +81,7 @@ const EXPECTED_MODULES = [
   '../src/collaboration.js',
   '../src/account-profile.js',
   '../src/ai-settings-schema.js',
-  '../src/ai-prompts.js',
+  './compat/ai-prompts-adapter.ts',
   '../src/ai-service.js',
   '../src/ai-context.js',
   './ai-ui-loader.js',
@@ -247,6 +247,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/output-panel-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/output-panel.js')), false);
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/output-panel-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/ai-prompts.ts')));
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/ai-prompts-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/ai-prompts.js')), false);
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/ai-prompts-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/icons.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/icons.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/icons-adapter.ts')));
