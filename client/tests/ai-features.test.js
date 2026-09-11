@@ -85,7 +85,7 @@ function loadAiCore(overrides = {}) {
 
   const window = { api, BOBO: { state: { ai: {} } } };
   const context = vm.createContext({ window, console, Map, Date, Promise, setTimeout, clearTimeout });
-  ['ai-settings-schema.js', '../renderer/compat/ai-prompts-adapter.ts'].forEach(file => {
+  ['ai-settings-schema.js', 'renderer/compat/ai-prompts-adapter.ts'].forEach(file => {
     if (file.endsWith('.ts')) {
       const bundled = esbuild.buildSync({
         absWorkingDir: projectRoot,
