@@ -202,6 +202,16 @@ historical six-method `BOBO.settings` facade. Registry disposal removes the
 static DOM handlers, render-scoped AI handlers, overlays, and deferred focus or
 first-run callbacks; no settings service is exposed to downloaded plugins.
 
+The account profile and compile-activity center follows the same boundary.
+`src/account-profile.ts` keeps the profile draft, avatar processing, UTC
+activity heatmap, identity/request generations, and close-confirmation flow
+behind typed state, account, collaboration, and transport ports.
+`compat/account-profile-adapter.ts` is the sole writable five-method
+`BOBO.accountProfile` projection and registers the lifecycle-owned
+`workbench.accountProfile` service privately; in-flight activity/save/image
+callbacks are fenced during reset or disposal, and no account authority is
+exposed to downloaded plugins.
+
 AI prompt assembly is now a typed pure boundary. `src/ai-prompts.ts` owns the
 bounded context/history DTOs, deterministic character budgeting, and inline/chat
 message builders; `compat/ai-prompts-adapter.ts` is the only legacy

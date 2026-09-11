@@ -72,6 +72,7 @@ import type { WorkspaceLaunchHost, WorkspaceLaunchService } from './workspace-la
 import type { WorkspaceSettingsHost, WorkspaceSettingsService } from './workspace-settings';
 import type { WorkbenchLayoutService } from './workbench-layout';
 import type { SettingsService } from './settings';
+import type { AccountProfileService } from './account-profile';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -125,6 +126,7 @@ export interface RendererServiceMap {
   readonly 'workbench.layout': WorkbenchLayoutService;
   readonly 'workbench.fileSearch': FileSearchService;
   readonly 'workbench.settings': SettingsService;
+  readonly 'workbench.accountProfile': AccountProfileService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -996,6 +998,27 @@ export type {
   WorkbenchTerminalPort,
   WorkbenchResizeKindDto
 } from './workbench-layout';
+export type {
+  AccountProfileActivityDataWireDto,
+  AccountProfileActivityDayWireDto,
+  AccountProfileAuthPort,
+  AccountProfileAuthState,
+  AccountProfileCollaborationPort,
+  AccountProfileConfirmPort,
+  AccountProfileDependencies,
+  AccountProfileFacade,
+  AccountProfileI18nPort,
+  AccountProfileImagePort,
+  AccountProfileRendererState,
+  AccountProfileSendToServer,
+  AccountProfileServerActionDto,
+  AccountProfileServerRequestMap,
+  AccountProfileServerResponseMap,
+  AccountProfileService,
+  AccountProfileTabDto,
+  AccountProfileToastPort,
+  AccountProfileUserDto
+} from './account-profile';
 export type {
   SettingsAiFieldOptionDto,
   SettingsAiFieldOptions,

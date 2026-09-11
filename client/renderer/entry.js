@@ -73,7 +73,7 @@ import './compat/views-adapter.ts';
 import '../src/auth.js';
 import './compat/projects-adapter.ts';
 import '../src/collaboration.js';
-import '../src/account-profile.js';
+import './compat/account-profile-adapter.ts';
 
 // AI modules.
 import '../src/ai-settings-schema.js';

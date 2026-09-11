@@ -34,6 +34,10 @@ const MIGRATED_SETTINGS_MODULES = Object.freeze([
   'renderer/compat/settings-adapter.ts',
   'src/settings.ts'
 ]);
+const MIGRATED_ACCOUNT_PROFILE_MODULES = Object.freeze([
+  'renderer/compat/account-profile-adapter.ts',
+  'src/account-profile.ts'
+]);
 const MIGRATED_PROJECT_TASKS_MODULES = Object.freeze([
   'renderer/compat/project-tasks-adapter.ts',
   'src/project-tasks.ts'
@@ -184,6 +188,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
   for (const file of MIGRATED_SETTINGS_MODULES) {
     assert.equal(actual.has(file), false,
       `the migrated settings slice must not regain a direct preload dependency: ${file}`);
+  }
+  for (const file of MIGRATED_ACCOUNT_PROFILE_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated account profile slice must not regain a direct preload dependency: ${file}`);
   }
   for (const file of MIGRATED_PROJECT_TASKS_MODULES) {
     assert.equal(actual.has(file), false,
@@ -348,6 +356,14 @@ test('native host services remain private to the workbench', () => {
     path.join(ROOT, 'renderer/compat/settings-adapter.ts'),
     'utf8'
   );
+  const accountProfileSource = fs.readFileSync(
+    path.join(ROOT, 'src/account-profile.ts'),
+    'utf8'
+  );
+  const accountProfileAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/account-profile-adapter.ts'),
+    'utf8'
+  );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
   assert.match(adapter, /PROJECT_TASKS_HOST_SERVICE_ID\s*=\s*['"]host\.projectTasks['"]/);
   assert.match(adapter, /RCLONE_HOST_SERVICE_ID\s*=\s*['"]host\.rclone['"]/);
@@ -445,4 +461,11 @@ test('native host services remain private to the workbench', () => {
   assert.doesNotMatch(settingsAdapter, /pluginView\s*:/);
   assert.match(settingsAdapter,
     /BOBO\.settings\s*=\s*\{\s*init:\s*settings\.init,\s*open:\s*settings\.open,\s*close:\s*settings\.close,\s*openFirstRun:\s*settings\.openFirstRun,\s*finishFirstRun:\s*settings\.finishFirstRun,\s*isFirstRunOpen:\s*settings\.isFirstRunOpen\s*\}/);
+  assert.match(accountProfileSource,
+    /ACCOUNT_PROFILE_SERVICE_ID\s*=\s*['"]workbench\.accountProfile['"]/);
+  assert.match(accountProfileAdapter, /ACCOUNT_PROFILE_SERVICE_ID/);
+  assert.match(accountProfileAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(accountProfileAdapter, /pluginView\s*:/);
+  assert.match(accountProfileAdapter,
+    /BOBO\.accountProfile\s*=\s*\{\s*init:\s*accountProfile\.init,\s*open:\s*accountProfile\.open,\s*close:\s*accountProfile\.close,\s*reset:\s*accountProfile\.reset,\s*renderActivity:\s*accountProfile\.renderActivity\s*\}/);
 });
