@@ -230,6 +230,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/compat/rclone-settings-adapter.ts',
   'src/run-config.ts',
   'renderer/compat/run-config-adapter.ts',
+  'src/task-problem-matcher.ts',
+  'renderer/compat/task-problem-matcher-adapter.ts',
   'src/runner.js',
   'src/project-tasks.ts',
   'renderer/compat/project-tasks-adapter.ts',
@@ -426,7 +428,9 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'src/toast.js',
     'renderer/compat/toast-adapter.js',
     'src/state.js',
-    'renderer/compat/state-adapter.js'
+    'renderer/compat/state-adapter.js',
+    'src/task-problem-matcher.js',
+    'renderer/compat/task-problem-matcher-adapter.js'
   ]) {
     assert.equal(
       fs.existsSync(path.join(ROOT, legacyModule)),

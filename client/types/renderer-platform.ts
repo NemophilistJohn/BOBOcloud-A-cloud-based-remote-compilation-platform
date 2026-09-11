@@ -65,6 +65,7 @@ import type { RunOutputService } from './run-output';
 import type { TabOrderService } from './tab-order';
 import type { ToastService } from './toast';
 import type { OutputPanelService } from './output-panel';
+import type { TaskProblemMatcherService } from './task-problem-matcher';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -109,6 +110,7 @@ export interface RendererServiceMap {
   readonly 'workbench.cloudFeaturePolicy': Readonly<CloudFeaturePolicyService>;
   readonly 'workbench.commandPalette': CommandPaletteService;
   readonly 'workbench.outputPanel': OutputPanelService;
+  readonly 'workbench.taskProblemMatcher': TaskProblemMatcherService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -842,6 +844,26 @@ export type {
   OutputPanelTerminalPort,
   OutputPanelWorkbenchPort
 } from './output-panel';
+export type {
+  TaskProblemDto,
+  TaskProblemExecutionDto,
+  TaskProblemMatcherDependencies,
+  TaskProblemMatcherEditorCorePort,
+  TaskProblemMatcherEditorPort,
+  TaskProblemMatcherFacade,
+  TaskProblemMatcherI18nPort,
+  TaskProblemMatcherListener,
+  TaskProblemMatcherMarkerDto,
+  TaskProblemMatcherModelPort,
+  TaskProblemMatcherMonacoEditorPort,
+  TaskProblemMatcherMonacoPort,
+  TaskProblemMatcherService,
+  TaskProblemMatcherState,
+  TaskProblemMatcherWorkspacePort,
+  TaskProblemPatternDto,
+  TaskProblemSession,
+  TaskProblemSeverity
+} from './task-problem-matcher';
 export type {
   DetectedLanguageIdDto,
   LocalPathSeparatorDto,

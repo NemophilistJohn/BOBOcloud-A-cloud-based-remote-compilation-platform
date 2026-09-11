@@ -58,7 +58,7 @@ import './compat/plugin-details-adapter.ts';
 import './compat/rclone-client-adapter.ts';
 import './compat/rclone-settings-adapter.ts';
 import './compat/run-config-adapter.ts';
-import '../src/task-problem-matcher.js';
+import './compat/task-problem-matcher-adapter.ts';
 import '../src/runner.js';
 import './compat/project-tasks-adapter.ts';
 import '../src/dap-client.js';

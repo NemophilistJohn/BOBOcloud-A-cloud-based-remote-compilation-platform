@@ -1,10 +1,20 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const esbuild = require('esbuild');
+
+const SERVICE_BUNDLE = esbuild.buildSync({
+  absWorkingDir: path.resolve(__dirname, '..'),
+  entryPoints: ['src/task-problem-matcher.ts'],
+  bundle: true,
+  format: 'cjs',
+  platform: 'node',
+  write: false,
+  logLevel: 'silent'
+}).outputFiles[0].text;
 
 function loadMatcher(options = {}) {
   const setCalls = [];
@@ -24,9 +34,19 @@ function loadMatcher(options = {}) {
     setTimeout,
     clearTimeout
   };
-  window.window = window;
-  vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, '../src/task-problem-matcher.js'), 'utf8'), { window, Set, Map, Array, String, Number, RegExp, Object, JSON, Math, console });
-  return { matcher: window.BOBO.taskProblemMatcher, setCalls };
+  const module = { exports: {} };
+  vm.runInNewContext(SERVICE_BUNDLE, { module, exports: module.exports, console });
+  const matcher = module.exports.createTaskProblemMatcherService({
+    document: window.document,
+    state: window.BOBO.state,
+    getMonaco: () => window.monaco,
+    getI18n: () => null,
+    getWorkspace: () => null,
+    getEditor: () => null,
+    getEditorCore: () => null
+  });
+  matcher.init();
+  return { matcher, setCalls };
 }
 
 test('GCC task output becomes a workspace-scoped error marker', () => {

@@ -142,6 +142,14 @@ and listener disposal through narrow collaborator ports;
 `BOBO.switchToPanel` projection. The service remains host-only and keeps
 terminal, debug, problem, and run-output authorities in their existing modules.
 
+Task-output diagnostics now use the same typed vertical boundary. `src/task-
+problem-matcher.ts` keeps VS Code-compatible matcher DTOs, workspace scoping,
+Monaco marker merging, and the clickable Problems panel behind narrow ports;
+`compat/task-problem-matcher-adapter.ts` preserves the writable
+`BOBO.taskProblemMatcher` facade and registers the service privately. A bounded
+problem snapshot cache avoids re-sorting unchanged task output on every panel
+refresh, while registry disposal clears listeners and active matcher state.
+
 AI prompt assembly is now a typed pure boundary. `src/ai-prompts.ts` owns the
 bounded context/history DTOs, deterministic character budgeting, and inline/chat
 message builders; `compat/ai-prompts-adapter.ts` is the only legacy
