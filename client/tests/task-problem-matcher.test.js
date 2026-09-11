@@ -35,7 +35,21 @@ function loadMatcher(options = {}) {
     clearTimeout
   };
   const module = { exports: {} };
-  vm.runInNewContext(SERVICE_BUNDLE, { module, exports: module.exports, console });
+  vm.runInNewContext(SERVICE_BUNDLE, {
+    module,
+    exports: module.exports,
+    console,
+    Set,
+    Map,
+    Array,
+    String,
+    Number,
+    RegExp,
+    Object,
+    JSON,
+    Math,
+    Promise
+  });
   const matcher = module.exports.createTaskProblemMatcherService({
     document: window.document,
     state: window.BOBO.state,
