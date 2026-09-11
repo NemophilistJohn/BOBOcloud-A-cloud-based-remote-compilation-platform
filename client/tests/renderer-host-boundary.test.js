@@ -28,8 +28,11 @@ const LEGACY_DIRECT_ACCESS_LIMITS = new Map([
 const MIGRATED_DIAGNOSTICS_MODULES = Object.freeze([
   'renderer/compat/diagnostics-settings-adapter.ts',
   'src/diagnostics-settings.ts',
-  'src/editor-core.js',
-  'src/settings.js'
+  'src/editor-core.js'
+]);
+const MIGRATED_SETTINGS_MODULES = Object.freeze([
+  'renderer/compat/settings-adapter.ts',
+  'src/settings.ts'
 ]);
 const MIGRATED_PROJECT_TASKS_MODULES = Object.freeze([
   'renderer/compat/project-tasks-adapter.ts',
@@ -177,6 +180,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
   for (const file of MIGRATED_DIAGNOSTICS_MODULES) {
     assert.equal(actual.has(file), false,
       `the migrated diagnostics slice must not regain a direct preload dependency: ${file}`);
+  }
+  for (const file of MIGRATED_SETTINGS_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated settings slice must not regain a direct preload dependency: ${file}`);
   }
   for (const file of MIGRATED_PROJECT_TASKS_MODULES) {
     assert.equal(actual.has(file), false,
@@ -333,6 +340,14 @@ test('native host services remain private to the workbench', () => {
     path.join(ROOT, 'renderer/compat/file-search-adapter.ts'),
     'utf8'
   );
+  const settingsSource = fs.readFileSync(
+    path.join(ROOT, 'src/settings.ts'),
+    'utf8'
+  );
+  const settingsAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/settings-adapter.ts'),
+    'utf8'
+  );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
   assert.match(adapter, /PROJECT_TASKS_HOST_SERVICE_ID\s*=\s*['"]host\.projectTasks['"]/);
   assert.match(adapter, /RCLONE_HOST_SERVICE_ID\s*=\s*['"]host\.rclone['"]/);
@@ -423,4 +438,11 @@ test('native host services remain private to the workbench', () => {
   assert.doesNotMatch(fileSearchAdapter, /pluginView\s*:/);
   assert.match(fileSearchAdapter,
     /BOBO\.fileSearch\s*=\s*\{\s*show:\s*fileSearch\.show,\s*hide:\s*fileSearch\.hide,\s*refreshCache:\s*fileSearch\.refreshCache\s*\}/);
+  assert.match(settingsSource,
+    /SETTINGS_SERVICE_ID\s*=\s*['"]workbench\.settings['"]/);
+  assert.match(settingsAdapter, /SETTINGS_SERVICE_ID/);
+  assert.match(settingsAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(settingsAdapter, /pluginView\s*:/);
+  assert.match(settingsAdapter,
+    /BOBO\.settings\s*=\s*\{\s*init:\s*settings\.init,\s*open:\s*settings\.open,\s*close:\s*settings\.close,\s*openFirstRun:\s*settings\.openFirstRun,\s*finishFirstRun:\s*settings\.finishFirstRun,\s*isFirstRunOpen:\s*settings\.isFirstRunOpen\s*\}/);
 });

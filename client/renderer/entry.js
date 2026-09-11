@@ -34,7 +34,7 @@ import './core/plugin-extension-bootstrap.ts';
 import './compat/workbench-layout-adapter.ts';
 import './compat/source-control-view-adapter.ts';
 import './compat/file-search-adapter.ts';
-import '../src/settings.js';
+import './compat/settings-adapter.ts';
 import './compat/plugin-manager-ui-adapter.ts';
 import './compat/language-packs-panel-adapter.ts';
 import './compat/utils-adapter.ts';

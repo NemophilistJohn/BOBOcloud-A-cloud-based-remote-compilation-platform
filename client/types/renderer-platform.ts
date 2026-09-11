@@ -71,6 +71,7 @@ import type { WorkspaceSyncStatusService } from './workspace-sync-status';
 import type { WorkspaceLaunchHost, WorkspaceLaunchService } from './workspace-launch';
 import type { WorkspaceSettingsHost, WorkspaceSettingsService } from './workspace-settings';
 import type { WorkbenchLayoutService } from './workbench-layout';
+import type { SettingsService } from './settings';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -123,6 +124,7 @@ export interface RendererServiceMap {
   readonly 'workbench.workspaceSettings': WorkspaceSettingsService;
   readonly 'workbench.layout': WorkbenchLayoutService;
   readonly 'workbench.fileSearch': FileSearchService;
+  readonly 'workbench.settings': SettingsService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -994,6 +996,39 @@ export type {
   WorkbenchTerminalPort,
   WorkbenchResizeKindDto
 } from './workbench-layout';
+export type {
+  SettingsAiFieldOptionDto,
+  SettingsAiFieldOptions,
+  SettingsAiFieldResult,
+  SettingsAiInlineModeDto,
+  SettingsAiModelDto,
+  SettingsAiModelInputDto,
+  SettingsAiModelUpdateDto,
+  SettingsAiPurposeDto,
+  SettingsAiResultDto,
+  SettingsAiServicePort,
+  SettingsAiSettingsCenterPort,
+  SettingsAiStateDto,
+  SettingsAiStatusDto,
+  SettingsAiStatusStateDto,
+  SettingsDependencies,
+  SettingsDiagnosticsPort,
+  SettingsDiagnosticsStateDto,
+  SettingsFacade,
+  SettingsI18nPort,
+  SettingsLanguagePacksPort,
+  SettingsLogger,
+  SettingsLspPort,
+  SettingsRendererState,
+  SettingsRclonePort,
+  SettingsServerSettingsDto,
+  SettingsService,
+  SettingsTabDto,
+  SettingsThemeDescriptorDto,
+  SettingsThemePort,
+  SettingsToastPort,
+  SettingsWindowPort
+} from './settings';
 export type {
   DetectedLanguageIdDto,
   LocalPathSeparatorDto,

@@ -290,9 +290,9 @@ test('a failed Diagnostics save keeps its draft open and the unified settings wa
   assert.equal(runtime.modal.style.display, 'flex');
   assert.equal(runtime.state._diagForm.enabled.checked, false);
   assert.deepEqual(runtime.notifications, ['Failed to save diagnostics settings']);
-  const settingsSource = fs.readFileSync(path.join(ROOT, 'src', 'settings.js'), 'utf8');
+  const settingsSource = fs.readFileSync(path.join(ROOT, 'src', 'settings.ts'), 'utf8');
   assert.match(settingsSource, /diagnosticsSave\.then\(function\(saved\)/);
-  assert.match(settingsSource, /if \(saved === true\) close\(\)/);
+  assert.match(settingsSource, /if \(!disposed && saved === true\) close\(\)/);
   runtime.service.dispose();
 });
 

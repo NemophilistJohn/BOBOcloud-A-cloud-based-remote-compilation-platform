@@ -194,6 +194,14 @@ projection, preserving its writable three-method facade while keeping the
 service out of the downloaded-plugin map. Cache rebuilds stay identity-aware,
 and bounded insertion avoids sorting the complete workspace result set.
 
+The unified settings shell now follows the same private typed boundary.
+`src/settings.ts` preserves the existing Local, LSP, Workbench, Language,
+Server, first-run, theme, diagnostics, and legacy AI flows behind injected
+state and collaborator ports. `compat/settings-adapter.ts` alone projects the
+historical six-method `BOBO.settings` facade. Registry disposal removes the
+static DOM handlers, render-scoped AI handlers, overlays, and deferred focus or
+first-run callbacks; no settings service is exposed to downloaded plugins.
+
 AI prompt assembly is now a typed pure boundary. `src/ai-prompts.ts` owns the
 bounded context/history DTOs, deterministic character budgeting, and inline/chat
 message builders; `compat/ai-prompts-adapter.ts` is the only legacy
