@@ -48,7 +48,7 @@ import './compat/output-panel-adapter.ts';
 import '../src/terminal.js';
 import './compat/runtime-adapter.ts';
 import './compat/file-icons-adapter.ts';
-import '../src/workspace-sync-status.js';
+import './compat/workspace-sync-status-adapter.ts';
 import '../src/workspace-settings.js';
 import '../src/editor-core.js';
 import './compat/document-views-adapter.ts';

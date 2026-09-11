@@ -150,6 +150,15 @@ Monaco marker merging, and the clickable Problems panel behind narrow ports;
 problem snapshot cache avoids re-sorting unchanged task output on every panel
 refresh, while registry disposal clears listeners and active matcher state.
 
+Workspace cloud-sync decoration is now a private typed service.
+`src/workspace-sync-status.ts` owns the queued/syncing/error/conflict state
+machine, revision-fenced upload contexts, bounded mutation de-duplication, and
+tree aggregation DTOs. `compat/workspace-sync-status-adapter.ts` is the sole
+`BOBO.workspaceSyncStatus` projection and registers the sync-lane contribution
+through the typed registry. Registry disposal removes contribution and language
+listeners, while coalesced animation-frame notifications keep large tree
+updates from triggering redundant visible-row refreshes.
+
 AI prompt assembly is now a typed pure boundary. `src/ai-prompts.ts` owns the
 bounded context/history DTOs, deterministic character budgeting, and inline/chat
 message builders; `compat/ai-prompts-adapter.ts` is the only legacy

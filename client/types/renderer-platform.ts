@@ -66,6 +66,7 @@ import type { TabOrderService } from './tab-order';
 import type { ToastService } from './toast';
 import type { OutputPanelService } from './output-panel';
 import type { TaskProblemMatcherService } from './task-problem-matcher';
+import type { WorkspaceSyncStatusService } from './workspace-sync-status';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -111,6 +112,7 @@ export interface RendererServiceMap {
   readonly 'workbench.commandPalette': CommandPaletteService;
   readonly 'workbench.outputPanel': OutputPanelService;
   readonly 'workbench.taskProblemMatcher': TaskProblemMatcherService;
+  readonly 'workbench.workspaceSyncStatus': WorkspaceSyncStatusService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -864,6 +866,27 @@ export type {
   TaskProblemSession,
   TaskProblemSeverity
 } from './task-problem-matcher';
+export type {
+  WorkspaceSyncBeginOptionsDto,
+  WorkspaceSyncChangeListener,
+  WorkspaceSyncContextDto,
+  WorkspaceSyncDecorationDto,
+  WorkspaceSyncEntryOptionsDto,
+  WorkspaceSyncEventPort,
+  WorkspaceSyncEventKindDto,
+  WorkspaceSyncFileEventDto,
+  WorkspaceSyncFinishErrorDto,
+  WorkspaceSyncFinishResultDto,
+  WorkspaceSyncI18nPort,
+  WorkspaceSyncPathDto,
+  WorkspaceSyncProvider,
+  WorkspaceSyncStateDto,
+  WorkspaceSyncStatusDependencies,
+  WorkspaceSyncStatusFacade,
+  WorkspaceSyncStatusService,
+  WorkspaceSyncTreeNodeDto,
+  WorkspaceSyncWorkspacePort
+} from './workspace-sync-status';
 export type {
   DetectedLanguageIdDto,
   LocalPathSeparatorDto,

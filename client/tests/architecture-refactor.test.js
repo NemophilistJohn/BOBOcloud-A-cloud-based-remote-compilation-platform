@@ -217,6 +217,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'src/runtime.ts',
   'renderer/compat/runtime-adapter.ts',
   'src/file-icons.ts',
+  'src/workspace-sync-status.ts',
+  'renderer/compat/workspace-sync-status-adapter.ts',
   'src/editor-core.js',
   'src/document-views.ts',
   'renderer/compat/document-views-adapter.ts',
@@ -430,7 +432,9 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'src/state.js',
     'renderer/compat/state-adapter.js',
     'src/task-problem-matcher.js',
-    'renderer/compat/task-problem-matcher-adapter.js'
+    'renderer/compat/task-problem-matcher-adapter.js',
+    'src/workspace-sync-status.js',
+    'renderer/compat/workspace-sync-status-adapter.js'
   ]) {
     assert.equal(
       fs.existsSync(path.join(ROOT, legacyModule)),
