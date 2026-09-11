@@ -44,7 +44,7 @@ import './compat/run-output-adapter.ts';
 import './compat/server-capabilities-adapter.ts';
 import './compat/cloud-feature-policy-adapter.ts';
 import '../src/lsp-client.js';
-import '../src/output-panel.js';
+import './compat/output-panel-adapter.ts';
 import '../src/terminal.js';
 import './compat/runtime-adapter.ts';
 import './compat/file-icons-adapter.ts';

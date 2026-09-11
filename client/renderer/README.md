@@ -129,6 +129,13 @@ locale, and in-flight request cleanup. `compat/run-config-adapter.ts` injects
 the legacy state/storage/server ports and projects the historical seven-method
 `BOBO.runConfig` facade without exposing run configuration to plugins.
 
+The bottom output panel is now a private typed service as well.
+`src/output-panel.ts` owns tab activation, keyboard navigation, clear routing,
+and listener disposal through narrow collaborator ports;
+`compat/output-panel-adapter.ts` is the sole `BOBO.outputPanel` and
+`BOBO.switchToPanel` projection. The service remains host-only and keeps
+terminal, debug, problem, and run-output authorities in their existing modules.
+
 Theme selection follows that boundary without adding a native capability.
 `src/theme-manager.ts` owns the synchronous, injectable theme service, while
 `compat/theme-manager-adapter.ts` registers the private `workbench.theme`

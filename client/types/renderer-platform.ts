@@ -64,6 +64,7 @@ import type { RunConfigService } from './run-config';
 import type { RunOutputService } from './run-output';
 import type { TabOrderService } from './tab-order';
 import type { ToastService } from './toast';
+import type { OutputPanelService } from './output-panel';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -107,6 +108,7 @@ export interface RendererServiceMap {
   readonly 'workbench.serverCapabilities': ServerCapabilityService;
   readonly 'workbench.cloudFeaturePolicy': Readonly<CloudFeaturePolicyService>;
   readonly 'workbench.commandPalette': CommandPaletteService;
+  readonly 'workbench.outputPanel': OutputPanelService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -829,6 +831,17 @@ export type {
   ToastKind,
   ToastService
 } from './toast';
+export type {
+  OutputPanelDapPort,
+  OutputPanelDependencies,
+  OutputPanelFacade,
+  OutputPanelProblemMatcherPort,
+  OutputPanelRunOutputPort,
+  OutputPanelService,
+  OutputPanelState,
+  OutputPanelTerminalPort,
+  OutputPanelWorkbenchPort
+} from './output-panel';
 export type {
   DetectedLanguageIdDto,
   LocalPathSeparatorDto,
