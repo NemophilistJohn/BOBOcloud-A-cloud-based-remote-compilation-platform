@@ -78,6 +78,7 @@ import type { AiContextService } from './ai-context';
 import type { AiService, AiServiceHostPort } from './ai-service';
 import type { AiInlineService } from './ai-inline';
 import type { AiAgentButtonService, AiAgentButtonHostPort } from './ai-agent-button';
+import type { AiSettingsCenterService } from './ai-settings-center';
 import type { ServerCommService } from './server-comm';
 
 export interface RendererCommandMap {
@@ -141,6 +142,7 @@ export interface RendererServiceMap {
   readonly 'workbench.aiService': AiService;
   readonly 'workbench.aiInline': AiInlineService;
   readonly 'workbench.aiAgentButton': AiAgentButtonService;
+  readonly 'workbench.aiSettingsCenter': AiSettingsCenterService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -1196,6 +1198,22 @@ export type {
   AiAgentButtonToastPort,
   AiAgentButtonWorkbenchPort
 } from './ai-agent-button';
+export type {
+  AiSettingsCenterAgentButtonPort,
+  AiSettingsCenterAgentWorkbenchPort,
+  AiSettingsCenterAiServicePort,
+  AiSettingsCenterConfirmPort,
+  AiSettingsCenterConnectionState,
+  AiSettingsCenterDependencies,
+  AiSettingsCenterDraft,
+  AiSettingsCenterFacade,
+  AiSettingsCenterI18nPort,
+  AiSettingsCenterProfileShape,
+  AiSettingsCenterRendererState,
+  AiSettingsCenterSchemaPort,
+  AiSettingsCenterService,
+  AiSettingsProviderDefinitionDto
+} from './ai-settings-center';
 export type {
   SettingsAiFieldOptionDto,
   SettingsAiFieldOptions,

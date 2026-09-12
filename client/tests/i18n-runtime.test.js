@@ -397,7 +397,7 @@ test('language packs have identical keys and placeholder contracts', () => {
 test('dynamic UI translation entry points reference defined English keys', () => {
   const messages = JSON.parse(fs.readFileSync(path.join(ROOT, 'language-packs', 'en', 'messages.json'), 'utf8'));
   const sourceFiles = [
-    'ai-agent-button.ts', 'ai-chat-panel.js', 'ai-markdown.ts', 'ai-settings-center.js',
+    'ai-agent-button.ts', 'ai-chat-panel.js', 'ai-markdown.ts', 'ai-settings-center.ts',
     'ai-prompts.ts', 'collaboration.js', 'account-profile.ts',
     'project-tasks.ts', 'workspace-sync-status.ts', 'task-problem-matcher.ts', 'runner.js', 'run-config.ts', 'runtime.ts', 'dap-client.js', 'terminal.js', 'auth.js', 'plugin-manager-ui.ts', 'plugin-details.ts',
     'source-control-view.ts', 'agent-workbench.js', 'command-palette.ts', 'language-packs-panel.ts', 'file-search.ts', 'settings.ts', 'workspace-launch.ts', 'workspace.js', 'projects.ts', 'cache-center.ts', 'environment-center.ts', 'environment-center-model.ts', 'package-center.js', 'rclone-settings.ts'

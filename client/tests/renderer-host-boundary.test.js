@@ -122,6 +122,10 @@ const MIGRATED_AI_AGENT_BUTTON_MODULES = Object.freeze([
   'renderer/compat/ai-agent-button-adapter.ts',
   'src/ai-agent-button.ts'
 ]);
+const MIGRATED_AI_SETTINGS_CENTER_MODULES = Object.freeze([
+  'renderer/compat/ai-settings-center-adapter.ts',
+  'src/ai-settings-center.ts'
+]);
 
 function sourceFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -292,6 +296,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated AI agent button slice must not gain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_AI_SETTINGS_CENTER_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated AI settings center slice must not gain a direct preload dependency: ${file}`);
+  }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],
     'tasksResolve must remain a unique native-adapter bridge capability');
@@ -441,6 +449,14 @@ test('native host services remain private to the workbench', () => {
   );
   const aiAgentButtonAdapter = fs.readFileSync(
     path.join(ROOT, 'renderer/compat/ai-agent-button-adapter.ts'),
+    'utf8'
+  );
+  const aiSettingsCenterSource = fs.readFileSync(
+    path.join(ROOT, 'src/ai-settings-center.ts'),
+    'utf8'
+  );
+  const aiSettingsCenterAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/ai-settings-center-adapter.ts'),
     'utf8'
   );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
@@ -594,4 +610,14 @@ test('native host services remain private to the workbench', () => {
   assert.doesNotMatch(aiAgentButtonAdapter, /pluginView\s*:/);
   assert.match(aiAgentButtonAdapter,
     /BOBO\.aiAgentButton\s*=\s*\{\s*init:\s*aiAgentButton\.init,\s*updateLEDs:\s*aiAgentButton\.updateLEDs,\s*toggleChat:\s*aiAgentButton\.toggleChat,\s*openMenu:\s*aiAgentButton\.openMenu,\s*closeMenu:\s*aiAgentButton\.closeMenu\s*\}/);
+  assert.match(aiSettingsCenterSource,
+    /AI_SETTINGS_CENTER_SERVICE_ID\s*=\s*['"]workbench\.aiSettingsCenter['"]/);
+  assert.match(aiSettingsCenterAdapter, /AI_SETTINGS_CENTER_SERVICE_ID/);
+  assert.match(aiSettingsCenterAdapter, /services\.register/);
+  assert.match(aiSettingsCenterAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(aiSettingsCenterAdapter, /pluginView\s*:/);
+  assert.doesNotMatch(aiSettingsCenterSource, /\b(?:window|global|globalThis|self)\.api\b/);
+  assert.doesNotMatch(aiSettingsCenterAdapter, /\b(?:window|global|globalThis|self)\.api\b/);
+  assert.match(aiSettingsCenterAdapter,
+    /BOBO\.aiSettingsCenter\s*=\s*\{\s*init:\s*aiSettingsCenter\.init,\s*open:\s*aiSettingsCenter\.open,\s*close:\s*aiSettingsCenter\.close,\s*save:\s*aiSettingsCenter\.save,\s*switchTab:\s*aiSettingsCenter\.switchTab,\s*isDirty:\s*aiSettingsCenter\.isDirty,\s*getDraft:\s*aiSettingsCenter\.getDraft\s*\}/);
 });

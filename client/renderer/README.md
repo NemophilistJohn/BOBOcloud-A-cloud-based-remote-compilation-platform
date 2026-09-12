@@ -367,6 +367,14 @@ are lifecycle-owned and removed together on disposal. The AI service and
 workbench layout resolve the button through the typed service map instead of
 creating another global dependency.
 
+The settings center follows the same boundary in the lazy bundle. Its
+`workbench.aiSettingsCenter` service receives the schema, AI transport, dialog,
+icons, and sibling workbench ports through a typed dependency object, owns its
+timers and locale subscription, and exposes only the historical seven-key
+`BOBO.aiSettingsCenter` projection. The shared schema remains the deliberate
+CommonJS-compatible JavaScript module used by both the main process and the
+renderer until that cross-process contract has its own typed wrapper.
+
 - `npm run build:renderer:dev` creates an unminified bundle with a linked source
   map for local development.
 - `npm run build:renderer` creates the minified production bundle.

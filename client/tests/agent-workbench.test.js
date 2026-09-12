@@ -289,7 +289,7 @@ test('Agent workbench is bundled and styled as an editor-peer page', () => {
 });
 
 test('saving host AI connections refreshes Agent model catalogs', () => {
-  const settings = fs.readFileSync(path.join(ROOT, 'src', 'ai-settings-center.js'), 'utf8');
+  const settings = fs.readFileSync(path.join(ROOT, 'src', 'ai-settings-center.ts'), 'utf8');
   assert.match(settings, /BOBO\.agentWorkbench\.refreshModels\(\)/);
 });
 
