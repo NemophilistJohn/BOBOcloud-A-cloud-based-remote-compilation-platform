@@ -43,7 +43,10 @@ const aiSettingsCenter: AiSettingsCenterService = createAiSettingsCenterService(
   state: BOBO.state as unknown as AiSettingsCenterRendererState,
   getI18n: () => rendererPlatform.services.get('workbench.i18n') || BOBO.i18n,
   getSchema: () => BOBO.aiSettingsSchema,
-  getAiService: () => rendererPlatform.services.get(AI_SERVICE_ID) as AiService | undefined,
+  // Keep the writable legacy facade authoritative for compatibility callers
+  // (including test and embedding overrides), while retaining the typed
+  // registry as the normal source when no legacy projection is present.
+  getAiService: () => BOBO.aiService || rendererPlatform.services.get(AI_SERVICE_ID) as AiService | undefined,
   getConfirm: () => BOBO.confirm || confirmService?.confirm,
   getIcons: () => BOBO.icons,
   getAgentButton: () => rendererPlatform.services.get(AI_AGENT_BUTTON_SERVICE_ID),
