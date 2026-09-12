@@ -129,6 +129,8 @@ export interface AiContextInlineContextDto {
     readonly column: number;
   };
   readonly version: number;
+  /** Preserve forward-compatible metadata when passed to the AI transport. */
+  readonly [key: string]: unknown;
 }
 
 export interface AiContextDependencies {

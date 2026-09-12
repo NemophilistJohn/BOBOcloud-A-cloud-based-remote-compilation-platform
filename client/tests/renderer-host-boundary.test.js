@@ -115,6 +115,10 @@ const MIGRATED_AI_SERVICE_MODULES = Object.freeze([
   'renderer/compat/ai-service-adapter.ts',
   'src/ai-service.ts'
 ]);
+const MIGRATED_AI_INLINE_MODULES = Object.freeze([
+  'renderer/compat/ai-inline-adapter.ts',
+  'src/ai-inline.ts'
+]);
 
 function sourceFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -277,6 +281,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated AI service slice must not gain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_AI_INLINE_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated AI inline slice must not gain a direct preload dependency: ${file}`);
+  }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],
     'tasksResolve must remain a unique native-adapter bridge capability');
@@ -410,6 +418,14 @@ test('native host services remain private to the workbench', () => {
   );
   const aiServiceAdapter = fs.readFileSync(
     path.join(ROOT, 'renderer/compat/ai-service-adapter.ts'),
+    'utf8'
+  );
+  const aiInlineSource = fs.readFileSync(
+    path.join(ROOT, 'src/ai-inline.ts'),
+    'utf8'
+  );
+  const aiInlineAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/ai-inline-adapter.ts'),
     'utf8'
   );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
@@ -546,4 +562,11 @@ test('native host services remain private to the workbench', () => {
   assert.match(aiServiceAdapter, /services\.require\(['"]host\.ai['"]\)/);
   assert.match(aiServiceAdapter, /exposeToPlugins:\s*false/);
   assert.doesNotMatch(aiServiceAdapter, /pluginView\s*:/);
+  assert.match(aiInlineSource,
+    /AI_INLINE_SERVICE_ID\s*=\s*['"]workbench\.aiInline['"]/);
+  assert.match(aiInlineAdapter, /AI_INLINE_SERVICE_ID/);
+  assert.match(aiInlineAdapter, /services\.require\(AI_SERVICE_ID\)/);
+  assert.match(aiInlineAdapter, /services\.require\(AI_CONTEXT_SERVICE_ID\)/);
+  assert.match(aiInlineAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(aiInlineAdapter, /pluginView\s*:/);
 });

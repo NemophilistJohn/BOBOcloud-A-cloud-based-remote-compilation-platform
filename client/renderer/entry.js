@@ -82,7 +82,7 @@ import './compat/ai-service-adapter.ts';
 import './compat/ai-context-adapter.ts';
 import './ai-ui-loader.js';
 import '../src/ai-agent-button.js';
-import '../src/ai-inline.js';
+import './compat/ai-inline-adapter.ts';
 
 // Bootstrap must execute after every registration above.
 import '../src/app.js';

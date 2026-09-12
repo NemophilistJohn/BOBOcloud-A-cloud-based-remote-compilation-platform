@@ -249,6 +249,17 @@ the historical 44-method facade remains intact, while generation fences and
 disposable stream subscriptions prevent late host results from mutating state
 after disposal or supersession.
 
+The Monaco inline-completion lane now has its own typed vertical boundary.
+`src/ai-inline.ts` owns the provider, latest-wins debounce, model-version
+checks, and cancellation lifecycle through structural Monaco, AI-service, and
+AI-context ports; `compat/ai-inline-adapter.ts` registers the private
+`workbench.aiInline` service and projects the exact seven-key writable
+`BOBO.aiInline` facade. Provider registrations, model listeners, token
+subscriptions, timers, and pending promises are released together, while the
+existing language coverage, trigger filtering, split-editor routing, and
+empty-result behavior remain unchanged. The service is intentionally absent
+from the downloaded-plugin map.
+
 The lazy Markdown renderer now follows the same explicit presentation boundary.
 `src/ai-markdown.ts` receives typed DOM, Temml, clipboard, icon, i18n, and timer
 ports; `compat/ai-markdown-adapter.ts` alone projects `BOBO.aiMarkdown`. Safe

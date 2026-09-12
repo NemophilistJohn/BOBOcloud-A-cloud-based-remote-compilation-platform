@@ -76,6 +76,7 @@ import type { AccountProfileService } from './account-profile';
 import type { EditorCoreService } from './editor-core';
 import type { AiContextService } from './ai-context';
 import type { AiService, AiServiceHostPort } from './ai-service';
+import type { AiInlineService } from './ai-inline';
 import type { ServerCommService } from './server-comm';
 
 export interface RendererCommandMap {
@@ -136,6 +137,7 @@ export interface RendererServiceMap {
   readonly 'workbench.editorCore': EditorCoreService;
   readonly 'workbench.aiContext': AiContextService;
   readonly 'workbench.aiService': AiService;
+  readonly 'workbench.aiInline': AiInlineService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -1151,6 +1153,28 @@ export type {
   AiStreamErrorListener,
   AiTransportResponseDto
 } from './ai-service';
+export type {
+  AiInlineAiContextPort,
+  AiInlineAiServicePort,
+  AiInlineCancellationTokenPort,
+  AiInlineCompletionItemDto,
+  AiInlineCompletionListDto,
+  AiInlineDependencies,
+  AiInlineFacade,
+  AiInlineEditorPort,
+  AiInlineLanguagesPort,
+  AiInlineLogger,
+  AiInlineModelPort,
+  AiInlineMonacoEditorPort,
+  AiInlineMonacoPort,
+  AiInlinePositionDto,
+  AiInlineRangeDto,
+  AiInlineRendererState,
+  AiInlineService,
+  AiInlineSplitEditorPort,
+  AiInlineStatePort,
+  AiInlineTriggerContextDto
+} from './ai-inline';
 export type {
   SettingsAiFieldOptionDto,
   SettingsAiFieldOptions,

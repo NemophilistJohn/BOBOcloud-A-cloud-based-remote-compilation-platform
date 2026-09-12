@@ -31,6 +31,27 @@ new Function('require', 'module', 'exports', aiServiceBundle)(
 );
 const { createAiService } = aiServiceModule.exports;
 
+const aiInlineBundle = esbuild.buildSync({
+  absWorkingDir: projectRoot,
+  stdin: {
+    contents: "export { createAiInlineService } from './src/ai-inline.ts';",
+    resolveDir: projectRoot,
+    sourcefile: 'ai-inline-test-entry.ts'
+  },
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  write: false,
+  logLevel: 'silent'
+}).outputFiles[0].text;
+const aiInlineModule = { exports: {} };
+new Function('require', 'module', 'exports', aiInlineBundle)(
+  require,
+  aiInlineModule,
+  aiInlineModule.exports
+);
+const { createAiInlineService } = aiInlineModule.exports;
+
 function profile(id, purpose = 'chat', overrides = {}) {
   const value = {
     id,
@@ -754,48 +775,50 @@ test('inline cache avoids duplicate transport and failures do not overwrite chat
 });
 
 test('inline provider exposes the Monaco disposal contract and reads canonical state', () => {
-  const source = fs.readFileSync(path.join(projectRoot, 'src', 'ai-inline.js'), 'utf8');
-  assert.match(source, /disposeInlineCompletions\s*:\s*function\s*\(/);
-  assert.match(source, /inlineSettings\(\)\.enabled/);
+  const source = fs.readFileSync(path.join(projectRoot, 'src', 'ai-inline.ts'), 'utf8');
+  assert.match(source, /disposeInlineCompletions\s*:/);
+  assert.match(source, /inlineSettings\(state\)\.enabled/);
 });
 
 test('inline enable toggle changes runtime state only after settings persist', async () => {
-  const source = fs.readFileSync(path.join(projectRoot, 'src', 'ai-inline.js'), 'utf8');
   const state = { ai: { inline: { enabled: true }, inlineEnabled: true } };
   let cancelCount = 0;
-  const BOBO = {
+  let updateSettings = async () => ({ success: false, code: 'ai.error.settingsWrite' });
+  const service = createAiInlineService({
     state,
-    aiService: {
-      updateSettings: async () => ({ success: false, code: 'ai.error.settingsWrite' }),
+    getAiService: () => ({
+      updateSettings: (...args) => updateSettings(...args),
+      getInlineCompletion: async () => ({ success: false, code: 'ai.error.noModel' }),
       cancelInline() { cancelCount += 1; }
-    }
-  };
-  const windowObject = { BOBO };
-  vm.runInNewContext(source, {
-    window: windowObject, console, Promise, setTimeout, clearTimeout
-  }, { filename: 'src/ai-inline.js' });
+    }),
+    getAiContext: () => null,
+    getMonaco: () => null,
+    setTimeout,
+    clearTimeout
+  });
 
-  const failed = await BOBO.aiInline.setEnabled(false);
+  const failed = await service.setEnabled(false);
   assert.equal(failed.success, false);
   assert.equal(state.ai.inline.enabled, true);
   assert.equal(state.ai.inlineEnabled, true);
   assert.equal(cancelCount, 0);
 
   state.ai.inlineProfileId = '';
-  const missingAgent = await BOBO.aiInline.setEnabled(true);
+  const missingAgent = await service.setEnabled(true);
   assert.equal(missingAgent.success, false);
   assert.equal(missingAgent.code, 'ai.error.noModel');
   assert.equal(state.ai.inline.enabled, true);
 
   state.ai.inlineProfileId = 'inline-profile';
-  BOBO.aiService.updateSettings = async patch => {
+  updateSettings = async patch => {
     state.ai.inline.enabled = patch.inline.enabled;
     state.ai.inlineEnabled = patch.inline.enabled;
     return { success: true };
   };
-  const saved = await BOBO.aiInline.setEnabled(false);
+  const saved = await service.setEnabled(false);
   assert.equal(saved.success, true);
   assert.equal(state.ai.inline.enabled, false);
   assert.equal(state.ai.inlineEnabled, false);
   assert.equal(cancelCount, 1);
+  service.dispose();
 });

@@ -283,7 +283,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'src/ai-markdown.ts',
   'renderer/compat/ai-markdown-adapter.ts',
   'src/ai-chat-panel.js',
-  'src/ai-inline.js',
+  'src/ai-inline.ts',
+  'renderer/compat/ai-inline-adapter.ts',
   'src/app.js'
 ];
 
@@ -445,6 +446,8 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'renderer/compat/ai-service-adapter.js',
     'src/ai-context.js',
     'renderer/compat/ai-context-adapter.js',
+    'src/ai-inline.js',
+    'renderer/compat/ai-inline-adapter.js',
     'src/ai-markdown.js',
     'renderer/compat/ai-markdown-adapter.js',
     'src/output-panel.js',
@@ -522,6 +525,19 @@ test('HTML has at most two startup scripts and the renderer build covers every f
   assert.doesNotMatch(aiServiceAdapter, /pluginView\s*:/);
   assert.match(aiServiceAdapter,
     /BOBO\.aiService\s*=\s*\{[\s\S]*init:\s*aiService\.init,[\s\S]*fingerprint:\s*aiService\.fingerprint/);
+
+  const aiInlineSource = read('src/ai-inline.ts');
+  const aiInlineAdapter = read('renderer/compat/ai-inline-adapter.ts');
+  assert.match(aiInlineSource,
+    /AI_INLINE_SERVICE_ID\s*=\s*['"]workbench\.aiInline['"]/);
+  assert.match(aiInlineSource, /createAiInlineService\s*\(/);
+  assert.match(aiInlineAdapter, /AI_INLINE_SERVICE_ID/);
+  assert.match(aiInlineAdapter, /services\.require\(AI_SERVICE_ID\)/);
+  assert.match(aiInlineAdapter, /services\.require\(AI_CONTEXT_SERVICE_ID\)/);
+  assert.match(aiInlineAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(aiInlineAdapter, /pluginView\s*:/);
+  assert.match(aiInlineAdapter,
+    /BOBO\.aiInline\s*=\s*\{[\s\S]*init:\s*aiInline\.init,[\s\S]*_createProvider:\s*aiInline\._createProvider/);
 
   const metadata = JSON.parse(read('renderer-dist/bobo-renderer.meta.json'));
   const inputs = new Set(
