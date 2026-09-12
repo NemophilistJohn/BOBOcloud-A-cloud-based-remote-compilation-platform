@@ -210,7 +210,11 @@ function loadWorkbench(options = {}) {
     .replace(/^import \{ DisposableStore, toDisposable \} from '\.\.\/renderer\/core\/disposable\.js';\s*/m, '')
     .replace(/^import type \{[\s\S]*?\} from '\.\.\/types\/agent-workbench';\s*/m, '')
     .replace(/^export const /m, 'const ')
-    .replace(/^export function /m, 'function ');
+    .replace(/^export function /m, 'function ')
+    .replace(
+      /function createAgentWorkbenchService\(\s*dependencies:\s*AgentWorkbenchDependencies\s*\):\s*AgentWorkbenchService\s*\{/,
+      'function createAgentWorkbenchService(dependencies) {'
+    );
   source = source.replace(
     '  return Object.freeze(service);\n}',
     [
