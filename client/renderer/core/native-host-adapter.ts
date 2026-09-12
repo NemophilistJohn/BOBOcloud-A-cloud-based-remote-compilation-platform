@@ -36,6 +36,15 @@ import type {
   WorkspaceLaunchHost,
   WorkspaceLaunchOpenedListener
 } from '../../types/workspace-launch';
+import type {
+  AiChatPayloadDto,
+  AiInlineRequestDto,
+  AiServiceHostPort,
+  AiSettingsDto,
+  AiStreamChunkListener,
+  AiStreamEndListener,
+  AiStreamErrorListener
+} from '../../types/ai-service';
 import { toDisposable } from './disposable.js';
 import { rendererPlatform } from './bootstrap';
 import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
@@ -52,6 +61,7 @@ export const RCLONE_HOST_SERVICE_ID = 'host.rclone';
 export const VIEWS_HOST_SERVICE_ID = 'host.views';
 export const WORKSPACE_LAUNCH_HOST_SERVICE_ID = 'host.workspaceLaunch';
 export const WORKSPACE_SETTINGS_HOST_SERVICE_ID = 'host.workspaceSettings';
+export const AI_HOST_SERVICE_ID = 'host.ai';
 
 function optionalDisposable(candidate: unknown): Disposable | null {
   return typeof candidate === 'function'
@@ -290,6 +300,21 @@ function createProjectsHost(host: NativeHost): Readonly<ProjectsHost> {
   });
 }
 
+function createAiHost(host: NativeHost): Readonly<AiServiceHostPort> {
+  return Object.freeze({
+    aiReadSettings: () => host.aiReadSettings(),
+    aiWriteSettings: (settings: AiSettingsDto) => host.aiWriteSettings(settings),
+    aiChatRequest: (payload: AiChatPayloadDto) => host.aiChatRequest(payload),
+    aiCancelStream: () => host.aiCancelStream(),
+    aiInlineRequest: (payload: AiInlineRequestDto) => host.aiInlineRequest(payload),
+    aiCancelInline: (requestId: string) => host.aiCancelInline(requestId),
+    aiTestConnection: (payload: AiInlineRequestDto | AiChatPayloadDto) => host.aiTestConnection(payload),
+    onAiChunk: (listener: AiStreamChunkListener) => host.onAiChunk(listener),
+    onAiStreamEnd: (listener: AiStreamEndListener) => host.onAiStreamEnd(listener),
+    onAiStreamError: (listener: AiStreamErrorListener) => host.onAiStreamError(listener)
+  });
+}
+
 // This is the only new renderer module allowed to read the preload global.
 // Domain services below it expose narrower capabilities and remain host-only.
 const nativeHost = window.api;
@@ -386,3 +411,10 @@ const rcloneRegistration = rendererPlatform.services.register(
   { owner: 'core', exposeToPlugins: false }
 );
 rendererPlatform.lifecycle.add(rcloneRegistration);
+
+const aiHostRegistration = rendererPlatform.services.register(
+  AI_HOST_SERVICE_ID,
+  createAiHost(nativeHost),
+  { owner: 'core', exposeToPlugins: false }
+);
+rendererPlatform.lifecycle.add(aiHostRegistration);

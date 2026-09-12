@@ -53,6 +53,15 @@ import type {
 } from './projects';
 import type { WorkspaceSettingsRequestDto } from './workspace-settings';
 import type { WorkspaceLaunchOpenedWorkspaceDto } from './workspace-launch';
+import type {
+  AiChatPayloadDto,
+  AiInlineRequestDto,
+  AiSettingsDto,
+  AiStreamChunkDto,
+  AiStreamEndDto,
+  AiStreamErrorDto,
+  AiTransportResponseDto
+} from './ai-service';
 
 export type { Dispose } from './lifecycle';
 
@@ -193,13 +202,13 @@ export interface IpcInvokeContracts {
   'plugins:agent-access-get': IpcInvokeContract<[payload: unknown]>;
   'plugins:agent-access-set': IpcInvokeContract<[payload: unknown]>;
   'plugins:agent-access-clear': IpcInvokeContract<[payload: unknown]>;
-  'ai-chat-request': IpcInvokeContract<[payload: unknown]>;
-  'ai-cancel-stream': IpcInvokeContract;
-  'ai-inline-request': IpcInvokeContract<[payload: unknown]>;
-  'ai-inline-cancel': IpcInvokeContract<[requestId: unknown]>;
-  'ai-read-settings': IpcInvokeContract;
-  'ai-write-settings': IpcInvokeContract<[settings: unknown]>;
-  'ai-test-connection': IpcInvokeContract<[payload: unknown]>;
+  'ai-chat-request': IpcInvokeContract<[payload: AiChatPayloadDto], AiTransportResponseDto>;
+  'ai-cancel-stream': IpcInvokeContract<[], AiTransportResponseDto>;
+  'ai-inline-request': IpcInvokeContract<[payload: AiInlineRequestDto], AiTransportResponseDto>;
+  'ai-inline-cancel': IpcInvokeContract<[requestId: string], AiTransportResponseDto>;
+  'ai-read-settings': IpcInvokeContract<[], AiSettingsDto | Record<string, unknown>>;
+  'ai-write-settings': IpcInvokeContract<[settings: AiSettingsDto], boolean | AiTransportResponseDto>;
+  'ai-test-connection': IpcInvokeContract<[payload: AiInlineRequestDto | AiChatPayloadDto], AiTransportResponseDto>;
   'read-files': IpcInvokeContract<[filePaths: unknown]>;
   'chat-history-read': IpcInvokeContract<[workspaceRoot: unknown]>;
   'chat-history-write': IpcInvokeContract<[request: unknown]>;
@@ -242,9 +251,9 @@ export interface IpcEventContracts {
   'plugins:agent-model-event': IpcEventContract<[payload: unknown]>;
   'plugins:changed': IpcEventContract<[payload: PluginManagementChangedDto]>;
   'open-plugin-manager': IpcEventContract;
-  'ai-chunk': IpcEventContract<[payload: unknown]>;
-  'ai-stream-end': IpcEventContract<[payload: unknown]>;
-  'ai-stream-error': IpcEventContract<[payload: unknown]>;
+  'ai-chunk': IpcEventContract<[payload: AiStreamChunkDto]>;
+  'ai-stream-end': IpcEventContract<[payload: AiStreamEndDto]>;
+  'ai-stream-error': IpcEventContract<[payload: AiStreamErrorDto]>;
   'open-ai-settings': IpcEventContract;
   'toggle-ai-chat': IpcEventContract;
   'open-diagnostics-settings': IpcEventContract;

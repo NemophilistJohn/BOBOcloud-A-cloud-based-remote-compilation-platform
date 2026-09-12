@@ -75,6 +75,7 @@ import type { SettingsService } from './settings';
 import type { AccountProfileService } from './account-profile';
 import type { EditorCoreService } from './editor-core';
 import type { AiContextService } from './ai-context';
+import type { AiService, AiServiceHostPort } from './ai-service';
 import type { ServerCommService } from './server-comm';
 
 export interface RendererCommandMap {
@@ -95,6 +96,7 @@ export interface RendererServiceMap {
   readonly 'host.views': Readonly<ViewsHost>;
   readonly 'host.workspaceLaunch': Readonly<WorkspaceLaunchHost>;
   readonly 'host.workspaceSettings': Readonly<WorkspaceSettingsHost>;
+  readonly 'host.ai': Readonly<AiServiceHostPort>;
   readonly 'workbench.confirm': ConfirmService;
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
   readonly 'workbench.documentViews': DocumentViewService;
@@ -133,6 +135,7 @@ export interface RendererServiceMap {
   readonly 'workbench.accountProfile': AccountProfileService;
   readonly 'workbench.editorCore': EditorCoreService;
   readonly 'workbench.aiContext': AiContextService;
+  readonly 'workbench.aiService': AiService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -1105,6 +1108,49 @@ export type {
   AiContextSplitEditorPort,
   AiContextTabDto
 } from './ai-context';
+export type {
+  AiActiveConnectionsResultDto,
+  AiApplySettingsOptions,
+  AiAuthType,
+  AiCapabilitiesDto,
+  AiChatContextPolicyDto,
+  AiChatMessageDto,
+  AiChatPayloadDto,
+  AiChatSettingsDto,
+  AiConnectionDto,
+  AiHealthDto,
+  AiHealthState,
+  AiInlineCompletionResultDto,
+  AiInlineContextDto,
+  AiInlineContextPolicyDto,
+  AiInlineRequestDto,
+  AiInlineSettingsDto,
+  AiLegacyModelDto,
+  AiMode,
+  AiOperationResultDto,
+  AiOperationSuccessDto,
+  AiParametersDto,
+  AiProfileDto,
+  AiProtocol,
+  AiPurpose,
+  AiResultErrorDto,
+  AiService,
+  AiServiceDependencies,
+  AiServiceFacade,
+  AiServiceHostPort,
+  AiServiceMutableState,
+  AiServiceRendererState,
+  AiSettingsDto,
+  AiSettingsSchemaPort,
+  AiStatusDto,
+  AiStreamChunkDto,
+  AiStreamChunkListener,
+  AiStreamEndDto,
+  AiStreamEndListener,
+  AiStreamErrorDto,
+  AiStreamErrorListener,
+  AiTransportResponseDto
+} from './ai-service';
 export type {
   SettingsAiFieldOptionDto,
   SettingsAiFieldOptions,
