@@ -284,7 +284,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'node_modules/temml/dist/temml.mjs',
   'src/ai-markdown.ts',
   'renderer/compat/ai-markdown-adapter.ts',
-  'src/ai-chat-panel.js',
+  'src/ai-chat-panel.ts',
+  'renderer/compat/ai-chat-panel-adapter.ts',
   'src/ai-inline.ts',
   'renderer/compat/ai-inline-adapter.ts',
   'src/app.js'
@@ -450,6 +451,8 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'renderer/compat/ai-context-adapter.js',
     'src/ai-settings-center.js',
     'renderer/compat/ai-settings-center-adapter.js',
+    'src/ai-chat-panel.js',
+    'renderer/compat/ai-chat-panel-adapter.js',
     'src/ai-agent-button.js',
     'renderer/compat/ai-agent-button-adapter.js',
     'src/ai-inline.js',
@@ -561,8 +564,8 @@ test('HTML has at most two startup scripts and the renderer build covers every f
   assert.equal(manifest.entries.core.orderedModules.at(-1), '../src/app.js');
   assert.equal(manifest.entries.aiUi.load, 'first-visible-ai-ui');
   assert.deepEqual(manifest.entries.aiUi.outputs, ['bobo-ai-ui.js', 'bobo-ai-ui.js.map']);
-  assert.equal(manifest.entries.core.orderedModules.includes('../src/ai-chat-panel.js'), false);
-  assert.ok(manifest.entries.aiUi.orderedModules.includes('../src/ai-chat-panel.js'));
+  assert.equal(manifest.entries.core.orderedModules.includes('../src/ai-chat-panel.ts'), false);
+  assert.ok(manifest.entries.aiUi.orderedModules.includes('./compat/ai-chat-panel-adapter.ts'));
 });
 
 test('checked renderer bundles are fresh for their recorded build mode', async (t) => {

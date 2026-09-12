@@ -375,6 +375,13 @@ timers and locale subscription, and exposes only the historical seven-key
 CommonJS-compatible JavaScript module used by both the main process and the
 renderer until that cross-process contract has its own typed wrapper.
 
+The chat panel now follows the same lazy-service boundary. Its historical DOM,
+stream rendering, command suggestions, referenced-file limits, conversation
+history migration, and ten-key `BOBO.aiChatPanel` facade remain unchanged, while
+file/tree/history IPC is narrowed to the private `host.aiChatPanel` port and all
+panel listeners and timers are owned by the disposable
+`workbench.aiChatPanel` service.
+
 - `npm run build:renderer:dev` creates an unminified bundle with a linked source
   map for local development.
 - `npm run build:renderer` creates the minified production bundle.

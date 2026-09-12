@@ -4,4 +4,4 @@ import './compat/ai-settings-center-adapter.ts';
 import './temml-runtime.js';
 import './compat/ai-markdown-adapter.ts';
 import './compat/stream-render-scheduler-adapter.ts';
-import '../src/ai-chat-panel.js';
+import './compat/ai-chat-panel-adapter.ts';

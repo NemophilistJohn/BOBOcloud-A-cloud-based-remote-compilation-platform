@@ -12,7 +12,6 @@ const SOURCE_ROOTS = [path.join(ROOT, 'renderer'), path.join(ROOT, 'src')];
 const NATIVE_HOST_ADAPTER = 'renderer/core/native-host-adapter.ts';
 const LEGACY_DIRECT_ACCESS_LIMITS = new Map([
   ['src/agent-workbench.js', 7],
-  ['src/ai-chat-panel.js', 7],
   ['src/app.js', 23],
   ['src/auth.js', 16],
   ['src/collaboration.js', 6],
@@ -125,6 +124,10 @@ const MIGRATED_AI_AGENT_BUTTON_MODULES = Object.freeze([
 const MIGRATED_AI_SETTINGS_CENTER_MODULES = Object.freeze([
   'renderer/compat/ai-settings-center-adapter.ts',
   'src/ai-settings-center.ts'
+]);
+const MIGRATED_AI_CHAT_PANEL_MODULES = Object.freeze([
+  'renderer/compat/ai-chat-panel-adapter.ts',
+  'src/ai-chat-panel.ts'
 ]);
 
 function sourceFiles(directory) {
@@ -300,6 +303,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated AI settings center slice must not gain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_AI_CHAT_PANEL_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated AI chat panel slice must not regain a direct preload dependency: ${file}`);
+  }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],
     'tasksResolve must remain a unique native-adapter bridge capability');
@@ -459,6 +466,14 @@ test('native host services remain private to the workbench', () => {
     path.join(ROOT, 'renderer/compat/ai-settings-center-adapter.ts'),
     'utf8'
   );
+  const aiChatPanelSource = fs.readFileSync(
+    path.join(ROOT, 'src/ai-chat-panel.ts'),
+    'utf8'
+  );
+  const aiChatPanelAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/ai-chat-panel-adapter.ts'),
+    'utf8'
+  );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
   assert.match(adapter, /PROJECT_TASKS_HOST_SERVICE_ID\s*=\s*['"]host\.projectTasks['"]/);
   assert.match(adapter, /RCLONE_HOST_SERVICE_ID\s*=\s*['"]host\.rclone['"]/);
@@ -475,7 +490,8 @@ test('native host services remain private to the workbench', () => {
     /WORKSPACE_LAUNCH_HOST_SERVICE_ID\s*=\s*['"]host\.workspaceLaunch['"]/);
   assert.match(adapter, /AI_HOST_SERVICE_ID\s*=\s*['"]host\.ai['"]/);
   assert.match(adapter, /AI_UI_HOST_SERVICE_ID\s*=\s*['"]host\.aiUi['"]/);
-  assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 14);
+  assert.match(adapter, /AI_CHAT_PANEL_HOST_SERVICE_ID\s*=\s*['"]host\.aiChatPanel['"]/);
+  assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 15);
   assert.doesNotMatch(adapter, /pluginView\s*:/);
   assert.match(diagnosticsAdapter,
     /DIAGNOSTICS_SETTINGS_SERVICE_ID\s*=\s*['"]workbench\.diagnosticsSettings['"]/);
@@ -620,4 +636,15 @@ test('native host services remain private to the workbench', () => {
   assert.doesNotMatch(aiSettingsCenterAdapter, /\b(?:window|global|globalThis|self)\.api\b/);
   assert.match(aiSettingsCenterAdapter,
     /BOBO\.aiSettingsCenter\s*=\s*\{\s*init:\s*aiSettingsCenter\.init,\s*open:\s*aiSettingsCenter\.open,\s*close:\s*aiSettingsCenter\.close,\s*save:\s*aiSettingsCenter\.save,\s*switchTab:\s*aiSettingsCenter\.switchTab,\s*isDirty:\s*aiSettingsCenter\.isDirty,\s*getDraft:\s*aiSettingsCenter\.getDraft\s*\}/);
+  assert.match(aiChatPanelSource,
+    /AI_CHAT_PANEL_SERVICE_ID\s*=\s*['"]workbench\.aiChatPanel['"]/);
+  assert.match(aiChatPanelSource, /createAiChatPanelService\s*\(/);
+  assert.match(aiChatPanelAdapter, /AI_CHAT_PANEL_SERVICE_ID/);
+  assert.match(aiChatPanelAdapter, /services\.require\(AI_CHAT_PANEL_HOST_SERVICE_ID\)/);
+  assert.match(aiChatPanelAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(aiChatPanelAdapter, /pluginView\s*:/);
+  assert.doesNotMatch(aiChatPanelSource, /\b(?:window|global|globalThis|self)\.api\b/);
+  assert.doesNotMatch(aiChatPanelAdapter, /\b(?:window|global|globalThis|self)\.api\b/);
+  assert.match(aiChatPanelAdapter,
+    /BOBO\.aiChatPanel\s*=\s*\{\s*init:\s*chatPanel\.init,[\s\S]*saveChatHistory:\s*chatPanel\.saveChatHistory\s*\}/);
 });

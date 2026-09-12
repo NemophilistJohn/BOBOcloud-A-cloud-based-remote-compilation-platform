@@ -46,6 +46,7 @@ import type {
   AiStreamEndListener,
   AiStreamErrorListener
 } from '../../types/ai-service';
+import type { AiChatPanelHostPort, AiChatHistoryWireDto, AiChatHistoryWriteDto, AiChatPanelTreeNodeDto } from '../../types/ai-chat-panel';
 import { toDisposable } from './disposable.js';
 import { rendererPlatform } from './bootstrap';
 import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
@@ -64,6 +65,7 @@ export const WORKSPACE_LAUNCH_HOST_SERVICE_ID = 'host.workspaceLaunch';
 export const WORKSPACE_SETTINGS_HOST_SERVICE_ID = 'host.workspaceSettings';
 export const AI_HOST_SERVICE_ID = 'host.ai';
 export const AI_UI_HOST_SERVICE_ID = 'host.aiUi';
+export const AI_CHAT_PANEL_HOST_SERVICE_ID = 'host.aiChatPanel';
 
 function optionalDisposable(candidate: unknown): Disposable | null {
   return typeof candidate === 'function'
@@ -327,6 +329,39 @@ function createAiUiHost(host: NativeHost): Readonly<AiAgentButtonHostPort> {
   });
 }
 
+function createAiChatPanelHost(host: NativeHost): Readonly<AiChatPanelHostPort> {
+  const isRecord = (value: unknown): value is Record<string, unknown> => (
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+  );
+  return Object.freeze({
+    readFiles: async (filePaths: readonly string[]) => {
+      const result = await host.readFiles(filePaths);
+      return isRecord(result)
+        ? result as Readonly<Record<string, unknown>>
+        : Object.freeze({}) as Readonly<Record<string, unknown>>;
+    },
+    readTree: async (workspaceRoot: string) => {
+      const result = await host.readTree(workspaceRoot);
+      return isRecord(result)
+        ? result as AiChatPanelTreeNodeDto
+        : null;
+    },
+    loadChatHistory: async (workspaceRoot: string) => {
+      const result = await host.loadChatHistory(workspaceRoot);
+      return isRecord(result)
+        ? result as AiChatHistoryWireDto
+        : null;
+    },
+    saveChatHistory: (workspaceRoot: string, data: AiChatHistoryWriteDto) => (
+      host.saveChatHistory(workspaceRoot, data)
+    ),
+    onWorkspaceOpened: (listener: () => void) => {
+      const dispose = host.onWorkspaceOpened(() => listener());
+      return toDisposable(typeof dispose === 'function' ? dispose : () => {});
+    }
+  });
+}
+
 // This is the only new renderer module allowed to read the preload global.
 // Domain services below it expose narrower capabilities and remain host-only.
 const nativeHost = window.api;
@@ -437,3 +472,10 @@ const aiUiHostRegistration = rendererPlatform.services.register(
   { owner: 'core', exposeToPlugins: false }
 );
 rendererPlatform.lifecycle.add(aiUiHostRegistration);
+
+const aiChatPanelHostRegistration = rendererPlatform.services.register(
+  AI_CHAT_PANEL_HOST_SERVICE_ID,
+  createAiChatPanelHost(nativeHost),
+  { owner: 'core', exposeToPlugins: false }
+);
+rendererPlatform.lifecycle.add(aiChatPanelHostRegistration);

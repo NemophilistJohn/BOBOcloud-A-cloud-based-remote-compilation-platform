@@ -94,7 +94,7 @@ const EXPECTED_AI_UI_MODULES = [
   './temml-runtime.js',
   './compat/ai-markdown-adapter.ts',
   './compat/stream-render-scheduler-adapter.ts',
-  '../src/ai-chat-panel.js'
+  './compat/ai-chat-panel-adapter.ts'
 ];
 const EXPECTED_TERMINAL_UI_MODULES = [
   '@xterm/xterm',
@@ -378,7 +378,9 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(aiUiSourceMap.sources.some((source) => source.endsWith('/src/ai-settings-center.js')), false);
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/renderer/compat/ai-settings-center-adapter.ts')));
   assert.equal(aiUiSourceMap.sources.some((source) => source.endsWith('/renderer/compat/ai-settings-center-adapter.js')), false);
-  assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/src/ai-chat-panel.js')));
+  assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/src/ai-chat-panel.ts')));
+  assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/renderer/compat/ai-chat-panel-adapter.ts')));
+  assert.equal(aiUiSourceMap.sources.some((source) => source.endsWith('/src/ai-chat-panel.js')), false);
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/src/stream-render-scheduler.ts')));
   assert.ok(aiUiSourceMap.sources.some((source) => source.endsWith('/renderer/compat/stream-render-scheduler-adapter.ts')));
   assert.equal(aiUiSourceMap.sources.some((source) => source.endsWith('/src/stream-render-scheduler.js')), false);

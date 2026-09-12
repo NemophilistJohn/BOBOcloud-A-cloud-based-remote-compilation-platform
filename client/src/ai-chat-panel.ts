@@ -1,8 +1,99 @@
-// src/ai-chat-panel.js — AI Chat panel on the right side
-(function(global) {
-  var BOBO = global.BOBO || {};
-  global.BOBO = BOBO;
-  var S = BOBO.state;
+// @ts-nocheck
+// src/ai-chat-panel.ts — AI Chat panel on the right side
+//
+// The DOM implementation intentionally remains structurally identical to the
+// historical panel.  Browser, sibling-module, and host access is injected at
+// the compatibility boundary so this service can be disposed independently
+// and never needs to read Window.api itself.
+
+import { DisposableStore, toDisposable } from '../renderer/core/disposable.js';
+import type {
+  AiChatPanelAiServicePort,
+  AiChatPanelDependencies,
+  AiChatPanelFacade,
+  AiChatPanelI18nPort,
+  AiChatPanelService
+} from '../types/ai-chat-panel';
+
+export const AI_CHAT_PANEL_SERVICE_ID = 'workbench.aiChatPanel' as const;
+
+interface InternalBobo {
+  i18n?: AiChatPanelI18nPort;
+  aiService?: AiChatPanelAiServicePort;
+  aiContext?: ReturnType<AiChatPanelDependencies['getAiContext']>;
+  aiPrompts?: ReturnType<AiChatPanelDependencies['getAiPrompts']>;
+  aiMarkdown?: ReturnType<AiChatPanelDependencies['getAiMarkdown']>;
+  aiSettingsCenter?: ReturnType<AiChatPanelDependencies['getSettingsCenter']>;
+  aiAgentButton?: ReturnType<AiChatPanelDependencies['getAgentButton']>;
+  workbench?: ReturnType<AiChatPanelDependencies['getWorkbench']>;
+  icons?: ReturnType<AiChatPanelDependencies['getIcons']>;
+  createStreamRenderScheduler?: ReturnType<AiChatPanelDependencies['getSchedulerFactory']>;
+  toast?: { info?: (message: string) => void };
+}
+
+export function createAiChatPanelService(
+  dependencies: AiChatPanelDependencies
+): AiChatPanelService {
+  const document = dependencies.document;
+  const window = dependencies.window;
+  const global = dependencies.window;
+  const S = dependencies.state;
+  const lifecycle = new DisposableStore({
+    onError: (event) => {
+      try {
+        (dependencies.logger || console).error('AI chat panel disposal:', event.error);
+      } catch (_) {
+        // Cleanup observers must not interrupt renderer teardown.
+      }
+    }
+  });
+  let disposed = false;
+  let subscriptionsBound = false;
+  const ownedTimers = new Set<number>();
+  const setTimeout = (callback, delay) => {
+    let handle = null;
+    const wrapped = () => {
+      if (handle !== null) ownedTimers.delete(handle);
+      if (!disposed) callback();
+    };
+    handle = dependencies.setTimer(wrapped, delay);
+    if (handle !== null && handle !== undefined) ownedTimers.add(handle);
+    return handle;
+  };
+  const clearTimeout = (handle) => {
+    if (handle === null || handle === undefined) return;
+    ownedTimers.delete(handle);
+    try { dependencies.clearTimer(handle); } catch (_) { /* best effort */ }
+  };
+  const listen = (target, type, listener, options) => {
+    target.addEventListener(type, listener, options);
+    const registration = toDisposable(() => target.removeEventListener(type, listener, options));
+    lifecycle.add(registration);
+    return registration;
+  };
+  const BOBO: InternalBobo = {};
+  Object.defineProperties(BOBO, {
+    i18n: { enumerable: true, get: () => dependencies.getI18n() || undefined },
+    aiService: { enumerable: true, get: () => dependencies.getAiService() || undefined },
+    aiContext: { enumerable: true, get: () => dependencies.getAiContext() || undefined },
+    aiPrompts: { enumerable: true, get: () => dependencies.getAiPrompts() || undefined },
+    aiMarkdown: { enumerable: true, get: () => dependencies.getAiMarkdown() || undefined },
+    aiSettingsCenter: { enumerable: true, get: () => dependencies.getSettingsCenter() || undefined },
+    aiAgentButton: { enumerable: true, get: () => dependencies.getAgentButton() || undefined },
+    workbench: { enumerable: true, get: () => dependencies.getWorkbench() || undefined },
+    icons: { enumerable: true, get: () => dependencies.getIcons() || undefined },
+    createStreamRenderScheduler: { enumerable: true, get: () => dependencies.getSchedulerFactory() || undefined },
+    toast: { enumerable: true, get: () => dependencies.getToast ? dependencies.getToast() || undefined : undefined }
+  });
+
+  function reportError(...args) {
+    try {
+      const logger = dependencies.logger || console;
+      if (logger && typeof logger.error === 'function') logger.error(...args);
+    } catch (_) {
+      // Logging must never change the panel's failure behavior.
+    }
+  }
 
   function t(key, params) {
     if (BOBO.i18n && BOBO.i18n.t) return BOBO.i18n.t(key, params);
@@ -32,7 +123,11 @@
   var contextBarEl = null;
   var filePickerEl = null;   // file picker dropdown
   var cmdSuggestEl = null;   // command suggestions dropdown
+  var filePickerOutsideDispose = null;
+  var commandOutsideDispose = null;
   var chatGeneration = 0;
+  var filePickerRequestGeneration = 0;
+  var historyRequestGeneration = 0;
   var historyPreviousFocus = null;
   var inputFocusTimer = null;
   var streamRenderScheduler = BOBO.createStreamRenderScheduler
@@ -65,13 +160,13 @@
     // Send button
     var sendBtn = document.getElementById('ai-chat-send');
     if (sendBtn) {
-      sendBtn.addEventListener('click', sendMessage);
+      listen(sendBtn, 'click', sendMessage);
     }
 
     // Close button
     var closeBtn = document.getElementById('ai-chat-close');
     if (closeBtn) {
-      closeBtn.addEventListener('click', function() {
+      listen(closeBtn, 'click', function() {
         if (BOBO.aiAgentButton) {
           BOBO.aiAgentButton.toggleChat(false);
         }
@@ -81,24 +176,24 @@
     // Clear button
     var clearBtn = document.getElementById('ai-chat-clear');
     if (clearBtn) {
-      clearBtn.addEventListener('click', clearChat);
+      listen(clearBtn, 'click', clearChat);
     }
 
     // New conversation button
     var newBtn = document.getElementById('ai-chat-new');
     if (newBtn) {
-      newBtn.addEventListener('click', newConversation);
+      listen(newBtn, 'click', newConversation);
     }
 
     // History button
     var histBtn = document.getElementById('ai-chat-history');
     if (histBtn) {
-      histBtn.addEventListener('click', showHistoryDialog);
+      listen(histBtn, 'click', showHistoryDialog);
     }
 
     var settingsBtn = document.getElementById('ai-chat-settings');
     if (settingsBtn) {
-      settingsBtn.addEventListener('click', function() {
+      listen(settingsBtn, 'click', function() {
         if (BOBO.aiSettingsCenter) BOBO.aiSettingsCenter.open('connections');
       });
     }
@@ -106,7 +201,7 @@
     // Tab switch detection — refresh context bar when user switches tabs
     var tabbar = document.getElementById('tabbar');
     if (tabbar) {
-      tabbar.addEventListener('click', function() {
+      listen(tabbar, 'click', function() {
         setTimeout(function() {
           if (S.ai && S.ai.chatOpen) updateContextBar();
         }, 100);
@@ -115,7 +210,7 @@
 
     // Input key handler
     if (inputEl) {
-      inputEl.addEventListener('keydown', function(e) {
+      listen(inputEl, 'keydown', function(e) {
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
           // If command suggestions open, execute selected command
@@ -140,7 +235,7 @@
           navigateCommands(e.key === 'ArrowDown' ? 1 : -1);
         }
       });
-      inputEl.addEventListener('input', function() {
+      listen(inputEl, 'input', function() {
         resizeInput();
         handleInputChange();
       });
@@ -148,7 +243,7 @@
 
     // Context bar click delegation
     if (contextBarEl) {
-      contextBarEl.addEventListener('click', function(e) {
+      listen(contextBarEl, 'click', function(e) {
         var removeBtn = e.target.closest('.ai-pill-remove');
         if (removeBtn) {
           var pill = removeBtn.closest('.ai-context-pill');
@@ -173,6 +268,7 @@
 
   // ──── Visibility ────
   function setVisible(visible) {
+    if (disposed) return;
     ensurePanelDOM();
     // Panel visibility is now controlled by CSS opacity/transform via .chat-open class
     // This function handles content refresh when showing
@@ -197,6 +293,7 @@
 
   // ──── Send Message ────
   async function sendMessage() {
+    if (disposed) return;
     if (!inputEl) return;
     var text = inputEl.value.trim();
     if (!text) return;
@@ -262,7 +359,7 @@
       }
       if (refPaths.length > 0) {
         try {
-          var fileContents = await window.api.readFiles(refPaths);
+          var fileContents = await dependencies.host.readFiles(refPaths);
           if (generation !== chatGeneration) return;
           context.referencedFilesContents = {};
           Object.keys(fileContents || {}).sort().forEach(function(filePath) {
@@ -272,7 +369,7 @@
               : String(content || '').slice(0, referencedFileChars);
           });
         } catch (e) {
-          console.error('Error reading referenced files:', e);
+          reportError('Error reading referenced files:', e);
         }
       }
     }
@@ -515,6 +612,7 @@
 
   // ──── Context Bar ────
   function updateContextBar() {
+    if (disposed) return;
     if (!contextBarEl) return;
     contextBarEl.innerHTML = '';
 
@@ -583,6 +681,7 @@
 
   // ──── Referenced File Management ────
   function addReferencedFile(filePath, fileName, fileType) {
+    if (disposed) return;
     if (!S.ai.referencedFiles) S.ai.referencedFiles = [];
     S.ai.excludedAutoContextPaths = (S.ai.excludedAutoContextPaths || []).filter(function(path) { return path !== filePath; });
     for (var i = 0; i < S.ai.referencedFiles.length; i++) {
@@ -597,6 +696,7 @@
   }
 
   function removeReferencedFile(filePath) {
+    if (disposed) return;
     if (!S.ai.referencedFiles) return;
     for (var i = 0; i < S.ai.referencedFiles.length; i++) {
       if (S.ai.referencedFiles[i].path === filePath) {
@@ -608,6 +708,7 @@
   }
 
   function excludeAutoFileContext(filePath) {
+    if (disposed) return;
     if (!filePath) return;
     if (!S.ai.excludedAutoContextPaths) S.ai.excludedAutoContextPaths = [];
     if (S.ai.excludedAutoContextPaths.indexOf(filePath) < 0) S.ai.excludedAutoContextPaths.push(filePath);
@@ -619,6 +720,7 @@
 
   // ──── File Picker Dropdown ────
   function openFilePicker(filterText) {
+    if (disposed) return;
     closeFilePicker();
     closeCommandSuggestions();
     if (!S.workspaceRoot) return;
@@ -626,6 +728,12 @@
   }
 
   function closeFilePicker() {
+    filePickerRequestGeneration += 1;
+    if (filePickerOutsideDispose) {
+      lifecycle.delete(filePickerOutsideDispose);
+      filePickerOutsideDispose.dispose();
+      filePickerOutsideDispose = null;
+    }
     if (filePickerEl && filePickerEl.parentNode) {
       filePickerEl.parentNode.removeChild(filePickerEl);
     }
@@ -633,12 +741,17 @@
   }
 
   async function loadFilePickerTree(filterText) {
+    if (disposed) return;
+    var requestGeneration = ++filePickerRequestGeneration;
+    var workspaceRoot = S.workspaceRoot;
+    if (!workspaceRoot) return;
     try {
-      var tree = await window.api.readTree(S.workspaceRoot);
+      var tree = await dependencies.host.readTree(workspaceRoot);
+      if (disposed || requestGeneration !== filePickerRequestGeneration || workspaceRoot !== S.workspaceRoot) return;
       if (!tree) return;
       renderFilePicker(tree, filterText);
     } catch (e) {
-      console.error('File picker load error:', e);
+      reportError('File picker load error:', e);
     }
   }
 
@@ -756,11 +869,13 @@
     var closeHandler = function(e) {
       if (filePickerEl && !filePickerEl.contains(e.target)) {
         closeFilePicker();
-        document.removeEventListener('mousedown', closeHandler, true);
       }
     };
+    var pickerForListener = filePickerEl;
     setTimeout(function() {
-      document.addEventListener('mousedown', closeHandler, true);
+      if (filePickerEl === pickerForListener) {
+        filePickerOutsideDispose = listen(document, 'mousedown', closeHandler, true);
+      }
     }, 0);
 
     document.body.appendChild(filePickerEl);
@@ -837,17 +952,24 @@
     var closeHandler = function(e) {
       if (cmdSuggestEl && !cmdSuggestEl.contains(e.target) && e.target !== inputEl) {
         closeCommandSuggestions();
-        document.removeEventListener('mousedown', closeHandler, true);
       }
     };
+    var suggestionsForListener = cmdSuggestEl;
     setTimeout(function() {
-      document.addEventListener('mousedown', closeHandler, true);
+      if (cmdSuggestEl === suggestionsForListener) {
+        commandOutsideDispose = listen(document, 'mousedown', closeHandler, true);
+      }
     }, 0);
 
     document.body.appendChild(cmdSuggestEl);
   }
 
   function closeCommandSuggestions() {
+    if (commandOutsideDispose) {
+      lifecycle.delete(commandOutsideDispose);
+      commandOutsideDispose.dispose();
+      commandOutsideDispose = null;
+    }
     if (cmdSuggestEl && cmdSuggestEl.parentNode) {
       cmdSuggestEl.parentNode.removeChild(cmdSuggestEl);
     }
@@ -899,9 +1021,13 @@
 
   // ──── Chat History Persistence ────
   async function loadChatHistory() {
+    if (disposed) return;
     if (!S.workspaceRoot) return;
+    var requestGeneration = ++historyRequestGeneration;
+    var workspaceRoot = S.workspaceRoot;
     try {
-      var history = await window.api.loadChatHistory(S.workspaceRoot);
+      var history = await dependencies.host.loadChatHistory(workspaceRoot);
+      if (disposed || requestGeneration !== historyRequestGeneration || workspaceRoot !== S.workspaceRoot) return;
       if (!history) return;
 
       // Migrate old format: {messages, referencedFiles} → new conversations format
@@ -954,12 +1080,14 @@
       updateContextBar();
       scrollToBottom();
     } catch (e) {
-      console.error('Error loading chat history:', e);
+      reportError('Error loading chat history:', e);
     }
   }
 
   async function saveChatHistory() {
+    if (disposed) return;
     if (!S.workspaceRoot) return;
+    var workspaceRoot = S.workspaceRoot;
     // Sync current messages to the active conversation before saving
     if (S.ai.currentConversationId && (S.ai.chatMessages.length > 0 || (S.ai.referencedFiles || []).length > 0)) {
       var active = null;
@@ -991,12 +1119,12 @@
       return (c.messages && c.messages.length > 0) || (c.referencedFiles && c.referencedFiles.length > 0);
     });
     try {
-      await window.api.saveChatHistory(S.workspaceRoot, {
+      await dependencies.host.saveChatHistory(workspaceRoot, {
         conversations: S.ai.conversations,
         currentConversationId: S.ai.currentConversationId
       });
     } catch (e) {
-      console.error('Error saving chat history:', e);
+      reportError('Error saving chat history:', e);
     }
   }
 
@@ -1241,6 +1369,7 @@
 
   // ──── Clear Chat ────
   function clearChat() {
+    if (disposed) return;
     chatGeneration += 1;
     streamRenderScheduler.cancel();
     if (S.ai.chatStreaming && BOBO.aiService) BOBO.aiService.cancelStream();
@@ -1280,23 +1409,40 @@
 
   // ──── Init ────
   function init() {
+    if (disposed) return;
     ensurePanelDOM();
     setupChatResizer();
     loadChatHistory();
-    // Reload history when workspace changes
-    if (window.api && window.api.onWorkspaceOpened) {
-      window.api.onWorkspaceOpened(function() { loadChatHistory(); });
-    }
-    global.addEventListener('bobo:workspace-changed', function() { loadChatHistory(); });
+    if (subscriptionsBound) return;
+    subscriptionsBound = true;
+    // Reload history when workspace changes.
+    lifecycle.add(dependencies.host.onWorkspaceOpened(function() { loadChatHistory(); }));
+    listen(global, 'bobo:workspace-changed', function() { loadChatHistory(); });
     if (BOBO.i18n && BOBO.i18n.onChange) {
-      BOBO.i18n.onChange(function() {
+      var localeDispose = BOBO.i18n.onChange(function() {
+        if (disposed) return;
         updateChatModelLabel();
         if (!S.ai.chatMessages.length) renderAllMessages();
       });
+      if (typeof localeDispose === 'function') lifecycle.add(toDisposable(localeDispose));
     }
   }
 
-  BOBO.aiChatPanel = {
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    chatGeneration += 1;
+    filePickerRequestGeneration += 1;
+    historyRequestGeneration += 1;
+    try { streamRenderScheduler.cancel(); } catch (_) { /* best effort */ }
+    closeFilePicker();
+    closeCommandSuggestions();
+    closeHistoryDialog();
+    for (const timer of Array.from(ownedTimers)) clearTimeout(timer);
+    lifecycle.dispose();
+  }
+
+  const facade: AiChatPanelFacade = {
     init: init,
     setVisible: setVisible,
     sendMessage: sendMessage,
@@ -1308,4 +1454,10 @@
     openFilePicker: openFilePicker,
     saveChatHistory: saveChatHistory
   };
-})(window);
+  const service: AiChatPanelService = {
+    ...facade,
+    get disposed() { return disposed; },
+    dispose
+  };
+  return Object.freeze(service);
+}
