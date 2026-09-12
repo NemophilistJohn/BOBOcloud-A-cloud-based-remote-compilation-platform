@@ -53,7 +53,7 @@ import './compat/workspace-settings-adapter.ts';
 import './compat/editor-core-adapter.ts';
 import './compat/document-views-adapter.ts';
 import '../src/workspace.js';
-import '../src/agent-workbench.js';
+import './compat/agent-workbench-adapter.ts';
 import './compat/plugin-details-adapter.ts';
 import './compat/rclone-client-adapter.ts';
 import './compat/rclone-settings-adapter.ts';

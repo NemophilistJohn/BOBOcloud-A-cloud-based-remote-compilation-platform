@@ -47,6 +47,17 @@ import type {
   AiStreamErrorListener
 } from '../../types/ai-service';
 import type { AiChatPanelHostPort, AiChatHistoryWireDto, AiChatHistoryWriteDto, AiChatPanelTreeNodeDto } from '../../types/ai-chat-panel';
+import type {
+  AgentWorkbenchAccessIdentityDto,
+  AgentWorkbenchAccessSetRequestDto,
+  AgentWorkbenchAccessResponseDto,
+  AgentWorkbenchApprovalCancelResultDto,
+  AgentWorkbenchApprovalDecisionRequestDto,
+  AgentWorkbenchApprovalDecisionResponseDto,
+  AgentWorkbenchApprovalDescribeResponseDto,
+  AgentWorkbenchApprovalRequestDto,
+  AgentWorkbenchHostPort
+} from '../../types/agent-workbench';
 import { toDisposable } from './disposable.js';
 import { rendererPlatform } from './bootstrap';
 import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
@@ -66,6 +77,7 @@ export const WORKSPACE_SETTINGS_HOST_SERVICE_ID = 'host.workspaceSettings';
 export const AI_HOST_SERVICE_ID = 'host.ai';
 export const AI_UI_HOST_SERVICE_ID = 'host.aiUi';
 export const AI_CHAT_PANEL_HOST_SERVICE_ID = 'host.aiChatPanel';
+export const AGENT_WORKBENCH_HOST_SERVICE_ID = 'host.agentWorkbench';
 
 function optionalDisposable(candidate: unknown): Disposable | null {
   return typeof candidate === 'function'
@@ -362,6 +374,66 @@ function createAiChatPanelHost(host: NativeHost): Readonly<AiChatPanelHostPort> 
   });
 }
 
+/**
+ * Invoke one of the Agent workbench bridge methods without leaking the broad
+ * NativeHost shape to the feature module. The preload bridge is versioned
+ * independently from the renderer, so preserve the unavailable-method
+ * failure mode for older installations.
+ */
+function invokeAgentWorkbench<T>(
+  host: NativeHost,
+  method: unknown,
+  request: unknown,
+  operation: string
+): Promise<T> {
+  if (typeof method !== 'function') {
+    return Promise.reject(new Error('Agent workbench host method unavailable: ' + operation));
+  }
+  try {
+    return Promise.resolve(
+      (method as (payload: unknown) => Promise<unknown>).call(host, request)
+    ).then((value) => value as T);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
+/** Narrow host projection for the Agent workbench approval/access broker. */
+function createAgentWorkbenchHost(host: NativeHost): Readonly<AgentWorkbenchHostPort> {
+  return Object.freeze({
+    getAccessMode: (request: AgentWorkbenchAccessIdentityDto) => (
+      invokeAgentWorkbench<AgentWorkbenchAccessResponseDto>(
+        host, host.agentAccessGet, request, 'agentAccessGet'
+      )
+    ),
+    setAccessMode: (request: AgentWorkbenchAccessSetRequestDto) => (
+      invokeAgentWorkbench<AgentWorkbenchAccessResponseDto>(
+        host, host.agentAccessSet, request, 'agentAccessSet'
+      )
+    ),
+    clearAccessMode: (request: AgentWorkbenchAccessIdentityDto) => (
+      invokeAgentWorkbench<AgentWorkbenchAccessResponseDto>(
+        host, host.agentAccessClear, request, 'agentAccessClear'
+      )
+    ),
+    describeApproval: (request: AgentWorkbenchApprovalRequestDto) => (
+      invokeAgentWorkbench<AgentWorkbenchApprovalDescribeResponseDto>(
+        host, host.pluginsAgentApprovalDescribe, request, 'pluginsAgentApprovalDescribe'
+      )
+    ),
+    decideApproval: (request: AgentWorkbenchApprovalDecisionRequestDto) => (
+      invokeAgentWorkbench<AgentWorkbenchApprovalDecisionResponseDto>(
+        host, host.pluginsAgentApprovalDecide, request, 'pluginsAgentApprovalDecide'
+      )
+    ),
+    cancelApproval: (request: AgentWorkbenchApprovalRequestDto) => (
+      invokeAgentWorkbench<AgentWorkbenchApprovalCancelResultDto>(
+        host, host.pluginsAgentApprovalCancel, request, 'pluginsAgentApprovalCancel'
+      )
+    )
+  });
+}
+
 // This is the only new renderer module allowed to read the preload global.
 // Domain services below it expose narrower capabilities and remain host-only.
 const nativeHost = window.api;
@@ -479,3 +551,10 @@ const aiChatPanelHostRegistration = rendererPlatform.services.register(
   { owner: 'core', exposeToPlugins: false }
 );
 rendererPlatform.lifecycle.add(aiChatPanelHostRegistration);
+
+const agentWorkbenchHostRegistration = rendererPlatform.services.register(
+  AGENT_WORKBENCH_HOST_SERVICE_ID,
+  createAgentWorkbenchHost(nativeHost),
+  { owner: 'core', exposeToPlugins: false }
+);
+rendererPlatform.lifecycle.add(agentWorkbenchHostRegistration);

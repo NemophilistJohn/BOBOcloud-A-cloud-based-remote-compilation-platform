@@ -382,6 +382,18 @@ file/tree/history IPC is narrowed to the private `host.aiChatPanel` port and all
 panel listeners and timers are owned by the disposable
 `workbench.aiChatPanel` service.
 
+The Agent workbench now follows the same typed vertical boundary in the core
+bundle. `src/agent-workbench.ts` keeps its keyed feed reconciliation,
+host-canonical approval rendering, access-mode confirmation, and six-key
+`BOBO.agentWorkbench` facade while receiving sibling services and timers
+through injected ports. `core/native-host-adapter.ts` narrows the six approval
+and access operations to the private `host.agentWorkbench` capability;
+`compat/agent-workbench-adapter.ts` registers the disposable
+`workbench.agentWorkbench` service and preserves the existing ready-event
+initialization timing. Disposal fences late approval/model results and clears
+owned DOM, listener, and expiry-timer state, while neither the service nor its
+host authority is exposed to downloaded plugins.
+
 - `npm run build:renderer:dev` creates an unminified bundle with a linked source
   map for local development.
 - `npm run build:renderer` creates the minified production bundle.

@@ -59,7 +59,7 @@ const EXPECTED_MODULES = [
   './compat/editor-core-adapter.ts',
   './compat/document-views-adapter.ts',
   '../src/workspace.js',
-  '../src/agent-workbench.js',
+  './compat/agent-workbench-adapter.ts',
   './compat/plugin-details-adapter.ts',
   './compat/rclone-client-adapter.ts',
   './compat/rclone-settings-adapter.ts',

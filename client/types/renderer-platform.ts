@@ -80,6 +80,7 @@ import type { AiInlineService } from './ai-inline';
 import type { AiAgentButtonService, AiAgentButtonHostPort } from './ai-agent-button';
 import type { AiSettingsCenterService } from './ai-settings-center';
 import type { AiChatPanelHostPort, AiChatPanelService } from './ai-chat-panel';
+import type { AgentWorkbenchHostPort, AgentWorkbenchService } from './agent-workbench';
 import type { ServerCommService } from './server-comm';
 
 export interface RendererCommandMap {
@@ -103,6 +104,7 @@ export interface RendererServiceMap {
   readonly 'host.ai': Readonly<AiServiceHostPort>;
   readonly 'host.aiUi': Readonly<AiAgentButtonHostPort>;
   readonly 'host.aiChatPanel': Readonly<AiChatPanelHostPort>;
+  readonly 'host.agentWorkbench': Readonly<AgentWorkbenchHostPort>;
   readonly 'workbench.confirm': ConfirmService;
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
   readonly 'workbench.documentViews': DocumentViewService;
@@ -146,6 +148,7 @@ export interface RendererServiceMap {
   readonly 'workbench.aiAgentButton': AiAgentButtonService;
   readonly 'workbench.aiSettingsCenter': AiSettingsCenterService;
   readonly 'workbench.aiChatPanel': AiChatPanelService;
+  readonly 'workbench.agentWorkbench': AgentWorkbenchService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -531,6 +534,75 @@ export type {
   AgentTimelineStatusDto,
   AgentVersionDto
 } from './agent';
+export type {
+  AgentWorkbenchAccessIdentityDto,
+  AgentWorkbenchAccessRequestStateDto,
+  AgentWorkbenchAccessRequestStatusDto,
+  AgentWorkbenchAccessResponseDto,
+  AgentWorkbenchAccessSetRequestDto,
+  AgentWorkbenchAgentPort,
+  AgentWorkbenchAgentsPort,
+  AgentWorkbenchAiSettingsCenterPort,
+  AgentWorkbenchApprovalCancelResultDto,
+  AgentWorkbenchApprovalDecisionRequestDto,
+  AgentWorkbenchApprovalDecisionResponseDto,
+  AgentWorkbenchApprovalDecisionStateDto,
+  AgentWorkbenchApprovalDecisionStatusDto,
+  AgentWorkbenchApprovalDescribeResponseDto,
+  AgentWorkbenchApprovalDetailDto,
+  AgentWorkbenchApprovalDetailStateDto,
+  AgentWorkbenchApprovalDetailStatusDto,
+  AgentWorkbenchApprovalDetailWireDto,
+  AgentWorkbenchApprovalRequestDto,
+  AgentWorkbenchApprovalResultDto,
+  AgentWorkbenchApprovalResultWireDto,
+  AgentWorkbenchApprovalRiskDto,
+  AgentWorkbenchApprovalUnavailableCodeDto,
+  AgentWorkbenchApprovalUnavailableDto,
+  AgentWorkbenchCommandExecutionResultDto,
+  AgentWorkbenchCommandPayloadDto,
+  AgentWorkbenchCommandValuesDto,
+  AgentWorkbenchCommandsPort,
+  AgentWorkbenchConfirmPort,
+  AgentWorkbenchDependencies,
+  AgentWorkbenchDocumentViewsPort,
+  AgentWorkbenchEffectiveReasoningEffortDto,
+  AgentWorkbenchFacade,
+  AgentWorkbenchFeedItemDto,
+  AgentWorkbenchFeedScrollSnapshotDto,
+  AgentWorkbenchFileTabDto,
+  AgentWorkbenchHostPort,
+  AgentWorkbenchHostServiceId,
+  AgentWorkbenchI18nPort,
+  AgentWorkbenchLogger,
+  AgentWorkbenchMessageDto,
+  AgentWorkbenchMessageFeedItemDto,
+  AgentWorkbenchPreferenceDto,
+  AgentWorkbenchProcessApprovalDetailDto,
+  AgentWorkbenchProcessApprovalDetailsDto,
+  AgentWorkbenchRecordDto,
+  AgentWorkbenchRendererState,
+  AgentWorkbenchService,
+  AgentWorkbenchServiceId,
+  AgentWorkbenchSessionStatusDto,
+  AgentWorkbenchStateChangeDto,
+  AgentWorkbenchStateChangeListener,
+  AgentWorkbenchStateDto,
+  AgentWorkbenchStatePatchDto,
+  AgentWorkbenchTabDto,
+  AgentWorkbenchTabMetadataDto,
+  AgentWorkbenchTabProvider,
+  AgentWorkbenchTimelineFeedItemDto,
+  AgentWorkbenchTimelineItemDto,
+  AgentWorkbenchUnderlyingViewModeDto,
+  AgentWorkbenchUnderlyingViewSnapshotDto,
+  AgentWorkbenchViewsPort,
+  AgentWorkbenchWorkspacePort,
+  AgentWorkbenchWorkspaceWriteApprovalDetailDto,
+  AgentWorkbenchWorkspaceWriteApprovalDetailsDto,
+  AgentWorkbenchWorkbenchPort,
+  AgentWorkbenchWindowPort
+} from './agent-workbench';
 export type {
   RendererOpaqueContributionDto,
   SourceControlDescriptorDto,

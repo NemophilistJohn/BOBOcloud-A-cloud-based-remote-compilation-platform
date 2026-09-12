@@ -1,12 +1,90 @@
-import { marked } from 'marked';
-
+// @ts-nocheck
 // Host-rendered Agent workbench. Installed extensions publish bounded state and
 // command ids; this module owns every DOM node and all interaction behavior.
-(function(global) {
+//
+// The DOM implementation intentionally remains structurally identical to the
+// historical workbench.  Browser, sibling-module, and native-host access is
+// supplied through a typed dependency boundary so this slice can be loaded and
+// disposed independently without reading the preload bridge directly.
+
+import { marked } from 'marked';
+import { DisposableStore, toDisposable } from '../renderer/core/disposable.js';
+import type {
+  AgentWorkbenchDependencies,
+  AgentWorkbenchService
+} from '../types/agent-workbench';
+
+export const AGENT_WORKBENCH_SERVICE_ID = 'workbench.agentWorkbench';
+
+export function createAgentWorkbenchService(
+  dependencies: AgentWorkbenchDependencies
+): AgentWorkbenchService {
   'use strict';
 
-  var BOBO = global.BOBO = global.BOBO || {};
-  var S = BOBO.state;
+  // `eventTarget` is the renderer window at the compatibility edge.  Keeping
+  // it as the local global preserves the legacy DOM behavior while all native
+  // host calls go through dependencies.host below.
+  var global = dependencies.eventTarget;
+  var document = dependencies.document;
+  var S = dependencies.state;
+  var disposed = false;
+  var lifecycleEpoch = 0;
+  var lifecycle = new DisposableStore();
+  var ownedTimers = new Set();
+
+  function setTimeout(callback, delay) {
+    var timer;
+    var wrapped = function() {
+      if (timer !== undefined && timer !== null) ownedTimers.delete(timer);
+      if (!disposed) callback();
+    };
+    timer = dependencies.setTimer(wrapped, delay);
+    if (timer !== undefined && timer !== null) ownedTimers.add(timer);
+    return timer;
+  }
+
+  function clearTimeout(timer) {
+    if (timer === undefined || timer === null) return;
+    ownedTimers.delete(timer);
+    try { dependencies.clearTimer(timer); } catch (_) {}
+  }
+
+  function requestAnimationFrame(callback) {
+    return dependencies.requestAnimationFrame(function() {
+      if (!disposed) callback();
+    });
+  }
+
+  function isCurrent(epoch) {
+    return !disposed && epoch === lifecycleEpoch;
+  }
+
+  function listen(target, type, listener, options) {
+    target.addEventListener(type, listener, options);
+    return lifecycle.add(toDisposable(function() {
+      try { target.removeEventListener(type, listener, options); } catch (_) {}
+    }));
+  }
+
+  // Keep a narrow, lazy compatibility projection for sibling renderer
+  // services.  The projection is intentionally not published to plugins.
+  var BOBO = {};
+  Object.defineProperties(BOBO, {
+    state: { enumerable: true, get: function() { return S; } },
+    platform: { enumerable: true, get: function() {
+      return { agents: dependencies.getAgents(), commands: dependencies.getCommands() };
+    } },
+    i18n: { enumerable: true, get: function() { return dependencies.getI18n(); } },
+    confirm: { enumerable: true, get: function() {
+      var value = dependencies.getConfirm();
+      return typeof value === 'function' ? value : value && value.confirm;
+    } },
+    aiSettingsCenter: { enumerable: true, get: function() { return dependencies.getAiSettingsCenter(); } },
+    workspace: { enumerable: true, get: function() { return dependencies.getWorkspace(); } },
+    workbench: { enumerable: true, get: function() { return dependencies.getWorkbench(); } },
+    views: { enumerable: true, get: function() { return dependencies.getViews(); } },
+    documentViews: { enumerable: true, get: function() { return dependencies.getDocumentViews(); } }
+  });
   var VIEW_ID = 'agent';
   var PAGE_ID = 'agent-workbench-view';
   var TAB_PREFIX = 'agent-workbench:';
@@ -241,14 +319,15 @@ import { marked } from 'marked';
 
   function ensureAccessMode(record) {
     var identity = accessIdentity(record);
-    var api = global.api;
-    if (!identity || !api || typeof api.agentAccessGet !== 'function') return;
+    var api = dependencies.host;
+    if (!identity || !api || typeof api.getAccessMode !== 'function') return;
+    var epoch = lifecycleEpoch;
     var key = accessKey(identity);
     if (accessRequests.has(key)) return;
     var entry = { status: 'loading' };
     accessRequests.set(key, entry);
-    Promise.resolve(api.agentAccessGet(identity)).then(function(value) {
-      if (!initialized) return;
+    Promise.resolve(api.getAccessMode(identity)).then(function(value) {
+      if (!initialized || !isCurrent(epoch)) return;
       var accessMode = validateAccessResponse(value, identity);
       var current = recordById(record.id);
       if (accessKey(accessIdentity(current)) !== key) return;
@@ -259,6 +338,7 @@ import { marked } from 'marked';
       preferences.set(current.id, preference);
       renderAll();
     }).catch(function(error) {
+      if (!isCurrent(epoch)) return;
       entry.status = 'error';
       errors.set(record.id, t('Agent action failed: {message}', { message: exceptionMessage(error) }));
       renderAll();
@@ -267,9 +347,10 @@ import { marked } from 'marked';
 
   async function setAccessMode(record, nextMode) {
     var identity = accessIdentity(record);
-    var api = global.api;
+    var api = dependencies.host;
     var accessMode = normalizedAccessMode(nextMode);
-    if (!identity || !api || typeof api.agentAccessSet !== 'function') return false;
+    if (!identity || !api || typeof api.setAccessMode !== 'function') return false;
+    var epoch = lifecycleEpoch;
     var confirmed = false;
     if (accessMode === 'full') {
       confirmed = typeof BOBO.confirm === 'function' && await BOBO.confirm({
@@ -287,9 +368,10 @@ import { marked } from 'marked';
     errors.delete(record.id);
     renderAll();
     try {
-      var value = await api.agentAccessSet(Object.assign({}, identity, { accessMode: accessMode, confirmed: confirmed }));
+      var value = await api.setAccessMode(Object.assign({}, identity, { accessMode: accessMode, confirmed: confirmed }));
       var accepted = validateAccessResponse(value, identity);
       if (accepted !== accessMode) throw new TypeError('Agent access mode was not accepted.');
+      if (!isCurrent(epoch)) return false;
       var current = recordById(record.id);
       if (accessKey(accessIdentity(current)) !== key) return false;
       entry.status = 'ready';
@@ -297,6 +379,7 @@ import { marked } from 'marked';
       updatePreferences(current, { accessMode: accepted });
       return true;
     } catch (error) {
+      if (!isCurrent(epoch)) return false;
       entry.status = 'error';
       errors.set(record.id, t('Agent action failed: {message}', { message: exceptionMessage(error) }));
       renderAll();
@@ -307,12 +390,15 @@ import { marked } from 'marked';
   async function clearAccessMode(record, identity) {
     if (!identity) return;
     accessRequests.delete(accessKey(identity));
-    var api = global.api;
-    if (!api || typeof api.agentAccessClear !== 'function') return;
+    var api = dependencies.host;
+    if (!api || typeof api.clearAccessMode !== 'function') return;
+    var epoch = lifecycleEpoch;
     try {
-      var value = await api.agentAccessClear(identity);
+      var value = await api.clearAccessMode(identity);
+      if (!isCurrent(epoch)) return;
       if (validateAccessResponse(value, identity) !== 'ask') throw new TypeError('Agent access mode was not cleared.');
     } catch (error) {
+      if (!isCurrent(epoch)) return;
       errors.set(record.id, t('Agent action failed: {message}', { message: exceptionMessage(error) }));
       renderAll();
     }
@@ -325,9 +411,9 @@ import { marked } from 'marked';
 
   function accessReady(record) {
     if (!record || !record.descriptor.capabilities.localTools || !record.state || !record.state.activeSession) return true;
-    var api = global.api;
+    var api = dependencies.host;
     var entry = accessEntry(record);
-    return Boolean(api && typeof api.agentAccessGet === 'function' && entry && entry.status === 'ready');
+    return Boolean(api && typeof api.getAccessMode === 'function' && entry && entry.status === 'ready');
   }
 
   function approvalKey(record, approvalId) {
@@ -383,7 +469,7 @@ import { marked } from 'marked';
 
   function clearApprovalExpiryTimer(key) {
     var timer = approvalExpiryTimers.get(key);
-    if (timer !== undefined && typeof global.clearTimeout === 'function') global.clearTimeout(timer);
+    if (timer !== undefined) clearTimeout(timer);
     approvalExpiryTimers.delete(key);
   }
 
@@ -399,12 +485,13 @@ import { marked } from 'marked';
   function scheduleApprovalExpiry(record, key, entry) {
     clearApprovalExpiryTimer(key);
     var expiresAt = entry && entry.detail && Date.parse(entry.detail.expiresAt);
-    if (!Number.isFinite(expiresAt) || typeof global.setTimeout !== 'function') return;
+    if (!Number.isFinite(expiresAt)) return;
     var delay = Math.max(0, Math.min(2147483647, expiresAt - Date.now() + 25));
-    var timer = global.setTimeout(function() {
+    var epoch = lifecycleEpoch;
+    var timer = setTimeout(function() {
       if (approvalExpiryTimers.get(key) !== timer) return;
       approvalExpiryTimers.delete(key);
-      if (!initialized || approvalDetails.get(key) !== entry || !activeApprovalMatches(record.id, key) || approvalDecisions.has(key)) return;
+      if (!initialized || !isCurrent(epoch) || approvalDetails.get(key) !== entry || !activeApprovalMatches(record.id, key) || approvalDecisions.has(key)) return;
       if (expiresAt > Date.now()) {
         scheduleApprovalExpiry(record, key, entry);
         return;
@@ -438,16 +525,17 @@ import { marked } from 'marked';
   function ensureApprovalDetail(record, approval) {
     var key = approvalKey(record, approval && approval.id);
     if (!record || !record.owner || !approval || !approval.id || approvalDetails.has(key)) return approvalDetails.get(key) || null;
-    var api = global.api;
-    var describe = api && api.pluginsAgentApprovalDescribe;
+    var api = dependencies.host;
+    var describe = api && api.describeApproval;
     if (typeof describe !== 'function') {
       approvalDetails.set(key, { status: 'unavailable' });
       return approvalDetails.get(key);
     }
     var entry = { status: 'loading' };
+    var epoch = lifecycleEpoch;
     approvalDetails.set(key, entry);
     Promise.resolve(describe({ pluginId: record.owner, approvalId: approval.id })).then(async function(value) {
-      if (!initialized || !activeApprovalMatches(record.id, key) || approvalDetails.get(key) !== entry) return;
+      if (!initialized || !isCurrent(epoch) || !activeApprovalMatches(record.id, key) || approvalDetails.get(key) !== entry) return;
       if (value && value.approvalUnavailable === true) {
         entry.status = 'terminal';
         clearApprovalExpiryTimer(key);
@@ -474,11 +562,11 @@ import { marked } from 'marked';
       scheduleApprovalExpiry(record, key, entry);
       renderAll();
     }).catch(function() {
-      if (!initialized || !activeApprovalMatches(record.id, key) || approvalDetails.get(key) !== entry) return;
+      if (!initialized || !isCurrent(epoch) || !activeApprovalMatches(record.id, key) || approvalDetails.get(key) !== entry) return;
       entry.status = 'unavailable';
       renderAll();
-      global.setTimeout(function() {
-        if (!initialized || !activeApprovalMatches(record.id, key) || approvalDetails.get(key) !== entry) return;
+      setTimeout(function() {
+        if (!initialized || !isCurrent(epoch) || !activeApprovalMatches(record.id, key) || approvalDetails.get(key) !== entry) return;
         var current = recordById(record.id);
         var currentApproval = current && current.state && current.state.activeSession && current.state.activeSession.approval;
         if (current && currentApproval) refreshApprovalDetail(current, currentApproval);
@@ -567,6 +655,8 @@ import { marked } from 'marked';
 
   async function deliverApprovalDecision(record, key, decision) {
     if (approvalDecisions.get(key) !== decision || !decision.approvalResult || !decision.action) return false;
+    var epoch = lifecycleEpoch;
+    if (!isCurrent(epoch)) return false;
     decision.status = 'delivering';
     renderAll();
     var delivered = await invoke(record, decision.action, {
@@ -574,6 +664,7 @@ import { marked } from 'marked';
       approvalId: decision.approvalId,
       approvalResult: decision.approvalResult
     }, { requireAccepted: true });
+    if (!isCurrent(epoch)) return false;
     if (approvalDecisions.get(key) !== decision) return false;
     if (delivered) {
       decision.status = 'delivered';
@@ -589,8 +680,9 @@ import { marked } from 'marked';
     var key = approvalKey(record, approvalId);
     var cached = approvalDetails.get(key);
     if (!cached || cached.status !== 'ready') return false;
-    var api = global.api;
-    if (!record || !record.owner || !api || typeof api.pluginsAgentApprovalDecide !== 'function') return false;
+    var api = dependencies.host;
+    if (!record || !record.owner || !api || typeof api.decideApproval !== 'function') return false;
+    var epoch = lifecycleEpoch;
     var existing = approvalDecisions.get(key);
     if (existing) return existing.status === 'delivery-failed'
       ? deliverApprovalDecision(record, key, existing)
@@ -609,11 +701,13 @@ import { marked } from 'marked';
     errors.delete(record.id);
     renderAll();
     try {
-      var rawResult = await api.pluginsAgentApprovalDecide({ pluginId: record.owner, approvalId: approvalId, approved: approved });
+      var rawResult = await api.decideApproval({ pluginId: record.owner, approvalId: approvalId, approved: approved });
+      if (!isCurrent(epoch)) return false;
       decision.approvalResult = canonicalApprovalResult(rawResult, cached, approved);
       decision.action = approved && decision.approvalResult.failed !== true ? 'approve' : 'reject';
       return await deliverApprovalDecision(record, key, decision);
     } catch (error) {
+      if (!isCurrent(epoch)) return false;
       var cancelled = decision.status === 'cancelling';
       if (cancelled) {
         decision.action = 'reject';
@@ -630,21 +724,24 @@ import { marked } from 'marked';
       errors.set(record.id, t('Agent action failed: {message}', { message: exceptionMessage(error) }));
       return false;
     } finally {
-      renderAll();
+      if (isCurrent(epoch)) renderAll();
     }
   }
 
   async function cancelApproval(record, approvalId) {
     var key = approvalKey(record, approvalId);
     var decision = approvalDecisions.get(key);
-    var api = global.api;
-    if (!decision || decision.status !== 'running' || !record.owner || !api || typeof api.pluginsAgentApprovalCancel !== 'function') return false;
+    var api = dependencies.host;
+    if (!decision || decision.status !== 'running' || !record.owner || !api || typeof api.cancelApproval !== 'function') return false;
+    var epoch = lifecycleEpoch;
     decision.status = 'cancelling';
     renderAll();
     try {
-      await api.pluginsAgentApprovalCancel({ pluginId: record.owner, approvalId: approvalId });
+      await api.cancelApproval({ pluginId: record.owner, approvalId: approvalId });
+      if (!isCurrent(epoch)) return false;
       return true;
     } catch (error) {
+      if (!isCurrent(epoch)) return false;
       decision.status = 'running';
       errors.set(record.id, t('Agent action failed: {message}', { message: exceptionMessage(error) }));
       renderAll();
@@ -702,22 +799,25 @@ import { marked } from 'marked';
     var key = busyKey(record.id, action);
     if (inflight.has(key)) return false;
     inflight.add(key);
+    var epoch = lifecycleEpoch;
     errors.delete(record.id);
     renderAll();
     try {
       var payload = api.createCommandPayload(record.id, action, values || {});
       var result = await commandApi.executeIsolated(command, payload);
+      if (!isCurrent(epoch)) return false;
       if (!result || result.ok !== true) throw (result && result.error) || new Error(t('Unknown error'));
       if (options.requireAccepted === true && (!result.value || result.value.accepted !== true)) {
         throw new Error(t('The Agent did not accept the approval result. Retry delivery.'));
       }
       return true;
     } catch (error) {
+      if (!isCurrent(epoch)) return false;
       errors.set(record.id, t('Agent action failed: {message}', { message: exceptionMessage(error) }));
       return false;
     } finally {
       inflight.delete(key);
-      renderAll();
+      if (isCurrent(epoch)) renderAll();
     }
   }
 
@@ -1263,12 +1363,13 @@ import { marked } from 'marked';
   }
 
   function copyMarkdownCode(button, code) {
-    var clipboard = global.navigator && global.navigator.clipboard;
+    var navigator = dependencies.navigator || global.navigator;
+    var clipboard = navigator && navigator.clipboard;
     if (!clipboard || typeof clipboard.writeText !== 'function') return;
     clipboard.writeText(code).then(function() {
       button.title = t('Copied');
       button.setAttribute('aria-label', t('Copied'));
-      global.setTimeout(function() {
+      setTimeout(function() {
         if (!button.isConnected) return;
         button.title = t('Copy code');
         button.setAttribute('aria-label', t('Copy code'));
@@ -2045,6 +2146,7 @@ import { marked } from 'marked';
   }
 
   function renderAll() {
+    if (disposed) return;
     renderSidebar();
     var record = activeRecord();
     if (record) renderWorkspace(record);
@@ -2056,6 +2158,7 @@ import { marked } from 'marked';
   }
 
   function sync(change) {
+    if (disposed) return;
     if (renderStatePatch(change)) return;
     var available = records();
     var known = new Set(available.map(function(record) { return record.id; }));
@@ -2095,6 +2198,12 @@ import { marked } from 'marked';
 
   function init() {
     if (initialized) return;
+    if (disposed) {
+      lifecycle = new DisposableStore();
+      ownedTimers.clear();
+      disposed = false;
+    }
+    lifecycleEpoch += 1;
     initialized = true;
     var api = agentApi();
     if (!api || typeof api.onDidChange !== 'function') return;
@@ -2111,13 +2220,16 @@ import { marked } from 'marked';
     agentSubscription = api.onDidChange(sync);
     if (BOBO.i18n && typeof BOBO.i18n.onChange === 'function') {
       var disposeLanguage = BOBO.i18n.onChange(function() { renderAll(); applyChromeLabels(); });
-      if (typeof disposeLanguage === 'function') languageSubscription = { dispose: disposeLanguage };
+      if (typeof disposeLanguage === 'function') {
+        languageSubscription = toDisposable(disposeLanguage);
+      } else if (disposeLanguage && typeof disposeLanguage.dispose === 'function') {
+        languageSubscription = disposeLanguage;
+      }
     } else {
-      global.addEventListener('bobo:language-changed', renderAll);
-      languageSubscription = { dispose: function() { global.removeEventListener('bobo:language-changed', renderAll); } };
+      languageSubscription = listen(global, 'bobo:language-changed', renderAll);
     }
     workspaceChangeHandler = refreshPendingApprovalsForWorkspaceChange;
-    global.addEventListener('bobo:workspace-changed', workspaceChangeHandler);
+    listen(global, 'bobo:workspace-changed', workspaceChangeHandler);
     documentClickHandler = function(event) {
       var controlMenu = document.querySelector('.agent-composer-control-menu:not([hidden])');
       if (controlMenu && !event.target.closest('.agent-composer-control-wrap')) {
@@ -2140,11 +2252,14 @@ import { marked } from 'marked';
         if (record) renderWorkspace(record);
       }
     };
-    document.addEventListener('click', documentClickHandler);
+    listen(document, 'click', documentClickHandler);
     sync();
   }
 
   function dispose() {
+    if (disposed && !initialized) return;
+    disposed = true;
+    lifecycleEpoch += 1;
     try { if (agentSubscription && agentSubscription.dispose) agentSubscription.dispose(); } catch (error) {}
     try { if (languageSubscription && languageSubscription.dispose) languageSubscription.dispose(); } catch (error) {}
     try { if (tabRegistration && tabRegistration.dispose) tabRegistration.dispose(); } catch (error) {}
@@ -2156,6 +2271,9 @@ import { marked } from 'marked';
     documentClickHandler = null;
     workspaceChangeHandler = null;
     Array.from(approvalExpiryTimers.keys()).forEach(clearApprovalExpiryTimer);
+    Array.from(ownedTimers).forEach(clearTimeout);
+    ownedTimers.clear();
+    try { lifecycle.dispose(); } catch (error) {}
     approvalDetails.clear();
     approvalDecisions.clear();
     accessRequests.clear();
@@ -2166,14 +2284,18 @@ import { marked } from 'marked';
     initialized = false;
   }
 
-  BOBO.agentWorkbench = Object.freeze({
+  var service = {
     init: init,
     dispose: dispose,
     open: openProvider,
     openConfiguration: openConfiguration,
     refresh: sync,
     refreshModels: refreshModels
+  };
+  Object.defineProperty(service, 'disposed', {
+    enumerable: false,
+    configurable: false,
+    get: function() { return disposed; }
   });
-  if (document.documentElement && document.documentElement.getAttribute('data-bobo-ready') === 'true') init();
-  else global.addEventListener('bobo:ready', init, { once: true });
-})(window);
+  return Object.freeze(service);
+}

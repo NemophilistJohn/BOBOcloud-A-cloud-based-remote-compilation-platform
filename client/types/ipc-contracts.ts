@@ -62,6 +62,16 @@ import type {
   AiStreamErrorDto,
   AiTransportResponseDto
 } from './ai-service';
+import type {
+  AgentWorkbenchAccessIdentityDto,
+  AgentWorkbenchAccessResponseDto,
+  AgentWorkbenchAccessSetRequestDto,
+  AgentWorkbenchApprovalCancelResultDto,
+  AgentWorkbenchApprovalDecisionRequestDto,
+  AgentWorkbenchApprovalDecisionResponseDto,
+  AgentWorkbenchApprovalDescribeResponseDto,
+  AgentWorkbenchApprovalRequestDto
+} from './agent-workbench';
 
 export type { Dispose } from './lifecycle';
 
@@ -196,12 +206,30 @@ export interface IpcInvokeContracts {
     PluginStatusDto
   >;
   'plugins:rpc': IpcInvokeContract<[request: unknown]>;
-  'plugins:agent-approval-describe': IpcInvokeContract<[payload: unknown]>;
-  'plugins:agent-approval-decide': IpcInvokeContract<[payload: unknown]>;
-  'plugins:agent-approval-cancel': IpcInvokeContract<[payload: unknown]>;
-  'plugins:agent-access-get': IpcInvokeContract<[payload: unknown]>;
-  'plugins:agent-access-set': IpcInvokeContract<[payload: unknown]>;
-  'plugins:agent-access-clear': IpcInvokeContract<[payload: unknown]>;
+  'plugins:agent-approval-describe': IpcInvokeContract<
+    [payload: AgentWorkbenchApprovalRequestDto],
+    AgentWorkbenchApprovalDescribeResponseDto
+  >;
+  'plugins:agent-approval-decide': IpcInvokeContract<
+    [payload: AgentWorkbenchApprovalDecisionRequestDto],
+    AgentWorkbenchApprovalDecisionResponseDto
+  >;
+  'plugins:agent-approval-cancel': IpcInvokeContract<
+    [payload: AgentWorkbenchApprovalRequestDto],
+    AgentWorkbenchApprovalCancelResultDto
+  >;
+  'plugins:agent-access-get': IpcInvokeContract<
+    [payload: AgentWorkbenchAccessIdentityDto],
+    AgentWorkbenchAccessResponseDto
+  >;
+  'plugins:agent-access-set': IpcInvokeContract<
+    [payload: AgentWorkbenchAccessSetRequestDto],
+    AgentWorkbenchAccessResponseDto
+  >;
+  'plugins:agent-access-clear': IpcInvokeContract<
+    [payload: AgentWorkbenchAccessIdentityDto],
+    AgentWorkbenchAccessResponseDto
+  >;
   'ai-chat-request': IpcInvokeContract<[payload: AiChatPayloadDto], AiTransportResponseDto>;
   'ai-cancel-stream': IpcInvokeContract<[], AiTransportResponseDto>;
   'ai-inline-request': IpcInvokeContract<[payload: AiInlineRequestDto], AiTransportResponseDto>;

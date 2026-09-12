@@ -185,37 +185,89 @@ function loadWorkbench(options = {}) {
     }
   };
   sandbox.__skipAgentRender = options.exposeApprovalInternals === true;
+  sandbox.DisposableStore = class TestDisposableStore {
+    constructor() { this.items = []; this.disposed = false; }
+    add(item) {
+      if (this.disposed) { item.dispose(); return item; }
+      this.items.push(item);
+      return item;
+    }
+    dispose() {
+      if (this.disposed) return;
+      this.disposed = true;
+      for (const item of this.items.splice(0).reverse()) item.dispose();
+    }
+  };
+  sandbox.toDisposable = (dispose) => {
+    let active = true;
+    return { dispose() { if (!active) return; active = false; dispose(); } };
+  };
   sandbox.window = sandbox;
-  let source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8')
-    .replace(/^import \{ marked \} from 'marked';\s*/, '');
-  if (options.exposeApprovalInternals === true) {
-    source = source
-      .replace('  function renderAll() {\n', '  function renderAll() {\n    if (global.__skipAgentRender === true) return;\n')
-      .replace('    page();\n    if (BOBO.workspace && BOBO.workspace.registerWorkbenchTabProvider) {', '    if (global.__skipAgentRender !== true) page();\n    if (BOBO.workspace && BOBO.workspace.registerWorkbenchTabProvider) {')
-      .replace(/\}\)\(window\);\s*$/, [
-        '  BOBO.__agentApprovalTest = Object.freeze({',
-        '    approvalKey: approvalKey,',
-        '    approvalDetails: approvalDetails,',
-        '    approvalDecisions: approvalDecisions,',
-        '    approvalExpiryTimers: approvalExpiryTimers,',
-        '    deliverApprovalDecision: deliverApprovalDecision',
-        '  });',
-        '})(window);',
-        ''
-      ].join('\n'));
-  }
-  if (options.exposeRenderInternals === true) {
-    source = source.replace(/\}\)\(window\);\s*$/, [
-      '  BOBO.__agentRenderTest = Object.freeze({',
+  const hooks = {};
+  let source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.ts'), 'utf8')
+    .replace(/\r\n/g, '\n')
+    .replace(/^import \{ marked \} from 'marked';\s*/m, '')
+    .replace(/^import \{ DisposableStore, toDisposable \} from '\.\.\/renderer\/core\/disposable\.js';\s*/m, '')
+    .replace(/^import type \{[\s\S]*?\} from '\.\.\/types\/agent-workbench';\s*/m, '')
+    .replace(/^export const /m, 'const ')
+    .replace(/^export function /m, 'function ');
+  source = source.replace(
+    '  return Object.freeze(service);\n}',
+    [
+      '  if (dependencies.__testHooks) Object.assign(dependencies.__testHooks, {',
+      '    approvalKey: approvalKey,',
+      '    approvalDetails: approvalDetails,',
+      '    approvalDecisions: approvalDecisions,',
+      '    approvalExpiryTimers: approvalExpiryTimers,',
+      '    deliverApprovalDecision: deliverApprovalDecision,',
       '    feedItemNode: feedItemNode,',
       '    renderStatePatch: renderStatePatch,',
       '    setRenderedWorkspace: function(value) { renderedWorkspace = value; }',
       '  });',
-      '})(window);',
-      ''
-    ].join('\n'));
-  }
-  vm.runInNewContext(source, sandbox, { filename: 'src/agent-workbench.js' });
+      '  return Object.freeze(service);',
+      '}'
+    ].join('\n')
+  );
+  const api = options.api || {};
+  const host = {
+    getAccessMode: typeof api.agentAccessGet === 'function' ? (payload) => api.agentAccessGet(payload) : undefined,
+    setAccessMode: typeof api.agentAccessSet === 'function' ? (payload) => api.agentAccessSet(payload) : undefined,
+    clearAccessMode: typeof api.agentAccessClear === 'function' ? (payload) => api.agentAccessClear(payload) : undefined,
+    describeApproval: typeof api.pluginsAgentApprovalDescribe === 'function' ? (payload) => api.pluginsAgentApprovalDescribe(payload) : undefined,
+    decideApproval: typeof api.pluginsAgentApprovalDecide === 'function' ? (payload) => api.pluginsAgentApprovalDecide(payload) : undefined,
+    cancelApproval: typeof api.pluginsAgentApprovalCancel === 'function' ? (payload) => api.pluginsAgentApprovalCancel(payload) : undefined
+  };
+  const bootstrap = [
+    'const __agentWorkbenchService = createAgentWorkbenchService({',
+    '  document: document,',
+    '  eventTarget: window,',
+    '  state: BOBO.state,',
+    '  getI18n: () => BOBO.i18n,',
+    '  getAgents: () => BOBO.platform.agents,',
+    '  getCommands: () => BOBO.platform.commands,',
+    '  getConfirm: () => BOBO.confirm,',
+    '  getAiSettingsCenter: () => BOBO.aiSettingsCenter,',
+    '  getWorkspace: () => BOBO.workspace,',
+    '  getWorkbench: () => BOBO.workbench,',
+    '  getViews: () => BOBO.views,',
+    '  getDocumentViews: () => BOBO.documentViews,',
+    '  host: __agentWorkbenchHost,',
+    '  navigator: window.navigator,',
+    '  setTimer: (callback, delay) => setTimeout(callback, delay),',
+    '  clearTimer: (timer) => clearTimeout(timer),',
+    '  requestAnimationFrame: (callback) => { callback(); return 0; },',
+    '  __testHooks: __agentWorkbenchHooks,',
+    '  logger: console',
+    '});',
+    'BOBO.agentWorkbench = __agentWorkbenchService;',
+    ''
+  ].join('\n');
+  source += '\n' + bootstrap;
+  sandbox.__agentWorkbenchHost = host;
+  sandbox.__agentWorkbenchHooks = hooks;
+  vm.runInNewContext(source, sandbox, { filename: 'src/agent-workbench.ts' });
+  if (hooks.approvalKey) sandbox.BOBO.__agentApprovalTest = hooks;
+  if (hooks.feedItemNode) sandbox.BOBO.__agentRenderTest = hooks;
   return { sandbox, calls, record, eventListeners };
 }
 
@@ -278,9 +330,9 @@ test('Agent workbench is bundled and styled as an editor-peer page', () => {
   const entry = fs.readFileSync(path.join(ROOT, 'renderer', 'entry.js'), 'utf8');
   const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   const css = fs.readFileSync(path.join(ROOT, 'styles', 'agent-workbench.css'), 'utf8');
-  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8');
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.ts'), 'utf8');
 
-  assert.match(entry, /import '\.\.\/src\/agent-workbench\.js';/);
+  assert.match(entry, /import '\.\/compat\/agent-workbench-adapter\.ts';/);
   assert.match(html, /styles\/agent-workbench\.css/);
   assert.match(css, /\.agent-workbench-view\s*\{[\s\S]*position:\s*absolute/);
   assert.match(source, /data-workbench-view/);
@@ -294,13 +346,13 @@ test('saving host AI connections refreshes Agent model catalogs', () => {
 });
 
 test('Agent approvals render and execute only host-canonical details', () => {
-  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8');
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.ts'), 'utf8');
   const css = fs.readFileSync(path.join(ROOT, 'styles', 'agent-workbench.css'), 'utf8');
 
-  assert.match(source, /api && api\.pluginsAgentApprovalDescribe/);
+  assert.match(source, /api && api\.describeApproval/);
   assert.match(source, /describe\(\{ pluginId: record\.owner, approvalId: approval\.id \}\)/);
-  assert.match(source, /pluginsAgentApprovalDecide\(\{ pluginId: record\.owner, approvalId: approvalId, approved: approved \}\)/);
-  assert.match(source, /pluginsAgentApprovalCancel\(\{ pluginId: record\.owner, approvalId: approvalId \}\)/);
+  assert.match(source, /api\.decideApproval\(\{ pluginId: record\.owner, approvalId: approvalId, approved: approved \}\)/);
+  assert.match(source, /api\.cancelApproval\(\{ pluginId: record\.owner, approvalId: approvalId \}\)/);
   assert.match(source, /approvalResult: decision\.approvalResult/);
   assert.match(source, /approved && decision\.approvalResult\.failed !== true \? 'approve' : 'reject'/);
   assert.match(source, /result\.failed === true[\s\S]*result\.rejected !== true/);
@@ -314,7 +366,7 @@ test('Agent approvals render and execute only host-canonical details', () => {
   const deliveryStart = source.indexOf('async function deliverApprovalDecision(');
   const deliveryEnd = source.indexOf('\n  async function ', deliveryStart + 1);
   assert.ok(deliveryStart >= 0 && deliveryEnd > deliveryStart);
-  assert.doesNotMatch(source.slice(deliveryStart, deliveryEnd), /pluginsAgentApprovalDecide/);
+  assert.doesNotMatch(source.slice(deliveryStart, deliveryEnd), /decideApproval/);
   assert.match(source, /approve\.disabled = !detail \|\| Boolean\(decision\)/);
   assert.match(source, /reject\.disabled = !detail \|\| Boolean\(decision\)/);
   assert.match(source, /t\('Loading approval details'\)/);
@@ -454,12 +506,12 @@ test('reloaded workbench delivers a toolless evicted terminal result until accep
 });
 
 test('Agent access modes stay session-scoped and full access requires trusted confirmation', () => {
-  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8');
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.ts'), 'utf8');
   const core = fs.readFileSync(path.join(ROOT, 'renderer', 'core', 'agent.ts'), 'utf8');
 
-  assert.match(source, /agentAccessGet\(identity\)/);
-  assert.match(source, /agentAccessSet\(Object\.assign\(\{\}, identity, \{ accessMode: accessMode, confirmed: confirmed \}\)\)/);
-  assert.match(source, /agentAccessClear\(identity\)/);
+  assert.match(source, /getAccessMode\(identity\)/);
+  assert.match(source, /setAccessMode\(Object\.assign\(\{\}, identity, \{ accessMode: accessMode, confirmed: confirmed \}\)\)/);
+  assert.match(source, /clearAccessMode\(identity\)/);
   assert.match(source, /pluginId: record\.owner, providerId: record\.id, sessionId: session\.id/);
   assert.match(source, /accessMode === 'full'[\s\S]*danger: true/);
   assert.match(source, /accessMode: normalizedAccessMode\(current\.accessMode\)/);
@@ -468,7 +520,7 @@ test('Agent access modes stay session-scoped and full access requires trusted co
 });
 
 test('Agent mode, effort, and access controls live in the composer with keyboard slash commands', () => {
-  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8');
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.ts'), 'utf8');
   const toolbarStart = source.indexOf('function appendToolbar(');
   const toolbarEnd = source.indexOf('\n  function ', toolbarStart + 1);
   const composerStart = source.indexOf('function composerNode(');
@@ -493,7 +545,7 @@ test('Agent mode, effort, and access controls live in the composer with keyboard
 });
 
 test('assistant Markdown uses lexer tokens and never injects parser HTML', () => {
-  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8');
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.ts'), 'utf8');
   const css = fs.readFileSync(path.join(ROOT, 'styles', 'agent-workbench.css'), 'utf8');
   const packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   const tokens = marked.lexer('| Name | Value |\n| --- | --- |\n| safe | yes |\n\n<script>alert(1)</script>', { gfm: true });
@@ -617,12 +669,12 @@ test('Agent feed patches update keyed nodes without rebuilding the composer', ()
     patch: { baseVersion: 4, operations: [{ type: 'session.merge', value: { status: 'running' } }] }
   }), false);
 
-  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8');
-  assert.match(source, /function sync\(change\)\s*\{\s*if \(renderStatePatch\(change\)\) return;/);
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.ts'), 'utf8');
+  assert.match(source, /function sync\(change\)\s*\{\s*if \(disposed\) return;\s*if \(renderStatePatch\(change\)\) return;/);
 });
 
 test('xhigh reasoning and compaction state are host-rendered workbench options', () => {
-  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.js'), 'utf8');
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'agent-workbench.ts'), 'utf8');
   const core = fs.readFileSync(path.join(ROOT, 'renderer', 'core', 'agent.ts'), 'utf8');
 
   assert.match(source, /effort === 'xhigh'/);

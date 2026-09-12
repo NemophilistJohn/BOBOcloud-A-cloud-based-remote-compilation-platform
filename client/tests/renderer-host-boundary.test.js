@@ -11,7 +11,6 @@ const ROOT = path.resolve(__dirname, '..');
 const SOURCE_ROOTS = [path.join(ROOT, 'renderer'), path.join(ROOT, 'src')];
 const NATIVE_HOST_ADAPTER = 'renderer/core/native-host-adapter.ts';
 const LEGACY_DIRECT_ACCESS_LIMITS = new Map([
-  ['src/agent-workbench.js', 7],
   ['src/app.js', 23],
   ['src/auth.js', 16],
   ['src/collaboration.js', 6],
@@ -128,6 +127,10 @@ const MIGRATED_AI_SETTINGS_CENTER_MODULES = Object.freeze([
 const MIGRATED_AI_CHAT_PANEL_MODULES = Object.freeze([
   'renderer/compat/ai-chat-panel-adapter.ts',
   'src/ai-chat-panel.ts'
+]);
+const MIGRATED_AGENT_WORKBENCH_MODULES = Object.freeze([
+  'renderer/compat/agent-workbench-adapter.ts',
+  'src/agent-workbench.ts'
 ]);
 
 function sourceFiles(directory) {
@@ -307,6 +310,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated AI chat panel slice must not regain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_AGENT_WORKBENCH_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated Agent workbench slice must not regain a direct preload dependency: ${file}`);
+  }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],
     'tasksResolve must remain a unique native-adapter bridge capability');
@@ -474,6 +481,14 @@ test('native host services remain private to the workbench', () => {
     path.join(ROOT, 'renderer/compat/ai-chat-panel-adapter.ts'),
     'utf8'
   );
+  const agentWorkbenchSource = fs.readFileSync(
+    path.join(ROOT, 'src/agent-workbench.ts'),
+    'utf8'
+  );
+  const agentWorkbenchAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/agent-workbench-adapter.ts'),
+    'utf8'
+  );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
   assert.match(adapter, /PROJECT_TASKS_HOST_SERVICE_ID\s*=\s*['"]host\.projectTasks['"]/);
   assert.match(adapter, /RCLONE_HOST_SERVICE_ID\s*=\s*['"]host\.rclone['"]/);
@@ -491,7 +506,7 @@ test('native host services remain private to the workbench', () => {
   assert.match(adapter, /AI_HOST_SERVICE_ID\s*=\s*['"]host\.ai['"]/);
   assert.match(adapter, /AI_UI_HOST_SERVICE_ID\s*=\s*['"]host\.aiUi['"]/);
   assert.match(adapter, /AI_CHAT_PANEL_HOST_SERVICE_ID\s*=\s*['"]host\.aiChatPanel['"]/);
-  assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 15);
+  assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 16);
   assert.doesNotMatch(adapter, /pluginView\s*:/);
   assert.match(diagnosticsAdapter,
     /DIAGNOSTICS_SETTINGS_SERVICE_ID\s*=\s*['"]workbench\.diagnosticsSettings['"]/);
@@ -647,4 +662,14 @@ test('native host services remain private to the workbench', () => {
   assert.doesNotMatch(aiChatPanelAdapter, /\b(?:window|global|globalThis|self)\.api\b/);
   assert.match(aiChatPanelAdapter,
     /BOBO\.aiChatPanel\s*=\s*\{\s*init:\s*chatPanel\.init,[\s\S]*saveChatHistory:\s*chatPanel\.saveChatHistory\s*\}/);
+  assert.match(agentWorkbenchSource,
+    /AGENT_WORKBENCH_SERVICE_ID\s*=\s*['"]workbench\.agentWorkbench['"]/);
+  assert.match(agentWorkbenchSource, /createAgentWorkbenchService\s*\(/);
+  assert.match(agentWorkbenchAdapter, /AGENT_WORKBENCH_SERVICE_ID/);
+  assert.match(agentWorkbenchAdapter, /services\.require\(AGENT_WORKBENCH_HOST_SERVICE_ID\)/);
+  assert.match(agentWorkbenchAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(agentWorkbenchSource, /\b(?:window|global|globalThis|self)\.api\b/);
+  assert.doesNotMatch(agentWorkbenchAdapter, /\b(?:window|global|globalThis|self)\.api\b/);
+  assert.match(agentWorkbenchAdapter,
+    /BOBO\.agentWorkbench\s*=\s*Object\.freeze\(\{\s*init:\s*agentWorkbench\.init,[\s\S]*refreshModels:\s*agentWorkbench\.refreshModels\s*\}\)/);
 });
