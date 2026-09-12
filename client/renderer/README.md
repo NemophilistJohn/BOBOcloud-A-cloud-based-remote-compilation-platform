@@ -239,6 +239,16 @@ structure, open-tab, full-context, and inline-context budgets retain their
 existing limits and null/disabled behavior, while service disposal fences later
 reads and the context service grants no host or downloaded-plugin authority.
 
+AI transport and profile coordination now follow the same boundary.
+`src/ai-service.ts` owns the canonical v4 settings, compatibility aliases,
+connection fingerprints and health probes, chat/inline request cancellation,
+stream filtering, and the bounded inline LRU through typed DTOs and the private
+`host.ai` port. `compat/ai-service-adapter.ts` is the sole writable
+`BOBO.aiService` projection and registers `workbench.aiService` privately;
+the historical 44-method facade remains intact, while generation fences and
+disposable stream subscriptions prevent late host results from mutating state
+after disposal or supersession.
+
 The lazy Markdown renderer now follows the same explicit presentation boundary.
 `src/ai-markdown.ts` receives typed DOM, Temml, clipboard, icon, i18n, and timer
 ports; `compat/ai-markdown-adapter.ts` alone projects `BOBO.aiMarkdown`. Safe

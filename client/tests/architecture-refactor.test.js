@@ -271,7 +271,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'src/ai-settings-schema.js',
   'src/ai-prompts.ts',
   'renderer/compat/ai-prompts-adapter.ts',
-  'src/ai-service.js',
+  'src/ai-service.ts',
+  'renderer/compat/ai-service-adapter.ts',
   'src/ai-context.ts',
   'renderer/compat/ai-context-adapter.ts',
   'src/ai-settings-center.js',
@@ -440,6 +441,8 @@ test('HTML has at most two startup scripts and the renderer build covers every f
     'renderer/compat/stream-render-scheduler-adapter.js',
     'src/ai-prompts.js',
     'renderer/compat/ai-prompts-adapter.js',
+    'src/ai-service.js',
+    'renderer/compat/ai-service-adapter.js',
     'src/ai-context.js',
     'renderer/compat/ai-context-adapter.js',
     'src/ai-markdown.js',
@@ -507,6 +510,18 @@ test('HTML has at most two startup scripts and the renderer build covers every f
   assert.doesNotMatch(aiContextAdapter, /pluginView\s*:/);
   assert.match(aiContextAdapter,
     /BOBO\.aiContext\s*=\s*\{\s*getCurrentFileContext:\s*aiContext\.getCurrentFileContext,[\s\S]*getInlineContext:\s*aiContext\.getInlineContext\s*\}/);
+
+  const aiServiceSource = read('src/ai-service.ts');
+  const aiServiceAdapter = read('renderer/compat/ai-service-adapter.ts');
+  assert.match(aiServiceSource,
+    /AI_SERVICE_ID\s*=\s*['"]workbench\.aiService['"]/);
+  assert.match(aiServiceSource, /createAiService\s*\(/);
+  assert.match(aiServiceAdapter, /AI_SERVICE_ID/);
+  assert.match(aiServiceAdapter, /services\.require\(['"]host\.ai['"]\)/);
+  assert.match(aiServiceAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(aiServiceAdapter, /pluginView\s*:/);
+  assert.match(aiServiceAdapter,
+    /BOBO\.aiService\s*=\s*\{[\s\S]*init:\s*aiService\.init,[\s\S]*fingerprint:\s*aiService\.fingerprint/);
 
   const metadata = JSON.parse(read('renderer-dist/bobo-renderer.meta.json'));
   const inputs = new Set(

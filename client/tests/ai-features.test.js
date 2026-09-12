@@ -10,6 +10,27 @@ const { completionMessages, resolveApiContract } = require('../main/ai');
 
 const projectRoot = path.resolve(__dirname, '..');
 
+const aiServiceBundle = esbuild.buildSync({
+  absWorkingDir: projectRoot,
+  stdin: {
+    contents: "export { createAiService } from './src/ai-service.ts';",
+    resolveDir: projectRoot,
+    sourcefile: 'ai-service-test-entry.ts'
+  },
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  write: false,
+  logLevel: 'silent'
+}).outputFiles[0].text;
+const aiServiceModule = { exports: {} };
+new Function('require', 'module', 'exports', aiServiceBundle)(
+  require,
+  aiServiceModule,
+  aiServiceModule.exports
+);
+const { createAiService } = aiServiceModule.exports;
+
 function profile(id, purpose = 'chat', overrides = {}) {
   const value = {
     id,
@@ -77,9 +98,18 @@ function loadAiCore(overrides = {}) {
         ? { success: true, data: { choices: [{ text: 'OK' }] } }
         : { success: true, data: { choices: [{ message: { content: 'OK' } }] } };
     },
-    onAiChunk: callback => { listeners.chunk = callback; },
-    onAiStreamEnd: callback => { listeners.end = callback; },
-    onAiStreamError: callback => { listeners.error = callback; }
+    onAiChunk: callback => {
+      listeners.chunk = callback;
+      return () => { if (listeners.chunk === callback) delete listeners.chunk; };
+    },
+    onAiStreamEnd: callback => {
+      listeners.end = callback;
+      return () => { if (listeners.end === callback) delete listeners.end; };
+    },
+    onAiStreamError: callback => {
+      listeners.error = callback;
+      return () => { if (listeners.error === callback) delete listeners.error; };
+    }
   };
   Object.assign(api, overrides.api || {});
 
@@ -111,9 +141,36 @@ function loadAiCore(overrides = {}) {
     excludedAutoContextPaths: [],
     connectionHealth: { chat: {}, inline: {} }
   });
-  vm.runInContext(fs.readFileSync(path.join(projectRoot, 'src', 'ai-service.js'), 'utf8'), context, { filename: 'src/ai-service.js' });
+  const host = {
+    aiReadSettings: (...args) => api.aiReadSettings(...args),
+    aiWriteSettings: (...args) => api.aiWriteSettings(...args),
+    aiChatRequest: (...args) => api.aiChatRequest(...args),
+    aiCancelStream: (...args) => api.aiCancelStream(...args),
+    aiInlineRequest: (...args) => api.aiInlineRequest(...args),
+    aiCancelInline: (...args) => api.aiCancelInline(...args),
+    aiTestConnection: (...args) => api.aiTestConnection(...args),
+    onAiChunk: callback => {
+      const dispose = api.onAiChunk(callback);
+      return typeof dispose === 'function' ? dispose : () => {};
+    },
+    onAiStreamEnd: callback => {
+      const dispose = api.onAiStreamEnd(callback);
+      return typeof dispose === 'function' ? dispose : () => {};
+    },
+    onAiStreamError: callback => {
+      const dispose = api.onAiStreamError(callback);
+      return typeof dispose === 'function' ? dispose : () => {};
+    }
+  };
+  const service = createAiService({
+    state: window.BOBO.state,
+    schema: window.BOBO.aiSettingsSchema,
+    getPrompts: () => window.BOBO.aiPrompts,
+    host,
+    getAgentButton: () => window.BOBO.aiAgentButton
+  });
   return {
-    service: window.BOBO.aiService,
+    service,
     schema: window.BOBO.aiSettingsSchema,
     prompts: window.BOBO.aiPrompts,
     state: window.BOBO.state.ai,
@@ -336,6 +393,28 @@ test('a queued mutation rebases after an earlier write failure', async () => {
   assert.equal(fixture.calls.writes[1].chat.instructions, 'survives');
   assert.equal(fixture.service.getSettings().globalInstructions, 'Follow repository conventions.');
   assert.equal(fixture.service.getSettings().chat.instructions, 'survives');
+});
+
+test('disposing the service fences a late settings write', async () => {
+  let resolveWrite;
+  let writeStarted = false;
+  const fixture = loadAiCore({ api: {
+    aiWriteSettings: value => {
+      fixture.calls.writes.push(value);
+      writeStarted = true;
+      return new Promise(resolve => { resolveWrite = resolve; });
+    }
+  } });
+  const before = fixture.service.getSettings();
+  const pending = fixture.service.updateSettings({ globalInstructions: 'must not apply after dispose' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(writeStarted, true);
+  fixture.service.dispose();
+  resolveWrite(true);
+  const result = await pending;
+  assert.equal(result.success, false);
+  assert.equal(result.code, 'ai.error.cancelled');
+  assert.deepEqual(fixture.service.getSettings(), before);
 });
 
 test('model status requires a successful matching fingerprint connection test', async () => {

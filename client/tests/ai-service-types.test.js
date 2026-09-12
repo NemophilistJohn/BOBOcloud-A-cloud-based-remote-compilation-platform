@@ -8,6 +8,7 @@ const ROOT = path.resolve(__dirname, '..');
 
 test('AI transport contract keeps the closed facade, private host port, and DTO boundaries typed', () => {
   const source = [
+    "import { createAiService, AI_SERVICE_ID } from '../src/ai-service';",
     "import type { Disposable } from '../types/lifecycle';",
     "import type { RendererPlatform, RendererPluginServiceMap, RendererServiceMap, AiChatPayloadDto, AiInlineCompletionResultDto, AiInlineRequestDto, AiService, AiServiceDependencies, AiServiceFacade, AiServiceHostPort, AiSettingsDto } from '../types/renderer-platform';",
     'type Equal<Left, Right> =',
@@ -29,6 +30,8 @@ test('AI transport contract keeps the closed facade, private host port, and DTO 
     "type DependencyKeys = 'state' | 'schema' | 'getPrompts' | 'host' | 'getAgentButton';",
     'type DependenciesAreExact = AssertTrue<Equal<keyof AiServiceDependencies, DependencyKeys>>;',
     'type HostIsNotAny = AssertFalse<IsAny<AiServiceHostPort>>;',
+    'type FactoryReturnIsTyped = AssertFalse<IsAny<ReturnType<typeof createAiService>>>;',
+    "const serviceId: 'workbench.aiService' = AI_SERVICE_ID;",
     'declare const service: AiService;',
     'declare const dependencies: AiServiceDependencies;',
     'declare const settings: AiSettingsDto;',
@@ -39,7 +42,8 @@ test('AI transport contract keeps the closed facade, private host port, and DTO 
     'const host: Readonly<AiServiceHostPort> = (null as unknown as RendererPlatform).services.require(\'host.ai\');',
     'service.init(); service.loadSettings(); service.saveSettings(); service.getSettings();',
     'service.sendChat("hello"); service.getInlineCompletion({}); service.dispose();',
-    'void dependencies; void settings; void chatPayload; void inlineRequest; void completion; void facade; void host;',
+    'const created: AiService = createAiService(dependencies);',
+    'void serviceId; void dependencies; void settings; void chatPayload; void inlineRequest; void completion; void facade; void host; void created;',
     '// @ts-expect-error AI service exposes a closed compatibility surface.',
     'service.reload();',
     '// @ts-expect-error AI service is intentionally absent from downloaded plugins.',
@@ -54,4 +58,3 @@ test('AI transport contract keeps the closed facade, private host port, and DTO 
     source
   });
 });
-

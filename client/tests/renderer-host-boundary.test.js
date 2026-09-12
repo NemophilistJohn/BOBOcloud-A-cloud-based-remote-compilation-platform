@@ -14,7 +14,6 @@ const LEGACY_DIRECT_ACCESS_LIMITS = new Map([
   ['src/agent-workbench.js', 7],
   ['src/ai-agent-button.js', 3],
   ['src/ai-chat-panel.js', 7],
-  ['src/ai-service.js', 16],
   ['src/app.js', 23],
   ['src/auth.js', 16],
   ['src/collaboration.js', 6],
@@ -111,6 +110,10 @@ const MIGRATED_SERVER_COMM_MODULES = Object.freeze([
 const MIGRATED_AI_CONTEXT_MODULES = Object.freeze([
   'renderer/compat/ai-context-adapter.ts',
   'src/ai-context.ts'
+]);
+const MIGRATED_AI_SERVICE_MODULES = Object.freeze([
+  'renderer/compat/ai-service-adapter.ts',
+  'src/ai-service.ts'
 ]);
 
 function sourceFiles(directory) {
@@ -270,6 +273,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated AI context slice must not gain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_AI_SERVICE_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated AI service slice must not gain a direct preload dependency: ${file}`);
+  }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],
     'tasksResolve must remain a unique native-adapter bridge capability');
@@ -395,6 +402,14 @@ test('native host services remain private to the workbench', () => {
   );
   const aiContextAdapter = fs.readFileSync(
     path.join(ROOT, 'renderer/compat/ai-context-adapter.ts'),
+    'utf8'
+  );
+  const aiServiceSource = fs.readFileSync(
+    path.join(ROOT, 'src/ai-service.ts'),
+    'utf8'
+  );
+  const aiServiceAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/ai-service-adapter.ts'),
     'utf8'
   );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
@@ -524,4 +539,11 @@ test('native host services remain private to the workbench', () => {
   assert.doesNotMatch(aiContextAdapter, /pluginView\s*:/);
   assert.match(aiContextAdapter,
     /BOBO\.aiContext\s*=\s*\{\s*getCurrentFileContext:\s*aiContext\.getCurrentFileContext,[\s\S]*getInlineContext:\s*aiContext\.getInlineContext\s*\}/);
+  assert.match(aiServiceSource,
+    /AI_SERVICE_ID\s*=\s*['"]workbench\.aiService['"]/);
+  assert.match(aiServiceSource, /createAiService\s*\(/);
+  assert.match(aiServiceAdapter, /AI_SERVICE_ID/);
+  assert.match(aiServiceAdapter, /services\.require\(['"]host\.ai['"]\)/);
+  assert.match(aiServiceAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(aiServiceAdapter, /pluginView\s*:/);
 });
