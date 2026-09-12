@@ -77,6 +77,7 @@ import type { EditorCoreService } from './editor-core';
 import type { AiContextService } from './ai-context';
 import type { AiService, AiServiceHostPort } from './ai-service';
 import type { AiInlineService } from './ai-inline';
+import type { AiAgentButtonService, AiAgentButtonHostPort } from './ai-agent-button';
 import type { ServerCommService } from './server-comm';
 
 export interface RendererCommandMap {
@@ -98,6 +99,7 @@ export interface RendererServiceMap {
   readonly 'host.workspaceLaunch': Readonly<WorkspaceLaunchHost>;
   readonly 'host.workspaceSettings': Readonly<WorkspaceSettingsHost>;
   readonly 'host.ai': Readonly<AiServiceHostPort>;
+  readonly 'host.aiUi': Readonly<AiAgentButtonHostPort>;
   readonly 'workbench.confirm': ConfirmService;
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
   readonly 'workbench.documentViews': DocumentViewService;
@@ -138,6 +140,7 @@ export interface RendererServiceMap {
   readonly 'workbench.aiContext': AiContextService;
   readonly 'workbench.aiService': AiService;
   readonly 'workbench.aiInline': AiInlineService;
+  readonly 'workbench.aiAgentButton': AiAgentButtonService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -1176,6 +1179,23 @@ export type {
   AiInlineStatePort,
   AiInlineTriggerContextDto
 } from './ai-inline';
+export type {
+  AiAgentButtonAiServicePort,
+  AiAgentButtonAiState,
+  AiAgentButtonChatPanelPort,
+  AiAgentButtonDependencies,
+  AiAgentButtonFacade,
+  AiAgentButtonHostPort,
+  AiAgentButtonI18nPort,
+  AiAgentButtonInlinePort,
+  AiAgentButtonInlineState,
+  AiAgentButtonProfileDto,
+  AiAgentButtonRendererState,
+  AiAgentButtonService,
+  AiAgentButtonSettingsCenterPort,
+  AiAgentButtonToastPort,
+  AiAgentButtonWorkbenchPort
+} from './ai-agent-button';
 export type {
   SettingsAiFieldOptionDto,
   SettingsAiFieldOptions,

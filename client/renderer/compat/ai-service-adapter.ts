@@ -1,4 +1,7 @@
 import {
+  AI_AGENT_BUTTON_SERVICE_ID
+} from '../../src/ai-agent-button';
+import {
   AI_SERVICE_ID,
   createAiService
 } from '../../src/ai-service';
@@ -19,7 +22,6 @@ interface LegacyAiServiceBobo {
   state?: RendererState;
   aiSettingsSchema?: AiSettingsSchemaPort;
   aiPrompts?: AiPromptsFacade;
-  aiAgentButton?: { updateLEDs?: (status: string) => void } | null;
   aiService?: AiServiceFacade;
 }
 
@@ -36,7 +38,7 @@ const aiService: AiService = createAiService({
   schema: BOBO.aiSettingsSchema,
   getPrompts: () => BOBO.aiPrompts,
   host,
-  getAgentButton: () => BOBO.aiAgentButton
+  getAgentButton: () => rendererPlatform.services.get(AI_AGENT_BUTTON_SERVICE_ID)
 });
 
 rendererPlatform.lifecycle.add(rendererPlatform.services.register(

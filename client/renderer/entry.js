@@ -81,7 +81,7 @@ import './compat/ai-prompts-adapter.ts';
 import './compat/ai-service-adapter.ts';
 import './compat/ai-context-adapter.ts';
 import './ai-ui-loader.js';
-import '../src/ai-agent-button.js';
+import './compat/ai-agent-button-adapter.ts';
 import './compat/ai-inline-adapter.ts';
 
 // Bootstrap must execute after every registration above.

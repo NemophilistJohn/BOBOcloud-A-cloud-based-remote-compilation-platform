@@ -12,7 +12,6 @@ const SOURCE_ROOTS = [path.join(ROOT, 'renderer'), path.join(ROOT, 'src')];
 const NATIVE_HOST_ADAPTER = 'renderer/core/native-host-adapter.ts';
 const LEGACY_DIRECT_ACCESS_LIMITS = new Map([
   ['src/agent-workbench.js', 7],
-  ['src/ai-agent-button.js', 3],
   ['src/ai-chat-panel.js', 7],
   ['src/app.js', 23],
   ['src/auth.js', 16],
@@ -118,6 +117,10 @@ const MIGRATED_AI_SERVICE_MODULES = Object.freeze([
 const MIGRATED_AI_INLINE_MODULES = Object.freeze([
   'renderer/compat/ai-inline-adapter.ts',
   'src/ai-inline.ts'
+]);
+const MIGRATED_AI_AGENT_BUTTON_MODULES = Object.freeze([
+  'renderer/compat/ai-agent-button-adapter.ts',
+  'src/ai-agent-button.ts'
 ]);
 
 function sourceFiles(directory) {
@@ -285,6 +288,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated AI inline slice must not gain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_AI_AGENT_BUTTON_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated AI agent button slice must not gain a direct preload dependency: ${file}`);
+  }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],
     'tasksResolve must remain a unique native-adapter bridge capability');
@@ -428,6 +435,14 @@ test('native host services remain private to the workbench', () => {
     path.join(ROOT, 'renderer/compat/ai-inline-adapter.ts'),
     'utf8'
   );
+  const aiAgentButtonSource = fs.readFileSync(
+    path.join(ROOT, 'src/ai-agent-button.ts'),
+    'utf8'
+  );
+  const aiAgentButtonAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/ai-agent-button-adapter.ts'),
+    'utf8'
+  );
   assert.match(adapter, /DIAGNOSTICS_HOST_SERVICE_ID\s*=\s*['"]host\.diagnostics['"]/);
   assert.match(adapter, /PROJECT_TASKS_HOST_SERVICE_ID\s*=\s*['"]host\.projectTasks['"]/);
   assert.match(adapter, /RCLONE_HOST_SERVICE_ID\s*=\s*['"]host\.rclone['"]/);
@@ -443,7 +458,8 @@ test('native host services remain private to the workbench', () => {
   assert.match(adapter,
     /WORKSPACE_LAUNCH_HOST_SERVICE_ID\s*=\s*['"]host\.workspaceLaunch['"]/);
   assert.match(adapter, /AI_HOST_SERVICE_ID\s*=\s*['"]host\.ai['"]/);
-  assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 13);
+  assert.match(adapter, /AI_UI_HOST_SERVICE_ID\s*=\s*['"]host\.aiUi['"]/);
+  assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 14);
   assert.doesNotMatch(adapter, /pluginView\s*:/);
   assert.match(diagnosticsAdapter,
     /DIAGNOSTICS_SETTINGS_SERVICE_ID\s*=\s*['"]workbench\.diagnosticsSettings['"]/);
@@ -569,4 +585,13 @@ test('native host services remain private to the workbench', () => {
   assert.match(aiInlineAdapter, /services\.require\(AI_CONTEXT_SERVICE_ID\)/);
   assert.match(aiInlineAdapter, /exposeToPlugins:\s*false/);
   assert.doesNotMatch(aiInlineAdapter, /pluginView\s*:/);
+  assert.match(aiAgentButtonSource,
+    /AI_AGENT_BUTTON_SERVICE_ID\s*=\s*['"]workbench\.aiAgentButton['"]/);
+  assert.match(aiAgentButtonSource, /createAiAgentButtonService\s*\(/);
+  assert.match(aiAgentButtonAdapter, /AI_AGENT_BUTTON_SERVICE_ID/);
+  assert.match(aiAgentButtonAdapter, /services\.get\(AI_UI_HOST_SERVICE_ID\)/);
+  assert.match(aiAgentButtonAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(aiAgentButtonAdapter, /pluginView\s*:/);
+  assert.match(aiAgentButtonAdapter,
+    /BOBO\.aiAgentButton\s*=\s*\{\s*init:\s*aiAgentButton\.init,\s*updateLEDs:\s*aiAgentButton\.updateLEDs,\s*toggleChat:\s*aiAgentButton\.toggleChat,\s*openMenu:\s*aiAgentButton\.openMenu,\s*closeMenu:\s*aiAgentButton\.closeMenu\s*\}/);
 });

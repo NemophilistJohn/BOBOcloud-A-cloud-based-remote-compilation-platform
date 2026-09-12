@@ -358,6 +358,15 @@ proxies and loads that bundle once, on the first visible Chat or AI Settings
 action. Its `init()` proxies only record pending initialization, so startup does
 not fetch or parse the presentation bundle.
 
+The AI status button is now a private `workbench.aiAgentButton` service. Its
+typed host event arrives through the private `host.aiUi` adapter, while lazy
+chat/settings proxies remain presentation dependencies. The compatibility
+adapter projects only the historical five-key `BOBO.aiAgentButton` facade;
+button DOM listeners, menu timers, host subscriptions, and status-bar nodes
+are lifecycle-owned and removed together on disposal. The AI service and
+workbench layout resolve the button through the typed service map instead of
+creating another global dependency.
+
 - `npm run build:renderer:dev` creates an unminified bundle with a linked source
   map for local development.
 - `npm run build:renderer` creates the minified production bundle.

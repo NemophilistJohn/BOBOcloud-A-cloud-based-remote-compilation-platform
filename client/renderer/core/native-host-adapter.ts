@@ -17,6 +17,7 @@ import type {
   LanguagePacksInvalidationListener
 } from '../../types/i18n';
 import type { Disposable } from '../../types/lifecycle';
+import type { AiAgentButtonHostPort } from '../../types/ai-agent-button';
 import type { NativeHost, RcloneNativeHost, RcloneProgressListener } from '../../types/native-host';
 import type { PluginExtensionNativeHost } from '../../types/plugin-extension-bootstrap';
 import type {
@@ -62,6 +63,7 @@ export const VIEWS_HOST_SERVICE_ID = 'host.views';
 export const WORKSPACE_LAUNCH_HOST_SERVICE_ID = 'host.workspaceLaunch';
 export const WORKSPACE_SETTINGS_HOST_SERVICE_ID = 'host.workspaceSettings';
 export const AI_HOST_SERVICE_ID = 'host.ai';
+export const AI_UI_HOST_SERVICE_ID = 'host.aiUi';
 
 function optionalDisposable(candidate: unknown): Disposable | null {
   return typeof candidate === 'function'
@@ -315,6 +317,16 @@ function createAiHost(host: NativeHost): Readonly<AiServiceHostPort> {
   });
 }
 
+function createAiUiHost(host: NativeHost): Readonly<AiAgentButtonHostPort> {
+  return Object.freeze({
+    onOpenAiSettings: (listener: () => void): Disposable => {
+      if (typeof host.onOpenAiSettings !== 'function') return toDisposable(() => {});
+      const dispose = host.onOpenAiSettings(listener);
+      return toDisposable(typeof dispose === 'function' ? dispose : () => {});
+    }
+  });
+}
+
 // This is the only new renderer module allowed to read the preload global.
 // Domain services below it expose narrower capabilities and remain host-only.
 const nativeHost = window.api;
@@ -418,3 +430,10 @@ const aiHostRegistration = rendererPlatform.services.register(
   { owner: 'core', exposeToPlugins: false }
 );
 rendererPlatform.lifecycle.add(aiHostRegistration);
+
+const aiUiHostRegistration = rendererPlatform.services.register(
+  AI_UI_HOST_SERVICE_ID,
+  createAiUiHost(nativeHost),
+  { owner: 'core', exposeToPlugins: false }
+);
+rendererPlatform.lifecycle.add(aiUiHostRegistration);

@@ -1,9 +1,11 @@
 import {
+  AI_AGENT_BUTTON_SERVICE_ID
+} from '../../src/ai-agent-button';
+import {
   createWorkbenchLayoutService,
   WORKBENCH_LAYOUT_SERVICE_ID
 } from '../../src/workbench-layout';
 import type {
-  WorkbenchAiAgentButtonPort,
   WorkbenchAiChatPanelPort,
   WorkbenchCollaborationPort,
   WorkbenchCommandsPort,
@@ -26,7 +28,6 @@ interface LegacyWorkbenchBobo {
   settings?: WorkbenchSettingsPort;
   projects?: WorkbenchProjectsPort;
   collaboration?: WorkbenchCollaborationPort;
-  aiAgentButton?: WorkbenchAiAgentButtonPort;
   aiChatPanel?: WorkbenchAiChatPanelPort;
   switchToPanel?: WorkbenchSwitchPanelPort;
 }
@@ -65,7 +66,7 @@ export const workbenchLayout = createWorkbenchLayoutService({
   getSettings: () => BOBO.settings,
   getProjects: () => BOBO.projects,
   getCollaboration: () => BOBO.collaboration,
-  getAiAgentButton: () => BOBO.aiAgentButton,
+  getAiAgentButton: () => rendererPlatform.services.get(AI_AGENT_BUTTON_SERVICE_ID),
   getAiChatPanel: () => BOBO.aiChatPanel,
   getSwitchToPanel: () => BOBO.switchToPanel,
   reportError: (error) => console.error('workbench layout:', error)
@@ -103,4 +104,3 @@ BOBO.workbench = {
   toggleAuxiliary: workbenchLayout.toggleAuxiliary,
   reset: workbenchLayout.reset
 };
-
