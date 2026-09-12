@@ -1167,6 +1167,7 @@ export type {
   AiInlineModelPort,
   AiInlineMonacoEditorPort,
   AiInlineMonacoPort,
+  AiInlineProvider,
   AiInlinePositionDto,
   AiInlineRangeDto,
   AiInlineRendererState,
