@@ -18,7 +18,7 @@ import '../editor-rules/plugins/c.ts';
 import '../editor-rules/plugins/cpp.ts';
 import '../editor-rules/plugins/java.ts';
 import '../editor-rules/plugins/go.ts';
-import '../editor-rules/plugins/rust.js';
+import '../editor-rules/plugins/rust.ts';
 
 // Workbench modules.
 import './compat/state-adapter.ts';

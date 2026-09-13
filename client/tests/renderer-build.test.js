@@ -27,7 +27,7 @@ const EXPECTED_MODULES = [
   '../editor-rules/plugins/cpp.ts',
   '../editor-rules/plugins/java.ts',
   '../editor-rules/plugins/go.ts',
-  '../editor-rules/plugins/rust.js',
+  '../editor-rules/plugins/rust.ts',
   './compat/state-adapter.ts',
   './compat/tab-order-adapter.ts',
   './compat/i18n-adapter.ts',
