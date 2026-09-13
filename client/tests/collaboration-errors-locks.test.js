@@ -17,6 +17,7 @@ const collaborationBundle = esbuild.buildSync({
       '  var service = Object.assign({}, facade);',
       '  if (dependencies.__test) dependencies.__test({ api: api, renewOpenFileLocks: renewOpenFileLocks, expireLocalLeases: expireLocalLeases, releaseHeldFileLocks: releaseHeldFileLocks, heldFileLocks: heldFileLocks, blockedFileLocks: blockedFileLocks, fileLockRequests: fileLockRequests, setCollaborationReadOnly: setCollaborationReadOnly });\n  var service = Object.assign({}, facade);'
     ),
+    loader: 'ts',
     sourcefile: 'src/collaboration.ts',
     resolveDir: path.join(projectRoot, 'src')
   },

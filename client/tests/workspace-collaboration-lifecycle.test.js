@@ -16,6 +16,7 @@ const collaborationBundle = esbuild.buildSync({
       '  var service = Object.assign({}, facade);',
       '  if (dependencies.__test) dependencies.__test({ deleteProject: deleteProject, manualPull: manualPull, openProject: openProject, runActionConfirm: runActionConfirm });\n  var service = Object.assign({}, facade);'
     ),
+    loader: 'ts',
     sourcefile: 'src/collaboration.ts',
     resolveDir: path.join(projectRoot, 'src')
   },
