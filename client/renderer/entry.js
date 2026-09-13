@@ -12,7 +12,7 @@ import './compat/theme-manager-adapter.ts';
 import '../editor-rules/completion-engine.ts';
 import '../completion-rules.js';
 import '../editor-rules/symbol-extractor.ts';
-import '../editor-rules/diagnostics/c-family-checker.js';
+import '../editor-rules/diagnostics/c-family-checker.ts';
 import '../editor-rules/plugins/python.js';
 import '../editor-rules/plugins/c.js';
 import '../editor-rules/plugins/cpp.js';

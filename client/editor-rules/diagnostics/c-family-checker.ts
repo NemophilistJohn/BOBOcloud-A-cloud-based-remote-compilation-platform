@@ -1,4 +1,19 @@
-// editor-rules/diagnostics/c-family-checker.js
+import type {
+  EditorRuleCFamilyCheckerPort,
+  EditorRuleCFamilyDiagnosticsOptions,
+  EditorRuleMarkerDto,
+  EditorRuleTokenDto
+} from '../../types/editor-rules';
+import type { DiagnosticsSeverity } from '../../types/diagnostics';
+
+type CFamilyTokenType = 'ident' | 'keyword' | 'number' | 'string' | 'char' | 'punct' | 'preproc' | 'unknown';
+type CFamilyToken = Omit<EditorRuleTokenDto, 'type'> & { readonly type: CFamilyTokenType };
+type HeaderKind = 'function' | 'namespace' | 'extern-block' | 'aggregate' | 'initializer';
+type CFamilyCheckerGlobal = typeof globalThis & {
+  cFamilyChecker?: EditorRuleCFamilyCheckerPort;
+};
+
+// editor-rules/diagnostics/c-family-checker.ts
 //
 // Structural syntax checker for C-family languages (C / C++ / Java).
 //
@@ -17,7 +32,7 @@
 // The scanner is NOT a full C parser — it is a statement-boundary tracker. It is
 // intentionally conservative: it only reports an error when it is confident, so it
 // favours fewer false positives over catching every theoretical mistake.
-(function (global) {
+(function (global: CFamilyCheckerGlobal): void {
   'use strict';
 
   // ───────────────────────────── Keywords ─────────────────────────────
@@ -82,13 +97,13 @@
   // ───────────────────────────── Tokenizer ─────────────────────────────
   // Produces tokens: { type, value, line, col }
   //   type ∈ 'ident' | 'keyword' | 'number' | 'string' | 'char' | 'punct' | 'preproc' | 'unknown'
-  function tokenize(src) {
-    const tokens = [];
+  function tokenize(src: string): CFamilyToken[] {
+    const tokens: CFamilyToken[] = [];
     const n = src.length;
     let i = 0, line = 1, col = 1;
     let onlyWsSinceNewline = true; // for preprocessor detection
 
-    function adv(count) {
+    function adv(count: number): void {
       for (let k = 0; k < count; k++) {
         if (src[i] === '\n') { line++; col = 1; } else { col++; }
         i++;
@@ -96,7 +111,7 @@
     }
 
     while (i < n) {
-      const ch = src[i];
+      const ch = src[i]!;
 
       // whitespace
       if (ch === ' ' || ch === '\t' || ch === '\r') { adv(1); continue; }
@@ -168,22 +183,22 @@
       }
 
       // number
-      if ((ch >= '0' && ch <= '9') || (ch === '.' && src[i + 1] >= '0' && src[i + 1] <= '9')) {
+      if ((ch >= '0' && ch <= '9') || (ch === '.' && (src[i + 1] ?? '') >= '0' && (src[i + 1] ?? '') <= '9')) {
         const sl = line, sc = col;
         onlyWsSinceNewline = false;
-        if (ch === '0' && (src[i + 1] === 'x' || src[i + 1] === 'X')) {
+        if (ch === '0' && ((src[i + 1] ?? '') === 'x' || (src[i + 1] ?? '') === 'X')) {
           adv(2);
-          while (i < n && /[0-9a-fA-F]/.test(src[i])) adv(1);
+          while (i < n && /[0-9a-fA-F]/.test(src[i]!)) adv(1);
         } else {
-          while (i < n && src[i] >= '0' && src[i] <= '9') adv(1);
-          if (src[i] === '.') { adv(1); while (i < n && src[i] >= '0' && src[i] <= '9') adv(1); }
+          while (i < n && src[i]! >= '0' && src[i]! <= '9') adv(1);
+          if (src[i] === '.') { adv(1); while (i < n && src[i]! >= '0' && src[i]! <= '9') adv(1); }
           if (src[i] === 'e' || src[i] === 'E') {
             adv(1); if (src[i] === '+' || src[i] === '-') adv(1);
-            while (i < n && src[i] >= '0' && src[i] <= '9') adv(1);
+            while (i < n && src[i]! >= '0' && src[i]! <= '9') adv(1);
           }
         }
         // numeric suffixes and digit separators
-        while (i < n && /[uUlLfF]/.test(src[i])) adv(1);
+        while (i < n && /[uUlLfF]/.test(src[i]!)) adv(1);
         tokens.push({ type: 'number', value: '0', line: sl, col: sc });
         continue;
       }
@@ -192,7 +207,7 @@
       if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch === '_' || ch === '$') {
         const sl = line, sc = col;
         const start = i;
-        while (i < n && /[A-Za-z0-9_$]/.test(src[i])) adv(1);
+        while (i < n && /[A-Za-z0-9_$]/.test(src[i]!)) adv(1);
         const word = src.slice(start, i);
         tokens.push({ type: KEYWORDS.has(word) ? 'keyword' : 'ident', value: word, line: sl, col: sc });
         onlyWsSinceNewline = false;
@@ -231,7 +246,7 @@
   //   'extern-block'  -> extern "C" { ... }           (no ';' needed)
   //   'aggregate'     -> struct/enum/union/class { }  (';' needed in C/C++, not Java)
   //   'initializer'   -> int x = { ... } / compound    (';' still needed)
-  function classifyHeader(tokens, startIdx, endIdx) {
+  function classifyHeader(tokens: readonly CFamilyToken[], startIdx: number, endIdx: number): HeaderKind {
     let depth = 0;
     let hadParenGroup = false;
     let hasAssign = false;
@@ -240,10 +255,10 @@
     let hasNamespace = false;
     let hasExtern = false;
     let externIsString = false;
-    const reduced = []; // tokens at paren-depth 0 (groups reduced away)
+    const reduced: CFamilyToken[] = []; // tokens at paren-depth 0 (groups reduced away)
 
     for (let k = startIdx; k < endIdx; k++) {
-      const t = tokens[k];
+      const t = tokens[k]!;
       if (t.type === 'punct') {
         if (t.value === '(' || t.value === '[') { depth++; continue; }
         if (t.value === ')' || t.value === ']') {
@@ -277,13 +292,13 @@
     if (hasExtern && externIsString) return 'extern-block';
     if (hasStructish) return 'aggregate';
     // any remaining top-level operator punct (not declarator modifier) => expression
-    const hasExprOp = reduced.some(function (t) { return t.type === 'punct'; });
+    const hasExprOp = reduced.some((t: CFamilyToken) => t.type === 'punct');
     if (hadParenGroup && !hasExprOp) return 'function';
     return 'initializer';
   }
 
   // ───────────────────────────── Scanner ─────────────────────────────
-  function runCFamilyDiagnostics(opts) {
+  function runCFamilyDiagnostics(opts: EditorRuleCFamilyDiagnosticsOptions): EditorRuleMarkerDto[] {
     const monaco = opts.monaco;
     const content = opts.content;
     const settings = opts.settings || {};
@@ -291,25 +306,25 @@
     const lang = opts.lang || 'c';
     const aggregateNeedsSemi = lang !== 'java';
 
-    const markers = [];
+    const markers: EditorRuleMarkerDto[] = [];
     const tokens = tokenize(content);
 
-    const push = function (id, defSev, line, c1, c2, msg) {
+    const push = function (id: string, defSev: DiagnosticsSeverity, line: number, c1: number, c2: number, msg: string): void {
       helpers.pushChecked(markers, monaco, settings, id, defSev, line, c1, c2, msg);
     };
-    const tokLen = function (t) {
+    const tokLen = function (t: CFamilyToken | undefined): number {
       if (!t) return 1;
       if (t.value && t.value.length) return t.value.length;
       return 1;
     };
 
     let pos = 0;
-    const peek = function (o) { o = o || 0; return tokens[pos + o]; };
-    const isPunct = function (v, o) { const t = peek(o); return t && t.type === 'punct' && t.value === v; };
-    const isKw = function (v, o) { const t = peek(o); return t && t.type === 'keyword' && t.value === v; };
+    const peek = function (o: number = 0): CFamilyToken | undefined { o = o || 0; return tokens[pos + o]; };
+    const isPunct = function (v: string, o: number = 0): boolean { const t = peek(o); return Boolean(t && t.type === 'punct' && t.value === v); };
+    const isKw = function (v: string, o: number = 0): boolean { const t = peek(o); return Boolean(t && t.type === 'keyword' && t.value === v); };
 
     // consume a balanced ( ... ) or [ ... ] starting at current token; return inner tokens
-    function consumeGroup() {
+    function consumeGroup(): CFamilyToken[] {
       const open = peek();
       if (!open || open.type !== 'punct') return [];
       const close = open.value === '(' ? ')' : (open.value === '[' ? ']' : null);
@@ -318,7 +333,7 @@
       pos++;
       let depth = 1;
       while (pos < tokens.length && depth > 0) {
-        const t = tokens[pos];
+        const t = tokens[pos]!;
         if (t.type === 'punct') {
           if (t.value === open.value) depth++;
           else if (t.value === close) depth--;
@@ -330,11 +345,11 @@
 
     // Skip a balanced { ... } block WITHOUT scanning its contents. Used for
     // initializer lists like {1, 2, 3} which are expressions, not statement blocks.
-    function consumeBlock() {
+    function consumeBlock(): void {
       pos++; // {
       let depth = 1;
       while (pos < tokens.length && depth > 0) {
-        const t = tokens[pos];
+        const t = tokens[pos]!;
         if (t.type === 'punct') {
           if (t.value === '{') depth++;
           else if (t.value === '}') depth--;
@@ -345,17 +360,17 @@
 
     // Consume a { ... } block AND scan its inner statements (function/aggregate
     // bodies, compound statements). Assumes current token is '{'.
-    function scanBracedBlock() {
+    function scanBracedBlock(): void {
       pos++; // {
       scanBlock(false); // scans statements until the matching '}'
       if (isPunct('}')) pos++; // consume '}'
     }
 
-    function skipToStatementEnd() {
+    function skipToStatementEnd(): void {
       // skip until ';' or '}' at depth 0; consume ';' but not '}'
       let depth = 0;
       while (pos < tokens.length) {
-        const t = tokens[pos];
+        const t = tokens[pos]!;
         if (t.type === 'punct') {
           if (t.value === '(' || t.value === '[' || t.value === '{') depth++;
           else if (t.value === ')' || t.value === ']' || t.value === '}') {
@@ -366,7 +381,7 @@
       }
     }
 
-    function isInvalidFileScopeStart(t) {
+    function isInvalidFileScopeStart(t: CFamilyToken | undefined): boolean {
       if (!t) return false;
       if (t.type === 'number' || t.type === 'string' || t.type === 'char' || t.type === 'unknown') return true;
       if (t.type === 'punct') return true; // no valid file-scope construct starts with an operator
@@ -374,7 +389,7 @@
       return false;
     }
 
-    function scanBlock(isFileScope) {
+    function scanBlock(isFileScope: boolean): void {
       while (pos < tokens.length) {
         const t = peek();
         if (!t) break;
@@ -390,7 +405,7 @@
       }
     }
 
-    function scanStatement(isFileScope) {
+    function scanStatement(isFileScope: boolean): void {
       const start = peek();
       if (!start) return;
 
@@ -407,7 +422,7 @@
 
       // label:  ident ':'   (but not '::')
       if (start.type === 'ident' && isPunct(':', 1) && !isPunct(':', 2) &&
-          !(peek(2) && peek(2).type === 'punct' && peek(2).value === ':')) {
+          !(peek(2)?.type === 'punct' && peek(2)?.value === ':')) {
         pos += 2; // ident ':'
         return; // labeled statement body follows
       }
@@ -416,14 +431,14 @@
       if (start.type === 'keyword' && CONTROL_HEADERS.has(start.value)) {
         const kw = start.value;
         pos++;
-        let condTokens = [];
+        let condTokens: CFamilyToken[] = [];
         if (isPunct('(')) condTokens = consumeGroup();
 
         // assignment-in-condition (if / while only — for/switch legitimately use '=')
         if ((kw === 'if' || kw === 'while') && condTokens.length) {
           let d = 0;
           for (let k = 0; k < condTokens.length; k++) {
-            const t = condTokens[k];
+            const t = condTokens[k]!;
             if (t.type === 'punct') {
               if (t.value === '(' || t.value === '[') d++;
               else if (t.value === ')' || t.value === ']') d = Math.max(0, d - 1);
@@ -482,7 +497,7 @@
         if (start.value === 'case') {
           let d = 0;
           while (pos < tokens.length) {
-            const t = tokens[pos];
+            const t = tokens[pos]!;
             if (t.type === 'punct') {
               if (t.value === '(' || t.value === '[') d++;
               else if (t.value === ')' || t.value === ']') d = Math.max(0, d - 1);
@@ -500,7 +515,8 @@
       // goto label ;
       if (start.type === 'keyword' && start.value === 'goto') {
         pos++;
-        if (peek() && peek().type === 'ident') pos++;
+        const label = peek();
+        if (label && label.type === 'ident') pos++;
         if (!isPunct(';')) {
           const t = peek();
           push('missingSemicolon', 'error', t ? t.line : 1, t ? t.col : 1, (t ? t.col : 1) + 1,
@@ -535,7 +551,7 @@
       let needSemi = true;
 
       while (pos < tokens.length) {
-        const tk = tokens[pos];
+        const tk = tokens[pos]!;
 
         if (tk.type === 'unknown') {
           push('strayTokens', 'error', tk.line, tk.col, tk.col + 1,
@@ -568,7 +584,7 @@
               } else {
                 scanBracedBlock();
               }
-              if (pos < tokens.length && tokens[pos - 1]) lastToken = tokens[pos - 1];
+              if (pos < tokens.length && tokens[pos - 1]) lastToken = tokens[pos - 1]!;
               if (kind === 'function' || kind === 'namespace' || kind === 'extern-block') {
                 return; // no ';' needed
               }
@@ -629,4 +645,4 @@
 
   // expose
   global.cFamilyChecker = { runCFamilyDiagnostics: runCFamilyDiagnostics, tokenize: tokenize };
-})(typeof window !== 'undefined' ? window : globalThis);
+})(typeof window !== 'undefined' ? window as CFamilyCheckerGlobal : globalThis);
