@@ -576,7 +576,7 @@ test('HTML has at most two startup scripts and the renderer build covers every f
   assert.equal(manifest.entries.aiUi.load, 'first-visible-ai-ui');
   assert.deepEqual(manifest.entries.aiUi.outputs, ['bobo-ai-ui.js', 'bobo-ai-ui.js.map']);
   assert.equal(manifest.entries.core.orderedModules.includes('../src/ai-chat-panel.ts'), false);
-  assert.ok(manifest.entries.aiUi.orderedModules.includes('./compat/ai-chat-panel-adapter.ts'));
+  assert.ok(manifest.entries.aiUi.orderedModules.includes('./compat/ai-chat-panel-adapter'));
 });
 
 test('checked renderer bundles are fresh for their recorded build mode', async (t) => {
