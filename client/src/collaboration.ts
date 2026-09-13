@@ -1,8 +1,112 @@
-// src/collaboration.js - Team identity, cloud mappings, Git workflow and cache UI.
-(function(global) {
-  var BOBO = global.BOBO || {};
-  global.BOBO = BOBO;
-  var S = BOBO.state;
+// @ts-nocheck
+// src/collaboration.ts - Team identity, cloud mappings, Git workflow and cache UI.
+//
+// The historical DOM implementation is kept intact inside an injected,
+// lifecycle-owned service.  Native file/workspace capabilities enter only
+// through the private collaboration host projection supplied by the adapter.
+import { DisposableStore, toDisposable } from '../renderer/core/disposable.js';
+import type {
+  CollaborationDependencies,
+  CollaborationFacade,
+  CollaborationService
+} from '../types/collaboration';
+
+export const COLLABORATION_SERVICE_ID = 'workbench.collaboration' as const;
+
+export function createCollaborationService(
+  dependencies: CollaborationDependencies
+): CollaborationService {
+  'use strict';
+
+  var global = dependencies.eventTarget;
+  var document = dependencies.document;
+  var S = dependencies.state;
+  var storage = dependencies.storage;
+  var clipboard = dependencies.clipboard;
+  var createImage = dependencies.createImage;
+  var createObjectURL = dependencies.createObjectURL;
+  var revokeObjectURL = dependencies.revokeObjectURL;
+  var disposed = false;
+  var lifecycleEpoch = 0;
+  var lifecycle = new DisposableStore();
+  var ownedTimers = new Set();
+  var ownedIntervals = new Set();
+  var ownedHandlers = [];
+  var activeAvatarLoads = new Set();
+
+  function isCurrent(epoch) { return !disposed && epoch === lifecycleEpoch; }
+  function setTimeout(callback, delay) {
+    var timer = null;
+    var fired = false;
+    var wrapped = function() {
+      fired = true;
+      if (timer !== null) ownedTimers.delete(timer);
+      if (!disposed) callback();
+    };
+    timer = dependencies.setTimer(wrapped, delay);
+    if (!fired && timer !== undefined && timer !== null) ownedTimers.add(timer);
+    return timer;
+  }
+  function clearTimeout(timer) {
+    if (timer === undefined || timer === null) return;
+    ownedTimers.delete(timer);
+    try { dependencies.clearTimer(timer); } catch (_) {}
+  }
+  function setInterval(callback, delay) {
+    var timer = dependencies.setInterval(function() { if (!disposed) callback(); }, delay);
+    if (timer !== undefined && timer !== null) ownedIntervals.add(timer);
+    return timer;
+  }
+  function clearInterval(timer) {
+    if (timer === undefined || timer === null) return;
+    ownedIntervals.delete(timer);
+    try { dependencies.clearInterval(timer); } catch (_) {}
+  }
+  function listen(target, type, listener, options, track) {
+    if (!target || typeof target.addEventListener !== 'function') return;
+    target.addEventListener(type, listener, options);
+    lifecycle.add(toDisposable(function() {
+      try { target.removeEventListener(type, listener, options); } catch (_) {}
+    }));
+  }
+  function assignHandler(element, property, handler, track) {
+    if (!element) return;
+    if (track === false) {
+      element[property] = handler;
+      lifecycle.add(toDisposable(function() {
+        try { if (element[property] === handler) element[property] = null; } catch (_) {}
+      }));
+      return;
+    }
+    var previous = element[property];
+    for (var i = ownedHandlers.length - 1; i >= 0; i--) {
+      var tracked = ownedHandlers[i];
+      if (tracked.element !== element || tracked.property !== property) continue;
+      tracked.handler = handler;
+      element[property] = handler;
+      return;
+    }
+    element[property] = handler;
+    ownedHandlers.push({ element: element, property: property, previous: previous, handler: handler });
+  }
+
+  // Dynamic getters preserve legacy sibling replacement semantics while the
+  // service itself receives only narrow typed ports.
+  var BOBO = {};
+  Object.defineProperties(BOBO, {
+    state: { enumerable: true, get: function() { return S; } },
+    i18n: { enumerable: true, get: function() { return dependencies.getI18n(); } },
+    toast: { enumerable: true, get: function() { return dependencies.getToast(); } },
+    auth: { enumerable: true, get: function() { return dependencies.getAuth(); } },
+    accountProfile: { enumerable: true, get: function() { return dependencies.getAccountProfile(); } },
+    workspace: { enumerable: true, get: function() { return dependencies.getWorkspace(); } },
+    rclone: { enumerable: true, get: function() { return dependencies.getRclone(); } },
+    runner: { enumerable: true, get: function() { return dependencies.getRunner(); } },
+    workbench: { enumerable: true, get: function() { return dependencies.getWorkbench(); } },
+    environmentActivity: { enumerable: true, get: function() { return dependencies.getEnvironmentActivity(); } },
+    switchToPanel: { enumerable: true, get: function() { return dependencies.getSwitchToPanel(); } },
+    sendToServer: { enumerable: true, get: function() { return dependencies.sendToServer; } }
+  });
   var selectedTeamId = '';
   var selectedDetail = null;
   var actionConfirm = null;
@@ -13,6 +117,7 @@
   var selectedCacheInfo = null;
   var workbenchCacheInfo = null;
   var lockRefreshInFlight = false;
+  var initialized = false;
   var heldFileLocks = Object.create(null);
   var blockedFileLocks = Object.create(null);
   var fileLockRequests = Object.create(null);
@@ -63,6 +168,7 @@
     return '<span class="' + className + ' avatar-' + esc(avatar) + '">' + esc(initials(name)) + '</span>';
   }
   function notify(message, type) {
+    if (disposed) return;
     if (BOBO.toast && BOBO.toast[type || 'info']) BOBO.toast[type || 'info'](t(message));
   }
   function legacyCollaborationErrorCode(message) {
@@ -105,6 +211,7 @@
     }
   }
   function renderActiveLockStatus() {
+    if (disposed) return;
     var badge = $('team-project-badge');
     if (!badge || !S.collaboration.current) return;
     if (!relativeCurrentPath(S.activeTabPath)) {
@@ -201,6 +308,7 @@
 
   // ─── Profile ───────────────────────────────────────────────
   function renderProfileAvatar() {
+    if (disposed) return;
     var user = Object.assign({}, currentUser() || {}, { avatar: chosenAvatar, name: $('profile-name').value });
     $('profile-avatar-preview').outerHTML = avatarMarkup(user, 'profile-avatar-preview').replace('<span ', '<span id="profile-avatar-preview" ');
     document.querySelectorAll('.profile-avatar-swatch').forEach(function(el) {
@@ -208,6 +316,7 @@
     });
   }
   function openProfile() {
+    if (disposed) return;
     if (!requireLogin()) return;
     var user = currentUser();
     $('profile-name').value = user.name || user.username || '';
@@ -220,16 +329,38 @@
     renderProfileAvatar();
     $('profile-modal').classList.add('open');
   }
-  function closeProfile() { $('profile-modal').classList.remove('open'); }
+  function closeProfile() { if (!disposed) $('profile-modal').classList.remove('open'); }
   function chooseAvatarFile(file) {
-    if (!file) return;
+    if (disposed || !file) return;
     if (!/^image\/(png|jpeg|webp|gif)$/.test(file.type) || file.size > 5 * 1024 * 1024) {
       notify('Choose a PNG, JPEG, WebP or GIF image under 5 MB', 'error');
       return;
     }
-    var objectURL = URL.createObjectURL(file);
-    var image = new Image();
+    if (!createObjectURL || !revokeObjectURL || !createImage) {
+      notify('The selected image could not be read', 'error');
+      return;
+    }
+    var objectURL;
+    var image;
+    try {
+      objectURL = createObjectURL(file);
+      image = createImage();
+    } catch (_) {
+      try { if (objectURL && revokeObjectURL) revokeObjectURL(objectURL); } catch (__) {}
+      notify('The selected image could not be read', 'error');
+      return;
+    }
+    var avatarLoad = { objectURL: objectURL, image: image, epoch: lifecycleEpoch, released: false };
+    activeAvatarLoads.add(avatarLoad);
+    function releaseAvatarLoad() {
+      if (avatarLoad.released) return;
+      avatarLoad.released = true;
+      activeAvatarLoads.delete(avatarLoad);
+      try { if (revokeObjectURL) revokeObjectURL(objectURL); } catch (_) {}
+      try { image.onload = null; image.onerror = null; } catch (_) {}
+    }
     image.onload = function() {
+      if (!isCurrent(avatarLoad.epoch)) { releaseAvatarLoad(); return; }
       try {
         var size = 128;
         var canvas = document.createElement('canvas');
@@ -245,28 +376,33 @@
         chosenAvatar = canvas.toDataURL('image/jpeg', 0.82);
         renderProfileAvatar();
       } finally {
-        URL.revokeObjectURL(objectURL);
+        releaseAvatarLoad();
       }
     };
     image.onerror = function() {
-      URL.revokeObjectURL(objectURL);
+      if (!isCurrent(avatarLoad.epoch)) { releaseAvatarLoad(); return; }
+      releaseAvatarLoad();
       notify('The selected image could not be read', 'error');
     };
     image.src = objectURL;
   }
   async function saveProfile() {
+    if (disposed) return;
+    var epoch = lifecycleEpoch;
     try {
       var result = await BOBO.sendToServer('updateProfile', { name: $('profile-name').value.trim(), avatar: chosenAvatar }, { quiet: true });
+      if (!isCurrent(epoch)) return;
       if (!result || !result.success) throw new Error(result && result.error || 'Update failed');
       S.auth.user = result.user;
       if (BOBO.auth) BOBO.auth.renderChip();
       closeProfile();
       notify('Profile updated', 'success');
-    } catch (err) { notify(err.message, 'error'); }
+    } catch (err) { if (isCurrent(epoch)) notify(err.message, 'error'); }
   }
 
   // ─── Reusable action dialog ────────────────────────────────
   function closeAction() {
+    if (disposed) return;
     $('collab-action-modal').classList.remove('open');
     actionConfirm = null;
   }
@@ -283,6 +419,7 @@
     el.classList.toggle('error', !!error);
   }
   function openAction(title, bodyHTML, confirmText, onConfirm, titleParams) {
+    if (disposed) return;
     bindText($('collab-action-title'), title, titleParams);
     $('collab-action-body').innerHTML = bodyHTML + '<div id="collab-action-status" class="collab-action-status"></div>';
     bindText($('collab-action-confirm'), confirmText || 'Continue');
@@ -293,17 +430,19 @@
     if (first) setTimeout(function() { first.focus(); }, 30);
   }
   async function runActionConfirm() {
-    if (!actionConfirm) return;
+    if (disposed || !actionConfirm) return;
+    var epoch = lifecycleEpoch;
     var btn = $('collab-action-confirm');
     btn.disabled = true;
     setActionStatusKey('Working...', null, false);
     try {
       var shouldClose = await actionConfirm();
+      if (!isCurrent(epoch)) return;
       if (shouldClose !== false) closeAction();
     } catch (err) {
-      setActionStatus(collaborationErrorMessage(err), true);
+      if (isCurrent(epoch)) setActionStatus(collaborationErrorMessage(err), true);
     } finally {
-      btn.disabled = false;
+      if (isCurrent(epoch)) btn.disabled = false;
     }
   }
   function inputField(id, label, value, type) {
@@ -323,16 +462,18 @@
 
   // ─── Team center ───────────────────────────────────────────
   async function openHub() {
-    if (!requireLogin()) return;
+    if (disposed || !requireLogin()) return;
+    var epoch = lifecycleEpoch;
     hubReturnFocus = document.activeElement;
     var modal = $('collab-modal');
     modal.classList.add('open');
     S.collaboration.modalOpen = true;
     $('collab-account-id').textContent = (currentUser().name || currentUser().username) + ' · ' + (currentUser().uid || '');
     setTimeout(function() { modal.focus(); }, 0);
-    await loadTeams();
+    await loadTeams(undefined, epoch);
   }
   function closeHub() {
+    if (disposed) return;
     $('collab-modal').classList.remove('open');
     S.collaboration.modalOpen = false;
     var fallback = $('team-hub-btn');
@@ -342,16 +483,19 @@
     if (target && typeof target.focus === 'function') target.focus();
   }
 
-  async function loadTeams(preferTeamId) {
+  async function loadTeams(preferTeamId, expectedEpoch) {
+    var epoch = expectedEpoch === undefined ? lifecycleEpoch : expectedEpoch;
+    if (!isCurrent(epoch)) return;
     $('collab-team-list').innerHTML = '<div class="collab-empty" data-i18n="Loading...">' + esc(t('Loading...')) + '</div>';
     try {
       S.collaboration.teams = await api('listTeams');
+      if (!isCurrent(epoch)) return;
       renderTeamList();
       var next = preferTeamId || selectedTeamId || (S.collaboration.teams[0] && S.collaboration.teams[0].id);
-      if (next) await selectTeam(next);
+      if (next) await selectTeam(next, epoch);
       else renderNoTeam();
     } catch (err) {
-      $('collab-team-list').innerHTML = '<div class="collab-empty">' + esc(err.message) + '</div>';
+      if (isCurrent(epoch)) $('collab-team-list').innerHTML = '<div class="collab-empty">' + esc(err.message) + '</div>';
     }
   }
   function renderTeamList() {
@@ -378,13 +522,16 @@
     $('collab-invite-list').innerHTML = '';
     $('collab-cache-view').innerHTML = '';
   }
-  async function selectTeam(teamId) {
+  async function selectTeam(teamId, expectedEpoch) {
+    var epoch = expectedEpoch === undefined ? lifecycleEpoch : expectedEpoch;
+    if (!isCurrent(epoch)) return;
     selectedTeamId = teamId;
     renderTeamList();
     try {
       selectedDetail = await api('getTeam', { teamId: teamId });
+      if (!isCurrent(epoch) || selectedTeamId !== teamId) return;
       renderSelectedTeam();
-    } catch (err) { notify(err.message, 'error'); }
+    } catch (err) { if (isCurrent(epoch) && selectedTeamId === teamId) notify(err.message, 'error'); }
   }
   function renderSelectedTeam() {
     var detail = selectedDetail;
@@ -419,11 +566,15 @@
     }).join('');
   }
   async function loadInvites() {
+    var epoch = lifecycleEpoch;
+    var teamId = selectedTeamId;
+    if (!isCurrent(epoch) || !teamId) return;
     try {
-      var invites = asArray(await api('listTeamInvites', { teamId: selectedTeamId }));
+      var invites = asArray(await api('listTeamInvites', { teamId: teamId }));
+      if (!isCurrent(epoch) || selectedTeamId !== teamId) return;
       selectedInvites = invites;
       renderInvites(invites);
-    } catch (err) { $('collab-invite-list').innerHTML = '<div class="collab-empty">' + esc(err.message) + '</div>'; }
+    } catch (err) { if (isCurrent(epoch) && selectedTeamId === teamId) $('collab-invite-list').innerHTML = '<div class="collab-empty">' + esc(err.message) + '</div>'; }
   }
   function renderInvites(invites) {
       if (!invites.length) { $('collab-invite-list').innerHTML = '<div class="collab-empty" data-i18n="No active invitations">' + esc(t('No active invitations')) + '</div>'; return; }
@@ -442,9 +593,16 @@
       });
   }
   async function loadTeamCache() {
-    if (!selectedTeamId) return;
-    try { selectedCacheInfo = await api('getTeamCacheInfo', { teamId: selectedTeamId }); renderCache(selectedCacheInfo, $('collab-cache-view'), true); }
-    catch (err) { $('collab-cache-view').innerHTML = '<div class="collab-empty">' + esc(err.message) + '</div>'; }
+    var epoch = lifecycleEpoch;
+    var teamId = selectedTeamId;
+    if (!isCurrent(epoch) || !teamId) return;
+    try {
+      selectedCacheInfo = await api('getTeamCacheInfo', { teamId: teamId });
+      if (!isCurrent(epoch) || selectedTeamId !== teamId) return;
+      renderCache(selectedCacheInfo, $('collab-cache-view'), true);
+    } catch (err) {
+      if (isCurrent(epoch) && selectedTeamId === teamId) $('collab-cache-view').innerHTML = '<div class="collab-empty">' + esc(err.message) + '</div>';
+    }
   }
   function renderCache(info, target, detailed) {
     if (!info) { target.innerHTML = '<div class="collab-empty" data-i18n="Cache is unavailable">' + esc(t('Cache is unavailable')) + '</div>'; return; }
@@ -515,7 +673,7 @@
     openAction('Generate invitation', inputField('action-invite-uses', 'Maximum uses', '1', 'number') + inputField('action-invite-hours', 'Valid for hours', '168', 'number'), 'Generate', async function() {
       var invite = await api('createTeamInvite', { teamId: selectedTeamId, maxUses: Number($('action-invite-uses').value), expiresInHours: Number($('action-invite-hours').value) });
       await loadInvites();
-      try { await navigator.clipboard.writeText(invite.code); } catch (e) {}
+      try { if (clipboard) await clipboard.writeText(invite.code); } catch (e) {}
       notify(t('Invitation copied: {code}', { code: invite.code }), 'success'); return true;
     });
   }
@@ -525,43 +683,54 @@
     return ['bobo-team-map-v1', S.serverSettings.ip || 'server', currentUser().uid || currentUser().id, teamId, projectId, branch].join(':');
   }
   function readMapping(teamId, projectId, branch) {
-    try { return localStorage.getItem(mappingKey(teamId, projectId, branch)) || ''; } catch (e) { return ''; }
+    try { return storage ? storage.getItem(mappingKey(teamId, projectId, branch)) || '' : ''; } catch (e) { return ''; }
   }
   function writeMapping(teamId, projectId, branch, path) {
-    try { localStorage.setItem(mappingKey(teamId, projectId, branch), path); } catch (e) {}
+    try { if (storage) storage.setItem(mappingKey(teamId, projectId, branch), path); } catch (e) {}
   }
   function removeProjectMappings(teamId, projectId) {
     try {
       var prefix = ['bobo-team-map-v1', S.serverSettings.ip || 'server', currentUser().uid || currentUser().id, teamId, projectId].join(':') + ':';
-      for (var i = localStorage.length - 1; i >= 0; i--) {
-        var key = localStorage.key(i);
-        if (key && key.indexOf(prefix) === 0) localStorage.removeItem(key);
+      if (!storage) return;
+      for (var i = storage.length - 1; i >= 0; i--) {
+        var key = storage.key(i);
+        if (key && key.indexOf(prefix) === 0) storage.removeItem(key);
       }
     } catch (e) {}
   }
 
   async function refreshApprovedWorkspace(rootPath) {
-    var tree = await window.api.refreshWorkspace();
-    var identity = await window.api.getWorkspaceIdentity();
-    if (!tree || !identity || identity.rootPath !== rootPath ||
-        !(await BOBO.workspace.applyWorkspace(rootPath, tree, identity.workspaceIdentity, null, { approved: true }))) {
+    if (disposed) return false;
+    var epoch = lifecycleEpoch;
+    var tree = await dependencies.host.refreshWorkspace();
+    var identity = await dependencies.host.getWorkspaceIdentity();
+    if (!isCurrent(epoch)) return false;
+    if (!tree || !identity || identity.rootPath !== rootPath) {
       throw new Error(t('Pull failed'));
     }
+    var applied = await BOBO.workspace.applyWorkspace(rootPath, tree, identity.workspaceIdentity, null, { approved: true });
+    if (!isCurrent(epoch)) return false;
+    if (!applied) throw new Error(t('Pull failed'));
+    return true;
   }
 
   async function openProject(project, preferredBranch) {
+    if (disposed) return false;
+    var epoch = lifecycleEpoch;
     openAction('Open {name}', '<div class="collab-open-loading" data-i18n="Loading cloud branches...">' + esc(t('Loading cloud branches...')) + '</div>', 'Open project', null, { name: project.name });
     $('collab-action-confirm').disabled = true;
     var branches;
     try {
       branches = await api('listTeamBranches', { teamId: project.team_id, projectId: project.id });
     } catch (err) {
+      if (!isCurrent(epoch)) return false;
       $('collab-action-body').innerHTML = '<div class="collab-open-error"><strong data-i18n="Could not load this project">' + esc(t('Could not load this project')) + '</strong><span>' + esc(err.message) + '</span></div><div id="collab-action-status" class="collab-action-status"></div>';
       bindText($('collab-action-confirm'), 'Retry');
       $('collab-action-confirm').disabled = false;
       actionConfirm = async function() { await openProject(project, preferredBranch); return false; };
       return;
     }
+    if (!isCurrent(epoch)) return false;
     if (!Array.isArray(branches)) {
       throw new Error(t('The server returned an invalid branch list'));
     }
@@ -576,12 +745,14 @@
       '<div class="collab-action-field"><label data-i18n="Local mapping">' + esc(t('Local mapping')) + '</label><div id="action-mapping-path" class="mapping-path">' + esc(existing || t('Not selected')) + '</div><button id="action-choose-mapping" class="ss-btn ss-btn-ghost" type="button" data-i18n="Choose directory">' + esc(t('Choose directory')) + '</button></div>' +
       selectField('action-open-mode', 'Open mode', existing ? [{value:'local',label:'Open local changes'}, {value:'pull',label:'Reset from cloud (discard local changes)'}] : [{value:'pull',label:'Initial pull from cloud'}], existing ? 'local' : 'pull');
     openAction('Open {name}', body, 'Open project', async function() {
+      if (!isCurrent(epoch)) return false;
       var selectedBranch = $('action-open-branch').value;
 	  var storedPath = readMapping(project.team_id, project.id, selectedBranch);
 	  var mappingElement = $('action-mapping-path');
 	  var localPath = mappingElement.getAttribute('data-path') || storedPath;
       if (!localPath) throw new Error(t('Choose a local mapping directory'));
-      var pathInfo = await window.api.localPathInfo(localPath, mappingElement.getAttribute('data-grant') || '');
+      var pathInfo = await dependencies.host.localPathInfo(localPath, mappingElement.getAttribute('data-grant') || '');
+      if (!isCurrent(epoch)) return false;
       if (!pathInfo.exists || !pathInfo.directory) throw new Error(t('Local mapping directory is unavailable'));
 	  if (!pathInfo.grantId) throw new Error(t('Choose the local mapping directory again to authorize synchronization'));
 	  var isFirst = !storedPath || storedPath !== localPath;
@@ -594,6 +765,7 @@
         leaveApproved = await BOBO.workspace.canLeaveWorkspace({ reason: 'team-pull', targetRoot: localPath });
         if (!leaveApproved) return false;
       }
+      if (!isCurrent(epoch)) return false;
       try {
         var prepared;
         if (isFirst || mode === 'pull') {
@@ -603,22 +775,27 @@
             projectId: project.id,
             branch: selectedBranch,
             reset: true
-          }, { dest: localPath, localGrant: pathInfo.grantId });
-          if (!prepared || !prepared.success) throw new Error(prepared && prepared.error || t('Pull failed'));
-          var result = await BOBO.rclone.pull({ dest: localPath, localGrant: pathInfo.grantId, remoteGrantId: prepared.remoteGrantId, onProgress: function(line) { setActionStatus(line, false); } });
-          if (!result.success) throw new Error(result.error && result.error.message || t('Pull failed'));
+           }, { dest: localPath, localGrant: pathInfo.grantId });
+           if (!isCurrent(epoch)) return false;
+           if (!prepared || !prepared.success) throw new Error(prepared && prepared.error || t('Pull failed'));
+           var result = await BOBO.rclone.pull({ dest: localPath, localGrant: pathInfo.grantId, remoteGrantId: prepared.remoteGrantId, onProgress: function(line) { setActionStatus(line, false); } });
+           if (!isCurrent(epoch)) return false;
+           if (!result.success) throw new Error(result.error && result.error.message || t('Pull failed'));
         } else {
           await api('prepareTeamProject', { teamId: project.team_id, projectId: project.id, branch: selectedBranch, reset: false });
         }
+	      if (!isCurrent(epoch)) return false;
 	    var teamName = project.team_name || (selectedDetail && selectedDetail.team && selectedDetail.team.name) || (S.collaboration.current && S.collaboration.current.teamName) || 'Team';
         var nextCurrent = { teamId: project.team_id, teamName: teamName, projectId: project.id, projectName: project.name, branch: selectedBranch, localPath: localPath };
-	    await window.api.writeTeamMapping({ localPath: localPath, localGrant: pathInfo.grantId, mapping: nextCurrent });
+    await dependencies.host.writeTeamMapping({ localPath: localPath, localGrant: pathInfo.grantId, mapping: nextCurrent });
+        if (!isCurrent(epoch)) return false;
         if (replacesCurrentWorkspace) {
           await refreshApprovedWorkspace(localPath);
         } else {
-          var opened = await window.api.pickWorkspace(localPath);
+          var opened = await dependencies.host.pickWorkspace(localPath);
           if (!opened || !(await BOBO.workspace.applyWorkspace(opened.rootPath, opened.tree, opened.workspaceIdentity, opened.leaveToken))) return false;
         }
+	      if (!isCurrent(epoch)) return false;
 	    writeMapping(project.team_id, project.id, selectedBranch, localPath);
         S.collaboration.current = nextCurrent;
         updateTeamChrome();
@@ -636,6 +813,7 @@
     initialPath.setAttribute('data-path', existing || '');
     initialPath.setAttribute('data-grant', '');
     function updateMappingForBranch() {
+      if (disposed) return;
       var selected = $('action-open-branch').value;
       var mapped = readMapping(project.team_id, project.id, selected);
       var pathEl = $('action-mapping-path');
@@ -645,9 +823,11 @@
       pathEl.setAttribute('data-grant', '');
       $('action-open-mode').innerHTML = mapped ? '<option value="local" data-i18n="Open local changes">' + esc(t('Open local changes')) + '</option><option value="pull" data-i18n="Reset from cloud (discard local changes)">' + esc(t('Reset from cloud (discard local changes)')) + '</option>' : '<option value="pull" data-i18n="Initial pull from cloud">' + esc(t('Initial pull from cloud')) + '</option>';
     }
-    $('action-open-branch').addEventListener('change', updateMappingForBranch);
-    $('action-choose-mapping').addEventListener('click', async function() {
-      var chosen = await window.api.pickLocalMapping();
+    listen($('action-open-branch'), 'change', updateMappingForBranch, undefined, false);
+    listen($('action-choose-mapping'), 'click', async function() {
+      if (disposed) return;
+      var chosen = await dependencies.host.pickLocalMapping();
+      if (disposed) return;
       if (!chosen) return;
       var selected = $('action-open-branch').value;
       var first = !readMapping(project.team_id, project.id, selected);
@@ -657,10 +837,11 @@
 	  $('action-mapping-path').setAttribute('data-grant', chosen.grantId || '');
 	  $('action-open-mode').innerHTML = '<option value="pull" data-i18n="Initial pull from cloud">' + esc(t('Initial pull from cloud')) + '</option>';
       setActionStatus('', false);
-    });
+    }, undefined, false);
   }
 
   function updateTeamChrome() {
+    if (disposed) return;
     var current = S.collaboration && S.collaboration.current;
     var badge = $('team-project-badge');
     var tab = $('team-panel-tab');
@@ -674,7 +855,7 @@
     badge.style.display = 'inline-flex';
     badge.innerHTML = '<span class="team-tag">TEAM</span><span>' + esc(current.projectName) + '</span><span class="branch">' + esc(current.branch) + '</span><span class="team-lock-status"></span>';
     tab.style.display = '';
-    badge.onclick = function() { BOBO.switchToPanel('team'); };
+    assignHandler(badge, 'onclick', function() { BOBO.switchToPanel('team'); });
     if (BOBO.workbench) BOBO.workbench.refreshContext();
     if (BOBO.environmentActivity) BOBO.environmentActivity.contextChanged('team');
     refreshWorkbench();
@@ -683,6 +864,7 @@
   }
 
 	function clearCurrent() {
+	  if (disposed) return;
 	  var previous = S.collaboration.current;
 	  if (previous) releaseHeldFileLocks(previous);
 	  S.collaboration.current = null;
@@ -692,6 +874,7 @@
 	}
 
 	function restoreMapping(mapping, localPath) {
+	  if (disposed) return;
 	  if (!mapping) { clearCurrent(); return; }
 	  if (S.collaboration.current) releaseHeldFileLocks(S.collaboration.current);
 	  S.collaboration.current = {
@@ -704,8 +887,10 @@
 
   // ─── Team workbench ────────────────────────────────────────
   async function refreshWorkbench() {
+    if (disposed) return;
     var current = S.collaboration.current;
     if (!current) return;
+    var epoch = lifecycleEpoch;
     var root = $('team-workbench');
     root.innerHTML = '<div class="collab-empty" data-i18n="Loading team state...">' + esc(t('Loading team state...')) + '</div>';
     try {
@@ -716,8 +901,11 @@
         api('getTeamCacheInfo', { teamId: current.teamId }),
         api('listTeamConflicts', { teamId: current.teamId, projectId: current.projectId, branch: current.branch })
       ]);
+      if (!isCurrent(epoch) || S.collaboration.current !== current) return;
       renderWorkbench(asArray(results[0]), asArray(results[1]), asArray(results[2]), results[3], asArray(results[4]));
-    } catch (err) { root.innerHTML = '<div class="collab-empty">' + esc(err.message) + '</div>'; }
+    } catch (err) {
+      if (isCurrent(epoch) && S.collaboration.current === current) root.innerHTML = '<div class="collab-empty">' + esc(err.message) + '</div>';
+    }
   }
   function renderWorkbench(branches, history, locks, cache, conflicts) {
     branches = asArray(branches);
@@ -790,20 +978,20 @@
     return { id: c.projectId, team_id: c.teamId, name: c.projectName, default_branch: 'main' };
   }
   function bindWorkbench(branches, conflicts) {
-    $('team-refresh').onclick = refreshWorkbench;
-    $('team-project-badge').onclick = function() { BOBO.switchToPanel('team'); };
-    $('team-open-branch').onclick = function() { openProject(currentProjectRecord(), $('team-branch-select').value); };
-    $('team-pull').onclick = manualPull;
-    $('team-upload').onclick = uploadChanges;
-    $('team-commit').onclick = commitChanges;
-    $('team-new-branch').onclick = function() { newBranch(branches); };
-    $('team-compare').onclick = function() { compareBranches(branches); };
-    $('team-merge').onclick = function() { mergeBranches(branches); };
+    assignHandler($('team-refresh'), 'onclick', refreshWorkbench, false);
+    assignHandler($('team-project-badge'), 'onclick', function() { BOBO.switchToPanel('team'); });
+    assignHandler($('team-open-branch'), 'onclick', function() { openProject(currentProjectRecord(), $('team-branch-select').value); }, false);
+    assignHandler($('team-pull'), 'onclick', manualPull, false);
+    assignHandler($('team-upload'), 'onclick', uploadChanges, false);
+    assignHandler($('team-commit'), 'onclick', commitChanges, false);
+    assignHandler($('team-new-branch'), 'onclick', function() { newBranch(branches); }, false);
+    assignHandler($('team-compare'), 'onclick', function() { compareBranches(branches); }, false);
+    assignHandler($('team-merge'), 'onclick', function() { mergeBranches(branches); }, false);
     document.querySelectorAll('.team-open-conflict').forEach(function(btn) {
-      btn.onclick = function() {
+      assignHandler(btn, 'onclick', function() {
         var file = conflicts.find(function(x) { return x.path === btn.getAttribute('data-conflict-path'); });
         renderConflictEditor(file);
-      };
+      }, false);
     });
   }
   function manualPull() {
@@ -833,19 +1021,23 @@
     });
   }
   async function uploadChanges() {
+    if (disposed) return false;
+    var epoch = lifecycleEpoch;
     var button = $('team-upload');
     if (button) { button.disabled = true; bindText(button, 'Uploading...'); }
     try {
       var synced = await BOBO.runner.uploadWorkspace();
+      if (!isCurrent(epoch)) return false;
       if (!synced) throw new Error(t('Local files could not be synchronized. Check the Output panel for details.'));
       notify('Uploaded to your private cloud worktree. Commit & push to publish these changes.', 'success');
       await refreshWorkbench();
+      if (!isCurrent(epoch)) return false;
       return true;
     } catch (err) {
-      notify(err.message, 'error');
+      if (isCurrent(epoch)) notify(err.message, 'error');
       return false;
     } finally {
-      if (button && button.isConnected) { button.disabled = false; bindText(button, 'Upload'); }
+      if (!disposed && button && button.isConnected) { button.disabled = false; bindText(button, 'Upload'); }
     }
   }
   function commitChanges() {
@@ -872,10 +1064,10 @@
     openAction('Merge branches',selectField('action-merge-source','Source',names,names.find(function(n){return n!==c.branch;})||c.branch)+selectField('action-merge-target','Target',names,c.branch),'Merge',async function(){var result=await api('mergeTeamBranch',{teamId:c.teamId,projectId:c.projectId,sourceBranch:$('action-merge-source').value,targetBranch:$('action-merge-target').value});await refreshWorkbench();if(result.conflicts&&result.conflicts.length)notify(t('{count} conflicts require resolution',{count:result.conflicts.length}),'error');else notify('Branches merged and pushed','success');return true;});
   }
   function renderConflictEditor(file) {
-    if (!file) return;
+    if (disposed || !file) return;
     $('team-conflict-editor').innerHTML = '<div class="conflict-columns"><div class="conflict-version"><label data-i18n="BASE">' + esc(t('BASE')) + '</label><pre>' + esc(file.base) + '</pre></div><div class="conflict-version"><label data-i18n="OURS">' + esc(t('OURS')) + '</label><pre>' + esc(file.ours) + '</pre></div><div class="conflict-version"><label data-i18n="THEIRS">' + esc(t('THEIRS')) + '</label><pre>' + esc(file.theirs) + '</pre></div></div><textarea id="team-conflict-content" class="conflict-editor">' + esc(file.ours) + '</textarea><button id="team-save-resolution" class="team-tool-btn" data-i18n="Mark resolved">' + esc(t('Mark resolved')) + '</button> <button id="team-complete-merge" class="team-tool-btn" data-i18n="Complete merge">' + esc(t('Complete merge')) + '</button>';
-    $('team-save-resolution').onclick = async function(){try{var c=S.collaboration.current;await api('resolveTeamConflict',{teamId:c.teamId,projectId:c.projectId,branch:c.branch,filePath:file.path,content:$('team-conflict-content').value});notify('Conflict marked resolved','success');await refreshWorkbench();}catch(err){notify(err.message,'error');}};
-    $('team-complete-merge').onclick = function(){openAction('Complete merge',inputField('action-merge-message','Commit message','Resolve merge conflicts'),'Commit and push',async function(){var c=S.collaboration.current;await api('completeTeamMerge',{teamId:c.teamId,projectId:c.projectId,branch:c.branch,commitMessage:$('action-merge-message').value});await refreshWorkbench();notify('Merge completed','success');return true;});};
+    assignHandler($('team-save-resolution'), 'onclick', async function(){if(disposed)return;try{var c=S.collaboration.current;await api('resolveTeamConflict',{teamId:c.teamId,projectId:c.projectId,branch:c.branch,filePath:file.path,content:$('team-conflict-content').value});if(disposed)return;notify('Conflict marked resolved','success');await refreshWorkbench();}catch(err){if(!disposed)notify(err.message,'error');}}, false);
+    assignHandler($('team-complete-merge'), 'onclick', function(){if(disposed)return;openAction('Complete merge',inputField('action-merge-message','Commit message','Resolve merge conflicts'),'Commit and push',async function(){if(disposed)return false;var c=S.collaboration.current;await api('completeTeamMerge',{teamId:c.teamId,projectId:c.projectId,branch:c.branch,commitMessage:$('action-merge-message').value});if(disposed)return false;await refreshWorkbench();notify('Merge completed','success');return true;});}, false);
   }
 
   // Advisory locks are a courtesy signal. Git remains the source of truth and
@@ -890,18 +1082,23 @@
     return candidate.substring(root.length + 1);
   }
   async function onFileOpened(filePath, options) {
+    if (disposed) return null;
     options = options || {};
     var c=S.collaboration.current;if(!c)return;var rel=relativeCurrentPath(filePath);if(!rel)return;
     var key = heldLockKey(filePath);
     if (fileLockRequests[key]) return fileLockRequests[key].promise;
     var previous = heldFileLocks[key] || blockedFileLocks[key];
     var sameContext = previous && previous.teamId === c.teamId && previous.projectId === c.projectId && previous.branch === c.branch && previous.path === rel;
-    var request = { teamId: c.teamId, projectId: c.projectId, branch: c.branch, path: rel, cancelled: false, promise: null };
+    var requestEpoch = lifecycleEpoch;
+    var request = { teamId: c.teamId, projectId: c.projectId, branch: c.branch, path: rel, cancelled: false, epoch: requestEpoch, promise: null };
+    function ownsRequest() {
+      return isCurrent(requestEpoch) && fileLockRequests[key] === request;
+    }
     request.promise = (async function() {
       try {
         var lock = await api('acquireTeamFileLock',{teamId:c.teamId,projectId:c.projectId,branch:c.branch,filePath:rel,lockLeaseId:sameContext ? previous.leaseId : undefined,ttlMinutes:FILE_LOCK_TTL_MINUTES});
         var returnedLeaseID = lock && (lock.lease_id || lock.leaseId) || '';
-        if (request.cancelled) {
+        if (request.cancelled || !ownsRequest()) {
           await api('releaseTeamFileLock', { teamId: c.teamId, projectId: c.projectId, branch: c.branch, filePath: rel, lockLeaseId: returnedLeaseID || undefined }).catch(function() {});
           return null;
         }
@@ -910,10 +1107,12 @@
         if (heldLockKey(S.activeTabPath) === key) renderActiveLockStatus();
         return lock;
       } catch(err) {
-        delete heldFileLocks[key];
-        if (!request.cancelled) blockedFileLocks[key] = { filePath: filePath, teamId: c.teamId, projectId: c.projectId, branch: c.branch, path: rel, leaseId: sameContext ? previous.leaseId : '', lock: err && err.details && err.details.lock || null, errorCode: err && err.code || '' };
-        if (heldLockKey(S.activeTabPath) === key) renderActiveLockStatus();
-        if(!request.cancelled && !options.silent)notify(collaborationErrorMessage(err),'info');
+        if (ownsRequest()) {
+          delete heldFileLocks[key];
+          if (!request.cancelled) blockedFileLocks[key] = { filePath: filePath, teamId: c.teamId, projectId: c.projectId, branch: c.branch, path: rel, leaseId: sameContext ? previous.leaseId : '', lock: err && err.details && err.details.lock || null, errorCode: err && err.code || '' };
+          if (heldLockKey(S.activeTabPath) === key) renderActiveLockStatus();
+          if(!request.cancelled && !options.silent)notify(collaborationErrorMessage(err),'info');
+        }
         return null;
       } finally {
         if (fileLockRequests[key] === request) delete fileLockRequests[key];
@@ -923,6 +1122,7 @@
     return request.promise;
   }
   async function onFileClosed(filePath) {
+    if (disposed) return;
     var key = heldLockKey(filePath);
     var held = heldFileLocks[key];
     if (fileLockRequests[key]) fileLockRequests[key].cancelled = true;
@@ -947,6 +1147,7 @@
     });
   }
   function expireLocalLeases() {
+    if (disposed) return;
     var now = Date.now();
     Object.keys(heldFileLocks).forEach(function(key) {
       var held = heldFileLocks[key];
@@ -958,6 +1159,8 @@
     renderActiveLockStatus();
   }
   async function renewOpenFileLocks() {
+    if (disposed) return;
+    var epoch = lifecycleEpoch;
     expireLocalLeases();
     if (lockRefreshInFlight || !S.collaboration.current || !clientIsForeground()) return;
     lockRefreshInFlight = true;
@@ -965,10 +1168,11 @@
       var paths = openTeamFilePaths();
       await Promise.all(paths.map(function(filePath) { return onFileOpened(filePath, { silent: true }); }));
     } finally {
-      lockRefreshInFlight = false;
+      if (epoch === lifecycleEpoch) lockRefreshInFlight = false;
     }
   }
   function releaseHeldFileLocks(project) {
+    if (disposed) return;
     Object.keys(fileLockRequests).forEach(function(key) {
       var request = fileLockRequests[key];
       if (!project || (request.teamId === project.teamId && request.projectId === project.projectId && request.branch === project.branch)) request.cancelled = true;
@@ -986,6 +1190,7 @@
     });
   }
   async function releaseForLogout() {
+    if (disposed) return;
     var pending = Object.keys(fileLockRequests).map(function(key) {
       fileLockRequests[key].cancelled = true;
       return fileLockRequests[key].promise.catch(function() {});
@@ -1000,6 +1205,7 @@
     await Promise.all(pending.concat(requests));
   }
   function onFileActivated(filePath) {
+    if (disposed) return;
     if (!S.collaboration.current || !relativeCurrentPath(filePath)) {
       setCollaborationReadOnly(false);
       return;
@@ -1023,20 +1229,25 @@
     if (clientIsForeground()) onFileOpened(filePath, { silent: true });
   }
   function isActiveFileReadOnly() {
+    if (disposed) return false;
     return !!blockedFileLocks[heldLockKey(S.activeTabPath)];
   }
   function startLockRefresh() {
+    if (disposed) return;
     if(lockRefreshTimer)clearInterval(lockRefreshTimer);
     renewOpenFileLocks();
     lockRefreshTimer=setInterval(renewOpenFileLocks,FILE_LOCK_HEARTBEAT_MS);
   }
 
   async function clearCache(scope, namespaceKey, projectId) {
-    if(!selectedTeamId)return;
-	try{await api('clearTeamCache',{teamId:selectedTeamId,cacheScope:scope,namespaceKey:namespaceKey||undefined,projectId:projectId||undefined});await loadTeamCache();if(S.collaboration.current&&S.collaboration.current.teamId===selectedTeamId)await refreshWorkbench();notify('Team cache cleared','success');}catch(err){notify(err.message,'error');}
+    if(disposed || !selectedTeamId)return;
+    var epoch = lifecycleEpoch;
+    var teamId = selectedTeamId;
+	try{await api('clearTeamCache',{teamId:teamId,cacheScope:scope,namespaceKey:namespaceKey||undefined,projectId:projectId||undefined});if(!isCurrent(epoch)||selectedTeamId!==teamId)return;await loadTeamCache();if(!isCurrent(epoch)||selectedTeamId!==teamId)return;if(S.collaboration.current&&S.collaboration.current.teamId===teamId)await refreshWorkbench();if(isCurrent(epoch))notify('Team cache cleared','success');}catch(err){if(isCurrent(epoch))notify(err.message,'error');}
   }
 
-  global.addEventListener('bobo:language-changed', function() {
+  function handleLanguageChanged() {
+    if (disposed) return;
     if (S.collaboration && S.collaboration.modalOpen) {
       renderTeamList();
       if (selectedDetail) {
@@ -1052,43 +1263,56 @@
     var compactCache = $('team-cache-compact');
     if (compactCache && workbenchCacheInfo) renderCache(workbenchCacheInfo, compactCache, false);
     renderActiveLockStatus();
-  });
+  }
 
 	function teamSettings() {
+	  if (disposed) return;
 	  if (!selectedDetail) return;
 	  var team=selectedDetail.team;var isAdmin=team.admin_user_id===currentUser().id;
 	  if(!isAdmin){
 		openAction('Leave team','<div class="collab-action-status" data-i18n="Your team worktrees and active file locks will be removed from the server.">' + esc(t('Your team worktrees and active file locks will be removed from the server.')) + '</div>','Leave',async function(){await api('leaveTeam',{teamId:team.id});await loadTeams();notify('Left team','success');return true;});return;
 	  }
 	  openAction('Team settings',inputField('action-team-settings-name','Team name',team.name)+textareaField('action-team-settings-description','Description',team.description||'')+inputField('action-team-settings-quota','Build cache quota (MB)',String(team.cache_quota_mb),'number')+inputField('action-team-settings-retention','Retention days',String(team.cache_retention_days||30),'number')+'<button id="action-delete-team" class="ss-btn ss-btn-ghost" type="button" data-i18n="Delete team">' + esc(t('Delete team')) + '</button>','Save',async function(){await api('updateTeam',{teamId:team.id,name:$('action-team-settings-name').value,description:$('action-team-settings-description').value,cacheQuotaMB:Number($('action-team-settings-quota').value),cacheRetentionDays:Number($('action-team-settings-retention').value)});await loadTeams(team.id);notify('Team settings saved','success');return true;});
-	  $('action-delete-team').onclick=function(){openAction('Delete team',inputField('action-delete-team-name','Type team name to confirm'),'Delete permanently',async function(){if($('action-delete-team-name').value!==team.name)throw new Error(t('Team name does not match'));await api('deleteTeam',{teamId:team.id});await loadTeams();notify('Team deleted','success');return true;});};
+	  assignHandler($('action-delete-team'), 'onclick', function(){if(disposed)return;openAction('Delete team',inputField('action-delete-team-name','Type team name to confirm'),'Delete permanently',async function(){if(disposed)return false;if($('action-delete-team-name').value!==team.name)throw new Error(t('Team name does not match'));await api('deleteTeam',{teamId:team.id});if(disposed)return false;await loadTeams();notify('Team deleted','success');return true;});}, false);
 	}
 
   function init() {
-    $('team-hub-btn').onclick = openHub;
-    $('collab-close').onclick = closeHub;
-    $('collab-modal').onclick = function(event) { if (event.target === $('collab-modal')) closeHub(); };
-    $('collab-modal').onkeydown = function(event) { if (event.key === 'Escape') { event.preventDefault(); closeHub(); } };
-    $('collab-new-team').onclick = newTeam;
-    $('collab-join').onclick = joinTeam;
-    $('collab-new-project').onclick = newProject;
-    $('collab-new-invite').onclick = newInvite;
-	$('collab-team-settings').onclick = teamSettings;
-	$('auth-menu-teams').onclick = function(){ $('auth-menu').style.display='none'; openHub(); };
-    if (!BOBO.accountProfile) {
-      $('auth-menu-profile').onclick = function(){ $('auth-menu').style.display='none'; openProfile(); };
-      $('profile-close-x').onclick = closeProfile;
-      $('profile-cancel').onclick = closeProfile;
-      $('profile-save').onclick = saveProfile;
-      $('profile-name').addEventListener('input', renderProfileAvatar);
-      $('profile-avatar-options').onclick = function(e){var btn=e.target.closest('[data-avatar]');if(btn){chosenAvatar=btn.getAttribute('data-avatar');renderProfileAvatar();}};
-      $('profile-avatar-upload').onclick = function(){ $('profile-avatar-file').click(); };
-      $('profile-avatar-file').onchange = function(){ chooseAvatarFile(this.files && this.files[0]); this.value=''; };
-      $('profile-copy-uid').onclick = async function(){try{await navigator.clipboard.writeText($('profile-uid').textContent);notify('User ID copied','success');}catch(e){notify('Copy failed','error');}};
+    if (initialized) return;
+    if (disposed) {
+      lifecycle = new DisposableStore();
+      ownedTimers = new Set();
+      ownedIntervals = new Set();
+      ownedHandlers = [];
+      disposed = false;
     }
-    $('collab-action-close').onclick=closeAction;$('collab-action-cancel').onclick=closeAction;$('collab-action-confirm').onclick=runActionConfirm;
-    $('collab-team-list').onclick=function(e){var item=e.target.closest('[data-team-id]');if(item)selectTeam(item.getAttribute('data-team-id'));};
-    $('collab-project-list').onclick=function(e){
+    lifecycleEpoch++;
+    initialized = true;
+    listen(global, 'bobo:language-changed', handleLanguageChanged);
+    assignHandler($('team-hub-btn'), 'onclick', openHub);
+    assignHandler($('collab-close'), 'onclick', closeHub);
+    assignHandler($('collab-modal'), 'onclick', function(event) { if (event.target === $('collab-modal')) closeHub(); });
+    assignHandler($('collab-modal'), 'onkeydown', function(event) { if (event.key === 'Escape') { event.preventDefault(); closeHub(); } });
+    assignHandler($('collab-new-team'), 'onclick', newTeam);
+    assignHandler($('collab-join'), 'onclick', joinTeam);
+    assignHandler($('collab-new-project'), 'onclick', newProject);
+    assignHandler($('collab-new-invite'), 'onclick', newInvite);
+	assignHandler($('collab-team-settings'), 'onclick', teamSettings);
+	assignHandler($('auth-menu-teams'), 'onclick', function(){ $('auth-menu').style.display='none'; openHub(); });
+    if (!BOBO.accountProfile) {
+      assignHandler($('auth-menu-profile'), 'onclick', function(){ $('auth-menu').style.display='none'; openProfile(); });
+      assignHandler($('profile-close-x'), 'onclick', closeProfile);
+      assignHandler($('profile-cancel'), 'onclick', closeProfile);
+      assignHandler($('profile-save'), 'onclick', saveProfile);
+      listen($('profile-name'), 'input', renderProfileAvatar);
+      assignHandler($('profile-avatar-options'), 'onclick', function(e){var btn=e.target.closest('[data-avatar]');if(btn){chosenAvatar=btn.getAttribute('data-avatar');renderProfileAvatar();}});
+      assignHandler($('profile-avatar-upload'), 'onclick', function(){ $('profile-avatar-file').click(); });
+      assignHandler($('profile-avatar-file'), 'onchange', function(){ chooseAvatarFile(this.files && this.files[0]); this.value=''; });
+	      assignHandler($('profile-copy-uid'), 'onclick', async function(){try{if (!clipboard) throw new Error('Clipboard unavailable');await clipboard.writeText($('profile-uid').textContent);notify('User ID copied','success');}catch(e){notify('Copy failed','error');}});
+    }
+    assignHandler($('collab-action-close'), 'onclick', closeAction); assignHandler($('collab-action-cancel'), 'onclick', closeAction); assignHandler($('collab-action-confirm'), 'onclick', runActionConfirm);
+    assignHandler($('collab-team-list'), 'onclick', function(e){var item=e.target.closest('[data-team-id]');if(item)selectTeam(item.getAttribute('data-team-id'));});
+    assignHandler($('collab-project-list'), 'onclick', function(e){
+      if (disposed) return;
       if(!selectedDetail)return;
       var remove=e.target.closest('.collab-delete-project');
       var open=e.target.closest('.collab-open-project');
@@ -1101,20 +1325,120 @@
       var label=button.textContent;
       bindText(button, 'Loading...');
       openProject(project).catch(function(err){
+        if (disposed) return;
         setActionStatus(err.message,true);
         $('collab-action-confirm').disabled=true;
         notify(err.message,'error');
-      }).finally(function(){button.disabled=false;bindText(button,'Open');});
-    };
-    $('collab-member-list').onclick=async function(e){var btn=e.target.closest('.collab-remove-member');if(!btn)return;try{await api('removeTeamMember',{teamId:selectedTeamId,userId:btn.getAttribute('data-user-id')});await selectTeam(selectedTeamId);notify('Member removed','success');}catch(err){notify(err.message,'error');}};
-    $('collab-invite-list').onclick=async function(e){var remove=e.target.closest('.collab-delete-invite');var revoke=e.target.closest('.collab-revoke-invite');var btn=remove||revoke;if(!btn)return;try{await api(remove?'deleteTeamInvite':'revokeTeamInvite',{teamId:selectedTeamId,inviteCode:btn.getAttribute('data-code')});await loadInvites();}catch(err){notify(err.message,'error');}};
-    document.querySelectorAll('.collab-tabs button').forEach(function(tab){tab.onclick=function(){document.querySelectorAll('.collab-tabs button').forEach(function(x){x.classList.remove('active');});document.querySelectorAll('.collab-pane').forEach(function(x){x.classList.remove('active');});tab.classList.add('active');$('collab-pane-'+tab.getAttribute('data-collab-tab')).classList.add('active');};});
-	$('collab-cache-view').onclick=function(e){var ns=e.target.closest('.cache-clear-namespace');if(ns)clearCache('namespace',ns.getAttribute('data-namespace'));if(e.target.closest('.cache-clear-shared'))clearCache('shared');if(e.target.closest('.cache-clear-all'))clearCache('all');};
-    global.addEventListener('focus', function() { renewOpenFileLocks(); renderActiveLockStatus(); });
-    document.addEventListener('visibilitychange', function() {
+      }).finally(function(){if(!disposed && button.isConnected){button.disabled=false;bindText(button,'Open');}});
+    });
+    assignHandler($('collab-member-list'), 'onclick', async function(e){if(disposed)return;var btn=e.target.closest('.collab-remove-member');if(!btn)return;try{await api('removeTeamMember',{teamId:selectedTeamId,userId:btn.getAttribute('data-user-id')});if(disposed)return;await selectTeam(selectedTeamId);notify('Member removed','success');}catch(err){if(!disposed)notify(err.message,'error');}});
+    assignHandler($('collab-invite-list'), 'onclick', async function(e){if(disposed)return;var remove=e.target.closest('.collab-delete-invite');var revoke=e.target.closest('.collab-revoke-invite');var btn=remove||revoke;if(!btn)return;try{await api(remove?'deleteTeamInvite':'revokeTeamInvite',{teamId:selectedTeamId,inviteCode:btn.getAttribute('data-code')});if(disposed)return;await loadInvites();}catch(err){if(!disposed)notify(err.message,'error');}});
+    document.querySelectorAll('.collab-tabs button').forEach(function(tab){assignHandler(tab, 'onclick', function(){if(disposed)return;document.querySelectorAll('.collab-tabs button').forEach(function(x){x.classList.remove('active');});document.querySelectorAll('.collab-pane').forEach(function(x){x.classList.remove('active');});tab.classList.add('active');$('collab-pane-'+tab.getAttribute('data-collab-tab')).classList.add('active');});});
+	assignHandler($('collab-cache-view'), 'onclick', function(e){if(disposed)return;var ns=e.target.closest('.cache-clear-namespace');if(ns)clearCache('namespace',ns.getAttribute('data-namespace'));if(e.target.closest('.cache-clear-shared'))clearCache('shared');if(e.target.closest('.cache-clear-all'))clearCache('all');});
+    listen(global, 'focus', function() { renewOpenFileLocks(); renderActiveLockStatus(); });
+    listen(document, 'visibilitychange', function() {
       if (!document.hidden) { renewOpenFileLocks(); renderActiveLockStatus(); }
     });
   }
 
-	BOBO.collaboration = { init:init, openHub:openHub, openProfile:openProfile, clearCurrent:clearCurrent, restoreMapping:restoreMapping, updateTeamChrome:updateTeamChrome, refreshWorkbench:refreshWorkbench, uploadCurrent:uploadChanges, onFileOpened:onFileOpened, onFileClosed:onFileClosed, onFileActivated:onFileActivated, isActiveFileReadOnly:isActiveFileReadOnly, releaseForLogout:releaseForLogout };
-})(window);
+  var facade: CollaborationFacade = {
+    init: init,
+    openHub: openHub,
+    openProfile: openProfile,
+    clearCurrent: clearCurrent,
+    restoreMapping: restoreMapping,
+    updateTeamChrome: updateTeamChrome,
+    refreshWorkbench: refreshWorkbench,
+    uploadCurrent: uploadChanges,
+    onFileOpened: onFileOpened,
+    onFileClosed: onFileClosed,
+    onFileActivated: onFileActivated,
+    isActiveFileReadOnly: isActiveFileReadOnly,
+    releaseForLogout: releaseForLogout
+  };
+
+  function dispose() {
+    if (disposed && !initialized) return;
+    disposed = true;
+    initialized = false;
+    lifecycleEpoch++;
+    actionConfirm = null;
+    try {
+      var modal = $('collab-modal');
+      var actionModal = $('collab-action-modal');
+      if (modal) modal.classList.remove('open');
+      if (actionModal) actionModal.classList.remove('open');
+      setCollaborationReadOnly(false);
+    } catch (_) {}
+    if (lockRefreshTimer !== null) clearInterval(lockRefreshTimer);
+    lockRefreshTimer = null;
+    lockRefreshInFlight = false;
+    ownedTimers.forEach(function(timer) { try { dependencies.clearTimer(timer); } catch (_) {} });
+    ownedTimers.clear();
+    ownedIntervals.forEach(function(timer) { try { dependencies.clearInterval(timer); } catch (_) {} });
+    ownedIntervals.clear();
+    activeAvatarLoads.forEach(function(load) {
+      try { load.image.onload = null; load.image.onerror = null; } catch (_) {}
+      try { if (revokeObjectURL) revokeObjectURL(load.objectURL); } catch (_) {}
+      load.released = true;
+    });
+    activeAvatarLoads.clear();
+    Object.keys(fileLockRequests).forEach(function(key) {
+      fileLockRequests[key].cancelled = true;
+      delete fileLockRequests[key];
+    });
+    Object.keys(heldFileLocks).forEach(function(key) {
+      var held = heldFileLocks[key];
+      try {
+        Promise.resolve(dependencies.sendToServer('releaseTeamFileLock', {
+          teamId: held.teamId, projectId: held.projectId, branch: held.branch,
+          filePath: held.path, lockLeaseId: held.leaseId || undefined
+        }, { quiet: true })).catch(function() {});
+      } catch (_) {}
+      delete heldFileLocks[key];
+    });
+    Object.keys(blockedFileLocks).forEach(function(key) { delete blockedFileLocks[key]; });
+    ownedHandlers.forEach(function(entry) {
+      try {
+        if (entry.element[entry.property] === entry.handler) entry.element[entry.property] = entry.previous || null;
+      } catch (_) {}
+    });
+    ownedHandlers = [];
+    lifecycle.dispose();
+    var workbenchRoot = $('team-workbench');
+    if (workbenchRoot) workbenchRoot.innerHTML = '';
+    var actionBody = $('collab-action-body');
+    if (actionBody) actionBody.innerHTML = '';
+    var conflictEditor = $('team-conflict-editor');
+    if (conflictEditor) conflictEditor.innerHTML = '';
+    var badge = $('team-project-badge');
+    if (badge) {
+      badge.innerHTML = '';
+      badge.style.display = 'none';
+    }
+    var panelTab = $('team-panel-tab');
+    if (panelTab) panelTab.style.display = 'none';
+    var ownsProfileFallback = false;
+    try { ownsProfileFallback = !dependencies.getAccountProfile(); } catch (_) { ownsProfileFallback = true; }
+    if (ownsProfileFallback) {
+      var avatarOptions = $('profile-avatar-options');
+      if (avatarOptions) avatarOptions.innerHTML = '';
+    }
+    selectedTeamId = '';
+    selectedDetail = null;
+    selectedInvites = null;
+    selectedCacheInfo = null;
+    workbenchCacheInfo = null;
+    hubReturnFocus = null;
+    if (S.collaboration) S.collaboration.modalOpen = false;
+  }
+
+  var service = Object.assign({}, facade);
+  Object.defineProperty(service, 'disposed', {
+    enumerable: true,
+    configurable: false,
+    get: function() { return disposed; }
+  });
+  service.dispose = dispose;
+  return Object.freeze(service);
+}

@@ -78,7 +78,7 @@ const EXPECTED_MODULES = [
   './compat/views-adapter.ts',
   '../src/auth.js',
   './compat/projects-adapter.ts',
-  '../src/collaboration.js',
+  './compat/collaboration-adapter.ts',
   './compat/account-profile-adapter.ts',
   '../src/ai-settings-schema.js',
   './compat/ai-prompts-adapter.ts',
@@ -259,6 +259,10 @@ test('production renderer build is minified, source-mapped and records ordered m
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/projects.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/projects-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/projects-adapter.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/collaboration.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/collaboration.js')), false);
+  assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/collaboration-adapter.ts')));
+  assert.equal(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/collaboration-adapter.js')), false);
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/src/account-profile.ts')));
   assert.ok(sourceMap.sources.some((source) => source.endsWith('/renderer/compat/account-profile-adapter.ts')));
   assert.equal(sourceMap.sources.some((source) => source.endsWith('/src/account-profile.js')), false);

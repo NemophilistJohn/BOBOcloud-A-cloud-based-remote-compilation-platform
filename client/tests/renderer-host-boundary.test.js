@@ -13,7 +13,6 @@ const NATIVE_HOST_ADAPTER = 'renderer/core/native-host-adapter.ts';
 const LEGACY_DIRECT_ACCESS_LIMITS = new Map([
   ['src/app.js', 23],
   ['src/auth.js', 16],
-  ['src/collaboration.js', 6],
   ['src/dap-client.js', 27],
   ['src/lsp-client.js', 56],
   ['src/package-center.js', 1],
@@ -131,6 +130,10 @@ const MIGRATED_AI_CHAT_PANEL_MODULES = Object.freeze([
 const MIGRATED_AGENT_WORKBENCH_MODULES = Object.freeze([
   'renderer/compat/agent-workbench-adapter.ts',
   'src/agent-workbench.ts'
+]);
+const MIGRATED_COLLABORATION_MODULES = Object.freeze([
+  'renderer/compat/collaboration-adapter.ts',
+  'src/collaboration.ts'
 ]);
 
 function sourceFiles(directory) {
@@ -314,6 +317,10 @@ test('renderer bridge access is confined to the adapter and bounded legacy calle
     assert.equal(actual.has(file), false,
       `the migrated Agent workbench slice must not regain a direct preload dependency: ${file}`);
   }
+  for (const file of MIGRATED_COLLABORATION_MODULES) {
+    assert.equal(actual.has(file), false,
+      `the migrated collaboration slice must not regain a direct preload dependency: ${file}`);
+  }
 
   assert.deepEqual(Array.from(taskResolveOwners), [[NATIVE_HOST_ADAPTER, 1]],
     'tasksResolve must remain a unique native-adapter bridge capability');
@@ -383,6 +390,14 @@ test('native host services remain private to the workbench', () => {
   );
   const projectsAdapter = fs.readFileSync(
     path.join(ROOT, 'renderer/compat/projects-adapter.ts'),
+    'utf8'
+  );
+  const collaborationSource = fs.readFileSync(
+    path.join(ROOT, 'src/collaboration.ts'),
+    'utf8'
+  );
+  const collaborationAdapter = fs.readFileSync(
+    path.join(ROOT, 'renderer/compat/collaboration-adapter.ts'),
     'utf8'
   );
   const workspaceSettingsAdapter = fs.readFileSync(
@@ -672,4 +687,14 @@ test('native host services remain private to the workbench', () => {
   assert.doesNotMatch(agentWorkbenchAdapter, /\b(?:window|global|globalThis|self)\.api\b/);
   assert.match(agentWorkbenchAdapter,
     /BOBO\.agentWorkbench\s*=\s*Object\.freeze\(\{\s*init:\s*agentWorkbench\.init,[\s\S]*refreshModels:\s*agentWorkbench\.refreshModels\s*\}\)/);
+  assert.match(collaborationSource,
+    /COLLABORATION_SERVICE_ID\s*=\s*['"]workbench\.collaboration['"]/);
+  assert.match(collaborationSource, /createCollaborationService\s*\(/);
+  assert.match(collaborationAdapter, /COLLABORATION_SERVICE_ID/);
+  assert.match(collaborationAdapter, /services\.require\(COLLABORATION_HOST_SERVICE_ID\)/);
+  assert.match(collaborationAdapter, /exposeToPlugins:\s*false/);
+  assert.doesNotMatch(collaborationSource, /\b(?:window|global|globalThis|self)\.api\b/);
+  assert.doesNotMatch(collaborationAdapter, /\b(?:window|global|globalThis|self)\.api\b/);
+  assert.match(collaborationAdapter,
+    /BOBO\.collaboration\s*=\s*\{\s*init:\s*collaboration\.init,[\s\S]*releaseForLogout:\s*collaboration\.releaseForLogout\s*\}/);
 });

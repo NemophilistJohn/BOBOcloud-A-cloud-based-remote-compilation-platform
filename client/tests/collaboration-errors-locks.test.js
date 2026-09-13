@@ -5,9 +5,28 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const esbuild = require('esbuild');
 const { installServerComm } = require('./support/server-comm-harness');
 
 const projectRoot = path.resolve(__dirname, '..');
+
+const collaborationSource = fs.readFileSync(path.join(projectRoot, 'src/collaboration.ts'), 'utf8');
+const collaborationBundle = esbuild.buildSync({
+  stdin: {
+    contents: collaborationSource.replace(
+      '  var service = Object.assign({}, facade);',
+      '  if (dependencies.__test) dependencies.__test({ api: api, renewOpenFileLocks: renewOpenFileLocks, expireLocalLeases: expireLocalLeases, releaseHeldFileLocks: releaseHeldFileLocks, heldFileLocks: heldFileLocks, blockedFileLocks: blockedFileLocks, fileLockRequests: fileLockRequests, setCollaborationReadOnly: setCollaborationReadOnly });\n  var service = Object.assign({}, facade);'
+    ),
+    sourcefile: 'src/collaboration.ts',
+    resolveDir: path.join(projectRoot, 'src')
+  },
+  bundle: true,
+  platform: 'browser',
+  format: 'iife',
+  globalName: 'CollaborationModule',
+  write: false,
+  logLevel: 'silent'
+}).outputFiles[0].text;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -15,20 +34,6 @@ function clone(value) {
 
 function loadCollaboration(options) {
   options = options || {};
-  let source = fs.readFileSync(path.join(projectRoot, 'src/collaboration.js'), 'utf8');
-  const exportMarker = 'BOBO.collaboration = { init:init';
-  assert.ok(source.includes(exportMarker), 'collaboration export marker should remain available');
-  source = source.replace(exportMarker,
-    'BOBO.__collaborationTest = {' +
-      'api:api,' +
-      'renewOpenFileLocks:renewOpenFileLocks,' +
-      'expireLocalLeases:expireLocalLeases,' +
-      'releaseHeldFileLocks:releaseHeldFileLocks,' +
-      'heldFileLocks:heldFileLocks,' +
-      'blockedFileLocks:blockedFileLocks,' +
-      'fileLockRequests:fileLockRequests,' +
-      'setCollaborationReadOnly:setCollaborationReadOnly' +
-    '};\n\t' + exportMarker);
 
   const state = Object.assign({
     workspaceRoot: 'C:\\workspace',
@@ -45,32 +50,73 @@ function loadCollaboration(options) {
       return Promise.resolve({ success: true, data: {} });
     }
   };
+  let internals = null;
   const windowObject = {
     BOBO,
-    addEventListener() {}
+    addEventListener() {},
+    removeEventListener() {}
   };
   const document = {
     hidden: false,
     hasFocus() { return true; },
     addEventListener() {},
+    removeEventListener() {},
     getElementById() { return null; },
     querySelectorAll() { return []; }
   };
 
-  vm.runInNewContext(source, {
-    window: windowObject,
-    document,
-    navigator: { clipboard: { writeText() { return Promise.resolve(); } } },
+  const sandbox = {
     console,
     Date,
     Promise,
     setTimeout,
     clearTimeout,
     setInterval() { return 1; },
-    clearInterval() {}
-  }, { filename: 'src/collaboration.js' });
+    clearInterval() {},
+    globalThis: null
+  };
+  sandbox.globalThis = sandbox;
+  vm.runInNewContext(collaborationBundle, sandbox, { filename: 'src/collaboration.ts' });
+  const service = sandbox.CollaborationModule.createCollaborationService({
+    document,
+    eventTarget: windowObject,
+    state,
+    host: {
+      refreshWorkspace: async () => null,
+      getWorkspaceIdentity: async () => ({ rootPath: state.workspaceRoot, workspaceIdentity: 1 }),
+      localPathInfo: async () => ({ exists: true, directory: true, empty: true, grantId: 'grant' }),
+      pickLocalMapping: async () => null,
+      pickWorkspace: async () => null,
+      writeTeamMapping: async () => true
+    },
+    sendToServer: (action, data, requestOptions) => BOBO.sendToServer(action, data, requestOptions),
+    getI18n: () => BOBO.i18n,
+    getToast: () => BOBO.toast,
+    getAuth: () => BOBO.auth,
+    getAccountProfile: () => BOBO.accountProfile,
+    getWorkspace: () => BOBO.workspace,
+    getRclone: () => BOBO.rclone,
+    getRunner: () => BOBO.runner,
+    getWorkbench: () => BOBO.workbench,
+    getEnvironmentActivity: () => BOBO.environmentActivity,
+    getSwitchToPanel: () => BOBO.switchToPanel,
+    getConfirm: () => undefined,
+    storage: null,
+    clipboard: { writeText() { return Promise.resolve(); } },
+    createImage: () => ({ naturalWidth: 1, naturalHeight: 1, onload: null, onerror: null, src: '' }),
+    createObjectURL: () => '',
+    revokeObjectURL: () => {},
+    setTimer: (callback, delay) => setTimeout(callback, delay),
+    clearTimer,
+    setInterval: () => 1,
+    clearInterval: () => {},
+    __test: (value) => { internals = value; }
+  });
+  const facade = {};
+  Object.keys(service).forEach((key) => { if (key !== 'disposed' && key !== 'dispose') facade[key] = service[key]; });
+  BOBO.collaboration = facade;
 
-  return { BOBO, state, calls, internals: BOBO.__collaborationTest };
+  return { BOBO, state, calls, internals };
 }
 
 function loadServerComm(responsePayload) {

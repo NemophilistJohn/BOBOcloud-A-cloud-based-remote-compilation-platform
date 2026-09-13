@@ -58,6 +58,16 @@ import type {
   AgentWorkbenchApprovalRequestDto,
   AgentWorkbenchHostPort
 } from '../../types/agent-workbench';
+import type {
+  CollaborationHostPort,
+  CollaborationHostServiceId,
+  CollaborationLocalMappingSelectionDto,
+  CollaborationLocalPathInfoDto,
+  CollaborationOpenedWorkspaceDto,
+  CollaborationTreeNodeDto,
+  CollaborationWorkspaceIdentityDto,
+  CollaborationWriteTeamMappingRequestDto
+} from '../../types/collaboration';
 import { toDisposable } from './disposable.js';
 import { rendererPlatform } from './bootstrap';
 import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
@@ -78,6 +88,7 @@ export const AI_HOST_SERVICE_ID = 'host.ai';
 export const AI_UI_HOST_SERVICE_ID = 'host.aiUi';
 export const AI_CHAT_PANEL_HOST_SERVICE_ID = 'host.aiChatPanel';
 export const AGENT_WORKBENCH_HOST_SERVICE_ID = 'host.agentWorkbench';
+export const COLLABORATION_HOST_SERVICE_ID: CollaborationHostServiceId = 'host.collaboration';
 
 function optionalDisposable(candidate: unknown): Disposable | null {
   return typeof candidate === 'function'
@@ -434,6 +445,28 @@ function createAgentWorkbenchHost(host: NativeHost): Readonly<AgentWorkbenchHost
   });
 }
 
+/**
+ * Narrow host projection for team collaboration.  The collaboration service
+ * never receives the broad preload object; these six operations are the only
+ * filesystem/workspace capabilities it may invoke.
+ */
+function createCollaborationHost(host: NativeHost): Readonly<CollaborationHostPort> {
+  return Object.freeze({
+    refreshWorkspace: () => host.refreshWorkspace() as Promise<CollaborationTreeNodeDto | null>,
+    getWorkspaceIdentity: () => host.getWorkspaceIdentity() as Promise<CollaborationWorkspaceIdentityDto>,
+    localPathInfo: (path: string, grantId?: string) => (
+      host.localPathInfo(path, grantId) as Promise<CollaborationLocalPathInfoDto>
+    ),
+    pickLocalMapping: () => host.pickLocalMapping() as Promise<CollaborationLocalMappingSelectionDto | null>,
+    pickWorkspace: (localPath: string) => (
+      host.pickWorkspace(localPath) as Promise<CollaborationOpenedWorkspaceDto | null>
+    ),
+    writeTeamMapping: (request: CollaborationWriteTeamMappingRequestDto) => (
+      host.writeTeamMapping(request) as Promise<unknown>
+    )
+  });
+}
+
 // This is the only new renderer module allowed to read the preload global.
 // Domain services below it expose narrower capabilities and remain host-only.
 const nativeHost = window.api;
@@ -558,3 +591,10 @@ const agentWorkbenchHostRegistration = rendererPlatform.services.register(
   { owner: 'core', exposeToPlugins: false }
 );
 rendererPlatform.lifecycle.add(agentWorkbenchHostRegistration);
+
+const collaborationHostRegistration = rendererPlatform.services.register(
+  COLLABORATION_HOST_SERVICE_ID,
+  createCollaborationHost(nativeHost),
+  { owner: 'core', exposeToPlugins: false }
+);
+rendererPlatform.lifecycle.add(collaborationHostRegistration);

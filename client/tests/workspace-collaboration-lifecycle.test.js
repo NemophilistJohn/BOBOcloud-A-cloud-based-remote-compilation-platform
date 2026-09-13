@@ -5,10 +5,27 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const esbuild = require('esbuild');
 
 const projectRoot = path.resolve(__dirname, '..');
 const workspaceSource = fs.readFileSync(path.join(projectRoot, 'src/workspace.js'), 'utf8');
-const collaborationSource = fs.readFileSync(path.join(projectRoot, 'src/collaboration.js'), 'utf8');
+const collaborationSource = fs.readFileSync(path.join(projectRoot, 'src/collaboration.ts'), 'utf8');
+const collaborationBundle = esbuild.buildSync({
+  stdin: {
+    contents: collaborationSource.replace(
+      '  var service = Object.assign({}, facade);',
+      '  if (dependencies.__test) dependencies.__test({ deleteProject: deleteProject, manualPull: manualPull, openProject: openProject, runActionConfirm: runActionConfirm });\n  var service = Object.assign({}, facade);'
+    ),
+    sourcefile: 'src/collaboration.ts',
+    resolveDir: path.join(projectRoot, 'src')
+  },
+  bundle: true,
+  platform: 'browser',
+  format: 'iife',
+  globalName: 'CollaborationModule',
+  write: false,
+  logLevel: 'silent'
+}).outputFiles[0].text;
 
 function deferred() {
   let resolve;
@@ -436,6 +453,10 @@ function loadCollaboration(options) {
       events.push({ type: 'pickWorkspace', localPath });
       return { rootPath: localPath, tree: { path: localPath }, workspaceIdentity: 8, leaveToken: 'pick-token' };
     },
+    async pickLocalMapping() {
+      events.push({ type: 'pickLocalMapping' });
+      return null;
+    },
     async readTree(localPath) {
       events.push({ type: 'readTree', localPath });
       return { path: localPath, type: 'folder', children: [] };
@@ -449,32 +470,54 @@ function loadCollaboration(options) {
       return { rootPath: state.workspaceRoot, workspaceIdentity: state.workspaceIdentity };
     }
   }, options.windowApi || {});
-  const instrumentedSource = collaborationSource.replace(
-    /\}\)\(window\);\s*$/,
-    'BOBO.collaboration.__test = { deleteProject: deleteProject, manualPull: manualPull, openProject: openProject, runActionConfirm: runActionConfirm };\n})(window);'
-  );
-  assert.notEqual(instrumentedSource, collaborationSource, 'collaboration test hooks were not injected');
-  const windowObject = { BOBO, api: windowApi, addEventListener() {} };
-  vm.runInNewContext(instrumentedSource, {
-    window: windowObject,
+  let hooks = null;
+  const windowObject = { BOBO, addEventListener() {}, removeEventListener() {} };
+  const sandbox = { Promise, Date, console, globalThis: null };
+  sandbox.globalThis = sandbox;
+  vm.runInNewContext(collaborationBundle, sandbox, { filename: 'src/collaboration.ts' });
+  const service = sandbox.CollaborationModule.createCollaborationService({
     document,
-    localStorage,
-    navigator: { clipboard: { writeText() { return Promise.resolve(); } } },
-    URL: { createObjectURL() { return ''; }, revokeObjectURL() {} },
-    Image: function Image() {},
-    Promise,
-    Date,
-    console,
-    setTimeout(callback) { callback(); return 1; },
-    clearTimeout() {},
-    setInterval() { return 1; },
-    clearInterval() {}
-  }, { filename: 'src/collaboration.js' });
+    eventTarget: windowObject,
+    state,
+    host: {
+      refreshWorkspace: windowApi.refreshWorkspace,
+      getWorkspaceIdentity: windowApi.getWorkspaceIdentity,
+      localPathInfo: windowApi.localPathInfo,
+      pickLocalMapping: windowApi.pickLocalMapping,
+      pickWorkspace: windowApi.pickWorkspace,
+      writeTeamMapping: windowApi.writeTeamMapping
+    },
+    sendToServer: (action, data, requestOptions) => BOBO.sendToServer(action, data, requestOptions),
+    getI18n: () => BOBO.i18n,
+    getToast: () => BOBO.toast,
+    getAuth: () => BOBO.auth,
+    getAccountProfile: () => BOBO.accountProfile,
+    getWorkspace: () => BOBO.workspace,
+    getRclone: () => BOBO.rclone,
+    getRunner: () => BOBO.runner,
+    getWorkbench: () => BOBO.workbench,
+    getEnvironmentActivity: () => BOBO.environmentActivity,
+    getSwitchToPanel: () => BOBO.switchToPanel,
+    getConfirm: () => undefined,
+    storage: localStorage,
+    clipboard: { writeText() { return Promise.resolve(); } },
+    createImage: () => ({ naturalWidth: 1, naturalHeight: 1, onload: null, onerror: null, src: '' }),
+    createObjectURL: () => '',
+    revokeObjectURL: () => {},
+    setTimer: (callback) => { callback(); return 1; },
+    clearTimer: () => {},
+    setInterval: () => 1,
+    clearInterval: () => {},
+    __test: (value) => { hooks = value; }
+  });
+  const facade = {};
+  Object.keys(service).forEach((key) => { if (key !== 'disposed' && key !== 'dispose') facade[key] = service[key]; });
+  BOBO.collaboration = facade;
   element('action-delete-project-name').value = project.name;
 
   return {
     BOBO: windowObject.BOBO,
-    hooks: windowObject.BOBO.collaboration.__test,
+    hooks,
     project,
     current,
     modelMarker,

@@ -82,6 +82,7 @@ import type { AiSettingsCenterService } from './ai-settings-center';
 import type { AiChatPanelHostPort, AiChatPanelService } from './ai-chat-panel';
 import type { AgentWorkbenchHostPort, AgentWorkbenchService } from './agent-workbench';
 import type { ServerCommService } from './server-comm';
+import type { CollaborationHostPort, CollaborationService } from './collaboration';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -105,6 +106,7 @@ export interface RendererServiceMap {
   readonly 'host.aiUi': Readonly<AiAgentButtonHostPort>;
   readonly 'host.aiChatPanel': Readonly<AiChatPanelHostPort>;
   readonly 'host.agentWorkbench': Readonly<AgentWorkbenchHostPort>;
+  readonly 'host.collaboration': Readonly<CollaborationHostPort>;
   readonly 'workbench.confirm': ConfirmService;
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
   readonly 'workbench.documentViews': DocumentViewService;
@@ -149,6 +151,7 @@ export interface RendererServiceMap {
   readonly 'workbench.aiSettingsCenter': AiSettingsCenterService;
   readonly 'workbench.aiChatPanel': AiChatPanelService;
   readonly 'workbench.agentWorkbench': AgentWorkbenchService;
+  readonly 'workbench.collaboration': CollaborationService;
   readonly 'workbench.sourceControlView': SourceControlViewService;
   readonly 'workbench.theme': ThemeService;
   readonly 'workbench.views': ViewsService;
@@ -603,6 +606,84 @@ export type {
   AgentWorkbenchWorkbenchPort,
   AgentWorkbenchWindowPort
 } from './agent-workbench';
+export type {
+  CollaborationAccountProfilePort,
+  CollaborationApiPort,
+  CollaborationServiceId,
+  CollaborationHostServiceId,
+  CollaborationAuthPort,
+  CollaborationAuthStateDto,
+  CollaborationBranchActionResultDto,
+  CollaborationBranchDto,
+  CollaborationCacheInfoDto,
+  CollaborationCacheNamespaceDto,
+  CollaborationCacheScopeDto,
+  CollaborationClipboardPort,
+  CollaborationCommitDto,
+  CollaborationConfirmPort,
+  CollaborationConflictActionResultDto,
+  CollaborationConflictFileDto,
+  CollaborationCurrentProjectDto,
+  CollaborationDependencies,
+  CollaborationDiffDto,
+  CollaborationEditorPort,
+  CollaborationEnvironmentActivityPort,
+  CollaborationErrorCodeDto,
+  CollaborationErrorDetailsDto,
+  CollaborationSuggestedActionDto,
+  CollaborationFacade,
+  CollaborationFileLockDto,
+  CollaborationHostPort,
+  CollaborationImagePort,
+  CollaborationI18nPort,
+  CollaborationInviteDto,
+  CollaborationLocalMappingSelectionDto,
+  CollaborationLocalPathInfoDto,
+  CollaborationLogger,
+  CollaborationMemberViewDto,
+  CollaborationOpenedWorkspaceDto,
+  CollaborationOperationErrorDto,
+  CollaborationPanelPort,
+  CollaborationProjectDto,
+  CollaborationRclonePort,
+  CollaborationRclonePrepareOptionsDto,
+  CollaborationRclonePrepareRequestDto,
+  CollaborationRclonePrepareResultDto,
+  CollaborationRclonePullOptionsDto,
+  CollaborationRclonePullResultDto,
+  CollaborationRendererState,
+  CollaborationRunnerPort,
+  CollaborationSendToServer,
+  CollaborationServerActionDto,
+  CollaborationServerRequestMap,
+  CollaborationServerResponseData,
+  CollaborationServerResponseEnvelopeDto,
+  CollaborationServerResponseMap,
+  CollaborationService,
+  CollaborationSplitEditorPort,
+  CollaborationStateDto,
+  CollaborationStoragePort,
+  CollaborationTabDto,
+  CollaborationTeamDetailDto,
+  CollaborationTeamDto,
+  CollaborationTeamMappingDto,
+  CollaborationTeamViewDto,
+  CollaborationTextModelPort,
+  CollaborationToastPort,
+  CollaborationTreeNodeDto,
+  CollaborationUserDto,
+  CollaborationWorkspaceIdentityDto,
+  CollaborationWorkspaceLeaveOptionsDto,
+  CollaborationWorkspacePort,
+  CollaborationWorktreeDto,
+  CollaborationWorkbenchPort,
+  CollaborationWriteTeamMappingRequestDto,
+  CollaborationDeleteResultDto,
+  CollaborationInviteActionResultDto,
+  CollaborationMembershipActionResultDto,
+  CollaborationReleaseLockResultDto,
+  CollaborationProfileResponseDataDto
+} from './collaboration';
 export type {
   RendererOpaqueContributionDto,
   SourceControlDescriptorDto,

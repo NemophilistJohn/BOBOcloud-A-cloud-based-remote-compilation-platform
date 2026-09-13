@@ -104,6 +104,16 @@ kept out of the downloaded-plugin service map. The cache center remains a
 separate service injected through a narrow port, so the existing Projects/cache
 tab behavior does not acquire a second lifecycle or authority path.
 
+Team collaboration now follows the same typed vertical boundary. The historical
+DOM workflow lives in `src/collaboration.ts`, with server action DTOs, lock and
+cache records, and a disposable thirteen-method facade defined in
+`types/collaboration.ts`. `compat/collaboration-adapter.ts` is the sole writable
+`BOBO.collaboration` projection; the six filesystem/workspace operations are
+available only through the private `host.collaboration` service registered by
+`core/native-host-adapter.ts`. Team state, lock heartbeats, modal handlers, and
+deferred callbacks are lifecycle-owned, and the service is not exposed to
+downloaded plugins.
+
 The shared renderer state now has a typed DTO boundary. `src/state.ts` owns the
 eager singleton shape and its stable nested state records, while
 `compat/state-adapter.ts` performs the one legacy `BOBO.state` projection. The

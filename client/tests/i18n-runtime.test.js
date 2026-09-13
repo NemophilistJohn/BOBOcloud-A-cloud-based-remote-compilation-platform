@@ -398,7 +398,7 @@ test('dynamic UI translation entry points reference defined English keys', () =>
   const messages = JSON.parse(fs.readFileSync(path.join(ROOT, 'language-packs', 'en', 'messages.json'), 'utf8'));
   const sourceFiles = [
     'ai-agent-button.ts', 'ai-chat-panel.ts', 'ai-markdown.ts', 'ai-settings-center.ts',
-    'ai-prompts.ts', 'collaboration.js', 'account-profile.ts',
+    'ai-prompts.ts', 'collaboration.ts', 'account-profile.ts',
     'project-tasks.ts', 'workspace-sync-status.ts', 'task-problem-matcher.ts', 'runner.js', 'run-config.ts', 'runtime.ts', 'dap-client.js', 'terminal.js', 'auth.js', 'plugin-manager-ui.ts', 'plugin-details.ts',
     'source-control-view.ts', 'agent-workbench.ts', 'command-palette.ts', 'language-packs-panel.ts', 'file-search.ts', 'settings.ts', 'workspace-launch.ts', 'workspace.js', 'projects.ts', 'cache-center.ts', 'environment-center.ts', 'environment-center-model.ts', 'package-center.js', 'rclone-settings.ts'
   ];
@@ -418,7 +418,7 @@ test('dynamic UI translation entry points reference defined English keys', () =>
     assertLiteralCalls(source, fileName, /\benvironmentTranslate\(\s*[^,]+,\s*((?:'(?:\\.|[^'\\])*')|(?:"(?:\\.|[^"\\])*"))/g, 1);
     assertLiteralCalls(source, fileName, /\bbindText\(\s*[^,]+,\s*((?:'(?:\\.|[^'\\])*')|(?:"(?:\\.|[^"\\])*"))/g, 1);
     assertLiteralCalls(source, fileName, /\bbindAttribute\(\s*[^,]+,\s*[^,]+,\s*((?:'(?:\\.|[^'\\])*')|(?:"(?:\\.|[^"\\])*"))/g, 1);
-    if (fileName !== 'collaboration.js') continue;
+    if (fileName !== 'collaboration.ts') continue;
     assertLiteralCalls(source, fileName, /\b(?:notify|openAction)\(\s*((?:'(?:\\.|[^'\\])*')|(?:"(?:\\.|[^"\\])*"))/g, 1);
     assertLiteralCalls(source, fileName, /\b(?:inputField|textareaField|selectField)\(\s*[^,]+,\s*((?:'(?:\\.|[^'\\])*')|(?:"(?:\\.|[^"\\])*"))/g, 1);
   }
