@@ -1284,6 +1284,13 @@ export type {
   AiSettingsSchemaRuntimePort
 } from './ai-settings-schema';
 export type {
+  AiUiBundle,
+  AiUiLoaderBobo,
+  AiUiLoaderFacade,
+  AiUiLoaderI18nPort,
+  AiUiLoaderToastPort
+} from './ai-ui-loader';
+export type {
   AiActiveConnectionsResultDto,
   AiApplySettingsOptions,
   AiAuthType,

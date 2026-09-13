@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const esbuild = require('esbuild');
 const packageJson = require('../package.json');
 const { buildRenderer, parseMode, readOrderedImports } = require('../scripts/build-renderer');
 const { inspectRendererBundleEntries } = require('../scripts/audit-release');
@@ -84,7 +85,7 @@ const EXPECTED_MODULES = [
   './compat/ai-prompts-adapter.ts',
   './compat/ai-service-adapter.ts',
   './compat/ai-context-adapter.ts',
-  './ai-ui-loader.js',
+  './ai-ui-loader.ts',
   './compat/ai-agent-button-adapter.ts',
   './compat/ai-inline-adapter.ts',
   '../src/app.js'
@@ -470,7 +471,12 @@ test('AI UI proxy stays lazy, single-flights requests, and retries a failed load
     }
   };
   context.window = context;
-  vm.runInNewContext(fs.readFileSync(path.join(ROOT, 'renderer', 'ai-ui-loader.js'), 'utf8'), context);
+  const loaderSource = fs.readFileSync(path.join(ROOT, 'renderer', 'ai-ui-loader.ts'), 'utf8');
+  const loaderJavaScript = esbuild.transformSync(loaderSource, {
+    loader: 'ts',
+    target: 'es2022'
+  }).code;
+  vm.runInNewContext(loaderJavaScript, context, { filename: 'renderer/ai-ui-loader.ts' });
 
   context.BOBO.aiChatPanel.init();
   assert.equal(appendedScripts.length, 0);

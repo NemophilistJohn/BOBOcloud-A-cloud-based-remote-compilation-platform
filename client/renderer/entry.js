@@ -80,7 +80,7 @@ import './compat/ai-settings-schema-adapter.ts';
 import './compat/ai-prompts-adapter.ts';
 import './compat/ai-service-adapter.ts';
 import './compat/ai-context-adapter.ts';
-import './ai-ui-loader.js';
+import './ai-ui-loader.ts';
 import './compat/ai-agent-button-adapter.ts';
 import './compat/ai-inline-adapter.ts';
 

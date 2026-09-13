@@ -363,10 +363,12 @@ plugin package loader or security sandbox.
 
 AI transport, the status button, and Monaco inline completion stay in the core
 bundle. The settings center, chat panel, Markdown renderer, and Temml are built
-as `bobo-ai-ui.js`. `ai-ui-loader.js` preserves their `window.BOBO` APIs with
+as `bobo-ai-ui.js`. `ai-ui-loader.ts` preserves their `window.BOBO` APIs with
 proxies and loads that bundle once, on the first visible Chat or AI Settings
 action. Its `init()` proxies only record pending initialization, so startup does
-not fetch or parse the presentation bundle.
+not fetch or parse the presentation bundle. Its small typed contract keeps the
+lazy loader's bundle result and compatibility namespace explicit without pulling
+the DOM-heavy presentation modules into the startup graph.
 
 The AI status button is now a private `workbench.aiAgentButton` service. Its
 typed host event arrives through the private `host.aiUi` adapter, while lazy
