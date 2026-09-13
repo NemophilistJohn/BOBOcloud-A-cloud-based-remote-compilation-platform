@@ -1,5 +1,21 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const esbuild = require('esbuild');
+
+const ROOT = path.resolve(__dirname, '..');
+
+function loadTypeScriptScript(relativePath) {
+  const source = fs.readFileSync(path.join(ROOT, relativePath), 'utf8');
+  const transformed = esbuild.transformSync(source, {
+    loader: 'ts',
+    target: 'node20',
+    sourcefile: relativePath
+  }).code;
+  vm.runInThisContext(transformed, { filename: relativePath });
+}
 
 const registeredProviders = {};
 const CompletionItemKind = {
@@ -34,7 +50,7 @@ const monaco = {
   MarkerSeverity: { Error: 8, Warning: 4, Info: 2, Hint: 1 }
 };
 
-require('../editor-rules/completion-engine.js');
+loadTypeScriptScript('editor-rules/completion-engine.ts');
 require('../completion-rules.js');
 require('../editor-rules/symbol-extractor.js');
 ['c', 'cpp', 'java', 'go', 'python', 'rust'].forEach(function (language) {

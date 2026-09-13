@@ -9,7 +9,7 @@ import './core/bootstrap.ts';
 import './core/native-host-adapter.ts';
 import './compat/platform-adapter.ts';
 import './compat/theme-manager-adapter.ts';
-import '../editor-rules/completion-engine.js';
+import '../editor-rules/completion-engine.ts';
 import '../completion-rules.js';
 import '../editor-rules/symbol-extractor.js';
 import '../editor-rules/diagnostics/c-family-checker.js';
