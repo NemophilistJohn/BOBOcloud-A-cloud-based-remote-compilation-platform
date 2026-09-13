@@ -392,19 +392,21 @@ type CompletionItems = readonly EditorRuleCompletionItemDto[];
     ): CompletionItems | Promise<CompletionItems> {
       if (!staticProvider || typeof staticProvider.provideCompletionItems !== 'function') return [];
       if (staticCache) return staticCache;
-      const result = staticProvider.provideCompletionItems(model, position, context, token) || {};
+      const result = staticProvider.provideCompletionItems(model, position, context, token) || {
+        suggestions: [] as readonly EditorRuleCompletionItemDto[]
+      };
       if (isPromiseLike<EditorRuleCompletionListDto | null | undefined>(result)) {
         return result.then((resolved) => {
           staticCache = (resolved && resolved.suggestions) || [];
           return staticCache;
-        });
+        }) as Promise<CompletionItems>;
       }
       staticCache = result.suggestions || [];
       return staticCache;
     }
 
     return {
-      triggerCharacters: safeTriggerCharacters(language, staticProvider && staticProvider.triggerCharacters),
+      triggerCharacters: safeTriggerCharacters(language, staticProvider?.triggerCharacters),
       provideCompletionItems(
         model?: EditorRuleTextModelPort,
         position?: EditorRulePositionDto,

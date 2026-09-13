@@ -11,7 +11,7 @@ import './compat/platform-adapter.ts';
 import './compat/theme-manager-adapter.ts';
 import '../editor-rules/completion-engine.ts';
 import '../completion-rules.js';
-import '../editor-rules/symbol-extractor.js';
+import '../editor-rules/symbol-extractor.ts';
 import '../editor-rules/diagnostics/c-family-checker.js';
 import '../editor-rules/plugins/python.js';
 import '../editor-rules/plugins/c.js';

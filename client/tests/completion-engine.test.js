@@ -52,7 +52,7 @@ const monaco = {
 
 loadTypeScriptScript('editor-rules/completion-engine.ts');
 require('../completion-rules.js');
-require('../editor-rules/symbol-extractor.js');
+loadTypeScriptScript('editor-rules/symbol-extractor.ts');
 ['c', 'cpp', 'java', 'go', 'python', 'rust'].forEach(function (language) {
   require('../editor-rules/plugins/' + language + '.js');
 });

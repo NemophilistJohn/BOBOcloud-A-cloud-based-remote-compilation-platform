@@ -21,6 +21,8 @@
   "include": [
     "renderer/**/*.ts",
     "renderer/**/*.d.ts",
+    "editor-rules/**/*.ts",
+    "editor-rules/**/*.d.ts",
     "src/**/*.ts",
     "src/**/*.d.ts",
     "types/**/*.ts",

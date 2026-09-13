@@ -1,4 +1,4 @@
-// editor-rules/symbol-extractor.js
+// editor-rules/symbol-extractor.ts
 //
 // Lightweight document symbol extraction for IntelliSense-style completion.
 // Scans the current document and collects variables, functions, classes,
@@ -8,27 +8,72 @@
 //
 // Heuristic (regex + line scanning). Prioritises few false positives over full
 // coverage; Monaco's built-in word-based suggestions act as a safety net.
-(function (global) {
+import type {
+  EditorRuleLanguageId,
+  EditorRuleSymbolDto,
+  EditorRuleSymbolExtractorPort
+} from '../types/editor-rules';
+
+type SymbolKind = EditorRuleSymbolDto['kind'];
+type SymbolList = EditorRuleSymbolDto[];
+type SymbolLocal = Pick<EditorRuleSymbolDto, 'name' | 'kind' | 'detail' | 'priority'>;
+type Segment = { text: string; line: number };
+type LanguageRegExp = RegExp & { language?: EditorRuleLanguageId };
+type EnclosingMatch = {
+  name: string;
+  params: string;
+  groups: string[];
+  open: number;
+  start: number;
+};
+type FunctionBlock = {
+  open: number;
+  end: number;
+  openLine: number;
+  endLine: number;
+};
+type PythonFunctionBlock = { openLine: number; endLine: number; indent: number };
+type ScopeFilter = (declarationLine: number) => boolean;
+type Extractor = (
+  content: string,
+  lang: EditorRuleLanguageId,
+  cursorLine?: number
+) => SymbolList;
+type MemberDefinition = readonly [name: string, detail: string, hasArgument: boolean];
+type StandardMemberGroups = Readonly<Record<string, readonly MemberDefinition[]>>;
+type StandardMembers = Readonly<Record<string, StandardMemberGroups | undefined>>;
+type SymbolBlock = {
+  name: string;
+  body: string;
+  start: number;
+  open: number;
+  end: number;
+};
+type ExpressionTypeCandidate = { index: number; type: string };
+
+(function (global: typeof globalThis & {
+  symbolExtractor?: EditorRuleSymbolExtractorPort;
+}) {
   'use strict';
 
-  function lineCommentFor(lang) {
+  function lineCommentFor(lang: EditorRuleLanguageId): string {
     return lang === 'python' ? '#' : '//';
   }
 
   // Remove string/char/raw-string literals and comments so identifiers inside
   // them are not picked up as symbols.
-  function sanitize(content, lang) {
+  function sanitize(content: string, lang: EditorRuleLanguageId): string {
     let s = content;
     if (lang === 'go') s = s.replace(/`[^`]*`/g, ' `` ');           // Go raw strings
-    if (lang === 'rust') s = s.replace(/r#+"[\s\S]*?"#+/g, function (value) {
+    if (lang === 'rust') s = s.replace(/r#+"[\s\S]*?"#+/g, function (value: string) {
       return value.replace(/[^\n]/g, ' ');
     });
-    if (lang === 'python') s = s.replace(/(?:"""[\s\S]*?"""|'''[\s\S]*?''')/g, function (value) {
+    if (lang === 'python') s = s.replace(/(?:"""[\s\S]*?"""|'''[\s\S]*?''')/g, function (value: string) {
       return value.replace(/[^\n]/g, ' ');
     });
     s = s.replace(/"(?:\\.|[^"\\\n])*"/g, ' "" ');
     s = s.replace(/'(?:\\.|[^'\\\n])*'/g, " '' ");
-    s = s.replace(/\/\*[\s\S]*?\*\//g, function (value) {
+    s = s.replace(/\/\*[\s\S]*?\*\//g, function (value: string) {
       return value.replace(/[^\n]/g, ' ');
     });
     const lc = lineCommentFor(lang);
@@ -40,8 +85,8 @@
   // Join physical lines whose () / [] groups continue onto the next line, so
   // multi-line function signatures are seen as one logical segment. Returns
   // segments tagged with the 1-based line number where each segment starts.
-  function joinContinuations(lines) {
-    const out = [];
+  function joinContinuations(lines: readonly string[]): Segment[] {
+    const out: Segment[] = [];
     let buf = '';
     let startLine = 0;
     let parens = 0, brackets = 0;
@@ -52,7 +97,7 @@
     };
     for (let i = 0; i < lines.length; i++) {
       lineNo = i + 1;
-      const ln = lines[i];
+      const ln = lines[i] || '';
       if (buf === '') startLine = lineNo;
       for (let k = 0; k < ln.length; k++) {
         const c = ln[k];
@@ -68,7 +113,7 @@
     return out;
   }
 
-  const KIND_PRIORITY = {
+  const KIND_PRIORITY: Partial<Record<SymbolKind, number>> = {
     variable: 1,
     field: 1,
     property: 1,
@@ -85,7 +130,15 @@
     macro: 5
   };
 
-  function pushUnique(syms, seen, name, kind, detail, priority, insertText) {
+  function pushUnique(
+    syms: SymbolList,
+    seen: Set<string>,
+    name: string | undefined,
+    kind: SymbolKind,
+    detail?: string,
+    priority?: number,
+    insertText?: string
+  ): void {
     if (!name || !/^[A-Za-z_$][\w$]*$/.test(name)) return;
     if (seen.has(name)) return;
     seen.add(name);
@@ -98,7 +151,7 @@
     });
   }
 
-  function contentIndexAtLine(content, line) {
+  function contentIndexAtLine(content: string, line: number): number {
     if (!line) return content.length;
     let idx = 0, l = 1;
     while (idx < content.length && l < line) {
@@ -108,8 +161,8 @@
     return idx;
   }
 
-  function splitTopLevel(value) {
-    const parts = [];
+  function splitTopLevel(value: string): string[] {
+    const parts: string[] = [];
     let start = 0;
     let angle = 0, paren = 0, bracket = 0, brace = 0;
     for (let i = 0; i < value.length; i += 1) {
@@ -131,7 +184,7 @@
     return parts.filter(Boolean);
   }
 
-  function braceStillOpen(content, openIndex) {
+  function braceStillOpen(content: string, openIndex: number): boolean {
     let depth = 0;
     for (let i = openIndex; i < content.length; i += 1) {
       if (content[i] === '{') depth += 1;
@@ -143,20 +196,27 @@
     return depth > 0;
   }
 
-  function enclosingBraceMatch(content, cursorLine, regex, nameGroup, paramsGroup, rejectName) {
+  function enclosingBraceMatch(
+    content: string,
+    cursorLine: number,
+    regex: LanguageRegExp,
+    nameGroup: number,
+    paramsGroup: number,
+    rejectName?: (name: string) => boolean
+  ): EnclosingMatch | null {
     const clean = sanitize(content, regex.language || 'c');
     const before = clean.slice(0, contentIndexAtLine(clean, cursorLine));
-    let match;
-    let candidate = null;
+    let match: RegExpExecArray | null;
+    let candidate: EnclosingMatch | null = null;
     regex.lastIndex = 0;
     while ((match = regex.exec(before))) {
       const openOffset = match[0].lastIndexOf('{');
       const openIndex = match.index + openOffset;
-      const name = nameGroup ? match[nameGroup] : '';
+      const name = nameGroup ? (match[nameGroup] || '') : '';
       if (openOffset >= 0 && braceStillOpen(before, openIndex) && !(rejectName && rejectName(name))) {
         candidate = {
           name: name,
-          params: paramsGroup ? match[paramsGroup] : '',
+          params: paramsGroup ? (match[paramsGroup] || '') : '',
           groups: Array.from(match),
           open: openIndex,
           start: match.index
@@ -167,21 +227,21 @@
     return candidate;
   }
 
-  function parseCFamilyParams(params) {
-    const result = [];
-    splitTopLevel(params).forEach(function (raw) {
+  function parseCFamilyParams(params: string): SymbolLocal[] {
+    const result: SymbolLocal[] = [];
+    splitTopLevel(params).forEach(function (raw: string) {
       const value = raw.replace(/\s*=.*$/, '').trim();
       if (!value || value === 'void' || value === '...') return;
       const functionPointer = /\(\s*[*&]+\s*(\w+)\s*\)/.exec(value);
       const match = functionPointer || /([A-Za-z_$][\w$]*)\s*(?:\[[^\]]*\]\s*)?$/.exec(value);
-      if (match) result.push({ name: match[1], kind: 'variable', detail: 'parameter: ' + value, priority: 0 });
+      if (match) result.push({ name: match[1] || '', kind: 'variable', detail: 'parameter: ' + value, priority: 0 });
     });
     return result;
   }
 
-  function parseRustParams(params) {
-    const result = [];
-    splitTopLevel(params).forEach(function (raw) {
+  function parseRustParams(params: string): SymbolLocal[] {
+    const result: SymbolLocal[] = [];
+    splitTopLevel(params).forEach(function (raw: string) {
       const value = raw.trim();
       if (!value) return;
       if (/^(?:&\s*(?:'\w+\s*)?)?(?:mut\s+)?self$/.test(value)) {
@@ -189,21 +249,21 @@
         return;
       }
       const match = /^(?:mut\s+)?(?:ref\s+)?([A-Za-z_][\w]*)\s*:\s*(.+)$/.exec(value);
-      if (match) result.push({ name: match[1], kind: 'variable', detail: 'parameter: ' + match[2].trim(), priority: 0 });
+      if (match) result.push({ name: match[1] || '', kind: 'variable', detail: 'parameter: ' + (match[2] || '').trim(), priority: 0 });
     });
     return result;
   }
 
-  function parseGoParams(params) {
+  function parseGoParams(params: string): SymbolLocal[] {
     const parts = splitTopLevel(params);
-    const result = [];
+    const result: SymbolLocal[] = [];
     let inheritedType = '';
     for (let i = parts.length - 1; i >= 0; i -= 1) {
-      const value = parts[i].trim();
+      const value = (parts[i] || '').trim();
       const match = /^([A-Za-z_][\w]*)\s+(.+)$/.exec(value);
       if (match) {
-        inheritedType = match[2].trim();
-        if (match[1] !== '_') result.unshift({ name: match[1], kind: 'variable', detail: 'parameter: ' + inheritedType, priority: 0 });
+        inheritedType = (match[2] || '').trim();
+        if (match[1] !== '_') result.unshift({ name: match[1] || '', kind: 'variable', detail: 'parameter: ' + inheritedType, priority: 0 });
       } else if (/^[A-Za-z_][\w]*$/.test(value) && inheritedType && value !== '_') {
         result.unshift({ name: value, kind: 'variable', detail: 'parameter: ' + inheritedType, priority: 0 });
       }
@@ -211,14 +271,14 @@
     return result;
   }
 
-  function parsePythonParams(params) {
-    const result = [];
-    splitTopLevel(params).forEach(function (raw) {
+  function parsePythonParams(params: string): SymbolLocal[] {
+    const result: SymbolLocal[] = [];
+    splitTopLevel(params).forEach(function (raw: string) {
       const value = raw.trim();
       if (!value || value === '/' || value === '*') return;
       const match = /^\*{0,2}([A-Za-z_][\w]*)(?:\s*:\s*([^=]+))?/.exec(value);
       if (match) result.push({
-        name: match[1],
+        name: match[1] || '',
         kind: 'variable',
         detail: match[2] ? 'parameter: ' + match[2].trim() : 'parameter',
         priority: 0
@@ -227,23 +287,27 @@
     return result;
   }
 
-  function enclosingParameters(content, lang, cursorLine) {
-    let match = null;
+  function enclosingParameters(
+    content: string,
+    lang: EditorRuleLanguageId,
+    cursorLine: number
+  ): SymbolLocal[] {
+    let match: EnclosingMatch | null = null;
     if (lang === 'c' || lang === 'cpp' || lang === 'java') {
-      const regex = /\b([A-Za-z_$~][\w$~]*)\s*\(([^()]*)\)\s*(?:const\s*)?(?:noexcept(?:\s*\([^)]*\))?\s*)?(?:override\s*)?(?:final\s*)?(?:throws\s+[\w.,\s]+)?\s*\{/gm;
+      const regex = /\b([A-Za-z_$~][\w$~]*)\s*\(([^()]*)\)\s*(?:const\s*)?(?:noexcept(?:\s*\([^)]*\))?\s*)?(?:override\s*)?(?:final\s*)?(?:throws\s+[\w.,\s]+)?\s*\{/gm as LanguageRegExp;
       regex.language = lang;
-      match = enclosingBraceMatch(content, cursorLine, regex, 1, 2, function (name) { return C_CONTROL.has(name); });
+      match = enclosingBraceMatch(content, cursorLine, regex, 1, 2, function (name: string) { return C_CONTROL.has(name); });
       if (match) return parseCFamilyParams(match.params);
       return [];
     }
     if (lang === 'rust') {
-      const regex = /\bfn\s+([A-Za-z_][\w]*)\s*(?:<[^>{}]*>\s*)?\(([^()]*)\)[^{;]*\{/gm;
+      const regex = /\bfn\s+([A-Za-z_][\w]*)\s*(?:<[^>{}]*>\s*)?\(([^()]*)\)[^{;]*\{/gm as LanguageRegExp;
       regex.language = lang;
       match = enclosingBraceMatch(content, cursorLine, regex, 1, 2);
       return match ? parseRustParams(match.params) : [];
     }
     if (lang === 'go') {
-      const regex = /\bfunc\s+(?:\(\s*([^)]*)\)\s*)?([A-Za-z_][\w]*)\s*\(([^()]*)\)[^{]*\{/gm;
+      const regex = /\bfunc\s+(?:\(\s*([^)]*)\)\s*)?([A-Za-z_][\w]*)\s*\(([^()]*)\)[^{]*\{/gm as LanguageRegExp;
       regex.language = lang;
       match = enclosingBraceMatch(content, cursorLine, regex, 2, 3);
       if (!match) return [];
@@ -253,9 +317,9 @@
         : null;
       if (receiver && receiver[1] !== '_') {
         locals.unshift({
-          name: receiver[1],
+          name: receiver[1] || '',
           kind: 'variable',
-          detail: 'method receiver: ' + receiver[2].trim(),
+          detail: 'method receiver: ' + (receiver[2] || '').trim(),
           priority: 0
         });
       }
@@ -264,24 +328,25 @@
     if (lang === 'python') {
       const lines = sanitize(content, lang).split('\n');
       const end = Math.min(lines.length, Math.max(0, cursorLine - 1));
-      let candidate = null;
+      let candidate: { indent: number; params: string } | null = null;
       for (let i = 0; i < end; i += 1) {
-        const functionMatch = /^(\s*)(?:async\s+)?def\s+([A-Za-z_][\w]*)\s*\(([^)]*)\)\s*:/.exec(lines[i]);
+        const functionMatch = /^(\s*)(?:async\s+)?def\s+([A-Za-z_][\w]*)\s*\(([^)]*)\)\s*:/.exec(lines[i] || '');
         if (functionMatch) {
-          candidate = { indent: functionMatch[1].length, params: functionMatch[3] };
+          candidate = { indent: (functionMatch[1] || '').length, params: functionMatch[3] || '' };
           continue;
         }
-        if (candidate && lines[i].trim() && /^\s*/.exec(lines[i])[0].length <= candidate.indent) candidate = null;
+        if (candidate && (lines[i] || '').trim() && ((/^\s*/.exec(lines[i] || '')?.[0] || '').length <= candidate.indent)) candidate = null;
       }
       return candidate ? parsePythonParams(candidate.params) : [];
     }
     return [];
   }
 
-  function promoteLocals(syms, seen, locals) {
+  function promoteLocals(syms: SymbolList, seen: Set<string>, locals: readonly SymbolLocal[]): void {
     for (let i = locals.length - 1; i >= 0; i -= 1) {
       const local = locals[i];
-      const existing = syms.findIndex(function (symbol) { return symbol.name === local.name; });
+      if (!local) continue;
+      const existing = syms.findIndex(function (symbol: EditorRuleSymbolDto) { return symbol.name === local.name; });
       if (existing !== -1) syms.splice(existing, 1);
       seen.add(local.name);
       syms.unshift({
@@ -294,28 +359,32 @@
     }
   }
 
-  function lineStartsFor(content) {
-    const starts = [0];
+  function lineStartsFor(content: string): number[] {
+    const starts: number[] = [0];
     for (let i = 0; i < content.length; i += 1) {
       if (content[i] === '\n') starts.push(i + 1);
     }
     return starts;
   }
 
-  function lineForIndex(starts, index) {
+  function lineForIndex(starts: readonly number[], index: number): number {
     let low = 0;
     let high = starts.length - 1;
     while (low <= high) {
       const middle = (low + high) >> 1;
-      if (starts[middle] <= index) low = middle + 1;
+      if ((starts[middle] || 0) <= index) low = middle + 1;
       else high = middle - 1;
     }
     return high + 1;
   }
 
-  function braceFunctionBlocks(clean, lang, starts) {
-    let regex;
-    let nameGroup;
+  function braceFunctionBlocks(
+    clean: string,
+    lang: EditorRuleLanguageId,
+    starts: readonly number[]
+  ): FunctionBlock[] {
+    let regex: LanguageRegExp;
+    let nameGroup: number;
     if (lang === 'go') {
       regex = /\bfunc\s+(?:\(\s*([^)]*)\)\s*)?([A-Za-z_][\w]*)\s*\(([^()]*)\)[^{]*\{/gm;
       nameGroup = 2;
@@ -327,10 +396,10 @@
       nameGroup = 1;
     }
 
-    const blocks = [];
-    let match;
+    const blocks: FunctionBlock[] = [];
+    let match: RegExpExecArray | null;
     while ((match = regex.exec(clean))) {
-      const name = match[nameGroup];
+      const name = match[nameGroup] || '';
       if ((lang === 'c' || lang === 'cpp' || lang === 'java') && C_CONTROL.has(name)) continue;
       const open = match.index + match[0].lastIndexOf('{');
       const matchedEnd = matchingBrace(clean, open);
@@ -345,17 +414,17 @@
     return blocks;
   }
 
-  function pythonFunctionBlocks(clean) {
+  function pythonFunctionBlocks(clean: string): PythonFunctionBlock[] {
     const lines = clean.split('\n');
-    const blocks = [];
+    const blocks: PythonFunctionBlock[] = [];
     for (let i = 0; i < lines.length; i += 1) {
-      const match = /^(\s*)(?:async\s+)?def\s+[A-Za-z_][\w]*\s*\(/.exec(lines[i]);
+      const match = /^(\s*)(?:async\s+)?def\s+[A-Za-z_][\w]*\s*\(/.exec(lines[i] || '');
       if (!match) continue;
-      const indent = match[1].length;
+      const indent = (match[1] || '').length;
       let endLine = lines.length;
       for (let j = i + 1; j < lines.length; j += 1) {
-        if (!lines[j].trim()) continue;
-        const nextIndent = /^\s*/.exec(lines[j])[0].length;
+        if (!(lines[j] || '').trim()) continue;
+        const nextIndent = ((/^\s*/.exec(lines[j] || '')?.[0]) || '').length;
         if (nextIndent <= indent) {
           endLine = j;
           break;
@@ -368,18 +437,22 @@
 
   // Returns whether a declaration on a given line is visible at the cursor.
   // Declarations outside functions remain available as globals/class fields.
-  function createScopeFilter(content, lang, cursorLine) {
+  function createScopeFilter(
+    content: string,
+    lang: EditorRuleLanguageId,
+    cursorLine: number
+  ): ScopeFilter {
     const clean = sanitize(content, lang);
     if (lang === 'python') {
       const blocks = pythonFunctionBlocks(clean);
-      return function (line) {
-        const owners = blocks.filter(function (block) {
+      return function (line: number): boolean {
+        const owners = blocks.filter(function (block: PythonFunctionBlock) {
           return line > block.openLine && line <= block.endLine;
-        }).sort(function (a, b) {
+        }).sort(function (a: PythonFunctionBlock, b: PythonFunctionBlock) {
           return b.openLine - a.openLine || b.indent - a.indent;
         });
         if (!owners.length) return true;
-        const owner = owners[0];
+        const owner = owners[0]!;
         return cursorLine > owner.openLine && cursorLine <= owner.endLine;
       };
     }
@@ -387,8 +460,8 @@
     const starts = lineStartsFor(clean);
     const blocks = braceFunctionBlocks(clean, lang, starts);
     const cursorIndex = contentIndexAtLine(clean, cursorLine);
-    const scopeByLine = [];
-    const stack = [];
+    const scopeByLine: Array<number | null> = [];
+    const stack: number[] = [];
     let line = 1;
     scopeByLine[line] = null;
     for (let i = 0; i < cursorIndex; i += 1) {
@@ -397,17 +470,17 @@
       else if (ch === '}') stack.pop();
       else if (ch === '\n') {
         line += 1;
-        scopeByLine[line] = stack.length ? stack[stack.length - 1] : null;
+        scopeByLine[line] = stack.length ? stack[stack.length - 1]! : null;
       }
     }
     const visibleScopes = new Set(stack);
 
-    return function (declarationLine) {
-      const owners = blocks.filter(function (block) {
+    return function (declarationLine: number): boolean {
+      const owners = blocks.filter(function (block: FunctionBlock) {
         return declarationLine > block.openLine && declarationLine <= block.endLine;
-      }).sort(function (a, b) { return b.open - a.open; });
+      }).sort(function (a: FunctionBlock, b: FunctionBlock) { return b.open - a.open; });
       if (!owners.length) return true;
-      const owner = owners[0];
+      const owner = owners[0]!;
       if (!(owner.open < cursorIndex && cursorIndex <= owner.end)) return false;
       const declarationScope = scopeByLine[declarationLine];
       return declarationScope == null || visibleScopes.has(declarationScope);
@@ -424,9 +497,13 @@
   const JAVA_BUILTIN_TYPES = 'int|long|short|byte|char|boolean|float|double|void|String|var';
   const C_MODIFIERS = '(?:static\\s+|inline\\s+|extern\\s+|virtual\\s+|explicit\\s+|friend\\s+|constexpr\\s+|final\\s+|override\\s+|public\\s+|private\\s+|protected\\s+|abstract\\s+|synchronized\\s+|native\\s+|default\\s+|const\\s+|volatile\\s+|register\\s+|mutable\\s+)*';
 
-  function extractCFamily(content, lang, cursorLine) {
-    const syms = [];
-    const seen = new Set();
+  function extractCFamily(
+    content: string,
+    lang: EditorRuleLanguageId,
+    cursorLine: number = 0
+  ): SymbolList {
+    const syms: SymbolList = [];
+    const seen = new Set<string>();
     const isJava = lang === 'java';
     const builtinTypes = isJava ? JAVA_BUILTIN_TYPES : C_BUILTIN_TYPES;
     const isVisibleDeclaration = createScopeFilter(content, lang, cursorLine);
@@ -435,7 +512,7 @@
     if (!isJava) {
       const upTo = cursorLine ? content.slice(0, contentIndexAtLine(content, cursorLine)) : content;
       const macroRe = /^\s*#\s*define\s+(\w+)/gm;
-      let mm;
+      let mm: RegExpExecArray | null;
       while ((mm = macroRe.exec(upTo))) {
         pushUnique(syms, seen, mm[1], 'macro', 'preprocessor macro');
       }
@@ -445,45 +522,49 @@
 
     // Pass 1: collect user-defined type names (struct/union/enum/class/interface/typedef)
     // so pass 2 can recognise variables of those types (e.g. `Point p;`).
-    const userTypes = new Set();
+    const userTypes = new Set<string>();
     for (let i = 0; i < segments.length; i++) {
-      if (cursorLine && segments[i].line >= cursorLine) continue;
-      const line = segments[i].text.trim();
-      let m;
-      if (isVisibleDeclaration(segments[i].line) && (m = /\b(?:struct|union|enum|class|interface)\s+(\w+)/.exec(line))) {
-        userTypes.add(m[1]);
+      const segment = segments[i];
+      if (!segment) continue;
+      if (cursorLine && segment.line >= cursorLine) continue;
+      const line = segment.text.trim();
+      let m: RegExpExecArray | null;
+      if (isVisibleDeclaration(segment.line) && (m = /\b(?:struct|union|enum|class|interface)\s+(\w+)/.exec(line))) {
+        userTypes.add(m[1] || '');
       }
-      if (isVisibleDeclaration(segments[i].line) && /^\s*typedef\b/.test(line)) {
+      if (isVisibleDeclaration(segment.line) && /^\s*typedef\b/.test(line)) {
         const tm = line.match(/(\w+)\s*;\s*$/);
-        if (tm) userTypes.add(tm[1]);
+        if (tm) userTypes.add(tm[1] || '');
       }
     }
     const typeAlt = '(?:(?:struct|union|enum|class)\\s+\\w+|' + builtinTypes + (userTypes.size ? '|' + Array.from(userTypes).map(function (t) { return t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }).join('|') : '') + ')';
 
     // Pass 2: extract symbols
     for (let i = 0; i < segments.length; i++) {
-      if (cursorLine && segments[i].line >= cursorLine) break;
-      const line = segments[i].text.trim();
+      const segment = segments[i];
+      if (!segment) continue;
+      if (cursorLine && segment.line >= cursorLine) break;
+      const line = segment.text.trim();
       if (!line) continue;
-      let m;
+      let m: RegExpExecArray | null;
 
       // struct / union / enum / class / interface NAME
       if ((m = /\b(?:struct|union|enum|class|interface)\s+(\w+)/.exec(line))) {
-        if (!isVisibleDeclaration(segments[i].line)) continue;
-        const kw = (line.match(/\b(struct|union|enum|class|interface)\b/) || [])[1];
-        let kind = 'struct';
+        if (!isVisibleDeclaration(segment.line)) continue;
+        const kw = (line.match(/\b(struct|union|enum|class|interface)\b/) || [])[1] || '';
+        let kind: SymbolKind = 'struct';
         if (kw === 'class') kind = 'class';
         else if (kw === 'interface') kind = 'interface';
         else if (kw === 'enum') kind = 'enum';
-        pushUnique(syms, seen, m[1], kind, kw + ' ' + m[1]);
+        pushUnique(syms, seen, m[1], kind, kw + ' ' + (m[1] || ''));
         continue;
       }
 
       // typedef ... NAME ;
       if (/^\s*typedef\b/.test(line)) {
-        if (!isVisibleDeclaration(segments[i].line)) continue;
+        if (!isVisibleDeclaration(segment.line)) continue;
         const tm = line.match(/(\w+)\s*;\s*$/);
-        if (tm) pushUnique(syms, seen, tm[1], 'typedef', 'typedef ' + tm[1]);
+        if (tm) pushUnique(syms, seen, tm[1], 'typedef', 'typedef ' + (tm[1] || ''));
         continue;
       }
 
@@ -496,9 +577,9 @@
         '(\\{|;)'
       ).exec(line);
       if (fm && fm[2] && !C_CONTROL.has(fm[2]) && !/^(if|for|while|switch|return|sizeof)$/.test(fm[2])) {
-        const retType = fm[1].trim();
-        if (isVisibleDeclaration(segments[i].line) && retType && !/^[\s,;=+\-*/<>!&|^]+$/.test(retType) && !C_CONTROL.has(retType.split(/\s+/).pop())) {
-          pushUnique(syms, seen, fm[2], 'function', retType + ' ' + fm[2] + '(' + fm[3].trim() + ')');
+        const retType = (fm[1] || '').trim();
+        if (isVisibleDeclaration(segment.line) && retType && !/^[\s,;=+\-*/<>!&|^]+$/.test(retType) && !C_CONTROL.has(retType.split(/\s+/).pop() || '')) {
+          pushUnique(syms, seen, fm[2], 'function', retType + ' ' + (fm[2] || '') + '(' + (fm[3] || '').trim() + ')');
           continue;
         }
       }
@@ -513,8 +594,8 @@
           '(?:=[^;]*)?(?:\\s*,\\s*[A-Za-z_$][\\w$]*\\s*(?:=[^;,]*)?)*\\s*;\\s*$'
         ).exec(line);
         if (javaVariable) {
-          typeName = javaVariable[1].trim();
-          variableName = javaVariable[2];
+          typeName = (javaVariable[1] || '').trim();
+          variableName = javaVariable[2] || '';
         }
       } else {
         const vm = new RegExp(
@@ -522,19 +603,19 @@
           '(?:\\[[^\\]]*\\]\\s*)*(?:=[^;]*)?(?:\\s*,\\s*\\w+\\s*(?:\\[[^\\]]*\\]\\s*)*(?:=[^;,]*)?)*\\s*;\\s*$'
         ).exec(line);
         if (vm && vm[1]) {
-          variableName = vm[1];
+          variableName = vm[1] || '';
           const typeMatch = line.match(new RegExp(typeAlt));
           typeName = typeMatch ? typeMatch[0].trim() : 'var';
         }
       }
-      if (variableName && isVisibleDeclaration(segments[i].line)) {
+      if (variableName && isVisibleDeclaration(segment.line)) {
         pushUnique(syms, seen, variableName, 'variable', typeName + ' ' + variableName);
         // comma-separated declarators: int a, b, c;
         const tail = line.slice(line.indexOf(variableName) + variableName.length, line.lastIndexOf(';'));
         const extras = tail.match(/,\s*([A-Za-z_$][\w$]*)/g);
-        if (extras) extras.forEach(function (e) {
+        if (extras) extras.forEach(function (e: string) {
           const em = e.match(/([A-Za-z_$][\w$]*)/);
-          if (em) pushUnique(syms, seen, em[1], 'variable', typeName + ' ' + em[1]);
+          if (em) pushUnique(syms, seen, em[1], 'variable', typeName + ' ' + (em[1] || ''));
         });
       }
     }
@@ -543,57 +624,62 @@
   }
 
   // ───────────────────────── Python ─────────────────────────
-  function extractPython(content, lang, cursorLine) {
-    const syms = [];
-    const seen = new Set();
+  function extractPython(
+    content: string,
+    lang: EditorRuleLanguageId,
+    cursorLine: number = 0
+  ): SymbolList {
+    const syms: SymbolList = [];
+    const seen = new Set<string>();
     const lines = sanitize(content, lang).split('\n');
     const isVisibleDeclaration = createScopeFilter(content, lang, cursorLine);
     for (let i = 0; i < lines.length; i++) {
       if (cursorLine && i + 1 >= cursorLine) break;
-      const line = lines[i];
+      const line = lines[i] || '';
       const trimmed = line.trim();
       if (!trimmed) continue;
-      let m;
+      let m: RegExpExecArray | null;
 
       if ((m = /^\s*def\s+(\w+)/.exec(line))) {
         if (!isVisibleDeclaration(i + 1)) continue;
-        pushUnique(syms, seen, m[1], 'function', 'def ' + m[1]); continue;
+        pushUnique(syms, seen, m[1], 'function', 'def ' + (m[1] || '')); continue;
       }
       if ((m = /^\s*class\s+(\w+)/.exec(line))) {
         if (!isVisibleDeclaration(i + 1)) continue;
-        pushUnique(syms, seen, m[1], 'class', 'class ' + m[1]); continue;
+        pushUnique(syms, seen, m[1], 'class', 'class ' + (m[1] || '')); continue;
       }
       if ((m = /^\s*import\s+(.+)/.exec(line))) {
         if (!isVisibleDeclaration(i + 1)) continue;
-        splitTopLevel(m[1]).forEach(function (entry) {
+        splitTopLevel(m[1] || '').forEach(function (entry: string) {
           const imported = /^([\w.]+)(?:\s+as\s+(\w+))?/.exec(entry);
           if (!imported) return;
-          const name = imported[2] || imported[1].split('.')[0];
-          pushUnique(syms, seen, name, 'module', 'import ' + imported[1], 2);
+          const name = imported[2] || (imported[1] || '').split('.')[0];
+          pushUnique(syms, seen, name, 'module', 'import ' + (imported[1] || ''), 2);
         });
         continue;
       }
       if ((m = /^\s*from\s+([\w.]+)\s+import\s+(.+)/.exec(line))) {
         if (!isVisibleDeclaration(i + 1)) continue;
-        m[2].split(',').forEach(function (n) {
+        const moduleName = m[1] || '';
+        (m[2] || '').split(',').forEach(function (n: string) {
           const nm = n.trim().match(/^(\w+)(?:\s+as\s+(\w+))?/);
-          if (nm) pushUnique(syms, seen, nm[2] || nm[1], 'module', 'from ' + m[1] + ' import ' + nm[1], 2);
+          if (nm) pushUnique(syms, seen, nm[2] || nm[1], 'module', 'from ' + moduleName + ' import ' + (nm[1] || ''), 2);
         });
         continue;
       }
       // assignment: NAME = ...   (skip compound stmts / control keywords)
       if ((m = /^\s*([\w.,\s]+?)\s*(?::\s*[\w.\[\]]+\s*)?=(?!=)/.exec(line))) {
         if (isVisibleDeclaration(i + 1) && !/^\s*(def|class|import|from|if|while|for|elif|else|return|with)\b/.test(line)) {
-          m[1].split(',').forEach(function (n) {
+          (m[1] || '').split(',').forEach(function (n: string) {
             const nm = n.trim().match(/^(\w+)/);
-            if (nm && ['self', 'cls', 'True', 'False', 'None'].indexOf(nm[1]) === -1) {
-              pushUnique(syms, seen, nm[1], 'variable', nm[1]);
+            if (nm && ['self', 'cls', 'True', 'False', 'None'].indexOf(nm[1] || '') === -1) {
+              pushUnique(syms, seen, nm[1], 'variable', nm[1] || '');
             }
           });
         }
       }
       if ((m = /\bfor\s+(\w+)\s+in\b/.exec(line))) {
-        if (isVisibleDeclaration(i + 1)) pushUnique(syms, seen, m[1], 'variable', m[1]);
+        if (isVisibleDeclaration(i + 1)) pushUnique(syms, seen, m[1], 'variable', m[1] || '');
       }
     }
     promoteLocals(syms, seen, enclosingParameters(content, lang, cursorLine));
@@ -601,32 +687,38 @@
   }
 
   // ───────────────────────── Go ─────────────────────────
-  function extractGo(content, lang, cursorLine) {
-    const syms = [];
-    const seen = new Set();
+  function extractGo(
+    content: string,
+    lang: EditorRuleLanguageId,
+    cursorLine: number = 0
+  ): SymbolList {
+    const syms: SymbolList = [];
+    const seen = new Set<string>();
     const segments = joinContinuations(sanitize(content, lang).split('\n'));
     const isVisibleDeclaration = createScopeFilter(content, lang, cursorLine);
     for (let i = 0; i < segments.length; i++) {
-      if (cursorLine && segments[i].line >= cursorLine) break;
-      const line = segments[i].text.trim();
+      const segment = segments[i];
+      if (!segment) continue;
+      if (cursorLine && segment.line >= cursorLine) break;
+      const line = segment.text.trim();
       if (!line) continue;
-      let m;
+      let m: RegExpExecArray | null;
       if ((m = /^\s*func\s+(?:\([^)]*\)\s+)?(\w+)\s*\(/.exec(line))) {
-        pushUnique(syms, seen, m[1], 'function', 'func ' + m[1]); continue;
+        pushUnique(syms, seen, m[1], 'function', 'func ' + (m[1] || '')); continue;
       }
       if ((m = /^\s*type\s+(\w+)\s+(struct|interface)/.exec(line))) {
-        if (!isVisibleDeclaration(segments[i].line)) continue;
-        pushUnique(syms, seen, m[1], m[2] === 'interface' ? 'interface' : 'struct', 'type ' + m[1] + ' ' + m[2]); continue;
+        if (!isVisibleDeclaration(segment.line)) continue;
+        pushUnique(syms, seen, m[1], m[2] === 'interface' ? 'interface' : 'struct', 'type ' + (m[1] || '') + ' ' + (m[2] || '')); continue;
       }
       if ((m = /^\s*type\s+(\w+)\b/.exec(line))) {
-        if (!isVisibleDeclaration(segments[i].line)) continue;
-        pushUnique(syms, seen, m[1], 'typedef', 'type ' + m[1]); continue;
+        if (!isVisibleDeclaration(segment.line)) continue;
+        pushUnique(syms, seen, m[1], 'typedef', 'type ' + (m[1] || '')); continue;
       }
-      if ((m = /^\s*var\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segments[i].line)) pushUnique(syms, seen, m[1], 'variable', 'var ' + m[1]); continue; }
-      if ((m = /^\s*const\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segments[i].line)) pushUnique(syms, seen, m[1], 'constant', 'const ' + m[1]); continue; }
+      if ((m = /^\s*var\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segment.line)) pushUnique(syms, seen, m[1], 'variable', 'var ' + (m[1] || '')); continue; }
+      if ((m = /^\s*const\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segment.line)) pushUnique(syms, seen, m[1], 'constant', 'const ' + (m[1] || '')); continue; }
       if ((m = /^\s*([\w\s,]+?)\s*:=/.exec(line))) {
-        if (isVisibleDeclaration(segments[i].line)) {
-          m[1].split(',').forEach(function (name) {
+        if (isVisibleDeclaration(segment.line)) {
+          (m[1] || '').split(',').forEach(function (name: string) {
             const cleanName = name.trim();
             if (cleanName !== '_') pushUnique(syms, seen, cleanName, 'variable', 'short variable declaration');
           });
@@ -639,33 +731,39 @@
   }
 
   // ───────────────────────── Rust ─────────────────────────
-  function extractRust(content, lang, cursorLine) {
-    const syms = [];
-    const seen = new Set();
+  function extractRust(
+    content: string,
+    lang: EditorRuleLanguageId,
+    cursorLine: number = 0
+  ): SymbolList {
+    const syms: SymbolList = [];
+    const seen = new Set<string>();
     const segments = joinContinuations(sanitize(content, lang).split('\n'));
     const isVisibleDeclaration = createScopeFilter(content, lang, cursorLine);
     for (let i = 0; i < segments.length; i++) {
-      if (cursorLine && segments[i].line >= cursorLine) break;
-      const line = segments[i].text.trim();
+      const segment = segments[i];
+      if (!segment) continue;
+      if (cursorLine && segment.line >= cursorLine) break;
+      const line = segment.text.trim();
       if (!line) continue;
-      let m;
-      if ((m = /^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segments[i].line)) pushUnique(syms, seen, m[1], 'function', 'fn ' + m[1]); continue; }
-      if ((m = /^\s*(?:pub\s+)?struct\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segments[i].line)) pushUnique(syms, seen, m[1], 'struct', 'struct ' + m[1]); continue; }
-      if ((m = /^\s*(?:pub\s+)?enum\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segments[i].line)) pushUnique(syms, seen, m[1], 'enum', 'enum ' + m[1]); continue; }
-      if ((m = /^\s*(?:pub\s+)?trait\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segments[i].line)) pushUnique(syms, seen, m[1], 'interface', 'trait ' + m[1]); continue; }
-      if ((m = /^\s*(?:pub\s+)?type\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segments[i].line)) pushUnique(syms, seen, m[1], 'typedef', 'type ' + m[1]); continue; }
-      if ((m = /^\s*(?:pub\s+)?(?:const|static)\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segments[i].line)) pushUnique(syms, seen, m[1], 'constant', m[1]); continue; }
-      if ((m = /^\s*let\s+(?:mut\s+)?(\w+)/.exec(line))) { if (isVisibleDeclaration(segments[i].line)) pushUnique(syms, seen, m[1], 'variable', 'let ' + m[1]); continue; }
+      let m: RegExpExecArray | null;
+      if ((m = /^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segment.line)) pushUnique(syms, seen, m[1], 'function', 'fn ' + (m[1] || '')); continue; }
+      if ((m = /^\s*(?:pub\s+)?struct\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segment.line)) pushUnique(syms, seen, m[1], 'struct', 'struct ' + (m[1] || '')); continue; }
+      if ((m = /^\s*(?:pub\s+)?enum\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segment.line)) pushUnique(syms, seen, m[1], 'enum', 'enum ' + (m[1] || '')); continue; }
+      if ((m = /^\s*(?:pub\s+)?trait\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segment.line)) pushUnique(syms, seen, m[1], 'interface', 'trait ' + (m[1] || '')); continue; }
+      if ((m = /^\s*(?:pub\s+)?type\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segment.line)) pushUnique(syms, seen, m[1], 'typedef', 'type ' + (m[1] || '')); continue; }
+      if ((m = /^\s*(?:pub\s+)?(?:const|static)\s+(\w+)/.exec(line))) { if (isVisibleDeclaration(segment.line)) pushUnique(syms, seen, m[1], 'constant', m[1] || ''); continue; }
+      if ((m = /^\s*let\s+(?:mut\s+)?(\w+)/.exec(line))) { if (isVisibleDeclaration(segment.line)) pushUnique(syms, seen, m[1], 'variable', 'let ' + (m[1] || '')); continue; }
     }
     promoteLocals(syms, seen, enclosingParameters(content, lang, cursorLine));
     return syms;
   }
 
-  function escapeRegExp(value) {
+  function escapeRegExp(value: string): string {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
-  function matchingBrace(content, openIndex) {
+  function matchingBrace(content: string, openIndex: number): number {
     let depth = 0;
     for (let i = openIndex; i < content.length; i += 1) {
       if (content[i] === '{') depth += 1;
@@ -677,9 +775,9 @@
     return -1;
   }
 
-  function collectBlocks(content, headerRegex) {
-    const blocks = [];
-    let match;
+  function collectBlocks(content: string, headerRegex: RegExp): SymbolBlock[] {
+    const blocks: SymbolBlock[] = [];
+    let match: RegExpExecArray | null;
     headerRegex.lastIndex = 0;
     while ((match = headerRegex.exec(content))) {
       const openIndex = match.index + match[0].lastIndexOf('{');
@@ -698,7 +796,7 @@
     return blocks;
   }
 
-  function depthAt(content, index) {
+  function depthAt(content: string, index: number): number {
     let depth = 0;
     for (let i = 0; i < index; i += 1) {
       if (content[i] === '{') depth += 1;
@@ -707,17 +805,23 @@
     return depth;
   }
 
-  function inferExpressionType(content, lang, expression, cursorLine) {
+  function inferExpressionType(
+    content: string,
+    lang: EditorRuleLanguageId,
+    expression: string,
+    cursorLine: number
+  ): string {
     const sanitized = sanitize(content, lang);
     const clean = sanitized.slice(0, contentIndexAtLine(sanitized, cursorLine));
     const name = escapeRegExp(expression);
-    const candidates = [];
-    let match;
+    const candidates: ExpressionTypeCandidate[] = [];
+    let match: RegExpExecArray | null;
 
-    function collect(regex, group) {
+    function collect(regex: RegExp, group: number): void {
       regex.lastIndex = 0;
       while ((match = regex.exec(clean))) {
-        candidates.push({ index: match.index, type: match[group] });
+        const type = match[group];
+        if (type) candidates.push({ index: match.index, type: type });
         if (match.index === regex.lastIndex) regex.lastIndex += 1;
       }
     }
@@ -745,11 +849,11 @@
 
     if (!candidates.length) return '';
     candidates.sort(function (a, b) { return b.index - a.index; });
-    return candidates[0].type.trim().replace(/^(?:struct|class)\s+/, '');
+    return candidates[0]!.type.trim().replace(/^(?:struct|class)\s+/, '');
   }
 
-  function methodInsertText(name, params, lang) {
-    let parsed = [];
+  function methodInsertText(name: string, params: string, lang: EditorRuleLanguageId): string {
+    let parsed: SymbolLocal[] = [];
     if (lang === 'rust') parsed = parseRustParams(params).filter(function (p) { return p.name !== 'self'; });
     else if (lang === 'go') parsed = parseGoParams(params);
     else parsed = parseCFamilyParams(params);
@@ -759,8 +863,14 @@
     return name + '(' + placeholders.join(', ') + ')';
   }
 
-  function addCFamilyMembers(result, seen, clean, typeName, lang) {
-    const baseType = typeName.replace(/<[^>]*>/g, '').split('::').pop().trim();
+  function addCFamilyMembers(
+    result: SymbolList,
+    seen: Set<string>,
+    clean: string,
+    typeName: string,
+    lang: EditorRuleLanguageId
+  ): void {
+    const baseType = (typeName.replace(/<[^>]*>/g, '').split('::').pop() || '').trim();
     const typePattern = escapeRegExp(baseType);
     const namedBlocks = collectBlocks(clean, new RegExp('\\b(?:struct|class)\\s+(' + typePattern + ')\\b[^;{]*\\{', 'gm'));
     const typedefBlocks = collectBlocks(clean, /\btypedef\s+struct(?:\s+\w+)?\s*\{/gm).filter(function (block) {
@@ -769,18 +879,22 @@
     });
 
     namedBlocks.concat(typedefBlocks).forEach(function (block) {
-      let match;
+      let match: RegExpExecArray | null;
       const methodRegex = /\b([A-Za-z_$~][\w$~]*)\s*\(([^()]*)\)\s*(?:const\s*)?(?:noexcept\s*)?(?:override\s*)?(?:final\s*)?(?:;|\{)/g;
       while ((match = methodRegex.exec(block.body))) {
-        if (depthAt(block.body, match.index) !== 0 || C_CONTROL.has(match[1])) continue;
-        pushUnique(result, seen, match[1], 'method', 'method: ' + match[1] + '(' + match[2].trim() + ')', 0,
-          methodInsertText(match[1], match[2], lang));
+        const methodName = match[1] || '';
+        const methodParams = match[2] || '';
+        if (depthAt(block.body, match.index) !== 0 || C_CONTROL.has(methodName)) continue;
+        pushUnique(result, seen, methodName, 'method', 'method: ' + methodName + '(' + methodParams.trim() + ')', 0,
+          methodInsertText(methodName, methodParams, lang));
       }
 
       const fieldRegex = /(?:^|[;}]|\n)\s*(?:(?:public|private|protected)\s*:\s*)?(?:static\s+)?(?:const\s+)?([A-Za-z_$][\w$:<>,*&\s]*)\s+([A-Za-z_$][\w$]*)\s*(?:\[[^\]]*\])?\s*(?:=[^;]*)?;/gm;
       while ((match = fieldRegex.exec(block.body))) {
+        const fieldType = match[1] || '';
+        const fieldName = match[2] || '';
         if (depthAt(block.body, match.index) === 0) {
-          pushUnique(result, seen, match[2], 'field', 'field: ' + match[1].trim(), 0);
+          pushUnique(result, seen, fieldName, 'field', 'field: ' + fieldType.trim(), 0);
         }
         // Keep the delimiter available as the start boundary of the next field
         // when declarations share one physical line (for example: int x; int y;).
@@ -789,26 +903,35 @@
     });
   }
 
-  function addRustMembers(result, seen, clean, typeName) {
-    const baseType = typeName.replace(/<[^>]*>/g, '').split('::').pop().trim();
+  function addRustMembers(
+    result: SymbolList,
+    seen: Set<string>,
+    clean: string,
+    typeName: string
+  ): void {
+    const baseType = (typeName.replace(/<[^>]*>/g, '').split('::').pop() || '').trim();
     const typePattern = escapeRegExp(baseType);
     collectBlocks(clean, new RegExp('\\bstruct\\s+(' + typePattern + ')\\b[^;{]*\\{', 'gm')).forEach(function (block) {
-      let match;
+      let match: RegExpExecArray | null;
       const fieldRegex = /(?:^|,)\s*(?:pub(?:\([^)]*\))?\s+)?([A-Za-z_][\w]*)\s*:\s*([^,}]+)/gm;
       while ((match = fieldRegex.exec(block.body))) {
-        pushUnique(result, seen, match[1], 'field', 'field: ' + match[2].trim(), 0);
+        const fieldName = match[1] || '';
+        const fieldType = match[2] || '';
+        pushUnique(result, seen, fieldName, 'field', 'field: ' + fieldType.trim(), 0);
       }
     });
 
     collectBlocks(clean, /\bimpl(?:\s*<[^>{}]*>)?\s+(?:[\w:<>]+\s+for\s+)?([A-Za-z_][\w:]*)[^{}]*\{/gm)
       .filter(function (block) { return block.name.split('::').pop() === baseType; })
       .forEach(function (block) {
-        let match;
+        let match: RegExpExecArray | null;
         const methodRegex = /\bfn\s+([A-Za-z_][\w]*)\s*(?:<[^>{}]*>)?\s*\(([^()]*)\)/gm;
         while ((match = methodRegex.exec(block.body))) {
+          const methodName = match[1] || '';
+          const methodParams = match[2] || '';
           if (depthAt(block.body, match.index) !== 0) continue;
-          pushUnique(result, seen, match[1], 'method', 'method: fn ' + match[1] + '(' + match[2].trim() + ')', 0,
-            methodInsertText(match[1], match[2], 'rust'));
+          pushUnique(result, seen, methodName, 'method', 'method: fn ' + methodName + '(' + methodParams.trim() + ')', 0,
+            methodInsertText(methodName, methodParams, 'rust'));
         }
       });
   }
@@ -825,29 +948,41 @@
       Option: [['is_some', 'is_some()', false], ['is_none', 'is_none()', false], ['unwrap', 'unwrap()', false], ['expect', 'expect(message)', true], ['map', 'map(function)', true], ['and_then', 'and_then(function)', true], ['unwrap_or', 'unwrap_or(default)', true]],
       Result: [['is_ok', 'is_ok()', false], ['is_err', 'is_err()', false], ['unwrap', 'unwrap()', false], ['expect', 'expect(message)', true], ['map', 'map(function)', true], ['map_err', 'map_err(function)', true], ['and_then', 'and_then(function)', true]]
     }
-  };
+  } as const satisfies StandardMembers;
 
-  function addStandardMembers(result, seen, lang, typeName) {
-    const groups = STANDARD_MEMBERS[lang];
+  function addStandardMembers(
+    result: SymbolList,
+    seen: Set<string>,
+    lang: EditorRuleLanguageId,
+    typeName: string
+  ): void {
+    const groups = (STANDARD_MEMBERS as StandardMembers)[lang];
     if (!groups) return;
-    Object.keys(groups).forEach(function (key) {
+    Object.keys(groups).forEach(function (key: string) {
       const matches = lang === 'cpp'
         ? new RegExp('(?:^|::|_)' + key + '(?:\\s*<|$)', 'i').test(typeName)
         : new RegExp('(?:^|::)' + key + '(?:\\s*<|$)').test(typeName);
       if (!matches) return;
-      groups[key].forEach(function (member) {
+      const members = groups[key];
+      if (!members) return;
+      members.forEach(function (member: MemberDefinition) {
         const insertText = member[2] ? member[0] + '(${1:value})' : member[0] + '()';
         pushUnique(result, seen, member[0], 'method', key + '::' + member[1], 1, insertText);
       });
     });
   }
 
-  function extractMembers(content, lang, expression, cursorLine) {
+  function extractMembers(
+    content: string,
+    lang: EditorRuleLanguageId,
+    expression: string,
+    cursorLine: number
+  ): SymbolList {
     try {
       const typeName = inferExpressionType(content, lang, expression, cursorLine || 0);
       if (!typeName) return [];
-      const result = [];
-      const seen = new Set();
+      const result: SymbolList = [];
+      const seen = new Set<string>();
       const clean = sanitize(content, lang);
       if (lang === 'rust') addRustMembers(result, seen, clean, typeName);
       else if (lang === 'c' || lang === 'cpp' || lang === 'java') addCFamilyMembers(result, seen, clean, typeName, lang);
@@ -858,7 +993,7 @@
     }
   }
 
-  const EXTRACTORS = {
+  const EXTRACTORS: Readonly<Record<string, Extractor | undefined>> = {
     c: extractCFamily,
     cpp: extractCFamily,
     java: extractCFamily,
@@ -867,7 +1002,11 @@
     rust: extractRust
   };
 
-  function extract(content, lang, cursorLine) {
+  function extract(
+    content: string,
+    lang: EditorRuleLanguageId,
+    cursorLine?: number
+  ): SymbolList {
     const fn = EXTRACTORS[lang];
     if (!fn) return [];
     try { return fn(content, lang, cursorLine || 0); } catch (e) { return []; }

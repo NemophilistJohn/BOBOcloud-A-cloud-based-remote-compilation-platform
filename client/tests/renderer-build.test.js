@@ -20,7 +20,7 @@ const EXPECTED_MODULES = [
   './compat/theme-manager-adapter.ts',
   '../editor-rules/completion-engine.ts',
   '../completion-rules.js',
-  '../editor-rules/symbol-extractor.js',
+  '../editor-rules/symbol-extractor.ts',
   '../editor-rules/diagnostics/c-family-checker.js',
   '../editor-rules/plugins/python.js',
   '../editor-rules/plugins/c.js',
