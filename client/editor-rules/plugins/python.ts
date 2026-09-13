@@ -1,4 +1,13 @@
-(function registerPythonRules(globalScope) {
+import type {
+  EditorRuleDiagnosticEmit,
+  EditorRuleGlobals,
+  EditorRuleMarkerDto
+} from '../../types/editor-rules';
+import type { DiagnosticsSeverity } from '../../types/diagnostics';
+
+type PythonRulesGlobal = typeof globalThis & EditorRuleGlobals;
+
+(function registerPythonRules(globalScope: PythonRulesGlobal): void {
   const registry = globalScope.editorRuleRegistry;
   if (!registry) {
     throw new Error('editorRuleRegistry must be loaded before python.js');
@@ -93,11 +102,17 @@
       };
     },
     provideDiagnostics({ monaco, content, lines, largeFile, helpers, settings }) {
-      const markers = [];
+      const markers: EditorRuleMarkerDto[] = [];
       const lns = lines || content.split('\n');
       const sharedOpts = { lines: lns };
 
-      const emitFor = (checkId) => (sevWord, line, c1, c2, msg) =>
+      const emitFor = (checkId: string): EditorRuleDiagnosticEmit => (
+        sevWord: DiagnosticsSeverity,
+        line: number,
+        c1: number,
+        c2: number,
+        msg: string
+      ): void =>
         helpers.pushChecked(markers, monaco, settings, checkId, sevWord, line, c1, c2, msg);
 
       // 1) Unmatched brackets
@@ -138,7 +153,7 @@
 
       // A line is a continuation (don't require a colon on it) if it has
       // unbalanced opening brackets or ends with a continuation marker.
-      function isContinuation(code) {
+      function isContinuation(code: string): boolean {
         if (code.endsWith('\\')) return true;
         // unbalanced openers
         let parens = 0, brackets = 0, braces = 0;
@@ -192,13 +207,16 @@
 
           // except outside try block (indentation-based)
           if (/^except\b/.test(trimmed)) {
-            const indent = line.match(/^(\s*)/)[1].length;
+            const indentMatch = line.match(/^(\s*)/);
+            const indent = indentMatch?.[1]?.length ?? 0;
             let foundTry = false;
             for (let j = index - 1; j >= 0; j--) {
-              const prevIndent = lns[j].match(/^(\s*)/)[1].length;
+              const previousLine = lns[j] ?? '';
+              const prevIndentMatch = previousLine.match(/^(\s*)/);
+              const prevIndent = prevIndentMatch?.[1]?.length ?? 0;
               if (prevIndent < indent) break;
-              if (prevIndent === indent && /^\s*try\s*:/.test(lns[j])) { foundTry = true; break; }
-              if (prevIndent === indent && /^\s*(if|for|while|with|def|class)\b/.test(lns[j])) break;
+              if (prevIndent === indent && /^\s*try\s*:/.test(previousLine)) { foundTry = true; break; }
+              if (prevIndent === indent && /^\s*(if|for|while|with|def|class)\b/.test(previousLine)) break;
             }
             if (!foundTry) {
               helpers.pushChecked(markers, monaco, settings, 'styleHints', 'warning',
@@ -217,4 +235,4 @@
       return markers;
     }
   });
-})(typeof window !== 'undefined' ? window : globalThis);
+})(typeof window !== 'undefined' ? window as PythonRulesGlobal : globalThis);

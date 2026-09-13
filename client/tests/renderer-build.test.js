@@ -22,7 +22,7 @@ const EXPECTED_MODULES = [
   '../completion-rules.js',
   '../editor-rules/symbol-extractor.ts',
   '../editor-rules/diagnostics/c-family-checker.ts',
-  '../editor-rules/plugins/python.js',
+  '../editor-rules/plugins/python.ts',
   '../editor-rules/plugins/c.ts',
   '../editor-rules/plugins/cpp.ts',
   '../editor-rules/plugins/java.ts',

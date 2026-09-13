@@ -13,7 +13,7 @@ import '../editor-rules/completion-engine.ts';
 import '../completion-rules.js';
 import '../editor-rules/symbol-extractor.ts';
 import '../editor-rules/diagnostics/c-family-checker.ts';
-import '../editor-rules/plugins/python.js';
+import '../editor-rules/plugins/python.ts';
 import '../editor-rules/plugins/c.ts';
 import '../editor-rules/plugins/cpp.ts';
 import '../editor-rules/plugins/java.ts';

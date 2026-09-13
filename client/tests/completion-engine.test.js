@@ -54,7 +54,7 @@ loadTypeScriptScript('editor-rules/completion-engine.ts');
 require('../completion-rules.js');
 loadTypeScriptScript('editor-rules/symbol-extractor.ts');
 ['c', 'cpp', 'java', 'go', 'python', 'rust'].forEach(function (language) {
-  if (language === 'c' || language === 'cpp' || language === 'java' || language === 'go' || language === 'rust') {
+  if (language === 'c' || language === 'cpp' || language === 'java' || language === 'go' || language === 'python' || language === 'rust') {
     loadTypeScriptScript('editor-rules/plugins/' + language + '.ts');
   } else {
     require('../editor-rules/plugins/' + language + '.js');
