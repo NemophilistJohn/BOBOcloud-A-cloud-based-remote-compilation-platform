@@ -108,7 +108,7 @@ function loadCollaboration(options) {
     createObjectURL: () => '',
     revokeObjectURL: () => {},
     setTimer: (callback, delay) => setTimeout(callback, delay),
-    clearTimer,
+    clearTimer: clearTimeout,
     setInterval: () => 1,
     clearInterval: () => {},
     __test: (value) => { internals = value; }

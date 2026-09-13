@@ -522,7 +522,7 @@ test('native host services remain private to the workbench', () => {
   assert.match(adapter, /AI_UI_HOST_SERVICE_ID\s*=\s*['"]host\.aiUi['"]/);
   assert.match(adapter, /AI_CHAT_PANEL_HOST_SERVICE_ID\s*=\s*['"]host\.aiChatPanel['"]/);
   assert.match(adapter,
-    /COLLABORATION_HOST_SERVICE_ID\s*=\s*['"]host\.collaboration['"]/);
+    /COLLABORATION_HOST_SERVICE_ID(?:\s*:\s*[^=;\n]+)?\s*=\s*['"]host\.collaboration['"]/);
   assert.equal((adapter.match(/exposeToPlugins:\s*false/g) || []).length, 17);
   assert.doesNotMatch(adapter, /pluginView\s*:/);
   assert.match(diagnosticsAdapter,
