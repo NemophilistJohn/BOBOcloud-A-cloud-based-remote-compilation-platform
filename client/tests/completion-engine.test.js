@@ -54,7 +54,11 @@ loadTypeScriptScript('editor-rules/completion-engine.ts');
 require('../completion-rules.js');
 loadTypeScriptScript('editor-rules/symbol-extractor.ts');
 ['c', 'cpp', 'java', 'go', 'python', 'rust'].forEach(function (language) {
-  require('../editor-rules/plugins/' + language + '.js');
+  if (language === 'c' || language === 'cpp' || language === 'java') {
+    loadTypeScriptScript('editor-rules/plugins/' + language + '.ts');
+  } else {
+    require('../editor-rules/plugins/' + language + '.js');
+  }
 });
 global.registerCompletionProviders(monaco);
 

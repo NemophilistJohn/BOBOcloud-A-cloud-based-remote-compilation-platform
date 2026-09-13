@@ -1,4 +1,16 @@
-(function registerCppRules(globalScope) {
+import type {
+  EditorRuleCFamilyCheckerPort,
+  EditorRuleDiagnosticEmit,
+  EditorRuleGlobals,
+  EditorRuleMarkerDto
+} from '../../types/editor-rules';
+import type { DiagnosticsSeverity } from '../../types/diagnostics';
+
+type CppRulesGlobal = typeof globalThis & EditorRuleGlobals & {
+  cFamilyChecker?: EditorRuleCFamilyCheckerPort;
+};
+
+(function registerCppRules(globalScope: CppRulesGlobal): void {
   const registry = globalScope.editorRuleRegistry;
   if (!registry) {
     throw new Error('editorRuleRegistry must be loaded before cpp.js');
@@ -85,11 +97,17 @@
       };
     },
     provideDiagnostics({ monaco, content, lines, largeFile, helpers, settings }) {
-      const markers = [];
+      const markers: EditorRuleMarkerDto[] = [];
       const lns = lines || content.split('\n');
       const sharedOpts = { lines: lns };
 
-      const emitFor = (checkId) => (sevWord, line, c1, c2, msg) =>
+      const emitFor = (checkId: string): EditorRuleDiagnosticEmit => (
+        sevWord: DiagnosticsSeverity,
+        line: number,
+        c1: number,
+        c2: number,
+        msg: string
+      ): void =>
         helpers.pushChecked(markers, monaco, settings, checkId, sevWord, line, c1, c2, msg);
 
       // 1) Unmatched brackets
@@ -161,4 +179,4 @@
       return markers;
     }
   });
-})(typeof window !== 'undefined' ? window : globalThis);
+})(typeof window !== 'undefined' ? window as CppRulesGlobal : globalThis);

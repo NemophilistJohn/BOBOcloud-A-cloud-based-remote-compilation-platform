@@ -141,6 +141,35 @@ export interface EditorRuleCompletionProvider {
 export interface EditorRuleProviderRegistration extends Disposable {}
 
 export interface EditorRuleCompletionItemKindPort {
+  readonly Method: number;
+  readonly Function: number;
+  readonly Constructor: number;
+  readonly Field: number;
+  readonly Variable: number;
+  readonly Class: number;
+  readonly Struct: number;
+  readonly Interface: number;
+  readonly Module: number;
+  readonly Property: number;
+  readonly Event: number;
+  readonly Operator: number;
+  readonly Unit: number;
+  readonly Value: number;
+  readonly Constant: number;
+  readonly Enum: number;
+  readonly EnumMember: number;
+  readonly Keyword: number;
+  readonly Text: number;
+  readonly Color: number;
+  readonly File: number;
+  readonly Reference: number;
+  readonly Customcolor: number;
+  readonly Folder: number;
+  readonly TypeParameter: number;
+  readonly User: number;
+  readonly Issue: number;
+  readonly Tool: number;
+  readonly Snippet: number;
   readonly [key: string]: number;
 }
 

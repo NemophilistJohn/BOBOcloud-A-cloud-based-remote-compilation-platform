@@ -14,9 +14,9 @@ import '../completion-rules.js';
 import '../editor-rules/symbol-extractor.ts';
 import '../editor-rules/diagnostics/c-family-checker.ts';
 import '../editor-rules/plugins/python.js';
-import '../editor-rules/plugins/c.js';
-import '../editor-rules/plugins/cpp.js';
-import '../editor-rules/plugins/java.js';
+import '../editor-rules/plugins/c.ts';
+import '../editor-rules/plugins/cpp.ts';
+import '../editor-rules/plugins/java.ts';
 import '../editor-rules/plugins/go.js';
 import '../editor-rules/plugins/rust.js';
 
