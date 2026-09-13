@@ -6,7 +6,7 @@ const esbuild = require('esbuild');
 
 const ROOT = path.resolve(__dirname, '..');
 const ENTRY = path.join(ROOT, 'renderer', 'entry.js');
-const AI_UI_ENTRY = path.join(ROOT, 'renderer', 'ai-ui-entry.js');
+const AI_UI_ENTRY = path.join(ROOT, 'renderer', 'ai-ui-entry.ts');
 const TERMINAL_UI_ENTRY = path.join(ROOT, 'renderer', 'terminal-ui-entry.js');
 const OUTPUT_DIRECTORY = path.join(ROOT, 'renderer-dist');
 const OUTPUT_FILE = path.join(OUTPUT_DIRECTORY, 'bobo-renderer.js');

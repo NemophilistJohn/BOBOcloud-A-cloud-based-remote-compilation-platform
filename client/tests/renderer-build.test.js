@@ -91,11 +91,11 @@ const EXPECTED_MODULES = [
   '../src/app.js'
 ];
 const EXPECTED_AI_UI_MODULES = [
-  './compat/ai-settings-center-adapter.ts',
-  './temml-runtime.js',
-  './compat/ai-markdown-adapter.ts',
-  './compat/stream-render-scheduler-adapter.ts',
-  './compat/ai-chat-panel-adapter.ts'
+  './compat/ai-settings-center-adapter',
+  './temml-runtime',
+  './compat/ai-markdown-adapter',
+  './compat/stream-render-scheduler-adapter',
+  './compat/ai-chat-panel-adapter'
 ];
 const EXPECTED_TERMINAL_UI_MODULES = [
   '@xterm/xterm',
@@ -110,7 +110,7 @@ test('renderer entry is the single source of truth for legacy module order', () 
   assert.equal(new Set(modules).size, modules.length);
   assert.equal(modules.at(-1), '../src/app.js');
 
-  const aiUiSource = fs.readFileSync(path.join(ROOT, 'renderer', 'ai-ui-entry.js'), 'utf8');
+  const aiUiSource = fs.readFileSync(path.join(ROOT, 'renderer', 'ai-ui-entry.ts'), 'utf8');
   assert.deepEqual(readOrderedImports(aiUiSource), EXPECTED_AI_UI_MODULES);
 
   const terminalUiSource = fs.readFileSync(path.join(ROOT, 'renderer', 'terminal-ui-entry.js'), 'utf8');

@@ -11,11 +11,11 @@ test('formula rendering bundles Temml without shipping a raw vendor script', () 
   assert.deepEqual(temmlFiles, []);
   assert.ok(packageJson.build.files.includes('renderer-dist/'));
   assert.match(
-    fs.readFileSync(path.join(__dirname, '..', 'renderer', 'ai-ui-entry.js'), 'utf8'),
-    /import '\.\/temml-runtime\.js';/
+    fs.readFileSync(path.join(__dirname, '..', 'renderer', 'ai-ui-entry.ts'), 'utf8'),
+    /import '\.\/temml-runtime';/
   );
   assert.match(
-    fs.readFileSync(path.join(__dirname, '..', 'renderer', 'temml-runtime.js'), 'utf8'),
+    fs.readFileSync(path.join(__dirname, '..', 'renderer', 'temml-runtime.ts'), 'utf8'),
     /import temml from 'temml';/
   );
   assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8'), /src\/vendor\/temml\.min\.js/);
