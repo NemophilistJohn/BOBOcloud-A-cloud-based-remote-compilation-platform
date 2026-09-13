@@ -1,4 +1,13 @@
-(function registerGoRules(globalScope) {
+import type {
+  EditorRuleDiagnosticEmit,
+  EditorRuleGlobals,
+  EditorRuleMarkerDto
+} from '../../types/editor-rules';
+import type { DiagnosticsSeverity } from '../../types/diagnostics';
+
+type GoRulesGlobal = typeof globalThis & EditorRuleGlobals;
+
+(function registerGoRules(globalScope: GoRulesGlobal): void {
   const registry = globalScope.editorRuleRegistry;
   if (!registry) {
     throw new Error('editorRuleRegistry must be loaded before go.js');
@@ -81,11 +90,17 @@
       };
     },
     provideDiagnostics({ monaco, content, lines, largeFile, helpers, settings }) {
-      const markers = [];
+      const markers: EditorRuleMarkerDto[] = [];
       const lns = lines || content.split('\n');
       const sharedOpts = { lines: lns };
 
-      const emitFor = (checkId) => (sevWord, line, c1, c2, msg) =>
+      const emitFor = (checkId: string): EditorRuleDiagnosticEmit => (
+        sevWord: DiagnosticsSeverity,
+        line: number,
+        c1: number,
+        c2: number,
+        msg: string
+      ): void =>
         helpers.pushChecked(markers, monaco, settings, checkId, sevWord, line, c1, c2, msg);
 
       // 1) Unmatched brackets
@@ -136,7 +151,7 @@
           // Missing error check: `val, err = foo()` (assignment, not :=) without
           // a following `if err != nil`
           if (/,\s*err\s*$/.test(trimmed) && /^[\w.]+\(/.test(trimmed) && !/err\s*:=/.test(trimmed)) {
-            const nextLine = index + 1 < lns.length ? lns[index + 1].trim() : '';
+            const nextLine = index + 1 < lns.length ? lns[index + 1]?.trim() ?? '' : '';
             if (!/if\s+err\s*!=\s*nil/.test(nextLine)) {
               helpers.pushChecked(markers, monaco, settings, 'styleHints', 'warning',
                 lineNum, 1, trimmed.length, 'Missing error check - err value is not checked');
@@ -144,7 +159,7 @@
           }
           // Exported function without doc comment
           if (/^func [A-Z]\w*/.test(trimmed) && index > 0) {
-            const prevLine = lns[index - 1].trim();
+            const prevLine = lns[index - 1]?.trim() ?? '';
             if (!/^\/\//.test(prevLine) && !/^\/\*/.test(prevLine)) {
               helpers.pushChecked(markers, monaco, settings, 'styleHints', 'info',
                 lineNum, 1, trimmed.length, 'Exported function should have a doc comment');
@@ -156,4 +171,4 @@
       return markers;
     }
   });
-})(typeof window !== 'undefined' ? window : globalThis);
+})(typeof window !== 'undefined' ? window as GoRulesGlobal : globalThis);

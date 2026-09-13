@@ -17,7 +17,7 @@ import '../editor-rules/plugins/python.js';
 import '../editor-rules/plugins/c.ts';
 import '../editor-rules/plugins/cpp.ts';
 import '../editor-rules/plugins/java.ts';
-import '../editor-rules/plugins/go.js';
+import '../editor-rules/plugins/go.ts';
 import '../editor-rules/plugins/rust.js';
 
 // Workbench modules.
