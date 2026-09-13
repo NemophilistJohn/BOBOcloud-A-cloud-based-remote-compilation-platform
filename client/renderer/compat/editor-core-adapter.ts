@@ -10,6 +10,8 @@ import type {
   EditorCoreFacade,
   EditorCoreGlobalEventPort,
   EditorCoreI18nPort,
+  EditorCoreMarkerDto,
+  EditorCoreModelPort,
   EditorCoreMonacoPort,
   EditorCoreProjectTasksPort,
   EditorCoreRendererState,
@@ -22,6 +24,11 @@ import type {
   EditorCoreWorkspacePort,
   EditorCoreWorkspaceSettingsPort
 } from '../../types/editor-core';
+import type {
+  EditorRuleMonacoPort,
+  EditorRuleRegistryPort,
+  EditorRuleTextModelPort
+} from '../../types/editor-rules';
 import type { I18nService } from '../../types/i18n';
 import type { RendererState } from '../../types/state';
 import { rendererPlatform } from '../core/bootstrap';
@@ -56,6 +63,45 @@ const BOBO = legacyWindow.BOBO = legacyWindow.BOBO || {};
 const state = BOBO.state;
 if (!state) throw new Error('Editor core requires renderer state.');
 
+type EditorCoreRuleModelCandidate = EditorCoreModelPort & {
+  readonly getValue?: () => string;
+};
+
+function getRegisteredEditorRules(): EditorRuleRegistryPort | undefined {
+  return rendererPlatform.services.get('workbench.editorRules') ||
+    legacyWindow.editorRuleRegistry as unknown as EditorRuleRegistryPort | undefined;
+}
+
+function asEditorRuleModel(model: EditorCoreModelPort): EditorRuleTextModelPort | null {
+  const candidate = model as EditorCoreRuleModelCandidate;
+  if (typeof candidate.getValue !== 'function' || typeof candidate.getLineCount !== 'function') {
+    return null;
+  }
+  return candidate as unknown as EditorRuleTextModelPort;
+}
+
+function asEditorRuleMonaco(monaco: EditorCoreMonacoPort): EditorRuleMonacoPort | null {
+  if (!monaco || !monaco.MarkerSeverity) return null;
+  return monaco as unknown as EditorRuleMonacoPort;
+}
+
+// Keep a stable bridge object for editor-core while resolving the private
+// service on every call. This preserves replacement semantics and remains
+// correct when an embedding loads adapters in a different order.
+const editorRuleRegistryBridge: EditorCoreRuleRegistryPort = {
+  getSyntaxMarkers(model, monaco, options): readonly EditorCoreMarkerDto[] {
+    const currentEditorRules = getRegisteredEditorRules();
+    const ruleModel = asEditorRuleModel(model);
+    const ruleMonaco = asEditorRuleMonaco(monaco);
+    if (!currentEditorRules || !ruleModel || !ruleMonaco) return [];
+    return currentEditorRules.getSyntaxMarkers(ruleModel, ruleMonaco, options);
+  }
+};
+
+function getEditorRuleRegistry(): EditorCoreRuleRegistryPort | null | undefined {
+  return getRegisteredEditorRules() ? editorRuleRegistryBridge : undefined;
+}
+
 const editorCore: EditorCoreService = createEditorCoreService({
   document,
   eventTarget: legacyWindow as EditorCoreGlobalEventPort,
@@ -72,7 +118,7 @@ const editorCore: EditorCoreService = createEditorCoreService({
   getTaskProblemMatcher: () => BOBO.taskProblemMatcher,
   getDiagnosticsSettings: () => BOBO.diagnosticsSettings,
   getWorkspaceSettings: () => BOBO.workspaceSettings,
-  getRuleRegistry: () => legacyWindow.editorRuleRegistry,
+  getRuleRegistry: getEditorRuleRegistry,
   getLanguageDisplayName: (languageId) => (
     typeof BOBO.langDisplayName === 'function'
       ? BOBO.langDisplayName(languageId)
@@ -110,4 +156,3 @@ BOBO.editorCore = {
 };
 
 export { editorCore };
-

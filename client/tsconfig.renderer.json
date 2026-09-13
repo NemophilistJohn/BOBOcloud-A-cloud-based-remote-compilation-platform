@@ -19,6 +19,7 @@
     "types": []
   },
   "include": [
+    "completion-rules.ts",
     "renderer/**/*.ts",
     "renderer/**/*.d.ts",
     "editor-rules/**/*.ts",

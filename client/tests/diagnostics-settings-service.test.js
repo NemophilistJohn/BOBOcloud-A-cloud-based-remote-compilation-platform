@@ -37,10 +37,14 @@ const CHECK_IDS = DIAGNOSTICS_CHECK_CATALOG.map((entry) => entry.id);
 function loadRendererDefaults() {
   const context = {};
   context.window = context;
+  const source = esbuild.transformSync(
+    fs.readFileSync(path.join(ROOT, 'completion-rules.ts'), 'utf8'),
+    { loader: 'ts', target: 'node20', sourcefile: 'completion-rules.ts' }
+  ).code;
   vm.runInNewContext(
-    fs.readFileSync(path.join(ROOT, 'completion-rules.js'), 'utf8'),
+    source,
     context,
-    { filename: 'completion-rules.js' }
+    { filename: 'completion-rules.ts' }
   );
   return JSON.parse(JSON.stringify(context.editorRuleRegistry.DEFAULT_DIAGNOSTICS_SETTINGS));
 }

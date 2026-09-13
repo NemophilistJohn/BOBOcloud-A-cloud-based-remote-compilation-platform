@@ -10,6 +10,14 @@ cannot yet benefit from fine-grained dead-code removal. New renderer modules
 should use explicit imports and exports; compatibility exports can be assigned
 to `window.BOBO` at their public boundary.
 
+The editor-rule registry is now a typed vertical service as well.
+`completion-rules.ts` owns the language-plugin registry, completion-provider
+disposables, symbol cache, and diagnostics DTOs; `compat/editor-rules-adapter.ts`
+registers it privately as `workbench.editorRules`. The historical
+`window.editorRuleRegistry` and `window.registerCompletionProviders` projections
+remain only as compatibility boundaries, while editor-core and diagnostics
+resolve the typed service first.
+
 `core/` now contains the explicit renderer platform: lifecycle ownership plus
 service, command, contribution, and plugin registries. `compat/` is the only
 place that should add new legacy `window.BOBO` projections. The first migrated

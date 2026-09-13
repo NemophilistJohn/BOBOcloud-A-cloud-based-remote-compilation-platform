@@ -74,6 +74,7 @@ import type { WorkbenchLayoutService } from './workbench-layout';
 import type { SettingsService } from './settings';
 import type { AccountProfileService } from './account-profile';
 import type { EditorCoreService } from './editor-core';
+import type { EditorRuleRegistryPort } from './editor-rules';
 import type { AiContextService } from './ai-context';
 import type { AiService, AiServiceHostPort } from './ai-service';
 import type { AiInlineService } from './ai-inline';
@@ -144,6 +145,7 @@ export interface RendererServiceMap {
   readonly 'workbench.settings': SettingsService;
   readonly 'workbench.accountProfile': AccountProfileService;
   readonly 'workbench.editorCore': EditorCoreService;
+  readonly 'workbench.editorRules': EditorRuleRegistryPort;
   readonly 'workbench.aiContext': AiContextService;
   readonly 'workbench.aiService': AiService;
   readonly 'workbench.aiInline': AiInlineService;

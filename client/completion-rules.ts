@@ -1,10 +1,83 @@
-// completion-rules.js
+// completion-rules.ts
 // Editor rule registry and shared helpers for per-language plugins.
-(function initEditorRuleRegistry(globalScope) {
-  const plugins = new Map();
-  const completionDisposables = [];
+import type {
+  EditorRuleAnalyzedContextDto,
+  EditorRuleBalancedPairOptions,
+  EditorRuleBlockCommentDto,
+  EditorRuleCheckConfigDto,
+  EditorRuleCommonDiagnosticOptions,
+  EditorRuleCompletionContextDto,
+  EditorRuleCompletionItemDto,
+  EditorRuleCompletionProvider,
+  EditorRuleCancellationToken,
+  EditorRuleDiagnosticEmit,
+  EditorRuleDiagnosticsSettingsDto,
+  EditorRuleGlobals,
+  EditorRuleHelpers,
+  EditorRuleLanguageId,
+  EditorRuleLanguagePlugin,
+  EditorRuleMarkerDto,
+  EditorRuleMonacoPort,
+  EditorRulePositionDto,
+  EditorRuleProviderRegistration,
+  EditorRuleRegistryPort,
+  EditorRuleSymbolDto,
+  EditorRuleSymbolKind,
+  EditorRuleTextModelPort,
+  EditorRuleUnclosedStringOptions
+} from './types/editor-rules';
+import type { DiagnosticsCheckId, DiagnosticsSeverity } from './types/diagnostics';
 
-  function createSnippet(label, insertText, kind, monacoInstance, extra = {}) {
+type EditorRuleMutableCheck = {
+  enabled: boolean;
+  severity: string;
+  maxLineLength?: number;
+};
+
+type EditorRuleMutableSettings = {
+  enabled: boolean;
+  // Keep the legacy open string behavior here; normalization closes this at
+  // the diagnostics service boundary.
+  checkOn: string;
+  debounceMs: number;
+  checks: Record<DiagnosticsCheckId, EditorRuleMutableCheck>;
+};
+
+type EditorRuleGlobal = typeof globalThis & EditorRuleGlobals & {
+  monaco?: EditorRuleMonacoPort;
+};
+
+type SymbolCacheEntry = {
+  readonly key: string;
+  readonly language: EditorRuleLanguageId;
+  readonly suggestions: readonly EditorRuleCompletionItemDto[];
+};
+
+type SymbolCompletionContext = EditorRuleCompletionContextDto & {
+  readonly memberAccess?: EditorRuleAnalyzedContextDto['memberAccess'];
+};
+
+type BalancedStackEntry = {
+  readonly char: string;
+  readonly line: number;
+  readonly column: number;
+};
+
+type StringState = { readonly quote: string };
+
+type UnknownRecord = Record<string, unknown>;
+
+(function initEditorRuleRegistry(globalScope: EditorRuleGlobal): void {
+  const plugins = new Map<EditorRuleLanguageId, EditorRuleLanguagePlugin>();
+  const completionDisposables: EditorRuleProviderRegistration[] = [];
+
+  function createSnippet(
+    label: string,
+    insertText: string,
+    kind: number,
+    monacoInstance: EditorRuleMonacoPort,
+    extra: Readonly<Record<string, unknown>> = {}
+  ): EditorRuleCompletionItemDto {
     return {
       label,
       kind,
@@ -14,7 +87,12 @@
     };
   }
 
-  function createPlain(label, insertText, kind, extra = {}) {
+  function createPlain(
+    label: string,
+    insertText: string,
+    kind: number,
+    extra: Readonly<Record<string, unknown>> = {}
+  ): EditorRuleCompletionItemDto {
     return {
       label,
       kind,
@@ -28,7 +106,14 @@
   /**
    * Push an ERROR marker (red squiggly)
    */
-  function pushError(markers, monacoInstance, lineNumber, startColumn, endColumn, message) {
+  function pushError(
+    markers: EditorRuleMarkerDto[],
+    monacoInstance: EditorRuleMonacoPort,
+    lineNumber: number,
+    startColumn: number,
+    endColumn: number,
+    message: string
+  ): void {
     markers.push({
       startLineNumber: lineNumber,
       endLineNumber: lineNumber,
@@ -42,7 +127,14 @@
   /**
    * Push a WARNING marker (yellow squiggly)
    */
-  function pushWarning(markers, monacoInstance, lineNumber, startColumn, endColumn, message) {
+  function pushWarning(
+    markers: EditorRuleMarkerDto[],
+    monacoInstance: EditorRuleMonacoPort,
+    lineNumber: number,
+    startColumn: number,
+    endColumn: number,
+    message: string
+  ): void {
     markers.push({
       startLineNumber: lineNumber,
       endLineNumber: lineNumber,
@@ -56,7 +148,14 @@
   /**
    * Push an INFO marker (blue squiggly)
    */
-  function pushInfo(markers, monacoInstance, lineNumber, startColumn, endColumn, message) {
+  function pushInfo(
+    markers: EditorRuleMarkerDto[],
+    monacoInstance: EditorRuleMonacoPort,
+    lineNumber: number,
+    startColumn: number,
+    endColumn: number,
+    message: string
+  ): void {
     markers.push({
       startLineNumber: lineNumber,
       endLineNumber: lineNumber,
@@ -68,7 +167,15 @@
   }
 
   // Legacy compatibility wrapper (defaults to Error)
-  function pushMarker(markers, monacoInstance, lineNumber, startColumn, endColumn, message, severity) {
+  function pushMarker(
+    markers: EditorRuleMarkerDto[],
+    monacoInstance: EditorRuleMonacoPort,
+    lineNumber: number,
+    startColumn: number,
+    endColumn: number,
+    message: string,
+    severity?: number
+  ): void {
     markers.push({
       startLineNumber: lineNumber,
       endLineNumber: lineNumber,
@@ -81,11 +188,15 @@
 
   // ──── Balanced pair diagnostics (unchanged core, enhanced return) ────
 
-  function createBalancedPairDiagnostics(content, monacoInstance, options = {}) {
-    const markers = [];
+  function createBalancedPairDiagnostics(
+    content: string,
+    monacoInstance: EditorRuleMonacoPort,
+    options: EditorRuleBalancedPairOptions = {}
+  ): EditorRuleMarkerDto[] {
+    const markers: EditorRuleMarkerDto[] = [];
     const lines = options.lines || content.split('\n');
-    const openToClose = options.pairs || { '(': ')', '[': ']', '{': '}' };
-    const closeToOpen = Object.entries(openToClose).reduce((acc, [openChar, closeChar]) => {
+    const openToClose: Readonly<Record<string, string>> = options.pairs || { '(': ')', '[': ']', '{': '}' };
+    const closeToOpen = Object.entries(openToClose).reduce<Record<string, string>>((acc, [openChar, closeChar]) => {
       acc[closeChar] = openChar;
       return acc;
     }, {});
@@ -94,23 +205,29 @@
     const quoteChars = new Set(options.quoteChars || ['"', '\'']);
     // settings-aware emit: options.emit(severityWord, line, c1, c2, msg)
     // severityWord ∈ 'error' | 'warning' | 'info'. Falls back to hardcoded helpers.
-    const emit = options.emit || function (sev, l, c1, c2, m) {
+    const emit: EditorRuleDiagnosticEmit = options.emit || function (
+      sev: DiagnosticsSeverity,
+      l: number,
+      c1: number,
+      c2: number,
+      m: string
+    ): void {
       if (sev === 'error') pushError(markers, monacoInstance, l, c1, c2, m);
       else if (sev === 'info') pushInfo(markers, monacoInstance, l, c1, c2, m);
       else pushWarning(markers, monacoInstance, l, c1, c2, m);
     };
-    const stack = [];
-    let blockComment = null;
-    let stringState = null;
+    const stack: BalancedStackEntry[] = [];
+    let blockComment: EditorRuleBlockCommentDto | null = null;
+    let stringState: StringState | null = null;
 
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-      const line = lines[lineIndex];
+      const line = lines[lineIndex] ?? '';
       let escaped = false;
 
       for (let columnIndex = 0; columnIndex < line.length; columnIndex += 1) {
-        const char = line[columnIndex];
-        const nextChar = line[columnIndex + 1];
-        const previousChar = columnIndex > 0 ? line[columnIndex - 1] : '';
+        const char = line[columnIndex] ?? '';
+        const nextChar = line[columnIndex + 1] ?? '';
+        const previousChar = columnIndex > 0 ? line[columnIndex - 1] ?? '' : '';
 
         if (blockComment) {
           if (char === blockComment.end[0] && nextChar === blockComment.end[1]) {
@@ -189,7 +306,7 @@
         item.line,
         item.column,
         item.column + 1,
-        `Missing closing "${openToClose[item.char]}"`
+        `Missing closing "${openToClose[item.char] as string}"`
       );
     });
 
@@ -204,8 +321,12 @@
    * - Mixed tabs and spaces (warning)
    * - Lines that are too long (info)
    */
-  function createCommonDiagnostics(content, monacoInstance, options = {}) {
-    const markers = [];
+  function createCommonDiagnostics(
+    content: string,
+    monacoInstance: EditorRuleMonacoPort,
+    options: EditorRuleCommonDiagnosticOptions = {}
+  ): EditorRuleMarkerDto[] {
+    const markers: EditorRuleMarkerDto[] = [];
     const lines = options.lines || content.split('\n');
     const maxLineLength = options.maxLineLength || 120;
     const checkTrailingWS = options.checkTrailingWS !== false;
@@ -221,7 +342,7 @@
     const todoPattern = /\b(TODO|FIXME|HACK)\b/;
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+      const line = lines[i] ?? '';
       const lineNum = i + 1;
 
       // Skip empty lines and comment-only lines
@@ -238,7 +359,7 @@
 
       // Tabs vs spaces detection
       if (checkMixedIndent) {
-        const leading = line.match(/^(\s*)/)[1];
+        const leading = line.match(/^(\s*)/)?.[1] ?? '';
         if (leading.includes('\t')) hasTabs = true;
         if (leading.includes(' ')) hasSpaces = true;
       }
@@ -253,7 +374,7 @@
       if (checkTodo) {
         const todoMatch = todoPattern.exec(line);
         if (todoMatch) {
-          const keyword = todoMatch[1];
+          const keyword = todoMatch[1] ?? '';
           const col = todoMatch.index + 1;
           if (keyword === 'TODO') {
             pushInfo(markers, monacoInstance, lineNum, col, col + 4, 'TODO comment');
@@ -276,30 +397,40 @@
   /**
    * Check for unclosed strings (multi-line string scan)
    */
-  function checkUnclosedStrings(content, monacoInstance, options = {}) {
-    const markers = [];
+  function checkUnclosedStrings(
+    content: string,
+    monacoInstance: EditorRuleMonacoPort,
+    options: EditorRuleUnclosedStringOptions = {}
+  ): EditorRuleMarkerDto[] {
+    const markers: EditorRuleMarkerDto[] = [];
     const lines = options.lines || content.split('\n');
     const lineComment = options.lineComment || null;
     const blockComments = options.blockComments || [];
     const quoteChars = options.quoteChars || ['"', "'"];
-    const emit = options.emit || function (sev, l, c1, c2, m) {
+    const emit: EditorRuleDiagnosticEmit = options.emit || function (
+      sev: DiagnosticsSeverity,
+      l: number,
+      c1: number,
+      c2: number,
+      m: string
+    ): void {
       if (sev === 'error') pushError(markers, monacoInstance, l, c1, c2, m);
       else if (sev === 'info') pushInfo(markers, monacoInstance, l, c1, c2, m);
       else pushWarning(markers, monacoInstance, l, c1, c2, m);
     };
 
-    let inString = null;
+    let inString: string | null = null;
     let stringStartLine = 0;
     let stringStartCol = 0;
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+      const line = lines[i] ?? '';
       let escaped = false;
       let inComment = false;
 
       for (let j = 0; j < line.length; j++) {
-        const ch = line[j];
-        const nextCh = line[j + 1];
+        const ch = line[j] ?? '';
+        const nextCh = line[j + 1] ?? '';
 
         // Skip comments
         if (lineComment && !inString) {
@@ -356,7 +487,7 @@
   // Plugins read these through helpers.getCheck / helpers.pushChecked so the
   // same check can be toggled or re-leveled without code changes.
 
-  const DEFAULT_DIAGNOSTICS_SETTINGS = {
+  const DEFAULT_DIAGNOSTICS_SETTINGS: EditorRuleMutableSettings = {
     enabled: true,
     checkOn: 'type',        // 'type' (debounced live) | 'save' (only on save)
     debounceMs: 300,
@@ -376,54 +507,89 @@
     }
   };
 
-  function mergeSettings(user) {
-    const out = JSON.parse(JSON.stringify(DEFAULT_DIAGNOSTICS_SETTINGS));
-    if (!user || typeof user !== 'object') return out;
-    if (typeof user.enabled === 'boolean') out.enabled = user.enabled;
-    if (typeof user.checkOn === 'string') out.checkOn = user.checkOn;
-    if (typeof user.debounceMs === 'number' && user.debounceMs >= 0) out.debounceMs = user.debounceMs;
-    if (user.checks && typeof user.checks === 'object') {
-      for (const id in user.checks) {
-        if (!out.checks[id] || !user.checks[id]) continue;
-        const u = user.checks[id];
-        if (typeof u.enabled === 'boolean') out.checks[id].enabled = u.enabled;
-        if (typeof u.severity === 'string') out.checks[id].severity = u.severity;
-        if (typeof u.maxLineLength === 'number' && u.maxLineLength > 0) out.checks[id].maxLineLength = u.maxLineLength;
+  function asRecord(value: unknown): UnknownRecord | null {
+    return value !== null && typeof value === 'object' ? value as UnknownRecord : null;
+  }
+
+  function mergeSettings(user: unknown): EditorRuleMutableSettings {
+    const out = JSON.parse(JSON.stringify(DEFAULT_DIAGNOSTICS_SETTINGS)) as EditorRuleMutableSettings;
+    const source = asRecord(user);
+    if (!source) return out;
+    if (typeof source.enabled === 'boolean') out.enabled = source.enabled;
+    if (typeof source.checkOn === 'string') out.checkOn = source.checkOn;
+    if (typeof source.debounceMs === 'number' && source.debounceMs >= 0) out.debounceMs = source.debounceMs;
+    const userChecks = asRecord(source.checks);
+    if (userChecks) {
+      for (const id in userChecks) {
+        const checkId = id as DiagnosticsCheckId;
+        const target = out.checks[checkId];
+        const update = asRecord(userChecks[id]);
+        if (!target || !update) continue;
+        if (typeof update.enabled === 'boolean') target.enabled = update.enabled;
+        if (typeof update.severity === 'string') target.severity = update.severity;
+        if (typeof update.maxLineLength === 'number' && update.maxLineLength > 0) {
+          target.maxLineLength = update.maxLineLength;
+        }
       }
     }
     return out;
   }
 
+  function mergeSettingsForPort(user: unknown): EditorRuleDiagnosticsSettingsDto {
+    return mergeSettings(user) as unknown as EditorRuleDiagnosticsSettingsDto;
+  }
+
   let currentDiagSettings = mergeSettings(null);
 
-  function setDiagnosticsSettings(s) { currentDiagSettings = mergeSettings(s); }
-  function getDiagnosticsSettings() { return currentDiagSettings; }
+  function setDiagnosticsSettings(s: unknown): void { currentDiagSettings = mergeSettings(s); }
+  function getDiagnosticsSettings(): EditorRuleDiagnosticsSettingsDto {
+    return currentDiagSettings as unknown as EditorRuleDiagnosticsSettingsDto;
+  }
 
   // Resolve a check config from (possibly partial) settings, falling back to defaults.
-  function getCheck(settings, id, defaultSeverity) {
-    const cfg = (settings && settings.checks && settings.checks[id]) ||
-                (DEFAULT_DIAGNOSTICS_SETTINGS.checks[id]) || {};
-    const defSev = defaultSeverity ||
-                   (DEFAULT_DIAGNOSTICS_SETTINGS.checks[id] && DEFAULT_DIAGNOSTICS_SETTINGS.checks[id].severity) ||
-                   'warning';
+  function getCheck(
+    settings: unknown,
+    id: DiagnosticsCheckId | string,
+    defaultSeverity?: DiagnosticsSeverity
+  ): EditorRuleCheckConfigDto {
+    const settingsRecord = asRecord(settings);
+    const settingsChecks = asRecord(settingsRecord?.checks);
+    const checkId = id as DiagnosticsCheckId;
+    const cfg = asRecord(settingsChecks?.[id]) ||
+                asRecord(DEFAULT_DIAGNOSTICS_SETTINGS.checks[checkId]) || {};
+    const defaultConfig = DEFAULT_DIAGNOSTICS_SETTINGS.checks[checkId];
+    const defSev = defaultSeverity || defaultConfig?.severity || 'warning';
+    const severity = typeof cfg.severity === 'string' && cfg.severity
+      ? cfg.severity
+      : defSev;
     return {
       enabled: cfg.enabled !== false,
-      severity: cfg.severity || defSev,
-      maxLineLength: cfg.maxLineLength || 0
+      severity: severity as DiagnosticsSeverity,
+      maxLineLength: (cfg.maxLineLength as number | undefined) || 0
     };
   }
 
-  function resolveSeverity(monacoInstance, sev) {
+  function resolveSeverity(monacoInstance: EditorRuleMonacoPort, sev: DiagnosticsSeverity): number {
     const M = monacoInstance && monacoInstance.MarkerSeverity;
     if (!M) return 8; // fallback: Error
     if (sev === 'error') return M.Error;
     if (sev === 'warning') return M.Warning;
-    if (sev === 'hint') return M.Hint;
+    if (sev === 'hint') return M.Hint as number;
     return M.Info;
   }
 
   // Push a marker only if the given check is enabled, using its configured severity.
-  function pushChecked(markers, monacoInstance, settings, checkId, defaultSeverity, line, startCol, endCol, message) {
+  function pushChecked(
+    markers: EditorRuleMarkerDto[],
+    monacoInstance: EditorRuleMonacoPort,
+    settings: unknown,
+    checkId: DiagnosticsCheckId | string,
+    defaultSeverity: DiagnosticsSeverity,
+    line: number,
+    startCol: number,
+    endCol: number,
+    message: string
+  ): void {
     const chk = getCheck(settings, checkId, defaultSeverity);
     if (!chk.enabled) return;
     markers.push({
@@ -438,25 +604,25 @@
 
   // ──── Plugin registry ────
 
-  function registerLanguageRulePlugin(plugin) {
+  function registerLanguageRulePlugin(plugin: EditorRuleLanguagePlugin): void {
     if (!plugin || typeof plugin.language !== 'string') {
       throw new Error('Language rule plugin must provide a language field');
     }
     plugins.set(plugin.language, plugin);
   }
 
-  function listLanguageRulePlugins() {
+  function listLanguageRulePlugins(): readonly EditorRuleLanguagePlugin[] {
     return Array.from(plugins.values());
   }
 
-  function getLanguageRulePlugin(language) {
+  function getLanguageRulePlugin(language: EditorRuleLanguageId): EditorRuleLanguagePlugin | null {
     return plugins.get(language) || null;
   }
 
   // ──── Symbol-aware completion ( IntelliSense ) ────
-  function symbolKind(monaco, kind) {
+  function symbolKind(monaco: EditorRuleMonacoPort, kind: EditorRuleSymbolKind): number {
     const K = monaco.languages.CompletionItemKind;
-    const kinds = {
+    const kinds: Record<string, number> = {
       variable: K.Variable,
       function: K.Function,
       method: K.Method,
@@ -479,10 +645,10 @@
   // Completion runs on every identifier keystroke. Cache extraction per model
   // prefix and cursor scope. Typing on the current line does not invalidate the
   // declarations above it, which avoids a full-file regex scan per keystroke.
-  const symbolCompletionCache = new WeakMap();
+  const symbolCompletionCache = new WeakMap<EditorRuleTextModelPort, SymbolCacheEntry>();
 
-  function prefixFingerprint(model, lineNumber) {
-    let prefix;
+  function prefixFingerprint(model: EditorRuleTextModelPort, lineNumber: number): string {
+    let prefix: string;
     if (typeof model.getValueInRange === 'function') {
       prefix = model.getValueInRange({
         startLineNumber: 1,
@@ -501,15 +667,24 @@
     return prefix.length + ':' + (hash >>> 0);
   }
 
-  function getSymbolSuggestions(monaco, language, model, position, context, token) {
+  function getSymbolSuggestions(
+    monaco: EditorRuleMonacoPort,
+    language: EditorRuleLanguageId,
+    model: EditorRuleTextModelPort,
+    position: EditorRulePositionDto,
+    context: EditorRuleCompletionContextDto,
+    token?: EditorRuleCancellationToken
+  ): readonly EditorRuleCompletionItemDto[] {
     const extractor = globalScope.symbolExtractor;
     if (!extractor || !model) return [];
     if (token && token.isCancellationRequested) return [];
     if (model.getLineCount() > 5000) return [];
     if (typeof model.getValueLength === 'function' && model.getValueLength() > 750000) return [];
 
-    const memberKey = context.memberAccess
-      ? context.memberAccess.expression + context.memberAccess.operator
+    const analyzedContext = context as SymbolCompletionContext;
+    const memberAccess = analyzedContext.memberAccess;
+    const memberKey = memberAccess
+      ? memberAccess.expression + memberAccess.operator
       : '';
     const cacheKey = [prefixFingerprint(model, position.lineNumber), position.lineNumber, memberKey].join(':');
     const cached = symbolCompletionCache.get(model);
@@ -517,17 +692,17 @@
 
     const content = model.getValue();
     if (!content || (token && token.isCancellationRequested)) return [];
-    let symbols;
-    if (context.memberAccess) {
+    let symbols: readonly EditorRuleSymbolDto[];
+    if (memberAccess) {
       symbols = typeof extractor.extractMembers === 'function'
-        ? extractor.extractMembers(content, language, context.memberAccess.expression, position.lineNumber)
+        ? extractor.extractMembers(content, language, memberAccess.expression, position.lineNumber)
         : [];
     } else {
       symbols = extractor.extract(content, language, position.lineNumber);
     }
 
     if (token && token.isCancellationRequested) return [];
-    const suggestions = (symbols || []).map(function (symbol) {
+    const suggestions: EditorRuleCompletionItemDto[] = (symbols || []).map(function (symbol) {
       return {
         label: symbol.name,
         kind: symbolKind(monaco, symbol.kind),
@@ -541,19 +716,26 @@
     return suggestions;
   }
 
-  function registerCompletionProviders(monacoInstance) {
+  function disposeCompletionProviders(): void {
+    while (completionDisposables.length) {
+      const disposable = completionDisposables.pop();
+      if (!disposable) continue;
+      try {
+        disposable.dispose();
+      } catch (_error) {
+        // A stale Monaco provider must not prevent remaining providers from
+        // being released during re-registration or platform teardown.
+      }
+    }
+  }
+
+  function registerCompletionProviders(monacoInstance?: EditorRuleMonacoPort): void {
     const monacoRef = monacoInstance || globalScope.monaco;
     if (!monacoRef) {
       throw new Error('Monaco is not available when registering completion providers');
     }
 
-    while (completionDisposables.length) {
-      const disposable = completionDisposables.pop();
-      try {
-        disposable.dispose();
-      } catch (_error) {
-      }
-    }
+    disposeCompletionProviders();
 
     const engine = globalScope.completionEngine;
     if (!engine) throw new Error('completionEngine must be loaded before registering completion providers');
@@ -575,9 +757,15 @@
     });
   }
 
-  function getSyntaxMarkers(model, monacoInstance, checkOptions = {}) {
-    const plugin = getLanguageRulePlugin(model.getLanguageId());
-    if (!plugin || typeof plugin.provideDiagnostics !== 'function') {
+  function getSyntaxMarkers(
+    model: EditorRuleTextModelPort,
+    monacoInstance: EditorRuleMonacoPort,
+    checkOptions: { readonly largeFile?: boolean } = {}
+  ): readonly EditorRuleMarkerDto[] {
+    const language = typeof model.getLanguageId === 'function' ? model.getLanguageId() : '';
+    const plugin = getLanguageRulePlugin(language);
+    const provideDiagnostics = plugin?.provideDiagnostics;
+    if (!plugin || typeof provideDiagnostics !== 'function') {
       return [];
     }
     // Master switch: emit nothing when diagnostics are globally disabled.
@@ -586,18 +774,18 @@
     }
     const content = model.getValue();
     const lines = content.split('\n');
-    return plugin.provideDiagnostics({
-      monaco: monacoInstance || globalScope.monaco,
+    return provideDiagnostics.call(plugin, {
+      monaco: monacoInstance || globalScope.monaco as EditorRuleMonacoPort,
       model,
       content: content,
       lines: lines,                 // pre-split lines — avoid re-splitting in helpers
       helpers: sharedHelpers,
-      settings: currentDiagSettings,
+      settings: currentDiagSettings as unknown as EditorRuleDiagnosticsSettingsDto,
       largeFile: checkOptions.largeFile || false
     }) || [];
   }
 
-  const sharedHelpers = {
+  const sharedHelpers: EditorRuleHelpers = {
     createSnippet,
     createPlain,
     pushMarker,
@@ -613,7 +801,12 @@
     pushChecked
   };
 
-  globalScope.editorRuleRegistry = {
+  function dispose(): void {
+    disposeCompletionProviders();
+  }
+
+  const editorRuleRegistry: EditorRuleRegistryPort = {
+    dispose,
     registerLanguageRulePlugin,
     listLanguageRulePlugins,
     getLanguageRulePlugin,
@@ -621,10 +814,13 @@
     getSyntaxMarkers,
     setDiagnosticsSettings,
     getDiagnosticsSettings,
-    mergeSettings,
-    DEFAULT_DIAGNOSTICS_SETTINGS,
+    mergeSettings: mergeSettingsForPort,
+    // The mutable internal copy intentionally keeps legacy open strings;
+    // expose its expected renderer shape through the DTO contract.
+    DEFAULT_DIAGNOSTICS_SETTINGS: DEFAULT_DIAGNOSTICS_SETTINGS as unknown as EditorRuleDiagnosticsSettingsDto,
     helpers: sharedHelpers
   };
 
+  globalScope.editorRuleRegistry = editorRuleRegistry;
   globalScope.registerCompletionProviders = registerCompletionProviders;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -35,7 +35,9 @@ const diagnosticsSettings = createDiagnosticsSettings({
   languageEvents: legacyWindow,
   getState: () => BOBO.state as DiagnosticsRendererState,
   getI18n: () => BOBO.i18n,
-  getRuleRegistry: () => legacyWindow.editorRuleRegistry,
+  getRuleRegistry: () => (
+    rendererPlatform.services.get('workbench.editorRules') || legacyWindow.editorRuleRegistry
+  ),
   getEditorCore: () => BOBO.editorCore,
   getToast: () => BOBO.toast
 });

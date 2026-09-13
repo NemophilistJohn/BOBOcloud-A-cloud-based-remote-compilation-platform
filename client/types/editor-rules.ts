@@ -448,14 +448,14 @@ export interface EditorRuleLanguagePlugin {
 }
 
 export interface EditorRuleDiagnosticsPort {
-  readonly DEFAULT_DIAGNOSTICS_SETTINGS: unknown;
+  readonly DEFAULT_DIAGNOSTICS_SETTINGS: EditorRuleDiagnosticsSettingsDto;
   setDiagnosticsSettings(settings: DiagnosticsSettings): void;
   getDiagnosticsSettings?(): DiagnosticsSettings | EditorRuleDiagnosticsSettingsDto;
   mergeSettings?(settings: unknown): DiagnosticsSettings | EditorRuleDiagnosticsSettingsDto;
 }
 
-/** Registry contract used by the future typed editor-rules service. */
-export interface EditorRuleRegistryPort extends EditorRuleDiagnosticsPort {
+/** Typed registry contract exposed through the private editor-rules service. */
+export interface EditorRuleRegistryPort extends EditorRuleDiagnosticsPort, Disposable {
   registerLanguageRulePlugin(plugin: EditorRuleLanguagePlugin): void;
   listLanguageRulePlugins(): readonly EditorRuleLanguagePlugin[];
   getLanguageRulePlugin(language: EditorRuleLanguageId): EditorRuleLanguagePlugin | null;
@@ -468,7 +468,7 @@ export interface EditorRuleRegistryPort extends EditorRuleDiagnosticsPort {
   readonly helpers: EditorRuleHelpers;
 }
 
-/** Global projections retained while the registry is migrated in a later slice. */
+/** Global projections retained for legacy editor and plugin compatibility. */
 export interface EditorRuleGlobals {
   editorRuleRegistry?: EditorRuleRegistryPort;
   completionEngine?: EditorRuleCompletionEnginePort;
