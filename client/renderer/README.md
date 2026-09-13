@@ -382,8 +382,10 @@ The settings center follows the same boundary in the lazy bundle. Its
 icons, and sibling workbench ports through a typed dependency object, owns its
 timers and locale subscription, and exposes only the historical seven-key
 `BOBO.aiSettingsCenter` projection. The shared schema remains the deliberate
-CommonJS-compatible JavaScript module used by both the main process and the
-renderer until that cross-process contract has its own typed wrapper.
+CommonJS-compatible JavaScript implementation used by both the main process and
+the renderer; `types/ai-settings-schema.ts` and
+`compat/ai-settings-schema-adapter.ts` provide its single typed renderer
+contract without duplicating or weakening the normalization rules.
 
 The chat panel now follows the same lazy-service boundary. Its historical DOM,
 stream rendering, command suggestions, referenced-file limits, conversation

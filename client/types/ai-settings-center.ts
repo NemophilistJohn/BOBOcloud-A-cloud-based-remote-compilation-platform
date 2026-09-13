@@ -5,37 +5,34 @@ import type {
   AiService,
   AiServiceRendererState,
   AiSettingsDto,
-  AiSettingsSchemaPort,
   AiStatusDto
 } from './ai-service';
+import type {
+  AiCapabilitySource,
+  AiKnownProviderId,
+  AiProviderId,
+  AiReasoningEffort,
+  AiSettingsProviderDefinitionDto,
+  AiSettingsSchemaPort
+} from './ai-settings-schema';
 import type { ConfirmFacade } from './confirm-dialog';
 import type { Disposable, Dispose } from './lifecycle';
 import type { RendererIconsFacade } from './icons';
 
-/** Provider metadata rendered by the connection editor. */
-export interface AiSettingsProviderDefinitionDto {
-  readonly labelKey: string;
-  readonly protocols: readonly string[];
-  readonly defaultProtocol: string;
-  readonly authTypes: readonly string[];
-  readonly defaultAuthType: string;
-  readonly apiVersion?: string;
-  readonly organization?: boolean;
-  readonly project?: boolean;
-  readonly region?: boolean;
-  readonly workspace?: boolean;
-  readonly billingPlan?: boolean;
-  readonly [key: string]: unknown;
-}
+export type {
+  AiSettingsProviderDefinitionDto,
+  AiSettingsSchemaPort
+} from './ai-settings-schema';
 
 /** Complete schema surface used by the settings editor. */
 export interface AiSettingsCenterSchemaPort extends AiSettingsSchemaPort {
   readonly SCHEMA_VERSION?: number;
   readonly MAX_MODEL_REQUEST_OUTPUT_TOKENS?: number;
-  readonly PROVIDER_ORDER?: readonly string[];
+  readonly PROVIDER_ORDER?: readonly AiKnownProviderId[];
   readonly PROVIDER_CATALOG?: Readonly<Record<string, AiSettingsProviderDefinitionDto>>;
-  readonly REASONING_EFFORTS?: readonly string[];
-  readonly normalizeProviderId?: (value: unknown) => string;
+  readonly CAPABILITY_SOURCES?: readonly AiCapabilitySource[];
+  readonly REASONING_EFFORTS?: readonly AiReasoningEffort[];
+  readonly normalizeProviderId?: (value: unknown) => AiProviderId;
   readonly normalizeCapabilities?: (value: unknown) => AiProfileDto['capabilities'];
   readonly defaultEndpointFor?: (provider: unknown, values?: Readonly<Record<string, unknown>>) => string;
   readonly qwenRegionsForBillingPlan?: (billingPlan: unknown) => readonly string[];

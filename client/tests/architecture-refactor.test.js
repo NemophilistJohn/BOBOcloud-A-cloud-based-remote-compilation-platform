@@ -270,6 +270,7 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/compat/collaboration-adapter.ts',
   'src/account-profile.ts',
   'renderer/compat/account-profile-adapter.ts',
+  'renderer/compat/ai-settings-schema-adapter.ts',
   'src/ai-settings-schema.js',
   'src/ai-prompts.ts',
   'renderer/compat/ai-prompts-adapter.ts',

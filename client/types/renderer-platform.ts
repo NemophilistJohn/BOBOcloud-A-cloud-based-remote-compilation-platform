@@ -1272,6 +1272,18 @@ export type {
   AiContextTabDto
 } from './ai-context';
 export type {
+  AiCapabilitySource,
+  AiKnownProviderId,
+  AiProviderId,
+  AiQwenBillingPlan,
+  AiQwenRegion,
+  AiReasoningEffort,
+  AiSettingsParameterDefaults,
+  AiSettingsSchemaEndpointValues,
+  AiSettingsSchemaRuntime,
+  AiSettingsSchemaRuntimePort
+} from './ai-settings-schema';
+export type {
   AiActiveConnectionsResultDto,
   AiApplySettingsOptions,
   AiAuthType,

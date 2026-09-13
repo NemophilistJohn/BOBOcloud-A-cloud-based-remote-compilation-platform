@@ -1,5 +1,8 @@
 import type { AiPromptsFacade } from './ai-prompts';
+import type { AiSettingsSchemaPort } from './ai-settings-schema';
 import type { Dispose, Disposable } from './lifecycle';
+
+export type { AiSettingsSchemaPort } from './ai-settings-schema';
 
 export type AiPurpose = 'chat' | 'inline';
 export type AiMode = 'chat' | 'fim';
@@ -150,11 +153,6 @@ export interface AiServiceMutableState {
 export interface AiServiceRendererState {
   ai: AiServiceMutableState;
   readonly [key: string]: unknown;
-}
-
-export interface AiSettingsSchemaPort {
-  normalizeSettings(value: unknown): AiSettingsDto;
-  normalizeProfile(value: unknown, index: number, purpose: AiPurpose): AiProfileDto;
 }
 
 export interface AiConnectionDto {
