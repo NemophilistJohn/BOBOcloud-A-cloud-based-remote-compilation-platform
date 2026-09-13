@@ -10,6 +10,7 @@ import type {
   DiagnosticsSettingsWriteDto,
   DiagnosticsSeverity
 } from '../types/diagnostics';
+import type { EditorRuleDiagnosticsPort } from '../types/editor-rules';
 
 interface DiagnosticsCatalogEntry {
   readonly id: DiagnosticsCheckId;
@@ -55,10 +56,8 @@ export interface DiagnosticsI18n {
   bindAttribute?(element: Element, attribute: string, source: string): unknown;
 }
 
-export interface DiagnosticsRuleRegistry {
-  readonly DEFAULT_DIAGNOSTICS_SETTINGS: unknown;
-  setDiagnosticsSettings(settings: DiagnosticsSettings): void;
-}
+/** Compatibility view of the editor-rule diagnostics settings port. */
+export interface DiagnosticsRuleRegistry extends EditorRuleDiagnosticsPort {}
 
 export interface DiagnosticsEditorCore {
   recheckAll(): void;
