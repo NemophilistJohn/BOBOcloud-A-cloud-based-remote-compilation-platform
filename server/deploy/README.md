@@ -21,7 +21,7 @@ a host manually, run the equivalent commands as root:
 ```bash
 groupadd --system bobocloud || true
 useradd --system --gid bobocloud --home-dir /root/cloudeEditor/data --shell /usr/sbin/nologin bobocloud || true
-usermod --append --groups docker bobocloud
+usermod --groups docker bobocloud
 install -d -o root -g bobocloud -m 0750 /etc/bobocloud/tls
 install -d -o root -g bobocloud -m 0750 /etc/bobocloud
 install -m 0640 -o root -g bobocloud deploy/bobocloud.env.example /etc/bobocloud/bobocloud.env
@@ -43,7 +43,11 @@ The service retains `CAP_SYS_ADMIN` for the current LSP/DAP bind-anchor
 implementation and keeps `PrivateMounts=false`; otherwise Docker cannot see
 the validated projection mounts. The Docker group is also a root-equivalent
 control-plane permission. A path-allowlisted root-owned mount helper and a
-Docker socket proxy are the follow-up hardening items.
+Docker socket proxy are the follow-up hardening items. When LSP or DAP is
+enabled, `lsp_servers.json` and `dap_adapters.json` are required deployment
+inputs; startup fails closed if either catalog is missing or invalid. The
+release transaction also rechecks staged hashes after stopping the previous
+process, closing the privileged-process time-of-check/time-of-use window.
 
 ## Build and preflight
 
@@ -89,6 +93,10 @@ The stop-through-verification portion is protected by a non-blocking remote
 `flock`. A second release fails before it can stop or replace the service;
 content-addressed uploads can still occur in parallel and are checked again
 under the release lock.
+
+The unit is bound to Docker availability and rejects symlinked executables,
+configuration, catalogs, and TLS files at startup. This keeps an operator or a
+stale release from redirecting the service through a replacement path.
 
 There is deliberately no binary rollback snapshot. A failed deployment leaves
 the newly uploaded staging artifact in `/root/cloudeEditor/.deploy` for an

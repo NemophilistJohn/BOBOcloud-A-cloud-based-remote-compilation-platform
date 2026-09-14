@@ -589,8 +589,9 @@ func main() {
 		manifestPath := lsp.ResolveManifestPath(execDir, cfg.LSPManifestPath)
 		catalog, catalogErr := lsp.LoadCatalog(manifestPath)
 		if catalogErr != nil {
-			slog.Warn("Failed to load LSP manifest; using safe built-in commands", "path", manifestPath, "error", catalogErr)
-			catalog = lsp.DefaultCatalog()
+			slog.Error("Failed to load LSP manifest; refusing to start with an unvalidated command catalog", "path", manifestPath, "error", catalogErr)
+			shutdownStartupAndExit(catalogErr)
+			return
 		}
 		analysisCache := lsp.NewCacheManager(filepath.Join(cfg.DataDir, "lsp-cache"), cfg.LSPCacheQuotaMB, cfg.LSPCacheRetentionDays)
 		lspManager = lsp.NewManager(catalog, analysisCache, nil, lsp.ManagerOptions{
@@ -616,28 +617,29 @@ func main() {
 		manifestPath := dap.ResolveManifestPath(execDir, cfg.DAPManifestPath)
 		catalog, catalogErr := dap.LoadCatalog(manifestPath)
 		if catalogErr != nil {
-			slog.Error("Remote DAP disabled because its manifest could not be loaded", "path", manifestPath, "error", catalogErr)
-		} else {
-			dapManager = dap.NewManager(catalog, nil, dap.ManagerOptions{
-				MaxSessions: cfg.DAPMaxSessions, MaxPerUser: cfg.DAPMaxSessionsPerUser,
-				IdleTTL:         time.Duration(cfg.DAPIdleTTLSeconds) * time.Second,
-				MaxSession:      time.Duration(cfg.DAPMaxSessionSeconds) * time.Second,
-				MaxMessageBytes: cfg.DAPMaxMessageBytes,
-				MemoryLimit:     cfg.DAPMemoryLimit, CPULimit: cfg.DAPCPULimit,
-				NetworkEnable:      cfg.DAPNetworkEnabled,
-				ResourceController: resourceController,
-				Metrics:            performanceMetrics,
-			})
-			if err := serverRuntime.RegisterStopHook(serverruntime.PhaseServices, "dap-manager", func(ctx context.Context) error {
-				return dapManager.CloseContext(ctx)
-			}); err != nil {
-				dapManager.Close()
-				slog.Error("Failed to register DAP shutdown", "error", err)
-				shutdownStartupAndExit(err)
-				return
-			}
-			slog.Info("Remote DAP initialized", "manifest", manifestPath, "catalog_version", catalog.Version(), "max_sessions", cfg.DAPMaxSessions, "max_per_user", cfg.DAPMaxSessionsPerUser)
+			slog.Error("Failed to load DAP manifest; refusing to start with debugging disabled", "path", manifestPath, "error", catalogErr)
+			shutdownStartupAndExit(catalogErr)
+			return
 		}
+		dapManager = dap.NewManager(catalog, nil, dap.ManagerOptions{
+			MaxSessions: cfg.DAPMaxSessions, MaxPerUser: cfg.DAPMaxSessionsPerUser,
+			IdleTTL:         time.Duration(cfg.DAPIdleTTLSeconds) * time.Second,
+			MaxSession:      time.Duration(cfg.DAPMaxSessionSeconds) * time.Second,
+			MaxMessageBytes: cfg.DAPMaxMessageBytes,
+			MemoryLimit:     cfg.DAPMemoryLimit, CPULimit: cfg.DAPCPULimit,
+			NetworkEnable:      cfg.DAPNetworkEnabled,
+			ResourceController: resourceController,
+			Metrics:            performanceMetrics,
+		})
+		if err := serverRuntime.RegisterStopHook(serverruntime.PhaseServices, "dap-manager", func(ctx context.Context) error {
+			return dapManager.CloseContext(ctx)
+		}); err != nil {
+			dapManager.Close()
+			slog.Error("Failed to register DAP shutdown", "error", err)
+			shutdownStartupAndExit(err)
+			return
+		}
+		slog.Info("Remote DAP initialized", "manifest", manifestPath, "catalog_version", catalog.Version(), "max_sessions", cfg.DAPMaxSessions, "max_per_user", cfg.DAPMaxSessionsPerUser)
 	}
 	collaborationManager := collab.NewManager(collaborationStore, userStore, filepath.Join(cfg.DataDir, "teams"))
 	if lspManager != nil || dapManager != nil {

@@ -4,6 +4,7 @@ Documentation=https://github.com/bobocloud
 After=network-online.target docker.service
 Wants=network-online.target
 Requires=docker.service
+BindsTo=docker.service
 StartLimitIntervalSec=60
 StartLimitBurst=3
 
@@ -47,8 +48,25 @@ ExecStart=/usr/bin/env \
   BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data \
   /root/cloudeEditor/bobocloud-server
 ExecStartPre=/usr/bin/test -r /root/cloudeEditor/bobocloud-server
+ExecStartPre=/usr/bin/test -f /root/cloudeEditor/bobocloud-server
+ExecStartPre=/usr/bin/test ! -L /root/cloudeEditor/bobocloud-server
+ExecStartPre=/usr/bin/test -r /root/cloudeEditor/config.json
+ExecStartPre=/usr/bin/test -f /root/cloudeEditor/config.json
+ExecStartPre=/usr/bin/test ! -L /root/cloudeEditor/config.json
+ExecStartPre=/usr/bin/test -r /root/cloudeEditor/lsp_servers.json
+ExecStartPre=/usr/bin/test -f /root/cloudeEditor/lsp_servers.json
+ExecStartPre=/usr/bin/test ! -L /root/cloudeEditor/lsp_servers.json
+ExecStartPre=/usr/bin/test -r /root/cloudeEditor/dap_adapters.json
+ExecStartPre=/usr/bin/test -f /root/cloudeEditor/dap_adapters.json
+ExecStartPre=/usr/bin/test ! -L /root/cloudeEditor/dap_adapters.json
 ExecStartPre=/usr/bin/test -r /etc/bobocloud/tls/bobocloud.crt
+ExecStartPre=/usr/bin/test -f /etc/bobocloud/tls/bobocloud.crt
+ExecStartPre=/usr/bin/test ! -L /etc/bobocloud/tls/bobocloud.crt
 ExecStartPre=/usr/bin/test -r /etc/bobocloud/tls/bobocloud.key
+ExecStartPre=/usr/bin/test -f /etc/bobocloud/tls/bobocloud.key
+ExecStartPre=/usr/bin/test ! -L /etc/bobocloud/tls/bobocloud.key
+ExecStartPre=/usr/bin/test -f /etc/bobocloud/bobocloud.env
+ExecStartPre=/usr/bin/test ! -L /etc/bobocloud/bobocloud.env
 ExecStartPre=/usr/bin/test -S /run/docker.sock
 
 # LSP/DAP dependency projections use host bind anchors. CAP_SYS_ADMIN is kept

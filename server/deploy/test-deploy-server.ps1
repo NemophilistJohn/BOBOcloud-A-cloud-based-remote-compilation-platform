@@ -93,7 +93,7 @@ try {
     if ($shouldProcessIndex -lt 0 -or $sshLookupIndex -lt 0 -or $shouldProcessIndex -ge $sshLookupIndex) {
         throw 'ShouldProcess must run before SSH resolution so WhatIf stays offline.'
     }
-    foreach ($requiredFragment in @('Get-ChildItem -LiteralPath $releaseRoot', "'^bobocloud-server'", 'systemd-analyze verify "$unit_artifact"', 'systemctl daemon-reload', 'install -m 0644', 'systemctl stop', "'/healthz'", "'/readyz'", 'serverInfo', 'sha256sum', "-name 'bobocloud-server*'", 'flock -n', 'useradd --system', 'usermod --append --groups', 'runuser -u "$service_user" -- docker info', 'setfacl -m', 'chmod 0710 /root', 'bobocloud.crt', 'bobocloud.key', 'BOBOCLOUD_TLS_REQUIRED', 'BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data', 'ExecStart=/usr/bin/env', 'test "$transport" =', 'find -P', 'chown --no-dereference', 'repair_tree', 'repair_mount_root')) {
+    foreach ($requiredFragment in @('Get-ChildItem -LiteralPath $releaseRoot', "'^bobocloud-server'", 'systemd-analyze verify "$unit_artifact"', 'systemctl daemon-reload', 'install -m 0644', 'systemctl stop', "'/healthz'", "'/readyz'", 'serverInfo', 'sha256sum', "-name 'bobocloud-server*'", 'flock -n', 'useradd --system', 'usermod --groups', 'runuser -u "$service_user" -- docker info', 'setfacl -m', 'chmod 0710 /root', 'bobocloud.crt', 'bobocloud.key', 'BOBOCLOUD_TLS_REQUIRED', 'BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data', 'ExecStart=/usr/bin/env', 'test "$transport" =', 'find -P', 'chown --no-dereference', 'repair_tree', 'repair_mount_root', 'secure_release_file "$root/lsp_servers.json"', 'secure_release_file "$root/dap_adapters.json"', 'actual_unit_sha="$(sha256sum')) {
         if (-not $scriptText.Contains($requiredFragment)) {
             throw "Deployment script is missing required release step: $requiredFragment"
         }
@@ -101,9 +101,14 @@ try {
     if ($scriptText -match 'curl\s+.*\s-k(?:\s|$)') {
         throw 'Deployment script must not use curl -k for verification.'
     }
+    foreach ($crlfSafeIdentityCheck in @("grep -Eq '^User=__SERVICE_USER__[[:space:]]*$'", "grep -Eq '^Group=__SERVICE_GROUP__[[:space:]]*$'", "grep -Eq '^SupplementaryGroups=docker[[:space:]]*$'")) {
+        if (-not $scriptText.Contains($crlfSafeIdentityCheck)) {
+            throw "Release checks must tolerate CRLF unit artifacts: $crlfSafeIdentityCheck"
+        }
+    }
 
     $unitText = Get-Content -LiteralPath (Join-Path -Path $PSScriptRoot -ChildPath 'bobocloud.service') -Raw
-    foreach ($requiredUnitFragment in @('User=bobocloud', 'Group=bobocloud', 'SupplementaryGroups=docker', 'CapabilityBoundingSet=CAP_SYS_ADMIN', 'AmbientCapabilities=CAP_SYS_ADMIN', 'PrivateMounts=false', 'NoNewPrivileges=true', 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6', 'Environment=BOBOCLOUD_TLS_REQUIRED=true', 'Environment=BOBOCLOUD_TLS_ENABLED=true', 'ExecStart=/usr/bin/env', 'BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data', 'ExecStartPre=/usr/bin/test -S /run/docker.sock')) {
+    foreach ($requiredUnitFragment in @('User=bobocloud', 'Group=bobocloud', 'SupplementaryGroups=docker', 'BindsTo=docker.service', 'CapabilityBoundingSet=CAP_SYS_ADMIN', 'AmbientCapabilities=CAP_SYS_ADMIN', 'PrivateMounts=false', 'NoNewPrivileges=true', 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6', 'Environment=BOBOCLOUD_TLS_REQUIRED=true', 'Environment=BOBOCLOUD_TLS_ENABLED=true', 'ExecStart=/usr/bin/env', 'BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data', 'ExecStartPre=/usr/bin/test -f /root/cloudeEditor/config.json', 'ExecStartPre=/usr/bin/test ! -L /root/cloudeEditor/config.json', 'ExecStartPre=/usr/bin/test -f /root/cloudeEditor/lsp_servers.json', 'ExecStartPre=/usr/bin/test ! -L /root/cloudeEditor/lsp_servers.json', 'ExecStartPre=/usr/bin/test -f /root/cloudeEditor/dap_adapters.json', 'ExecStartPre=/usr/bin/test ! -L /root/cloudeEditor/dap_adapters.json', 'ExecStartPre=/usr/bin/test -f /etc/bobocloud/bobocloud.env', 'ExecStartPre=/usr/bin/test ! -L /etc/bobocloud/bobocloud.env', 'ExecStartPre=/usr/bin/test -S /run/docker.sock')) {
         if (-not $unitText.Contains($requiredUnitFragment)) {
             throw "systemd unit is missing required hardening directive: $requiredUnitFragment"
         }
