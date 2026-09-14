@@ -817,7 +817,12 @@ func normalizeUserIdentities(cfg *Config) error {
 	seen := make(map[string]struct{}, len(cfg.Users))
 	for index := range cfg.Users {
 		userID := cfg.Users[index].ID
-		if err := auth.ValidateUsername(userID); err != nil {
+		// Persisted account IDs may be UUIDs (the registration path uses a UUID
+		// primary key), while config seeded users also need to accept those same
+		// IDs for controlled API-key rotation and quota reconciliation. Validate
+		// the filesystem-safe ID contract rather than the shorter display-name
+		// username contract.
+		if err := auth.ValidateUserID(userID); err != nil {
 			return fmt.Errorf("users[%d].id: %w", index, err)
 		}
 		identityKey := strings.ToLower(userID)
