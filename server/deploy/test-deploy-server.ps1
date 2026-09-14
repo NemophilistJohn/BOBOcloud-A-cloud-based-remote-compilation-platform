@@ -50,6 +50,26 @@ try {
         throw 'HTTPS preflight accepted a missing remote CA file.'
     }
 
+    $probeValidationRejected = $false
+    try {
+        & $deployScript -Target production-81.70.51.43 -BinaryPath $fixturePath -RemoteCAFile /etc/bobocloud/tls/bobocloud.crt -ProbeHost ("81.70.51.43" + [char]10) -Apply -ConfirmTarget 81.70.51.43 -WhatIf 2>$null | Out-Null
+    } catch {
+        $probeValidationRejected = $true
+    }
+    if (-not $probeValidationRejected) {
+        throw 'ProbeHost validation accepted a trailing newline.'
+    }
+
+    $caValidationRejected = $false
+    try {
+        & $deployScript -Target production-81.70.51.43 -BinaryPath $fixturePath -RemoteCAFile ("/etc/bobocloud/tls/bobocloud.crt" + [char]10) -Apply -ConfirmTarget 81.70.51.43 -WhatIf 2>$null | Out-Null
+    } catch {
+        $caValidationRejected = $true
+    }
+    if (-not $caValidationRejected) {
+        throw 'RemoteCAFile validation accepted a trailing newline.'
+    }
+
     # Dot-source the offline preflight so the remote command generator can be
     # exercised without resolving SSH or opening a network connection.
     . $deployScript -Target production-81.70.51.43 -BinaryPath $fixturePath -RemoteCAFile /etc/bobocloud/tls/bobocloud.crt | Out-Null
@@ -68,6 +88,7 @@ try {
         DockerGroup = 'docker'
         DataRoot    = '/root/cloudeEditor/data'
         WorkspaceRoot = '/shareOnling'
+        ServerRoot = '/shareOnling'
         TLSRoot     = '/etc/bobocloud/tls'
         TLSCertFile = '/etc/bobocloud/tls/bobocloud.crt'
         TLSKeyFile  = '/etc/bobocloud/tls/bobocloud.key'
@@ -83,6 +104,14 @@ try {
     if ($releaseCommand.Contains('__') -or -not $releaseCommand.Contains($expectedHashBinding) -or -not $releaseCommand.Contains($expectedUnitHashBinding)) {
         throw 'Remote release command did not bind the expected checksums safely.'
     }
+    $apostropheLiteral = ConvertTo-PosixShellLiteral "a'b"
+    $expectedApostropheLiteral = "'a'" + [char]92 + "''b'"
+    if ($apostropheLiteral -cne $expectedApostropheLiteral) {
+        throw "POSIX shell literal escaping is incorrect: $apostropheLiteral"
+    }
+    if (-not $releaseCommand.Contains("probe_host='81.70.51.43'") -or -not $releaseCommand.Contains("ca_file='/etc/bobocloud/tls/bobocloud.crt'") -or -not $releaseCommand.Contains('BOBOCLOUD_SERVER_ROOT=/shareOnling')) {
+        throw 'Remote release command did not quote probe or CA parameters and pin the server root.'
+    }
     if ($prepareCommand.Contains('__') -or -not $prepareCommand.Contains('flock -n 9') -or -not $prepareCommand.Contains('-mmin +1440')) {
         throw 'Remote preparation must lock and preserve fresh concurrent uploads.'
     }
@@ -93,7 +122,7 @@ try {
     if ($shouldProcessIndex -lt 0 -or $sshLookupIndex -lt 0 -or $shouldProcessIndex -ge $sshLookupIndex) {
         throw 'ShouldProcess must run before SSH resolution so WhatIf stays offline.'
     }
-    foreach ($requiredFragment in @('Get-ChildItem -LiteralPath $releaseRoot', "'^bobocloud-server'", 'systemd-analyze verify "$unit_artifact"', 'systemctl daemon-reload', 'install -m 0644', 'systemctl stop', "'/healthz'", "'/readyz'", 'serverInfo', 'sha256sum', "-name 'bobocloud-server*'", 'flock -n', 'useradd --system', 'usermod --groups', 'runuser -u "$service_user" -- docker info', 'setfacl -m', 'chmod 0710 /root', 'bobocloud.crt', 'bobocloud.key', 'BOBOCLOUD_TLS_REQUIRED', 'BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data', 'ExecStart=/usr/bin/env', 'test "$transport" =', 'find -P', 'chown --no-dereference', 'repair_tree', 'repair_mount_root', 'secure_release_file "$root/lsp_servers.json"', 'secure_release_file "$root/dap_adapters.json"', 'actual_unit_sha="$(sha256sum')) {
+    foreach ($requiredFragment in @('Get-ChildItem -LiteralPath $releaseRoot', "'^bobocloud-server'", 'systemd-analyze verify "$unit_artifact"', 'systemctl daemon-reload', 'install -m 0644', 'systemctl stop', "'/healthz'", "'/readyz'", 'serverInfo', 'sha256sum', "-name 'bobocloud-server*'", 'flock -n', 'useradd --system', 'usermod --groups', 'runuser -u "$service_user" -- docker info', 'setfacl -m', 'chmod 0710 /root', 'bobocloud.crt', 'bobocloud.key', 'BOBOCLOUD_TLS_REQUIRED', 'BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data', 'BOBOCLOUD_SERVER_ROOT=__SERVER_ROOT__', 'ExecStart=/usr/bin/env', 'test "$transport" =', 'find -P', 'chown --no-dereference', 'repair_tree', 'repair_mount_root', 'secure_release_file "$root/lsp_servers.json"', 'secure_release_file "$root/dap_adapters.json"', 'actual_unit_sha="$(sha256sum')) {
         if (-not $scriptText.Contains($requiredFragment)) {
             throw "Deployment script is missing required release step: $requiredFragment"
         }
@@ -108,7 +137,7 @@ try {
     }
 
     $unitText = Get-Content -LiteralPath (Join-Path -Path $PSScriptRoot -ChildPath 'bobocloud.service') -Raw
-    foreach ($requiredUnitFragment in @('User=bobocloud', 'Group=bobocloud', 'SupplementaryGroups=docker', 'BindsTo=docker.service', 'CapabilityBoundingSet=CAP_SYS_ADMIN', 'AmbientCapabilities=CAP_SYS_ADMIN', 'PrivateMounts=false', 'NoNewPrivileges=true', 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6', 'Environment=BOBOCLOUD_TLS_REQUIRED=true', 'Environment=BOBOCLOUD_TLS_ENABLED=true', 'ExecStart=/usr/bin/env', 'BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data', 'ExecStartPre=/usr/bin/test -f /root/cloudeEditor/config.json', 'ExecStartPre=/usr/bin/test ! -L /root/cloudeEditor/config.json', 'ExecStartPre=/usr/bin/test -f /root/cloudeEditor/lsp_servers.json', 'ExecStartPre=/usr/bin/test ! -L /root/cloudeEditor/lsp_servers.json', 'ExecStartPre=/usr/bin/test -f /root/cloudeEditor/dap_adapters.json', 'ExecStartPre=/usr/bin/test ! -L /root/cloudeEditor/dap_adapters.json', 'ExecStartPre=/usr/bin/test -f /etc/bobocloud/bobocloud.env', 'ExecStartPre=/usr/bin/test ! -L /etc/bobocloud/bobocloud.env', 'ExecStartPre=/usr/bin/test -S /run/docker.sock')) {
+    foreach ($requiredUnitFragment in @('User=bobocloud', 'Group=bobocloud', 'SupplementaryGroups=docker', 'BindsTo=docker.service', 'CapabilityBoundingSet=CAP_SYS_ADMIN', 'AmbientCapabilities=CAP_SYS_ADMIN', 'PrivateMounts=false', 'NoNewPrivileges=true', 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6', 'Environment=BOBOCLOUD_TLS_REQUIRED=true', 'Environment=BOBOCLOUD_TLS_ENABLED=true', 'Environment=BOBOCLOUD_SERVER_ROOT=/shareOnling', 'ExecStart=/usr/bin/env', 'BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data', 'BOBOCLOUD_SERVER_ROOT=/shareOnling', 'ExecStartPre=/usr/bin/test -f /root/cloudeEditor/config.json', 'ExecStartPre=/usr/bin/test ! -L /root/cloudeEditor/config.json', 'ExecStartPre=/usr/bin/test -f /root/cloudeEditor/lsp_servers.json', 'ExecStartPre=/usr/bin/test ! -L /root/cloudeEditor/lsp_servers.json', 'ExecStartPre=/usr/bin/test -f /root/cloudeEditor/dap_adapters.json', 'ExecStartPre=/usr/bin/test ! -L /root/cloudeEditor/dap_adapters.json', 'ExecStartPre=/usr/bin/test -f /etc/bobocloud/bobocloud.env', 'ExecStartPre=/usr/bin/test ! -L /etc/bobocloud/bobocloud.env', 'ExecStartPre=/usr/bin/test -S /run/docker.sock')) {
         if (-not $unitText.Contains($requiredUnitFragment)) {
             throw "systemd unit is missing required hardening directive: $requiredUnitFragment"
         }

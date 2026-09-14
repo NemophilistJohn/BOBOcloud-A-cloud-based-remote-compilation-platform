@@ -900,6 +900,9 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("BOBOCLOUD_DATA_DIR"); v != "" {
 		cfg.DataDir = v
 	}
+	if v := os.Getenv("BOBOCLOUD_SERVER_ROOT"); v != "" {
+		cfg.ServerRoot = v
+	}
 	if v := os.Getenv("BOBOCLOUD_HTTP_PORT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.HTTPPort = n

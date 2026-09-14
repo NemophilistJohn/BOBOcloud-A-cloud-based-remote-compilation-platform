@@ -33,7 +33,7 @@ systemctl enable bobocloud.service
 Install the certificate and private key as root-owned files readable by the
 `bobocloud` group (`0640` for the key, `0644` or `0640` for the certificate),
 then set real per-host values in `/etc/bobocloud/bobocloud.env`. The unit pins
-TLS and the data root again through `/usr/bin/env` at the final exec boundary,
+TLS, the data root, and the server workspace root again through `/usr/bin/env` at the final exec boundary,
 because systemd gives `EnvironmentFile=` precedence over `Environment=`. Never add secrets
 to the example file or unit. `Type=simple` is intentional because the Go
 process does not implement `sd_notify`. Release readiness is checked by the
@@ -122,8 +122,9 @@ server and the hostname covered by the certificate:
 
 The HTTPS probe resolves that hostname to `127.0.0.1` on the server, so the
 certificate name and chain are checked without exposing a separate probe port.
-The script refuses HTTPS verification without `-RemoteCAFile` and never uses
-`curl -k`.
+`-ProbeHost` and `-RemoteCAFile` accept only single-line POSIX path/hostname
+values and are emitted as shell literals. The script refuses HTTPS verification
+without `-RemoteCAFile` and never uses `curl -k`.
 
 ## BOBOCLOUD server deployment (Chinese)
 
@@ -156,6 +157,7 @@ Linux/amd64 二进制、检查 ELF 头和 SHA-256；该目录不保留二进制�
 `/root/cloudeEditor` 顶层所有旧的 `bobocloud-server*` 二进制产物和中断替换文件，
 只安装一个正式二进制，最后启动并完成三项健康验证。
 
-不会保留旧二进制或回滚快照。生产 TLS 发布必须指定服务器上的 CA 文件和证书覆盖的主机名，
+不会保留旧二进制或回滚快照。服务 unit 会在最终 exec 边界固定 TLS、数据目录和工作区根目录；
+生产 TLS 发布必须指定服务器上的 CA 文件和证书覆盖的主机名，
 例如 `-Transport https -ProbeHost cloud.example.com -RemoteCAFile
 /etc/bobocloud/tls/ca.pem`；脚本不会使用 `curl -k`。

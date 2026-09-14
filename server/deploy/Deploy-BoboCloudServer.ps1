@@ -18,10 +18,10 @@ param(
     [ValidateSet('http', 'https')]
     [string]$Transport = 'https',
 
-    [ValidatePattern('^/[A-Za-z0-9._/@+=:,%-]+$')]
+    [ValidatePattern('\A/[A-Za-z0-9._/@+=:,%-]+\z')]
     [string]$RemoteCAFile,
 
-    [ValidatePattern('^[A-Za-z0-9.-]+$')]
+    [ValidatePattern('\A[A-Za-z0-9.-]+\z')]
     [string]$ProbeHost,
 
     [switch]$AllowInteractiveAuthentication
@@ -44,6 +44,7 @@ $DeploymentProfiles = @{
         DockerGroup = 'docker'
         DataRoot    = '/root/cloudeEditor/data'
         WorkspaceRoot = '/shareOnling'
+        ServerRoot = '/shareOnling'
         TLSRoot     = '/etc/bobocloud/tls'
         TLSCertFile = '/etc/bobocloud/tls/bobocloud.crt'
         TLSKeyFile  = '/etc/bobocloud/tls/bobocloud.key'
@@ -202,6 +203,24 @@ function Test-LinuxAmd64ELF {
     if ($machine -ne 62) {
         throw "Expected an x86_64 Linux executable, received ELF machine ${machine}: $Path"
     }
+}
+
+function ConvertTo-PosixShellLiteral {
+    param(
+        [AllowEmptyString()]
+        [string]$Value
+    )
+
+    if ($null -eq $Value) {
+        return "''"
+    }
+    # Single-quoted POSIX shell literals treat every byte literally. A literal
+    # apostrophe is represented by closing the quote, emitting an escaped
+    # apostrophe, and reopening the quote. Keep this helper even for values
+    # currently constrained by ValidatePattern so future template parameters
+    # cannot accidentally become shell syntax.
+    $escapedApostrophe = "'" + [char]92 + "''"
+    return "'" + $Value.Replace("'", $escapedApostrophe) + "'"
 }
 
 function Get-RemotePrepareCommand {
@@ -453,9 +472,9 @@ workspace_root="__WORKSPACE_ROOT__"
 expected_sha="__EXPECTED_SHA__"
 expected_unit_sha="__EXPECTED_UNIT_SHA__"
 transport="__TRANSPORT__"
-probe_host="__PROBE_HOST__"
+probe_host=__PROBE_HOST__
 http_port="__HTTP_PORT__"
-ca_file="__CA_FILE__"
+ca_file=__CA_FILE__
 
 command -v flock >/dev/null 2>&1
 exec 9>"$root/.deploy/bobocloud-release.lock"
@@ -482,10 +501,12 @@ grep -Eq '^Group=__SERVICE_GROUP__[[:space:]]*$' "$unit_artifact"
 grep -Eq '^SupplementaryGroups=docker[[:space:]]*$' "$unit_artifact"
 grep -Eq '^Environment=BOBOCLOUD_TLS_REQUIRED=true[[:space:]]*$' "$unit_artifact"
 grep -Eq '^Environment=BOBOCLOUD_TLS_ENABLED=true[[:space:]]*$' "$unit_artifact"
+grep -Eq '^Environment=BOBOCLOUD_SERVER_ROOT=__SERVER_ROOT__[[:space:]]*$' "$unit_artifact"
 grep -Eq '^ExecStart=/usr/bin/env' "$unit_artifact"
 grep -Eq 'BOBOCLOUD_TLS_REQUIRED=true' "$unit_artifact"
 grep -Eq 'BOBOCLOUD_TLS_ENABLED=true' "$unit_artifact"
 grep -Eq 'BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data' "$unit_artifact"
+grep -Eq 'BOBOCLOUD_SERVER_ROOT=__SERVER_ROOT__' "$unit_artifact"
 test "$transport" = 'https'
 
 if systemctl is-active --quiet "$service"; then
@@ -608,7 +629,9 @@ printf '%s' "$server_info" | grep -Eq '"success"[[:space:]]*:[[:space:]]*true'
 systemctl --no-pager --full status "$service"
 rm -f "$artifact" "$unit_artifact"
 '@
-    return ($template.Replace('__ROOT__', $Profile.RemoteRoot).Replace('__ARTIFACT__', $ArtifactPath).Replace('__UNIT_ARTIFACT__', $UnitArtifactPath).Replace('__SERVICE__', $Profile.ServiceName).Replace('__SERVICE_USER__', $Profile.ServiceUser).Replace('__SERVICE_GROUP__', $Profile.ServiceGroup).Replace('__DATA_ROOT__', $Profile.DataRoot).Replace('__WORKSPACE_ROOT__', $Profile.WorkspaceRoot).Replace('__EXPECTED_SHA__', $ExpectedHash).Replace('__EXPECTED_UNIT_SHA__', $ExpectedUnitHash).Replace('__TRANSPORT__', $Transport).Replace('__PROBE_HOST__', $ProbeHost).Replace('__HTTP_PORT__', [string]$Profile.HTTPPort).Replace('__CA_FILE__', $RemoteCAFile))
+    $probeHostLiteral = ConvertTo-PosixShellLiteral $ProbeHost
+    $caFileLiteral = ConvertTo-PosixShellLiteral $RemoteCAFile
+    return ($template.Replace('__ROOT__', $Profile.RemoteRoot).Replace('__ARTIFACT__', $ArtifactPath).Replace('__UNIT_ARTIFACT__', $UnitArtifactPath).Replace('__SERVICE__', $Profile.ServiceName).Replace('__SERVICE_USER__', $Profile.ServiceUser).Replace('__SERVICE_GROUP__', $Profile.ServiceGroup).Replace('__DATA_ROOT__', $Profile.DataRoot).Replace('__WORKSPACE_ROOT__', $Profile.WorkspaceRoot).Replace('__SERVER_ROOT__', $Profile.ServerRoot).Replace('__EXPECTED_SHA__', $ExpectedHash).Replace('__EXPECTED_UNIT_SHA__', $ExpectedUnitHash).Replace('__TRANSPORT__', $Transport).Replace('__PROBE_HOST__', $probeHostLiteral).Replace('__HTTP_PORT__', [string]$Profile.HTTPPort).Replace('__CA_FILE__', $caFileLiteral))
 }
 
 function Invoke-RemoteCommand {
