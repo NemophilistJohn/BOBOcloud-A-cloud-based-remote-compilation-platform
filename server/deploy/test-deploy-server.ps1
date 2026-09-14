@@ -28,11 +28,21 @@ try {
 
     # This exercises PowerShell's ShouldProcess path. It must finish before
     # the script resolves either SSH executable or issues a remote command.
-    & $deployScript -Target production-81.70.51.43 -BinaryPath $fixturePath -Apply -ConfirmTarget 81.70.51.43 -WhatIf | Out-Null
+    & $deployScript -Target production-81.70.51.43 -BinaryPath $fixturePath -RemoteCAFile /etc/bobocloud/tls/bobocloud.crt -Apply -ConfirmTarget 81.70.51.43 -WhatIf | Out-Null
+
+    $httpRejected = $false
+    try {
+        & $deployScript -Target production-81.70.51.43 -BinaryPath $fixturePath -Transport http -Apply -ConfirmTarget 81.70.51.43 -WhatIf 2>$null | Out-Null
+    } catch {
+        $httpRejected = $_.Exception.Message -match 'requires HTTPS'
+    }
+    if (-not $httpRejected) {
+        throw 'Production apply accepted plaintext HTTP verification.'
+    }
 
     $httpsRejected = $false
     try {
-        & $deployScript -Target production-81.70.51.43 -BinaryPath $fixturePath -Transport https 2>$null | Out-Null
+        & $deployScript -Target production-81.70.51.43 -BinaryPath $fixturePath -Transport https -Apply -ConfirmTarget 81.70.51.43 -WhatIf 2>$null | Out-Null
     } catch {
         $httpsRejected = $_.Exception.Message -match 'RemoteCAFile'
     }
@@ -42,7 +52,7 @@ try {
 
     # Dot-source the offline preflight so the remote command generator can be
     # exercised without resolving SSH or opening a network connection.
-    . $deployScript -Target production-81.70.51.43 -BinaryPath $fixturePath | Out-Null
+    . $deployScript -Target production-81.70.51.43 -BinaryPath $fixturePath -RemoteCAFile /etc/bobocloud/tls/bobocloud.crt | Out-Null
     $resolvedGo = Get-NativeCommandPath -Name 'go'
     if ($resolvedGo -isnot [string] -or [string]::IsNullOrWhiteSpace($resolvedGo) -or -not (Test-Path -LiteralPath $resolvedGo -PathType Leaf)) {
         throw 'Native command resolution must return exactly one executable path.'
@@ -53,11 +63,21 @@ try {
         RemoteRoot  = '/root/cloudeEditor'
         ServiceName = 'bobocloud.service'
         HTTPPort    = 3100
+        ServiceUser = 'bobocloud'
+        ServiceGroup = 'bobocloud'
+        DockerGroup = 'docker'
+        DataRoot    = '/root/cloudeEditor/data'
+        WorkspaceRoot = '/shareOnling'
+        TLSRoot     = '/etc/bobocloud/tls'
+        TLSCertFile = '/etc/bobocloud/tls/bobocloud.crt'
+        TLSKeyFile  = '/etc/bobocloud/tls/bobocloud.key'
+        EnvironmentFile = '/etc/bobocloud/bobocloud.env'
+        RequireTLS  = $true
     }
     $expectedHash = ('a' * 64) -join ''
     $expectedUnitHash = ('b' * 64) -join ''
     $prepareCommand = Get-RemotePrepareCommand -Profile $remoteProfile
-    $releaseCommand = Get-RemoteReleaseCommand -Profile $remoteProfile -ArtifactPath '/root/cloudeEditor/.deploy/bobocloud-server-test.tmp' -ExpectedHash $expectedHash -UnitArtifactPath '/root/cloudeEditor/.deploy/bobocloud.service-test.tmp' -ExpectedUnitHash $expectedUnitHash -Transport http -ProbeHost '81.70.51.43'
+    $releaseCommand = Get-RemoteReleaseCommand -Profile $remoteProfile -ArtifactPath '/root/cloudeEditor/.deploy/bobocloud-server-test.tmp' -ExpectedHash $expectedHash -UnitArtifactPath '/root/cloudeEditor/.deploy/bobocloud.service-test.tmp' -ExpectedUnitHash $expectedUnitHash -Transport https -ProbeHost '81.70.51.43' -RemoteCAFile '/etc/bobocloud/tls/bobocloud.crt'
     $expectedHashBinding = 'expected_sha="' + $expectedHash + '"'
     $expectedUnitHashBinding = 'expected_unit_sha="' + $expectedUnitHash + '"'
     if ($releaseCommand.Contains('__') -or -not $releaseCommand.Contains($expectedHashBinding) -or -not $releaseCommand.Contains($expectedUnitHashBinding)) {
@@ -73,13 +93,28 @@ try {
     if ($shouldProcessIndex -lt 0 -or $sshLookupIndex -lt 0 -or $shouldProcessIndex -ge $sshLookupIndex) {
         throw 'ShouldProcess must run before SSH resolution so WhatIf stays offline.'
     }
-    foreach ($requiredFragment in @('Get-ChildItem -LiteralPath $releaseRoot', "'^bobocloud-server'", 'systemd-analyze verify "$unit_artifact"', 'systemctl daemon-reload', 'install -m 0644', 'systemctl stop', "'/healthz'", "'/readyz'", 'serverInfo', 'sha256sum', "-name 'bobocloud-server*'", 'flock -n')) {
+    foreach ($requiredFragment in @('Get-ChildItem -LiteralPath $releaseRoot', "'^bobocloud-server'", 'systemd-analyze verify "$unit_artifact"', 'systemctl daemon-reload', 'install -m 0644', 'systemctl stop', "'/healthz'", "'/readyz'", 'serverInfo', 'sha256sum', "-name 'bobocloud-server*'", 'flock -n', 'useradd --system', 'usermod --append --groups', 'runuser -u "$service_user" -- docker info', 'setfacl -m', 'chmod 0710 /root', 'bobocloud.crt', 'bobocloud.key', 'BOBOCLOUD_TLS_REQUIRED', 'BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data', 'ExecStart=/usr/bin/env', 'test "$transport" =', 'find -P', 'chown --no-dereference', 'repair_tree', 'repair_mount_root')) {
         if (-not $scriptText.Contains($requiredFragment)) {
             throw "Deployment script is missing required release step: $requiredFragment"
         }
     }
     if ($scriptText -match 'curl\s+.*\s-k(?:\s|$)') {
         throw 'Deployment script must not use curl -k for verification.'
+    }
+
+    $unitText = Get-Content -LiteralPath (Join-Path -Path $PSScriptRoot -ChildPath 'bobocloud.service') -Raw
+    foreach ($requiredUnitFragment in @('User=bobocloud', 'Group=bobocloud', 'SupplementaryGroups=docker', 'CapabilityBoundingSet=CAP_SYS_ADMIN', 'AmbientCapabilities=CAP_SYS_ADMIN', 'PrivateMounts=false', 'NoNewPrivileges=true', 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6', 'Environment=BOBOCLOUD_TLS_REQUIRED=true', 'Environment=BOBOCLOUD_TLS_ENABLED=true', 'ExecStart=/usr/bin/env', 'BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data', 'ExecStartPre=/usr/bin/test -S /run/docker.sock')) {
+        if (-not $unitText.Contains($requiredUnitFragment)) {
+            throw "systemd unit is missing required hardening directive: $requiredUnitFragment"
+        }
+    }
+    if ($unitText -match '(?m)^User=root\s*$') {
+        throw 'systemd unit must not run the compiler as root.'
+    }
+    foreach ($forbiddenMountNamespaceDirective in @('PrivateTmp=', 'PrivateDevices=', 'ProtectSystem=', 'ProtectHome=', 'ReadWritePaths=', 'InaccessiblePaths=')) {
+        if ($unitText -match "(?m)^$([regex]::Escape($forbiddenMountNamespaceDirective))") {
+            throw "systemd unit must not hide host mount anchors with $forbiddenMountNamespaceDirective"
+        }
     }
 
     Write-Output 'Deployment script offline validation passed.'

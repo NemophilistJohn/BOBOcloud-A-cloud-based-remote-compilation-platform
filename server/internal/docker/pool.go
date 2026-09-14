@@ -955,6 +955,12 @@ func (dp *Pool) GetUserActive(userID string) int {
 // Acquire 获取容器（Phase 1 兼容，不检查用户配额）。
 // 新代码应使用 AcquireForUser。
 func (dp *Pool) Acquire(ctx context.Context, image string, output session.OutputWriter) (string, error) {
+	started := time.Now()
+	defer func() {
+		if dp.metrics != nil {
+			dp.metrics.ObserveSince("docker.acquire", started)
+		}
+	}()
 	return dp.acquireInternal(ctx, "", image, image, output, "", nil, nil)
 }
 
@@ -988,6 +994,12 @@ func (dp *Pool) AcquireForUserRuntimeWithContext(ctx context.Context, userID, ru
 }
 
 func (dp *Pool) acquireForUser(ctx context.Context, userID, runtimeID, image, cacheKey string, volumes, env map[string]string, output session.OutputWriter) (string, error) {
+	started := time.Now()
+	defer func() {
+		if dp.metrics != nil {
+			dp.metrics.ObserveSince("docker.acquire", started)
+		}
+	}()
 	dp.mu.Lock()
 	closed := dp.closed
 	dp.mu.Unlock()
@@ -1075,6 +1087,7 @@ func (dp *Pool) acquireViaQueue(ctx context.Context, userID, runtimeID, image, c
 	defer func() {
 		if dp.metrics != nil {
 			dp.metrics.Observe("queue.wait", time.Since(queuedAt))
+			dp.metrics.Observe("queue.docker.wait", time.Since(queuedAt))
 		}
 	}()
 	if output != nil {
@@ -1288,8 +1301,13 @@ func (dp *Pool) acquireInternal(ctx context.Context, userID, runtimeID, image st
 		if output != nil {
 			output.WriteStatus("docker", fmt.Sprintf("Pulling image %s...", image))
 		}
-		if err := dp.pullImage(ctx, image, output); err != nil {
-			return "", fmt.Errorf("failed to pull image %s: %w", image, err)
+		pullStarted := time.Now()
+		pullErr := dp.pullImage(ctx, image, output)
+		if dp.metrics != nil {
+			dp.metrics.ObserveSince("docker.pull", pullStarted)
+		}
+		if pullErr != nil {
+			return "", fmt.Errorf("failed to pull image %s: %w", image, pullErr)
 		}
 		dp.markImageLocal(image)
 		if output != nil {

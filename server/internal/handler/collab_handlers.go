@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"bobocloud-server/internal/auth"
 	"bobocloud-server/internal/collab"
@@ -101,8 +102,15 @@ func (h *HTTPHandler) handleCollaboration(w http.ResponseWriter, r *http.Request
 				}
 			}
 			if h.BuildCache != nil {
+				cacheStarted := time.Now()
 				if err := h.BuildCache.Clear(req.TeamID, "all", "", ""); err != nil {
+					if h.Metrics != nil {
+						h.Metrics.ObserveSince("cache.team.clear", cacheStarted)
+					}
 					return err
+				}
+				if h.Metrics != nil {
+					h.Metrics.ObserveSince("cache.team.clear", cacheStarted)
 				}
 			}
 			if h.LSP != nil {
@@ -192,8 +200,15 @@ func (h *HTTPHandler) handleCollaboration(w http.ResponseWriter, r *http.Request
 				}
 			}
 			if h.BuildCache != nil {
+				cacheStarted := time.Now()
 				if err := h.BuildCache.Clear(req.TeamID, "project", req.ProjectID, ""); err != nil {
+					if h.Metrics != nil {
+						h.Metrics.ObserveSince("cache.team.clear", cacheStarted)
+					}
 					return err
+				}
+				if h.Metrics != nil {
+					h.Metrics.ObserveSince("cache.team.clear", cacheStarted)
 				}
 			}
 			if h.LSP != nil {
@@ -311,7 +326,12 @@ func (h *HTTPHandler) handleCollaboration(w http.ResponseWriter, r *http.Request
 			success(nil)
 			return
 		}
-		success(h.BuildCache.Inspect(team.ID, team.CacheQuotaMB))
+		cacheStarted := time.Now()
+		info := h.BuildCache.Inspect(team.ID, team.CacheQuotaMB)
+		if h.Metrics != nil {
+			h.Metrics.ObserveSince("cache.team.inspect", cacheStarted)
+		}
+		success(info)
 	case "clearTeamCache":
 		team, err := h.Collaboration.Store().GetTeam(req.TeamID)
 		if err != nil {
@@ -326,14 +346,26 @@ func (h *HTTPHandler) handleCollaboration(w http.ResponseWriter, r *http.Request
 			success(nil)
 			return
 		}
+		cacheStarted := time.Now()
 		if err := h.BuildCache.Clear(req.TeamID, req.CacheScope, req.ProjectID, req.NamespaceKey); err != nil {
+			if h.Metrics != nil {
+				h.Metrics.ObserveSince("cache.team.clear", cacheStarted)
+			}
 			collabError(w, err)
 			return
+		}
+		if h.Metrics != nil {
+			h.Metrics.ObserveSince("cache.team.clear", cacheStarted)
 		}
 		if h.OnBuildCacheCleared != nil {
 			h.OnBuildCacheCleared()
 		}
-		success(h.BuildCache.Inspect(team.ID, team.CacheQuotaMB))
+		inspectStarted := time.Now()
+		info := h.BuildCache.Inspect(team.ID, team.CacheQuotaMB)
+		if h.Metrics != nil {
+			h.Metrics.ObserveSince("cache.team.inspect", inspectStarted)
+		}
+		success(info)
 	}
 }
 

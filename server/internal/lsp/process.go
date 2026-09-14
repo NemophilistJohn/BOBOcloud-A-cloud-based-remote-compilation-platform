@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/safefile"
 )
 
@@ -46,6 +47,7 @@ type LaunchSpec struct {
 	CPULimit           string
 	DependencyView     AnalysisDependencyView
 	SharedDependencies *SharedDependencies
+	Metrics            *metrics.Registry
 }
 
 type Process interface {
@@ -311,7 +313,12 @@ func (ExecStarter) Start(ctx context.Context, spec LaunchSpec) (Process, error) 
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	cmd.Dir = workspace
 	cmd.Env = appendEnvironment(os.Environ(), commandEnvironment(spec, false))
-	return startCommand(cmd, spec.SessionID)
+	started := time.Now()
+	process, err := startCommand(cmd, spec.SessionID)
+	if spec.Metrics != nil {
+		spec.Metrics.ObserveSince("lsp.adapter.launch", started)
+	}
+	return process, err
 }
 
 func startDockerProcess(ctx context.Context, spec LaunchSpec) (Process, error) {
@@ -339,7 +346,11 @@ func startDockerProcess(ctx context.Context, spec LaunchSpec) (Process, error) {
 	if len(name) > 60 {
 		name = name[:60]
 	}
+	mountStarted := time.Now()
 	pinnedMounts, releasePinnedMounts, err := pinDockerDependencyMounts(spec.MountRoot, spec.SessionID, spec.DependencyView.Mounts)
+	if spec.Metrics != nil {
+		spec.Metrics.ObserveSince("lsp.process.mount", mountStarted)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +386,11 @@ func startDockerProcess(ctx context.Context, spec LaunchSpec) (Process, error) {
 	}
 	args = append(args, image)
 	args = append(args, command...)
+	launchStarted := time.Now()
 	process, err := startCommand(exec.CommandContext(ctx, "docker", args...), spec.SessionID)
+	if spec.Metrics != nil {
+		spec.Metrics.ObserveSince("lsp.adapter.launch", launchStarted)
+	}
 	if err != nil {
 		return nil, err
 	}

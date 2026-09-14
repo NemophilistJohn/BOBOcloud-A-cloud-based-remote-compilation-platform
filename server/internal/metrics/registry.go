@@ -96,6 +96,18 @@ func (r *Registry) Observe(name string, elapsed time.Duration) {
 	r.mu.Unlock()
 }
 
+// ObserveSince records the elapsed time since started. Keeping the clock
+// calculation at the metrics boundary makes optional instrumentation cheap at
+// call sites and gives every stage the same negative-duration handling as
+// Observe. A zero time is still a valid start point; callers that have no
+// useful start timestamp should simply skip the call.
+func (r *Registry) ObserveSince(name string, started time.Time) {
+	if !r.Enabled() || name == "" {
+		return
+	}
+	r.Observe(name, time.Since(started))
+}
+
 func (r *Registry) AddBytes(name string, bytes int64) {
 	if !r.Enabled() || name == "" {
 		return

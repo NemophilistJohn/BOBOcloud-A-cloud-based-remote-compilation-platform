@@ -74,6 +74,11 @@ type admissionObservation struct {
 	outcome  metrics.AdmissionOutcome
 	reason   metrics.AdmissionReason
 	elapsed  time.Duration
+	// queued marks observations emitted by the fair queue. Keep queue wait
+	// separate from total admission latency so the baseline can distinguish
+	// scheduler pressure from validation/dispatch overhead.
+	queued    bool
+	queueWait time.Duration
 }
 
 func New(governor *resourcegovernor.Governor, profiles Profiles, registry *metrics.Registry) (*Controller, error) {
@@ -287,6 +292,9 @@ func (controller *Controller) Acquire(ctx context.Context, admission Admission) 
 				outcome = metrics.AdmissionRejected
 			}
 			controller.publish(events, depths, true, used, len(events) > 0)
+			if controller.metrics != nil {
+				controller.metrics.Observe("queue.resource.wait", time.Since(item.enqueuedAt))
+			}
 			controller.observeAdmission(admission.Workload, outcome, reason, time.Since(started))
 			return nil, newAdmissionError(code, admission, waitCtx.Err())
 		}
@@ -384,7 +392,10 @@ func (controller *Controller) tryCandidateLocked(candidate queueCandidate, now t
 			outcome = metrics.AdmissionRejected
 			reason = metrics.AdmissionReasonQueueTimeout
 		}
-		return false, true, &admissionObservation{workload: item.admission.Workload, outcome: outcome, reason: reason, elapsed: now.Sub(item.started)}
+		return false, true, &admissionObservation{
+			workload: item.admission.Workload, outcome: outcome, reason: reason,
+			elapsed: now.Sub(item.started), queued: true, queueWait: now.Sub(item.enqueuedAt),
+		}
 	}
 	inner, err := controller.governor.TryAcquire(governorRequest(item.admission, item.resources))
 	if err != nil {
@@ -396,7 +407,11 @@ func (controller *Controller) tryCandidateLocked(candidate queueCandidate, now t
 		}
 		item.state = queuedFinished
 		item.result <- queuedResult{err: err}
-		return false, true, &admissionObservation{workload: item.admission.Workload, outcome: metrics.AdmissionRejected, reason: admissionReason(err), elapsed: now.Sub(item.started)}
+		return false, true, &admissionObservation{
+			workload: item.admission.Workload, outcome: metrics.AdmissionRejected,
+			reason: admissionReason(err), elapsed: now.Sub(item.started), queued: true,
+			queueWait: now.Sub(item.enqueuedAt),
+		}
 	}
 	if controller.queue.pop(candidate) == nil {
 		inner.Release()
@@ -409,7 +424,11 @@ func (controller *Controller) tryCandidateLocked(candidate queueCandidate, now t
 	}
 	item.state = queuedGranted
 	item.result <- queuedResult{lease: lease}
-	return true, false, &admissionObservation{workload: item.admission.Workload, outcome: metrics.AdmissionAccepted, reason: metrics.AdmissionReasonNone, elapsed: now.Sub(item.started)}
+	return true, false, &admissionObservation{
+		workload: item.admission.Workload, outcome: metrics.AdmissionAccepted,
+		reason: metrics.AdmissionReasonNone, elapsed: now.Sub(item.started), queued: true,
+		queueWait: now.Sub(item.enqueuedAt),
+	}
 }
 
 // BeginDrain rejects new admissions and wakes every queued caller. Active
@@ -441,6 +460,7 @@ func (controller *Controller) BeginDrain(cause error) {
 				events = append(events, admissionObservation{
 					workload: item.admission.Workload, outcome: metrics.AdmissionRejected,
 					reason: metrics.AdmissionReasonDraining, elapsed: time.Since(item.started),
+					queued: true, queueWait: time.Since(item.enqueuedAt),
 				})
 			}
 		}
@@ -625,6 +645,9 @@ func (controller *Controller) publish(events []admissionObservation, depths [wor
 		controller.observeUsage(used)
 	}
 	for _, event := range events {
+		if event.queued && controller.metrics != nil {
+			controller.metrics.Observe("queue.resource.wait", event.queueWait)
+		}
 		controller.observeAdmission(event.workload, event.outcome, event.reason, event.elapsed)
 	}
 }

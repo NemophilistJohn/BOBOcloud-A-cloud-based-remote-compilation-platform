@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/resourcecontrol"
 	"bobocloud-server/internal/resourcegovernor"
 )
@@ -62,6 +63,9 @@ type ManagerOptions struct {
 	NetworkEnable      bool
 	Inspector          ImageInspector
 	ResourceController *resourcecontrol.Controller
+	// Metrics is optional and records bounded adapter/session timings in the
+	// shared server performance registry.
+	Metrics            *metrics.Registry
 	processWaitTimeout time.Duration
 	killWaitTimeout    time.Duration
 }
@@ -90,6 +94,7 @@ type Session struct {
 	onClose            func(*Session)
 	processWaitTimeout time.Duration
 	killWaitTimeout    time.Duration
+	metrics            *metrics.Registry
 }
 
 // ChildSession owns one additional DAP connection for an adapter-managed
@@ -113,6 +118,8 @@ func newChildSession(conn io.ReadWriteCloser, maxBytes int) *ChildSession {
 }
 
 func (s *Session) OpenChild(ctx context.Context) (*ChildSession, error) {
+	started := time.Now()
+	defer s.observeStage("dap.child.open", started)
 	provider, ok := s.process.(ChildConnectionProvider)
 	if !ok || !s.Adapter.SupportsChildSessions {
 		return nil, fmt.Errorf("this debug adapter does not support child DAP sessions")
@@ -220,6 +227,8 @@ func (s *Session) Stop() {
 
 func (s *Session) releaseResources() {
 	s.releaseOnce.Do(func() {
+		cleanupStarted := time.Now()
+		defer s.observeStage("dap.session.cleanup", cleanupStarted)
 		if s.Context.Release != nil {
 			s.Context.Release()
 		}
@@ -234,6 +243,7 @@ func (s *Session) readLoop() {
 	defer func() {
 		s.Stop()
 		_ = s.process.Stdout().Close()
+		waitStarted := time.Now()
 		waitDone := make(chan struct{})
 		go func() {
 			_ = s.process.Wait()
@@ -251,6 +261,7 @@ func (s *Session) readLoop() {
 			case <-time.After(s.killWaitTimeout):
 			}
 		}
+		s.observeStage("dap.process.wait", waitStarted)
 		if waited {
 			s.releaseResources()
 		} else {
@@ -309,6 +320,7 @@ type Manager struct {
 	starting       int
 	startingByUser map[string]int
 	startingKeys   map[string]struct{}
+	metrics        *metrics.Registry
 }
 
 func NewManager(catalog *Catalog, starter ProcessStarter, opts ManagerOptions) *Manager {
@@ -344,9 +356,23 @@ func NewManager(catalog *Catalog, starter ProcessStarter, opts ManagerOptions) *
 		inspector = &DockerImageInspector{TTL: 30 * time.Second}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	manager := &Manager{catalog: catalog, starter: starter, opts: opts, inspector: inspector, ctx: ctx, cancel: cancel, sessions: make(map[string]*Session), startingByUser: make(map[string]int), startingKeys: make(map[string]struct{})}
+	manager := &Manager{catalog: catalog, starter: starter, opts: opts, inspector: inspector, ctx: ctx, cancel: cancel, sessions: make(map[string]*Session), startingByUser: make(map[string]int), startingKeys: make(map[string]struct{}), metrics: opts.Metrics}
 	go manager.cleanupLoop()
 	return manager
+}
+
+func (m *Manager) observeStage(name string, started time.Time) {
+	if m == nil || m.metrics == nil {
+		return
+	}
+	m.metrics.ObserveSince(name, started)
+}
+
+func (s *Session) observeStage(name string, started time.Time) {
+	if s == nil || s.metrics == nil {
+		return
+	}
+	s.metrics.ObserveSince(name, started)
 }
 
 func (m *Manager) CatalogVersion() string {
@@ -421,6 +447,8 @@ func (m *Manager) finishReservation(userID, key string) {
 }
 
 func (m *Manager) Start(sessionContext SessionContext) (*Session, error) {
+	started := time.Now()
+	defer m.observeStage("dap.session.start", started)
 	resourceLease := sessionContext.ResourceLease
 	sessionContext.ResourceLease = nil
 	resourceOwned := resourceLease != nil
@@ -458,16 +486,20 @@ func (m *Manager) Start(sessionContext SessionContext) (*Session, error) {
 		return nil, err
 	}
 	if resourceLease == nil && m.opts.ResourceController != nil {
+		admissionStarted := time.Now()
 		resourceLease, err = m.opts.ResourceController.TryAcquireWithDemand(
 			resourcecontrol.WorkloadDAP, sessionContext.UserID, id,
 			resourcegovernor.Resources{DockerContainers: 1},
 		)
+		m.observeStage("dap.resource.admission", admissionStarted)
 		if err != nil {
 			return nil, fmt.Errorf("admit DAP session resources: %w", err)
 		}
 	}
 	resourceOwned = resourceLease != nil
+	inspectStarted := time.Now()
 	available, reason := m.inspector.Available(m.ctx, spec.Image)
+	m.observeStage("dap.adapter.inspect", inspectStarted)
 	if !available {
 		if reason == "" {
 			reason = "managed debug adapter image is not installed"
@@ -489,13 +521,15 @@ func (m *Manager) Start(sessionContext SessionContext) (*Session, error) {
 	for key, value := range sessionContext.DependencyEnv {
 		dependencyEnv[key] = value
 	}
+	processStarted := time.Now()
 	process, err := m.starter.Start(processCtx, LaunchSpec{
 		SessionID: id, UserID: sessionContext.UserID, Workspace: sessionContext.RemoteRoot,
 		PersistDir: sessionContext.PersistDir, DependencyRoot: sessionContext.DependencyRoot,
 		DependencyMountRoot: sessionContext.DependencyMountRoot,
 		DependencyEnv:       dependencyEnv, Adapter: spec, MemoryLimit: m.opts.MemoryLimit,
-		CPULimit: m.opts.CPULimit, NetworkEnable: m.opts.NetworkEnable,
+		CPULimit: m.opts.CPULimit, NetworkEnable: m.opts.NetworkEnable, Metrics: m.metrics,
 	})
+	m.observeStage("dap.process.start", processStarted)
 	if err != nil {
 		cancel()
 		if resourceLease != nil {
@@ -504,7 +538,7 @@ func (m *Manager) Start(sessionContext SessionContext) (*Session, error) {
 		}
 		return nil, fmt.Errorf("start managed debug adapter: %w", err)
 	}
-	session := &Session{ID: id, Key: key, Context: sessionContext, Adapter: spec, messages: make(chan []byte, 32), done: make(chan struct{}), resourcesDone: make(chan struct{}), stopping: make(chan struct{}), process: process, writer: NewLockedFrameWriter(process.Stdin()), cancel: cancel, maxBytes: m.opts.MaxMessageBytes, created: time.Now(), resourceLease: resourceLease, processWaitTimeout: m.opts.processWaitTimeout, killWaitTimeout: m.opts.killWaitTimeout}
+	session := &Session{ID: id, Key: key, Context: sessionContext, Adapter: spec, messages: make(chan []byte, 32), done: make(chan struct{}), resourcesDone: make(chan struct{}), stopping: make(chan struct{}), process: process, writer: NewLockedFrameWriter(process.Stdin()), cancel: cancel, maxBytes: m.opts.MaxMessageBytes, created: time.Now(), resourceLease: resourceLease, processWaitTimeout: m.opts.processWaitTimeout, killWaitTimeout: m.opts.killWaitTimeout, metrics: m.metrics}
 	resourceOwned = false
 	session.Touch()
 	session.onClose = m.remove

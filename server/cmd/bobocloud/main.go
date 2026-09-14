@@ -275,6 +275,7 @@ func main() {
 		"http_port", cfg.HTTPPort,
 		"ws_port", cfg.WSPort,
 		"dap_child_ws_port", cfg.DAPChildWSPort,
+		"tls_required", cfg.TLSRequired,
 		"tls_enabled", cfg.TLSEnabled,
 		"data_dir", cfg.DataDir,
 		"auth_enabled", cfg.AuthEnabled,
@@ -599,6 +600,7 @@ func main() {
 			MemoryLimit:     cfg.LSPMemoryLimit, CPULimit: cfg.LSPCPULimit,
 			DependencyRegistry: dependencyViews,
 			ResourceController: resourceController,
+			Metrics:            performanceMetrics,
 		})
 		if err := serverRuntime.RegisterStopHook(serverruntime.PhaseServices, "lsp-manager", func(ctx context.Context) error {
 			return lspManager.CloseContext(ctx)
@@ -624,6 +626,7 @@ func main() {
 				MemoryLimit:     cfg.DAPMemoryLimit, CPULimit: cfg.DAPCPULimit,
 				NetworkEnable:      cfg.DAPNetworkEnabled,
 				ResourceController: resourceController,
+				Metrics:            performanceMetrics,
 			})
 			if err := serverRuntime.RegisterStopHook(serverruntime.PhaseServices, "dap-manager", func(ctx context.Context) error {
 				return dapManager.CloseContext(ctx)
@@ -860,7 +863,7 @@ func main() {
 		Config: cfg, Manager: dapManager, AuthEnabled: multiUser,
 		Authenticator: authenticator, UserStore: userStore, AuthSessions: authSessions,
 		Collaboration: collaborationManager, Lifecycle: resourceLifecycle, ChildTickets: dap.NewChildTicketBroker(),
-		PersonalCache: personalCache, RuntimeMetadata: runtimeMetadata, Resources: resourceController,
+		PersonalCache: personalCache, RuntimeMetadata: runtimeMetadata, Resources: resourceController, Metrics: performanceMetrics,
 		Accepting: serverRuntime.IsAccepting, AcquireWork: serverRuntime.Acquire,
 	}
 
@@ -1079,6 +1082,9 @@ func newBOBOHTTPServer(addr string, handler http.Handler, cfg *config.Config, ba
 // security, not an application-level encryption scheme: HTTP and all WebSocket
 // upgrades on a configured listener are protected by the same TLS 1.3 policy.
 func serveBOBOHTTP(server *http.Server, cfg *config.Config) error {
+	if cfg != nil && cfg.TLSRequired && !cfg.TLSEnabled {
+		return errors.New("TLS is required but disabled")
+	}
 	if cfg != nil && cfg.TLSEnabled {
 		server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS13}
 		return server.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)

@@ -1,6 +1,6 @@
 {
   "_comment": "══════════ BOBOCLOUD Server 配置文件 ══════════",
-  "_comment_note": "支持环境变量覆盖：BOBOCLOUD_DATA_DIR, BOBOCLOUD_HTTP_PORT, BOBOCLOUD_WS_PORT, BOBOCLOUD_LOG_LEVEL, BOBOCLOUD_AUTH_ENABLED, BOBOCLOUD_ADMIN_API_KEY, BOBOCLOUD_MAX_CONTAINERS",
+  "_comment_note": "支持环境变量覆盖：BOBOCLOUD_DATA_DIR, BOBOCLOUD_HTTP_PORT, BOBOCLOUD_WS_PORT, BOBOCLOUD_LOG_LEVEL, BOBOCLOUD_AUTH_ENABLED, BOBOCLOUD_ADMIN_API_KEY, BOBOCLOUD_MAX_CONTAINERS, BOBOCLOUD_TLS_REQUIRED, BOBOCLOUD_TLS_ENABLED, BOBOCLOUD_TLS_CERT_FILE, BOBOCLOUD_TLS_KEY_FILE",
 
   "_section_network": "────────── 网络配置 ──────────",
   "server_root": "/shareOnling",
@@ -65,7 +65,7 @@
 
   "_section_observability": "────────── 阶段指标与结果保留 ──────────",
   "performance_metrics_enabled": true,
-  "_performance_metrics_enabled": "记录队列、池命中、容器创建、工作区复制、依赖、编译、运行、磁盘增长和缓存命中的滚动指标。",
+  "_performance_metrics_enabled": "记录队列、池命中、容器创建、工作区复制、依赖、编译、运行、磁盘增长、团队/个人缓存以及 LSP/DAP 启动、挂载、清理阶段的滚动指标；管理员可通过 getPerformanceMetrics 查看 P50/P95/P99。",
   "performance_metrics_window": 512,
   "_performance_metrics_window": "每个阶段用于 P50/P95/P99 的最近样本数。",
   "run_output_retained_bytes": 262144,
@@ -337,6 +337,8 @@
   "dap_enabled": true,
 	"dap_child_ws_port": 3102,
 	"_dap_child_ws_port": "Node.js js-debug target sessions use this separate WSS listener. It brokers authenticated one-use child tickets; no Docker adapter port is exposed publicly.",
+	"tls_required": false,
+	"_tls_required": "生产 systemd unit 会将此项强制设为 true；设为 true 时若 TLS 未启用，服务会拒绝启动。开发环境可保持 false。",
 	"tls_enabled": false,
 	"tls_cert_file": "",
 	"tls_key_file": "",

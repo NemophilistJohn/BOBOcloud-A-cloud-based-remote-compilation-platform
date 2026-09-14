@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/resourcecontrol"
 	"bobocloud-server/internal/resourcegovernor"
 )
@@ -37,6 +38,9 @@ type ManagerOptions struct {
 	DependencyPollInterval time.Duration
 	DependencyPollJitter   time.Duration
 	ResourceController     *resourcecontrol.Controller
+	// Metrics is optional. When set, the manager records bounded startup,
+	// process, dependency, and cleanup timings in the shared registry.
+	Metrics *metrics.Registry
 }
 
 func (m *Manager) RequiresDocker(languageID, runtimeID string) bool {
@@ -78,6 +82,7 @@ type Session struct {
 	dependencyIndexMu     sync.Mutex
 	dependencyIndex       *DependencyAPIIndex
 	dependencyIndexTasks  atomic.Int32
+	metrics               *metrics.Registry
 }
 
 func (s *Session) Messages() <-chan []byte { return s.messages }
@@ -139,6 +144,8 @@ func (s *Session) Stop() {
 
 func (s *Session) releaseResources() {
 	s.releaseOnce.Do(func() {
+		cleanupStarted := time.Now()
+		defer s.observeStage("lsp.session.cleanup", cleanupStarted)
 		// The dependency summary is written into the same namespace as the
 		// analyzer cache. Give a bounded static scan time to finish before that
 		// namespace becomes eligible for a manual clear or normal pruning.
@@ -195,6 +202,7 @@ func (s *Session) readLoop() {
 			s.Stop()
 		}
 		_ = s.process.Stdout().Close()
+		waitStarted := time.Now()
 		waitDone := make(chan struct{})
 		go func() {
 			_ = s.process.Wait()
@@ -212,6 +220,7 @@ func (s *Session) readLoop() {
 			case <-time.After(2 * time.Second):
 			}
 		}
+		s.observeStage("lsp.process.wait", waitStarted)
 		s.stopOnce.Do(func() {
 			close(s.stopping)
 			s.cancel()
@@ -287,6 +296,7 @@ type Manager struct {
 	refreshCloseOnce sync.Once
 	refreshCloseDone chan struct{}
 	resourceWait     time.Duration
+	metrics          *metrics.Registry
 }
 
 type dependencyRefreshTimer interface {
@@ -343,10 +353,28 @@ func NewManager(catalog *Catalog, cache *CacheManager, starter ProcessStarter, o
 		refreshDelay:     500 * time.Millisecond,
 		refreshCloseDone: make(chan struct{}),
 		resourceWait:     3 * time.Second,
+		metrics:          opts.Metrics,
+	}
+	if cache != nil && opts.Metrics != nil {
+		cache.SetMetrics(opts.Metrics)
 	}
 	m.refreshScan = m.refreshDependencyViewsOnce
 	go m.cleanupLoop()
 	return m
+}
+
+func (m *Manager) observeStage(name string, started time.Time) {
+	if m == nil || m.metrics == nil {
+		return
+	}
+	m.metrics.ObserveSince(name, started)
+}
+
+func (s *Session) observeStage(name string, started time.Time) {
+	if s == nil || s.metrics == nil {
+		return
+	}
+	s.metrics.ObserveSince(name, started)
 }
 
 func randomSessionID() (string, error) {
@@ -399,6 +427,8 @@ func (m *Manager) finishReservation(userID, key string) {
 }
 
 func (m *Manager) Start(ctx SessionContext) (*Session, error) {
+	started := time.Now()
+	defer m.observeStage("lsp.session.start", started)
 	resourceLease := ctx.ResourceLease
 	ctx.ResourceLease = nil
 	resourceOwned := resourceLease != nil
@@ -454,11 +484,13 @@ func (m *Manager) Start(ctx SessionContext) (*Session, error) {
 		return nil, err
 	}
 	if resourceLease == nil && m.opts.ResourceController != nil {
+		admissionStarted := time.Now()
 		minimum := resourcegovernor.Resources{}
 		if useDocker {
 			minimum.DockerContainers = 1
 		}
 		resourceLease, err = m.opts.ResourceController.TryAcquireWithDemand(resourcecontrol.WorkloadLSP, ctx.UserID, id, minimum)
+		m.observeStage("lsp.resource.admission", admissionStarted)
 		if err != nil {
 			return nil, fmt.Errorf("admit LSP session resources: %w", err)
 		}
@@ -470,10 +502,13 @@ func (m *Manager) Start(ctx SessionContext) (*Session, error) {
 	}
 	ownerKind, ownerID := ctx.Owner()
 	cacheContext := CacheContext{OwnerKind: ownerKind, OwnerID: ownerID, UserID: ctx.UserID, ProjectID: ctx.ProjectID, Branch: ctx.Branch, FolderKey: ctx.FolderKey, RuntimeID: ctx.RuntimeID, LanguageID: ctx.LanguageID, Mode: ctx.Mode, ToolchainFingerprint: ToolchainFingerprint(spec, ctx.RuntimeID), LockHash: lockHash}
+	cacheStarted := time.Now()
 	lease, err := m.cache.Prepare(cacheContext)
+	m.observeStage("lsp.session.cache_prepare", cacheStarted)
 	if err != nil {
 		return nil, err
 	}
+	mountStarted := time.Now()
 	dependencyRelease, err := acquireDependencySnapshotMounts(ctx.DependencyView)
 	if err != nil && m.opts.DependencyRegistry != nil {
 		// A publisher may have advanced the immutable generation after the WS
@@ -486,6 +521,7 @@ func (m *Manager) Start(ctx SessionContext) (*Session, error) {
 			dependencyRelease, err = acquireDependencySnapshotMounts(ctx.DependencyView)
 		}
 	}
+	m.observeStage("lsp.dependency.mount", mountStarted)
 	if err != nil {
 		lease.Release()
 		return nil, err
@@ -501,14 +537,16 @@ func (m *Manager) Start(ctx SessionContext) (*Session, error) {
 		stopManagerCancellation()
 		processCancel()
 	}
-	process, err := m.starter.Start(processCtx, LaunchSpec{SessionID: id, UserID: ctx.UserID, Workspace: ctx.RemoteRoot, CacheDir: lease.Dir, MountRoot: filepath.Join(m.cache.root, "mounts"), LanguageID: ctx.LanguageID, Mode: ctx.Mode, RuntimeID: ctx.RuntimeID, RuntimeImage: ctx.RuntimeImage, Server: spec, Docker: useDocker, MemoryLimit: m.opts.MemoryLimit, CPULimit: m.opts.CPULimit, DependencyView: ctx.DependencyView, SharedDependencies: ctx.SharedDependencies})
+	processStarted := time.Now()
+	process, err := m.starter.Start(processCtx, LaunchSpec{SessionID: id, UserID: ctx.UserID, Workspace: ctx.RemoteRoot, CacheDir: lease.Dir, MountRoot: filepath.Join(m.cache.root, "mounts"), LanguageID: ctx.LanguageID, Mode: ctx.Mode, RuntimeID: ctx.RuntimeID, RuntimeImage: ctx.RuntimeImage, Server: spec, Docker: useDocker, MemoryLimit: m.opts.MemoryLimit, CPULimit: m.opts.CPULimit, DependencyView: ctx.DependencyView, SharedDependencies: ctx.SharedDependencies, Metrics: m.metrics})
+	m.observeStage("lsp.process.start", processStarted)
 	if err != nil {
 		cancel()
 		lease.Release()
 		dependencyRelease()
 		return nil, fmt.Errorf("start %s language server: %w", ctx.LanguageID, err)
 	}
-	session := &Session{ID: id, Key: key, Context: ctx, Cache: lease.Namespace, Docker: useDocker, messages: make(chan []byte, 16), done: make(chan struct{}), resourcesDone: make(chan struct{}), stopping: make(chan struct{}), process: process, writer: lockedWriter{w: process.Stdin()}, cancel: cancel, lease: lease, sharedRelease: sharedRelease, dependencyRelease: dependencyRelease, storeRelease: storeRelease, resourceLease: resourceLease, maxBytes: m.opts.MaxMessageBytes, uriMapper: mapper}
+	session := &Session{ID: id, Key: key, Context: ctx, Cache: lease.Namespace, Docker: useDocker, messages: make(chan []byte, 16), done: make(chan struct{}), resourcesDone: make(chan struct{}), stopping: make(chan struct{}), process: process, writer: lockedWriter{w: process.Stdin()}, cancel: cancel, lease: lease, sharedRelease: sharedRelease, dependencyRelease: dependencyRelease, storeRelease: storeRelease, resourceLease: resourceLease, maxBytes: m.opts.MaxMessageBytes, uriMapper: mapper, metrics: m.metrics}
 	resourceOwned = false
 	session.Touch()
 	session.onClose = m.remove
@@ -761,6 +799,8 @@ func (m *Manager) RestartDependencyViews(scope DependencyRefreshScope) int {
 }
 
 func (m *Manager) runDependencyRefresh(key string, state *dependencyRefreshState, registry *DependencyRegistry, scope DependencyRefreshScope) (restarted int) {
+	started := time.Now()
+	defer m.observeStage("lsp.dependency.refresh", started)
 	defer m.refreshRunWG.Done()
 	select {
 	case m.refreshGate <- struct{}{}:

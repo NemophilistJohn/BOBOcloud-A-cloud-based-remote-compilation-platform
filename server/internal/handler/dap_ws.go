@@ -20,6 +20,7 @@ import (
 	"bobocloud-server/internal/dap"
 	"bobocloud-server/internal/lifecycle"
 	"bobocloud-server/internal/lsp"
+	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/resourcecontrol"
@@ -46,8 +47,16 @@ type DAPHandler struct {
 	PersonalCache   *personalcache.Manager
 	RuntimeMetadata RuntimeMetadataProvider
 	Resources       *resourcecontrol.Controller
+	Metrics         *metrics.Registry
 	Accepting       func() bool
 	AcquireWork     func(string) (func(), error)
+}
+
+func (h *DAPHandler) observeStage(name string, started time.Time) {
+	if h == nil || h.Metrics == nil {
+		return
+	}
+	h.Metrics.ObserveSince(name, started)
 }
 
 type dapWorkspaceStart struct {
@@ -347,6 +356,8 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer releaseWork()
+	requestStarted := time.Now()
+	defer h.observeStage("dap.websocket.total", requestStarted)
 	conn, err := dapUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Error("DAP WebSocket upgrade failed", "error", err)
@@ -452,9 +463,11 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		pendingRelease = combineDAPReleases(activity.Release, pendingRelease)
 	}
+	workspaceStarted := time.Now()
 	setupCtx, cancelSetup := context.WithTimeout(r.Context(), 30*time.Second)
 	root, folderKey, teamID, projectID, branch, err := h.resolveWorkspace(setupCtx, user, start.Workspace)
 	cancelSetup()
+	h.observeStage("dap.workspace.resolve", workspaceStarted)
 	if err != nil {
 		writeDAPControlError(conn, "workspace_denied", err.Error())
 		return
@@ -464,10 +477,12 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	var dependencyEnv map[string]string
 	processContext := r.Context()
 	if teamID == "" {
+		dependencyStarted := time.Now()
 		var dependencyRelease func()
 		dependencyRoot, dependencyEnv, dependencyStatus, dependencyRelease = h.acquireDAPDependencyCache(
 			user.ID, start.Workspace.FolderName, folderKey, runtime.RuntimeID, runtime.DockerImage, languageID, root, start.SetupCommands,
 		)
+		h.observeStage("dap.dependency.resolve", dependencyStarted)
 		if dependencyRelease != nil {
 			pendingRelease = combineDAPReleases(pendingRelease, dependencyRelease)
 		}
@@ -477,7 +492,9 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if h.PersonalCache != nil {
+		cacheStarted := time.Now()
 		operation, operationErr := h.PersonalCache.BeginOperation(r.Context(), user.ID, userQuotaBytes(h.UserStore, user.ID))
+		h.observeStage("dap.cache.operation", cacheStarted)
 		if operationErr != nil {
 			writeDAPControlError(conn, "start_failed", operationErr.Error())
 			return
@@ -497,8 +514,10 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		copyTimeout = 30 * time.Second
 	}
 	copyCtx, cancelCopy := context.WithTimeout(r.Context(), copyTimeout)
+	copyStarted := time.Now()
 	copyErr := dap.CopyWorkspace(copyCtx, root, tempRoot, h.Config.DAPWorkspaceCopyMaxBytes)
 	cancelCopy()
+	h.observeStage("workspace.copy.dap", copyStarted)
 	if copyErr != nil {
 		_ = os.RemoveAll(tempRoot)
 		writeDAPControlError(conn, "workspace_copy_failed", copyErr.Error())
@@ -519,12 +538,14 @@ func (h *DAPHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dapResourceOwnedByHandler = false
+	managerStarted := time.Now()
 	session, err := h.Manager.Start(dap.SessionContext{
 		UserID: user.ID, WorkspaceKind: start.Workspace.Kind, TeamID: teamID, ProjectID: projectID,
 		Branch: branch, FolderKey: folderKey, RuntimeID: runtime.RuntimeID, LanguageID: languageID,
 		RemoteRoot: tempRoot, PersistDir: filepath.Join(h.Config.DataDir, "dap-cache", "downloads", user.ID, dapRuntimePart),
 		DependencyRoot: dependencyRoot, DependencyMountRoot: filepath.Join(h.Config.DataDir, "dap-cache", "mounts"), DependencyEnv: dependencyEnv, ProcessContext: processContext, ResourceLease: dapResourceLease, Release: sessionRelease,
 	})
+	h.observeStage("dap.gateway.session_start", managerStarted)
 	if err != nil {
 		releaseDAPSessionAfterStartError(sessionRelease, err)
 		writeDAPControlError(conn, "start_failed", err.Error())
@@ -691,6 +712,8 @@ func (h *DAPHandler) HandleChildWebSocket(w http.ResponseWriter, r *http.Request
 		return
 	}
 	defer releaseWork()
+	requestStarted := time.Now()
+	defer h.observeStage("dap.child.websocket.total", requestStarted)
 	conn, err := dapUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return

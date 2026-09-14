@@ -335,7 +335,7 @@ Plugin installation and Marketplace administration use a separate private `host.
 
 The service validates authenticated owner, logical project, runtime, paths, limits, and operation identity before execution. Project workspaces are isolated copies; published dependency generations are read-only. LSP and DAP can read the same generation through separate leases, but they never share sessions, transports, analysis/debug caches, or protocol policy.
 
-When TLS is enabled, all configured HTTP/WebSocket listeners require TLS 1.3 or later. Do not expose the Docker socket, toolkit ports, Bolt files, dependency trees, or service data directory to clients.
+When TLS is enabled, all configured HTTP/WebSocket listeners require TLS 1.3 or later. The supplied production unit sets both `BOBOCLOUD_TLS_REQUIRED=true` and `BOBOCLOUD_TLS_ENABLED=true`, so a missing or downgraded certificate configuration fails closed. Do not expose the Docker socket, toolkit ports, Bolt files, dependency trees, or service data directory to clients.
 
 ## For server operators
 
@@ -378,7 +378,7 @@ go build -trimpath -o bobocloud-server ./cmd/bobocloud
 ./bobocloud-server
 ```
 
-The supplied unit is `server/deploy/bobocloud.service`. It uses `Type=simple`, waits for Docker, reads the optional protected environment file, sends SIGTERM, gives graceful shutdown 20 seconds, restarts on failure, and sends output to journald while the application keeps its managed log.
+The supplied unit is `server/deploy/bobocloud.service`. It uses `Type=simple`, runs as the dedicated non-root `bobocloud` account with the `docker` supplementary group, requires Docker and a protected environment file, forces TLS, applies systemd process restrictions, sends SIGTERM, gives graceful shutdown 30 seconds, restarts on failure, and sends output to journald while the application keeps its managed log. LSP/DAP dependency projection currently retains `CAP_SYS_ADMIN` and disables private mount namespaces so Docker can see validated bind anchors; replacing that capability with a small root-owned mount helper is the next hardening step.
 
 ### Configuration map
 
@@ -437,9 +437,9 @@ Use checks in this order:
 2. `/readyz`: required storage/runtime services are ready.
 3. `serverInfo`: the exact capability, runtime, protocol, endpoint, auth, and limit contract visible to a client.
 4. structured logs and audit records: identity and lifecycle failures without unbounded output.
-5. admin performance/resource views: queue admission, depth, capacity/usage, hot/idle pool hit, container creation, workspace copy, dependency resolution, compile, run, disk growth, and cache hit samples.
+5. admin performance/resource views: queue admission, depth, capacity/usage, hot/idle pool hit, container creation, workspace copy, dependency resolution, compile, run, disk growth, cache hit samples, and LSP/DAP startup/mount/cleanup stages.
 
-Metrics use closed low-cardinality dimensions and bounded windows for P50/P95/P99. Run history is bounded per user and keeps a bounded output tail plus an omission marker. A systemd `active` state alone does not prove Docker, storage, cache, LSP/DAP images, or every listener is usable.
+Metrics use closed low-cardinality dimensions and bounded windows for P50/P95/P99. The admin `getPerformanceMetrics` action exposes fixed stage names such as `queue.resource.wait`, `queue.docker.wait`, `docker.acquire`, `docker.pull`, `workspace.copy.*`, `cache.*`, `lsp.*`, and `dap.*`; each stage includes `p50_ms`, `p95_ms`, and `p99_ms`. Run history is bounded per user and keeps a bounded output tail plus an omission marker. A systemd `active` state alone does not prove Docker, storage, cache, LSP/DAP images, or every listener is usable.
 
 ### Reviewed deployment to 81.70.51.43
 
@@ -451,12 +451,13 @@ Set-Location server/deploy
   -Target production-81.70.51.43 `
   -Build `
   -Apply `
-  -ConfirmTarget 81.70.51.43
+  -ConfirmTarget 81.70.51.43 `
+  -RemoteCAFile /etc/bobocloud/tls/bobocloud.crt
 ```
 
 Before every cross-build, the script removes prior local `server/release/bobocloud-server*` artifacts. During apply it takes a remote release lock, verifies uploaded hashes, stops the service, removes every prior top-level server binary, and installs exactly one `/root/cloudeEditor/bobocloud-server`. It does not create `.bak`, version-number binaries, or rollback snapshots. Rollback means rebuilding and deploying a known source revision.
 
-A deployment is successful only after systemd, `/healthz`, `/readyz`, and `serverInfo` all pass. HTTPS verification requires an explicit CA file and never falls back to `curl -k`. See [server deployment](server/deploy/README.md) for first-host setup and recovery details.
+A deployment is successful only after systemd, `/healthz`, `/readyz`, and `serverInfo` all pass. Production apply uses HTTPS and requires an explicit CA file; verification never falls back to `curl -k`. The release path creates/provisions `bobocloud`, validates Docker-socket access as that user, repairs existing state with symlink-safe ownership changes while the service is stopped, and leaves exactly one deployed binary. See [server deployment](server/deploy/README.md) for first-host setup and recovery details.
 
 ## Repository map
 

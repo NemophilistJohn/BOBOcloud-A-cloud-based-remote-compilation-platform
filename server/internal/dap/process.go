@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/safefile"
 )
 
@@ -30,6 +31,7 @@ type LaunchSpec struct {
 	MemoryLimit         string
 	CPULimit            string
 	NetworkEnable       bool
+	Metrics             *metrics.Registry
 }
 
 type Process interface {
@@ -435,7 +437,11 @@ func ensureDAPInternalNetwork() error {
 func (ExecStarter) Start(ctx context.Context, spec LaunchSpec) (Process, error) {
 	var releaseDependencyMount func()
 	if strings.TrimSpace(spec.DependencyRoot) != "" {
+		mountStarted := time.Now()
 		pinnedRoot, release, err := pinDAPDependencyMount(spec.DependencyMountRoot, spec.SessionID, spec.DependencyRoot)
+		if spec.Metrics != nil {
+			spec.Metrics.ObserveSince("dap.process.mount", mountStarted)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -448,6 +454,7 @@ func (ExecStarter) Start(ctx context.Context, spec LaunchSpec) (Process, error) 
 		releaseDependencyMountAfterStartError(releaseDependencyMount, err)
 		return nil, err
 	}
+	launchStarted := time.Now()
 	var process Process
 	if spec.Adapter.Transport == "tcp" {
 		process, err = startTCPDockerAdapter(ctx, spec, name, args)
@@ -457,6 +464,9 @@ func (ExecStarter) Start(ctx context.Context, spec LaunchSpec) (Process, error) 
 		args = append(args, spec.Adapter.Image)
 		args = append(args, spec.Adapter.Command...)
 		process, err = startDockerCommand(ctx, exec.CommandContext(ctx, "docker", args...), name, spec.SessionID)
+	}
+	if spec.Metrics != nil {
+		spec.Metrics.ObserveSince("dap.adapter.launch", launchStarted)
 	}
 	if err != nil {
 		releaseDependencyMountAfterStartError(releaseDependencyMount, err)
