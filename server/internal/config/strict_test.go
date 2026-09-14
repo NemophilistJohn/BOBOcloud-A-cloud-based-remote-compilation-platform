@@ -56,6 +56,21 @@ func TestConfigRejectsUnsafeRootAndSeedUserIdentities(t *testing.T) {
 	}
 }
 
+func TestConfigAcceptsUUIDSeedUserIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := `{"users":[{"id":"bbf2045f-0090-4a28-a3c8-e8041ffd793e","api_key":"bobo_test-key"}]}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("UUID seed user was rejected: %v", err)
+	}
+	if len(cfg.Users) != 1 || cfg.Users[0].ID != "bbf2045f-0090-4a28-a3c8-e8041ffd793e" {
+		t.Fatalf("unexpected UUID seed users: %+v", cfg.Users)
+	}
+}
+
 func TestConfigRejectsUnboundedRunOutputFromJSONAndEnvironment(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"run_output_retained_bytes":16777217}`), 0600); err != nil {
