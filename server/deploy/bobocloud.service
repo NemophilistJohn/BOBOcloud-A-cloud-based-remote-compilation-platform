@@ -36,6 +36,7 @@ Environment=BOBOCLOUD_TLS_KEY_FILE=/etc/bobocloud/tls/bobocloud.key
 # Keep the existing release data location for this migration. The provisioning
 # step grants bobocloud ownership without copying or deleting user state.
 Environment=BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data
+Environment=BOBOCLOUD_SERVER_ROOT=/shareOnling
 
 # Pin transport and state-root policy at the final exec boundary. This keeps a
 # stale or operator-edited EnvironmentFile from downgrading TLS or redirecting
@@ -46,6 +47,7 @@ ExecStart=/usr/bin/env \
   BOBOCLOUD_TLS_CERT_FILE=/etc/bobocloud/tls/bobocloud.crt \
   BOBOCLOUD_TLS_KEY_FILE=/etc/bobocloud/tls/bobocloud.key \
   BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data \
+  BOBOCLOUD_SERVER_ROOT=/shareOnling \
   /root/cloudeEditor/bobocloud-server
 ExecStartPre=/usr/bin/test -r /root/cloudeEditor/bobocloud-server
 ExecStartPre=/usr/bin/test -f /root/cloudeEditor/bobocloud-server

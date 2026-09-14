@@ -111,6 +111,17 @@ func TestConfigTLSRequiredEnvironmentOverridesCompleteConfiguration(t *testing.T
 	}
 }
 
+func TestConfigServerRootEnvironmentOverride(t *testing.T) {
+	t.Setenv("BOBOCLOUD_SERVER_ROOT", "/srv/bobocloud-workspaces")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ServerRoot != "/srv/bobocloud-workspaces" {
+		t.Fatalf("server root environment override = %q", cfg.ServerRoot)
+	}
+}
+
 func TestConfigRejectsInvalidWebSocketBounds(t *testing.T) {
 	tests := []struct {
 		field string
