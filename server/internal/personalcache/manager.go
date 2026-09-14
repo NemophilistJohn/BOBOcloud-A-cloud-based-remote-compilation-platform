@@ -1569,7 +1569,10 @@ func cloneDependencyTreePortable(source, destination string) error {
 		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			return fmt.Errorf("dependency staging path escapes source")
 		}
-		entryInfo, infoErr := entry.Info()
+		// DirEntry.Info can return a platform-cached directory timestamp. Use
+		// Lstat so the metadata we restore is the same timestamp readers observe
+		// when they later hash the copied tree.
+		entryInfo, infoErr := os.Lstat(path)
 		if infoErr != nil {
 			return infoErr
 		}

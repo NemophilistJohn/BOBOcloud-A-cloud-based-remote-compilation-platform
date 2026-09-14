@@ -20,7 +20,22 @@ var ignoredWorkspaceDirs = map[string]bool{
 	"__pycache__": true, ".venv": true, "venv": true,
 }
 
+// Temporary DAP workspaces are copied by a service running with UMask=0077.
+// A userns-remapped Docker daemon may read the staging tree as a different
+// UID, so explicitly grant read/traverse permission after creation while
+// retaining owner write access for the service.
+func containerReadableDirectoryMode(_ fs.FileMode) fs.FileMode {
+	return 0755
+}
+
+func containerReadableFileMode(mode fs.FileMode) fs.FileMode {
+	return 0644 | (mode.Perm() & 0111)
+}
+
 func CopyWorkspace(ctx context.Context, source, destination string, maxBytes int64) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if maxBytes <= 0 {
 		maxBytes = 512 << 20
 	}
@@ -50,7 +65,11 @@ func CopyWorkspace(ctx context.Context, source, destination string, maxBytes int
 		default:
 		}
 		if current == source {
-			return os.MkdirAll(destination, 0755)
+			directoryMode := containerReadableDirectoryMode(0755)
+			if err := os.MkdirAll(destination, directoryMode.Perm()); err != nil {
+				return err
+			}
+			return os.Chmod(destination, directoryMode.Perm())
 		}
 		if entry.IsDir() && ignoredWorkspaceDirs[entry.Name()] {
 			return filepath.SkipDir
@@ -70,12 +89,20 @@ func CopyWorkspace(ctx context.Context, source, destination string, maxBytes int
 			return nil
 		}
 		if entry.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm())
+			directoryMode := containerReadableDirectoryMode(info.Mode())
+			if err := os.MkdirAll(target, directoryMode.Perm()); err != nil {
+				return err
+			}
+			return os.Chmod(target, directoryMode.Perm())
 		}
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		directoryMode := containerReadableDirectoryMode(0755)
+		if err := os.MkdirAll(filepath.Dir(target), directoryMode.Perm()); err != nil {
+			return err
+		}
+		if err := os.Chmod(filepath.Dir(target), directoryMode.Perm()); err != nil {
 			return err
 		}
 		input, openedInfo, err := safefile.OpenRegularBeneath(source, relative, 0)
@@ -86,8 +113,14 @@ func CopyWorkspace(ctx context.Context, source, destination string, maxBytes int
 			_ = input.Close()
 			return ErrWorkspaceCopyLimit
 		}
-		output, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, openedInfo.Mode().Perm())
+		fileMode := containerReadableFileMode(openedInfo.Mode())
+		output, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, fileMode.Perm())
 		if err != nil {
+			_ = input.Close()
+			return err
+		}
+		if err := output.Chmod(fileMode.Perm()); err != nil {
+			_ = output.Close()
 			_ = input.Close()
 			return err
 		}

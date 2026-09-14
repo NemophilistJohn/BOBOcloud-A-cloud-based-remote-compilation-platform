@@ -51,6 +51,37 @@ func TestPortableReadPinnerRetainsExactGeneration(t *testing.T) {
 	}
 }
 
+func TestPortableReadPinnerPreservesNodeTreeRevision(t *testing.T) {
+	dataDir := t.TempDir()
+	root := filepath.Join(dataDir, "users")
+	source := filepath.Join(dataDir, "published")
+	packageJSON := filepath.Join(source, "node_modules", "lodash", "package.json")
+	if err := os.MkdirAll(filepath.Dir(packageJSON), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(packageJSON, []byte(`{"name":"lodash","version":"4.17.21"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, sourceRevision, _, err := scanNodePackageTree(filepath.Join(source, "node_modules"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pinner := NewPortableReadPinnerForTests()
+	anchor, release, err := pinner.pin(root, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	_, pinnedRevision, _, err := scanNodePackageTree(filepath.Join(anchor, "node_modules"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pinnedRevision != sourceRevision {
+		t.Fatalf("portable Node tree revision changed during pin: source=%s pinned=%s", sourceRevision, pinnedRevision)
+	}
+}
+
 func TestPortableReadPinnerCleansAbandonedPins(t *testing.T) {
 	dataDir := t.TempDir()
 	root := filepath.Join(dataDir, "users")

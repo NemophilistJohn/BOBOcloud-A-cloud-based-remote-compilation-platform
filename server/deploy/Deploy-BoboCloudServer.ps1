@@ -205,6 +205,22 @@ function Test-LinuxAmd64ELF {
     }
 }
 
+function ConvertTo-PosixShellCommand {
+    param(
+        [AllowEmptyString()]
+        [string]$Command
+    )
+
+    if ($null -eq $Command) {
+        return ''
+    }
+    # PowerShell source files are commonly checked out with CRLF. OpenSSH
+    # forwards the command argument byte-for-byte, while POSIX shells treat a
+    # trailing CR as part of the preceding token (for example `set -eu` or a
+    # path assignment). Normalize at the single remote-command boundary.
+    return $Command.Replace("`r`n", "`n").Replace("`r", "`n")
+}
+
 function ConvertTo-PosixShellLiteral {
     param(
         [AllowEmptyString()]
@@ -330,7 +346,13 @@ secure_release_file() {
     setfacl -m "u:$service_user:$mode" "$path"
   fi
 }
-secure_release_file "$root/bobocloud-server" rx
+# A fresh host may not have a previous binary yet. If an entry is present,
+# including a dangling symlink, validate it before the release phase; an absent
+# entry is intentionally allowed so the staged artifact can provide the first
+# installation.
+if [ -e "$root/bobocloud-server" ] || [ -L "$root/bobocloud-server" ]; then
+  secure_release_file "$root/bobocloud-server" rx
+fi
 secure_release_file "$root/config.json" r
 # Enabled protocol workers must have an explicit, validated catalog. A missing
 # catalog must stop provisioning rather than silently selecting local commands.
@@ -547,9 +569,34 @@ repair_mount_root() {
   tree="$1"
   # A stale bind mount at the anchor itself must be cleaned by the server's
   # recovery path, never chmod/chown'ed as if it were an ordinary directory.
-  if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$tree"; then
+  if ! command -v mountpoint >/dev/null 2>&1; then
+    echo "Refusing to repair cache anchor without mountpoint: $tree" >&2
+    exit 1
+  fi
+  if mountpoint -q "$tree"; then
     echo "Refusing to repair a mounted cache anchor: $tree" >&2
     exit 1
+  else
+    mount_status=$?
+    case "$mount_status" in
+      32)
+        # util-linux mountpoint uses 32 for an existing path that is not a
+        # mountpoint. This is the expected result on the production host.
+        ;;
+      1)
+        # A missing path is reported as status 1 by util-linux. Allow the
+        # repair below to create it, but do not treat status 1 as safe for an
+        # existing entry because it can also represent an inspection error.
+        if [ -e "$tree" ] || [ -L "$tree" ]; then
+          echo "Unable to determine whether cache anchor is mounted: $tree" >&2
+          exit 1
+        fi
+        ;;
+      *)
+        echo "Unable to determine whether cache anchor is mounted: $tree" >&2
+        exit 1
+        ;;
+    esac
   fi
   test ! -L "$tree"
   if [ ! -e "$tree" ]; then
@@ -650,7 +697,8 @@ function Invoke-RemoteCommand {
     )
 
     $connection = "$($Profile.User)@$($Profile.Host)"
-    Invoke-NativeCommand -FilePath $SshPath -Arguments ($SshOptions + @($connection, $Command))
+    $normalizedCommand = ConvertTo-PosixShellCommand -Command $Command
+    Invoke-NativeCommand -FilePath $SshPath -Arguments ($SshOptions + @($connection, $normalizedCommand))
 }
 
 $profile = $DeploymentProfiles[$Target]
