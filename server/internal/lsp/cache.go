@@ -12,8 +12,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/safefile"
 )
 
@@ -93,6 +95,7 @@ type CacheManager struct {
 	namespaceEntries int
 	namespaceBudget  time.Duration
 	sizeRefreshes    map[string]*cacheSizeRefreshState
+	metrics          atomic.Pointer[metrics.Registry]
 }
 
 type cacheOwnerGate struct {
@@ -128,6 +131,24 @@ func NewCacheManager(root string, quotaMB, retentionDays int) *CacheManager {
 		sizeEntries: cacheSizeScanEntries, sizeBudget: cacheSizeScanDuration,
 		namespaceEntries: cacheNamespaceEntries, namespaceBudget: cacheNamespaceBudget,
 		sizeRefreshes: make(map[string]*cacheSizeRefreshState),
+	}
+}
+
+// SetMetrics attaches the shared optional performance registry. It is intended
+// to be called during startup, before the cache is exposed to session handlers.
+// Keeping this setter avoids changing the historical constructor signature.
+func (m *CacheManager) SetMetrics(registry *metrics.Registry) {
+	if m != nil {
+		m.metrics.Store(registry)
+	}
+}
+
+func (m *CacheManager) observeStage(name string, started time.Time) {
+	if m == nil {
+		return
+	}
+	if registry := m.metrics.Load(); registry != nil {
+		registry.ObserveSince(name, started)
 	}
 }
 
@@ -189,6 +210,8 @@ func (m *CacheManager) invalidate(ownerKind, ownerID string) {
 }
 
 func (m *CacheManager) Prepare(ctx CacheContext) (*CacheLease, error) {
+	started := time.Now()
+	defer m.observeStage("lsp.cache.prepare", started)
 	if ctx.OwnerKind == "" || ctx.OwnerID == "" || ctx.UserID == "" || ctx.RuntimeID == "" || ctx.LanguageID == "" {
 		return nil, fmt.Errorf("incomplete LSP cache context")
 	}
@@ -239,6 +262,8 @@ func writeCacheMetadata(dir string, ns CacheNamespace) error {
 }
 
 func (m *CacheManager) release(ns CacheNamespace) {
+	started := time.Now()
+	defer m.observeStage("lsp.cache.release", started)
 	gate := m.ownerGate(ns.OwnerKind, ns.OwnerID)
 	gate.mu.Lock()
 	ns.Active = false
@@ -297,6 +322,8 @@ func (m *CacheManager) runReleasedNamespaceSizeRefresh(key string, request cache
 }
 
 func (m *CacheManager) refreshReleasedNamespaceSize(ns CacheNamespace, expectedEpoch uint64) {
+	started := time.Now()
+	defer m.observeStage("lsp.cache.size_scan", started)
 	size, _, complete := directorySizeBounded(ns.Path, cacheSizeScanEntries, cacheSizeScanDuration)
 	if !complete {
 		return
@@ -537,16 +564,24 @@ func (m *CacheManager) inspectOwnerDisk(ownerKind, ownerID string) CacheInfo {
 }
 
 func (m *CacheManager) Inspect(ownerKind, ownerID string) CacheInfo {
+	started := time.Now()
+	defer m.observeStage("lsp.cache.inspect", started)
 	ownerKey := cacheOwnerKey(ownerKind, ownerID)
 	var latest CacheInfo
 	for attempt := 0; attempt < 2; attempt++ {
 		m.mu.Lock()
 		if cached, ok := m.scans[ownerKey]; ok && time.Since(cached.at) < m.scanTTL {
 			m.mu.Unlock()
+			if registry := m.metrics.Load(); registry != nil {
+				registry.Cache("lsp.cache.scan", true)
+			}
 			return cloneCacheInfo(cached.info)
 		}
 		epoch := m.epochs[ownerKey]
 		m.mu.Unlock()
+		if registry := m.metrics.Load(); registry != nil {
+			registry.Cache("lsp.cache.scan", false)
+		}
 
 		info := m.inspectOwnerDisk(ownerKind, ownerID)
 		m.mu.Lock()
@@ -573,6 +608,8 @@ func pathInside(root, target string) bool {
 // Clear deletes only the dedicated analysis cache. Active namespaces are
 // protected and build/dependency cache roots are structurally unreachable.
 func (m *CacheManager) Clear(ownerKind, ownerID, scope, projectID, namespaceKey string) error {
+	started := time.Now()
+	defer m.observeStage("lsp.cache.clear", started)
 	scope = strings.ToLower(strings.TrimSpace(scope))
 	if scope != "all" && scope != "project" && scope != "namespace" {
 		return fmt.Errorf("invalid LSP cache scope")
@@ -692,6 +729,8 @@ func trustedCacheNamespaceKey(key string) bool {
 }
 
 func (m *CacheManager) Prune(ownerKind, ownerID string) CacheInfo {
+	started := time.Now()
+	defer m.observeStage("lsp.cache.prune", started)
 	m.invalidate(ownerKind, ownerID)
 	info := m.Inspect(ownerKind, ownerID)
 	cutoff := time.Now().UTC().Add(-m.retention)

@@ -557,7 +557,10 @@ jobs:
             pwsh -NoProfile -File server/deploy/Deploy-BoboCloudServer.ps1 -Target production-81.70.51.43 -Build 2>&1 | Tee-Object -FilePath $logPath -Append
             if ($LASTEXITCODE -ne 0) { throw "Server build preflight failed with exit code $LASTEXITCODE" }
           } catch {
-            $_ | Out-String | Tee-Object -FilePath $logPath -Append | Write-Error
+            $_ | Out-String | Tee-Object -FilePath $logPath -Append | Write-Error -ErrorAction Continue
+            # Do not let the diagnostic write turn a failed preflight into a
+            # successful PowerShell step. CI must fail closed on build/test errors.
+            exit 1
           }
       - name: Upload release-preflight diagnostics
         if: failure()

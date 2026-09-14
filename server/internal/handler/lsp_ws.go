@@ -700,6 +700,12 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer releaseWork()
+	requestStarted := time.Now()
+	defer func() {
+		if h.Metrics != nil {
+			h.Metrics.ObserveSince("lsp.websocket.total", requestStarted)
+		}
+	}()
 	conn, err := lspUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -814,21 +820,30 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		pendingResourceRelease = combineLSPResourceReleases(projectActivityRelease, activityRelease)
 	}
+	workspaceStarted := time.Now()
 	setupCtx, cancelSetup := context.WithTimeout(r.Context(), 30*time.Second)
 	remoteRoot, folderKey, teamID, projectID, branch, err := h.resolveLSPWorkspace(setupCtx, user, start.Workspace)
 	cancelSetup()
+	if h.Metrics != nil {
+		h.Metrics.ObserveSince("lsp.workspace.resolve", workspaceStarted)
+	}
 	if err != nil {
 		writeLSPError(conn, "workspace_denied", err.Error())
 		return
 	}
 	var teamDependencies *buildcache.SharedDependencies
 	sharedHost, snapshotRoot, dependencyGeneration := "", "", ""
+	dependencyStarted := time.Now()
 	if teamID != "" && h.BuildCache != nil {
 		cacheRuntime := "local"
 		if runtimeID != "local" {
 			cacheRuntime = "docker-" + runtimeID
 		}
+		cacheStarted := time.Now()
 		dependencyLease, dependencyErr := h.BuildCache.SharedDependencies(buildcache.BuildContext{TeamID: teamID, ProjectID: projectID, Branch: branch, Runtime: cacheRuntime, Language: canonicalRuntimeLanguage(start.LanguageID)})
+		if h.Metrics != nil {
+			h.Metrics.ObserveSince("cache.team.shared_dependencies", cacheStarted)
+		}
 		if dependencyErr != nil {
 			writeLSPError(conn, "cache_error", dependencyErr.Error())
 			return
@@ -859,6 +874,9 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	dependencyRequest, dependencyView, dependencyResolved := h.resolveAnalysisDependencies(user.ID, teamID, runtimeID, start.LanguageID, remoteRoot, workspaceID, sharedHost, snapshotRoot, dependencyGeneration, projectDependencies)
+	if h.Metrics != nil {
+		h.Metrics.ObserveSince("lsp.dependency.resolve", dependencyStarted)
+	}
 	if projectDependencies.Release != nil && (!dependencyResolved || !dependencyView.UsesHostRoot(projectDependencies.Root)) {
 		projectDependencies.Release()
 	}
@@ -873,7 +891,11 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 	sessionResourceRelease := pendingResourceRelease
 	pendingResourceRelease = nil
 	lspResourceOwnedByHandler = false
+	managerStarted := time.Now()
 	session, err := h.LSP.Start(lsp.SessionContext{UserID: user.ID, WorkspaceKind: start.Workspace.Kind, TeamID: teamID, ProjectID: projectID, Branch: branch, FolderKey: folderKey, RuntimeID: runtimeID, RuntimeImage: runtimeImage, LanguageID: start.LanguageID, Mode: mode, RemoteRoot: remoteRoot, DependencyRequest: dependencyRequest, DependencyView: dependencyView, DependencyResolved: dependencyResolved, SharedDependencies: shared, DependencyStoreRelease: sessionResourceRelease, ProcessContext: r.Context(), ResourceLease: lspResourceLease})
+	if h.Metrics != nil {
+		h.Metrics.ObserveSince("lsp.gateway.session_start", managerStarted)
+	}
 	if err != nil {
 		writeLSPError(conn, "start_failed", err.Error())
 		return
@@ -1196,6 +1218,12 @@ clientLoop:
 				}
 				requestID, cursor, maxBytes := control.RequestID, control.Cursor, control.MaxBytes
 				go func() {
+					indexStarted := time.Now()
+					defer func() {
+						if h.Metrics != nil {
+							h.Metrics.ObserveSince("lsp.dependency.index", indexStarted)
+						}
+					}()
 					defer dependencyIndexRequests.release()
 					page, indexErr := session.DependencyAPIIndexPage(cursor, maxBytes)
 					if indexErr != nil {
@@ -1237,7 +1265,11 @@ clientLoop:
 				case <-serverDone:
 				case <-time.After(2 * time.Second):
 				}
+				cacheClearStarted := time.Now()
 				info, clearErr := h.LSP.ClearCache(ownerKind, ownerID, "namespace", session.Context.ProjectID, session.Cache.Key)
+				if h.Metrics != nil {
+					h.Metrics.ObserveSince("lsp.websocket.cache_clear", cacheClearStarted)
+				}
 				result := map[string]any{"type": "lsp.cache", "success": clearErr == nil, "message": errorMessage(clearErr), "cache": info, "restartRequired": true}
 				if writeJSONAndClose(result, websocket.CloseNormalClosure, "analysis cache cleared") != nil {
 					closing.Store(true)

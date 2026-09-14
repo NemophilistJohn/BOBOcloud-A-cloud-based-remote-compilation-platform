@@ -16,7 +16,7 @@ param(
     [string]$ConfirmTarget,
 
     [ValidateSet('http', 'https')]
-    [string]$Transport = 'http',
+    [string]$Transport = 'https',
 
     [ValidatePattern('^/[A-Za-z0-9._/@+=:,%-]+$')]
     [string]$RemoteCAFile,
@@ -39,6 +39,16 @@ $DeploymentProfiles = @{
         RemoteRoot  = '/root/cloudeEditor'
         ServiceName = 'bobocloud.service'
         HTTPPort    = 3100
+        ServiceUser = 'bobocloud'
+        ServiceGroup = 'bobocloud'
+        DockerGroup = 'docker'
+        DataRoot    = '/root/cloudeEditor/data'
+        WorkspaceRoot = '/shareOnling'
+        TLSRoot     = '/etc/bobocloud/tls'
+        TLSCertFile = '/etc/bobocloud/tls/bobocloud.crt'
+        TLSKeyFile  = '/etc/bobocloud/tls/bobocloud.key'
+        EnvironmentFile = '/etc/bobocloud/bobocloud.env'
+        RequireTLS  = $true
     }
 }
 
@@ -99,22 +109,34 @@ function Invoke-LocalLinuxAmd64Build {
     $goPath = Get-NativeCommandPath -Name 'go'
     $releaseDir = Join-Path -Path $ServerRoot -ChildPath 'release'
     $outputPath = Join-Path -Path $releaseDir -ChildPath 'bobocloud-server-linux-amd64'
-    New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+    $releaseEntry = Get-Item -LiteralPath $releaseDir -Force -ErrorAction SilentlyContinue
+    if ($null -ne $releaseEntry) {
+        if (-not $releaseEntry.PSIsContainer -or -not [string]::IsNullOrWhiteSpace([string]$releaseEntry.LinkType)) {
+            throw "Refusing to use a release path that is not a real directory: $releaseDir"
+        }
+    } else {
+        New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+    }
 
     # A release directory must never become a local archive of deployable
     # server binaries. Resolve each exact target before deleting it so this
     # cleanup cannot escape the release directory.
     $releaseRoot = (Resolve-Path -LiteralPath $releaseDir).Path
     $releasePrefix = [System.IO.Path]::GetFullPath($releaseRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
-    $previousArtifacts = Get-ChildItem -LiteralPath $releaseRoot -File | Where-Object {
+    $previousArtifacts = Get-ChildItem -LiteralPath $releaseRoot -Force | Where-Object {
         $_.Name -match '^bobocloud-server'
     }
     foreach ($previousArtifact in $previousArtifacts) {
-        $resolvedArtifact = (Resolve-Path -LiteralPath $previousArtifact.FullName).Path
-        if (-not [System.IO.Path]::GetFullPath($resolvedArtifact).StartsWith($releasePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Refusing to remove a server artifact outside the release directory: $resolvedArtifact"
+        $candidatePath = [System.IO.Path]::GetFullPath($previousArtifact.FullName)
+        if (-not $candidatePath.StartsWith($releasePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to remove a server artifact outside the release directory: $candidatePath"
         }
-        Remove-Item -LiteralPath $resolvedArtifact -Force
+        if ($previousArtifact.PSIsContainer -and [string]::IsNullOrWhiteSpace([string]$previousArtifact.LinkType)) {
+            throw "Refusing to remove a release directory: $candidatePath"
+        }
+        # Use the lexical path so a symbolic link is removed rather than
+        # resolving and deleting its target outside the release directory.
+        Remove-Item -LiteralPath $candidatePath -Force
     }
 
     $originalValues = @{}
@@ -188,20 +210,176 @@ function Get-RemotePrepareCommand {
         [pscustomobject]$Profile
     )
 
-    $template = @'
+	$template = @'
 set -eu
 umask 077
-install -d -m 0700 "__ROOT__/.deploy"
-exec 9>"__ROOT__/.deploy/bobocloud-release.lock"
+root="__ROOT__"
+service_user="__SERVICE_USER__"
+service_group="__SERVICE_GROUP__"
+docker_group="__DOCKER_GROUP__"
+data_root="__DATA_ROOT__"
+workspace_root="__WORKSPACE_ROOT__"
+tls_source="$root/tls"
+tls_root="__TLS_ROOT__"
+tls_cert="__TLS_CERT__"
+tls_key="__TLS_KEY__"
+environment_file="__ENVIRONMENT_FILE__"
+
+command -v install >/dev/null 2>&1
+command -v getent >/dev/null 2>&1
+command -v useradd >/dev/null 2>&1
+command -v groupadd >/dev/null 2>&1
+command -v usermod >/dev/null 2>&1
+command -v runuser >/dev/null 2>&1
+command -v stat >/dev/null 2>&1
+command -v flock >/dev/null 2>&1
+
+test -d "$root"
+test ! -L "$root"
+test -d "$root/tls"
+test ! -L "$root/tls"
+
+# Serialize each provisioning/release phase. The release phase reacquires the
+# same lock before stopping systemd, so concurrent replacements cannot overlap;
+# content-addressed uploads may safely happen between the two phases.
+install -d -o root -g root -m 0700 "$root/.deploy"
+test ! -L "$root/.deploy"
+exec 9>"$root/.deploy/bobocloud-release.lock"
 if ! flock -n 9; then
   echo "Another BOBOCLOUD release is already in progress." >&2
   exit 75
 fi
-# Content-addressed uploads are safe to coexist. Only reap abandoned files
-# old enough that they cannot belong to another active upload.
-find "__ROOT__/.deploy" -maxdepth 1 -type f \( -name 'bobocloud-server-*.tmp' -o -name 'bobocloud.service-*.tmp.service' \) -mmin +1440 -delete
+find "$root/.deploy" -maxdepth 1 -type f \( -name 'bobocloud-server-*.tmp' -o -name 'bobocloud.service-*.tmp.service' \) -mmin +1440 -delete
+
+# Create a locked-down service identity. It receives no shell and no host
+# capabilities except the explicit Docker group needed by the CLI.
+if ! getent group "$service_group" >/dev/null 2>&1; then
+  groupadd --system "$service_group"
+fi
+test "$(getent group "$service_group" | cut -d: -f3)" != 0
+if ! id -u "$service_user" >/dev/null 2>&1; then
+  useradd --system --gid "$service_group" --home-dir "$data_root" --shell /usr/sbin/nologin "$service_user"
+else
+  usermod --gid "$service_group" --shell /usr/sbin/nologin "$service_user"
+fi
+test "$(id -u "$service_user")" != 0
+getent group "$docker_group" >/dev/null 2>&1
+test "$(getent group "$docker_group" | cut -d: -f3)" != 0
+usermod --append --groups "$docker_group" "$service_user"
+
+# Docker group membership is checked as the actual service identity. Merely
+# having a group entry while the socket is root-only would otherwise make a
+# release appear healthy and fail after systemd starts it.
+test -S /run/docker.sock
+test "$(stat -c '%G' /run/docker.sock)" = "$docker_group"
+test "$(stat -c '%A' /run/docker.sock | cut -c5-6)" = "rw"
+runuser -u "$service_user" -- id -nG | tr ' ' '\n' | grep -Fx "$docker_group" >/dev/null
+runuser -u "$service_user" -- docker info --format '{{.ServerVersion}}' >/dev/null
+
+# Preserve the existing /root/cloudeEditor release location while allowing
+# only this account to traverse /root and read the release inputs. Prefer ACLs;
+# the chmod fallback grants execute-only traversal on /root and group access to
+# the release directory, never broad read access to root's home files.
+if command -v setfacl >/dev/null 2>&1; then
+  setfacl -m "u:$service_user:--x" /root
+  chmod 0750 "$root"
+  setfacl -m "u:$service_user:r-x" "$root"
+else
+  # setfacl is not present on minimal images. Use a dedicated group for
+  # traversal and release-file access; do not grant the group access to other
+  # files in /root.
+  chgrp "$service_group" /root
+  chmod 0710 /root
+  chgrp "$service_group" "$root"
+  chmod 0750 "$root"
+fi
+
+secure_release_file() {
+  path="$1"
+  mode="$2"
+  test -f "$path"
+  test ! -L "$path"
+  chown root:"$service_group" "$path"
+  case "$mode" in
+    r) chmod 0640 "$path" ;;
+    rx) chmod 0750 "$path" ;;
+    *) echo "Unsupported release-file mode: $mode" >&2; exit 1 ;;
+  esac
+  if command -v setfacl >/dev/null 2>&1; then
+    setfacl -m "u:$service_user:$mode" "$path"
+  fi
+}
+secure_release_file "$root/bobocloud-server" rx
+secure_release_file "$root/config.json" r
+for optional_file in compile_rules.json lsp_servers.json dap_adapters.json; do
+  if [ -f "$root/$optional_file" ]; then
+    secure_release_file "$root/$optional_file" r
+  fi
+done
+
+# Keep existing user state in place for this release. Ownership is repaired
+# only after the release command stops the service, so a running compiler can
+# never race a recursive permission change. The release command also uses
+# -P/--no-dereference and skips managed mount roots.
+test -d "$data_root"
+test ! -L "$data_root"
+test -d "$workspace_root"
+test ! -L "$workspace_root"
+
+# Move the existing root-only certificate/key into a service-readable, root-
+# owned directory. Never follow a symlink or relax the private-key mode.
+test ! -L "$tls_source"
+if [ -e "$tls_root" ] && [ -L "$tls_root" ]; then
+  echo "Refusing symlink TLS directory: $tls_root" >&2
+  exit 1
+fi
+install -d -o root -g "$service_group" -m 0750 "$tls_root"
+for tls_file in "$tls_cert" "$tls_key"; do
+  if [ -e "$tls_file" ] && [ -L "$tls_file" ]; then
+    echo "Refusing symlink TLS destination: $tls_file" >&2
+    exit 1
+  fi
+done
+if [ -f "$tls_source/bobocloud.crt" ]; then
+  test ! -L "$tls_source/bobocloud.crt"
+  test "$(stat -c '%u' "$tls_source/bobocloud.crt")" = 0
+  install -o root -g "$service_group" -m 0640 "$tls_source/bobocloud.crt" "$tls_cert"
+fi
+if [ -f "$tls_source/bobocloud.key" ]; then
+  test ! -L "$tls_source/bobocloud.key"
+  test "$(stat -c '%u' "$tls_source/bobocloud.key")" = 0
+  case "$(stat -c '%A' "$tls_source/bobocloud.key")" in
+    -rw-------|-r--------) ;;
+    *) echo "Refusing TLS private key with broad permissions" >&2; exit 1 ;;
+  esac
+  install -o root -g "$service_group" -m 0640 "$tls_source/bobocloud.key" "$tls_key"
+fi
+test -s "$tls_cert"
+test -s "$tls_key"
+test "$(stat -c '%u' "$tls_key")" = 0
+test "$(stat -c '%A' "$tls_key" | cut -c5-6)" = "r-"
+
+# The env file is intentionally required by the unit. Create an empty,
+# protected file on a first install so systemd cannot silently omit it.
+if [ -e "$environment_file" ] && [ -L "$environment_file" ]; then
+  echo "Refusing symlink environment file: $environment_file" >&2
+  exit 1
+fi
+environment_dir="$(dirname "$environment_file")"
+if [ -e "$environment_dir" ] && [ -L "$environment_dir" ]; then
+  echo "Refusing symlink environment directory: $environment_dir" >&2
+  exit 1
+fi
+install -d -o root -g "$service_group" -m 0750 "$environment_dir"
+if [ ! -e "$environment_file" ]; then
+  install -o root -g "$service_group" -m 0640 /dev/null "$environment_file"
+else
+  chown root:"$service_group" "$environment_file"
+  chmod 0640 "$environment_file"
+fi
+
 '@
-    return $template.Replace('__ROOT__', $Profile.RemoteRoot)
+	return $template.Replace('__ROOT__', $Profile.RemoteRoot).Replace('__SERVICE_USER__', $Profile.ServiceUser).Replace('__SERVICE_GROUP__', $Profile.ServiceGroup).Replace('__DOCKER_GROUP__', $Profile.DockerGroup).Replace('__DATA_ROOT__', $Profile.DataRoot).Replace('__WORKSPACE_ROOT__', $Profile.WorkspaceRoot).Replace('__TLS_ROOT__', $Profile.TLSRoot).Replace('__TLS_CERT__', $Profile.TLSCertFile).Replace('__TLS_KEY__', $Profile.TLSKeyFile).Replace('__ENVIRONMENT_FILE__', $Profile.EnvironmentFile)
 }
 
 function Get-RemoteChecksumCommand {
@@ -264,6 +442,10 @@ root="__ROOT__"
 artifact="__ARTIFACT__"
 unit_artifact="__UNIT_ARTIFACT__"
 service="__SERVICE__"
+service_user="__SERVICE_USER__"
+service_group="__SERVICE_GROUP__"
+data_root="__DATA_ROOT__"
+workspace_root="__WORKSPACE_ROOT__"
 expected_sha="__EXPECTED_SHA__"
 expected_unit_sha="__EXPECTED_UNIT_SHA__"
 transport="__TRANSPORT__"
@@ -278,26 +460,83 @@ if ! flock -n 9; then
   exit 75
 fi
 
+test -f "$artifact"
+test ! -L "$artifact"
+test -f "$unit_artifact"
+test ! -L "$unit_artifact"
 actual_sha="$(sha256sum "$artifact" | awk '{print $1}')"
 test "$actual_sha" = "$expected_sha"
 actual_unit_sha="$(sha256sum "$unit_artifact" | awk '{print $1}')"
 test "$actual_unit_sha" = "$expected_unit_sha"
 systemd-analyze verify "$unit_artifact"
 
+# Refuse to install a unit that would silently revert to a root or plaintext
+# service. The unit itself carries the same values; this check protects the
+# release transaction if a stale/mismatched artifact is supplied.
+grep -Eq '^User=__SERVICE_USER__$' "$unit_artifact"
+grep -Eq '^SupplementaryGroups=docker$' "$unit_artifact"
+grep -Eq '^Environment=BOBOCLOUD_TLS_REQUIRED=true$' "$unit_artifact"
+grep -Eq '^Environment=BOBOCLOUD_TLS_ENABLED=true$' "$unit_artifact"
+grep -Eq '^ExecStart=/usr/bin/env' "$unit_artifact"
+grep -Eq 'BOBOCLOUD_TLS_REQUIRED=true' "$unit_artifact"
+grep -Eq 'BOBOCLOUD_TLS_ENABLED=true' "$unit_artifact"
+grep -Eq 'BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data' "$unit_artifact"
+test "$transport" = 'https'
+
 install -m 0644 "$unit_artifact" "/etc/systemd/system/$service"
 systemctl daemon-reload
 
-systemctl stop "$service"
+if systemctl is-active --quiet "$service"; then
+  systemctl stop "$service"
+fi
 if systemctl is-active --quiet "$service"; then
   echo "Service remained active after stop: $service" >&2
   exit 1
 fi
 
+# Repair ownership while the old process is stopped. Never follow a symlink,
+# and never walk the kernel mount anchors which Docker/LSP/DAP may have left in
+# the data tree. Bind anchors are cleaned during the next server startup.
+repair_tree() {
+  tree="$1"
+  test -d "$tree"
+  test ! -L "$tree"
+  find -P "$tree" -xdev \
+    \( -path "$data_root/lsp-cache/mounts" -o -path "$data_root/dap-cache/mounts" -o -path "$data_root/personalcache-mounts" \) -prune -o \
+    \( -type d -o -type f \) -exec chown --no-dereference "$service_user:$service_group" '{}' +
+  find -P "$tree" -xdev \
+    \( -path "$data_root/lsp-cache/mounts" -o -path "$data_root/dap-cache/mounts" -o -path "$data_root/personalcache-mounts" \) -prune -o \
+    \( -type d -o -type f \) -exec chmod go-rwx '{}' +
+}
+repair_mount_root() {
+  tree="$1"
+  if [ ! -e "$tree" ]; then
+    install -d -o "$service_user" -g "$service_group" -m 0700 "$tree"
+    return
+  fi
+  test -d "$tree"
+  test ! -L "$tree"
+  # Child entries may be live bind mounts. Change only the anchor directory
+  # itself so ownership repair never crosses into a mounted cache generation.
+  chown --no-dereference "$service_user:$service_group" "$tree"
+  chmod 0700 "$tree"
+}
+repair_tree "$data_root"
+repair_tree "$workspace_root"
+repair_mount_root "$data_root/lsp-cache/mounts"
+repair_mount_root "$data_root/dap-cache/mounts"
+repair_mount_root "$data_root/personalcache-mounts"
+install -d -o "$service_user" -g "$service_group" -m 0700 "$data_root"
+install -d -o "$service_user" -g "$service_group" -m 0700 "$workspace_root"
+
 # Do not retain previous deployed binary versions or rollback snapshots.
 rm -f "$root/.bobocloud-server.next"
-find "$root" -maxdepth 1 -type f -name 'bobocloud-server*' -delete
-install -m 0755 "$artifact" "$root/.bobocloud-server.next"
+find -P "$root" -maxdepth 1 \( -type f -o -type l \) -name 'bobocloud-server*' -delete
+install -o root -g "$service_group" -m 0750 "$artifact" "$root/.bobocloud-server.next"
 mv -f "$root/.bobocloud-server.next" "$root/bobocloud-server"
+if command -v setfacl >/dev/null 2>&1; then
+  setfacl -m "u:$service_user:r-x" "$root/bobocloud-server"
+fi
 systemctl start "$service"
 
 if [ "$transport" = 'https' ]; then
@@ -340,6 +579,7 @@ wait_for_get() {
 }
 
 systemctl is-active --quiet "$service"
+test "$(systemctl show -p User --value "$service")" = "$service_user"
 wait_for_get '/healthz'
 wait_for_get '/readyz'
 server_info="$(probe_server_info)"
@@ -348,7 +588,7 @@ printf '%s' "$server_info" | grep -Eq '"success"[[:space:]]*:[[:space:]]*true'
 systemctl --no-pager --full status "$service"
 rm -f "$artifact" "$unit_artifact"
 '@
-    return ($template.Replace('__ROOT__', $Profile.RemoteRoot).Replace('__ARTIFACT__', $ArtifactPath).Replace('__UNIT_ARTIFACT__', $UnitArtifactPath).Replace('__SERVICE__', $Profile.ServiceName).Replace('__EXPECTED_SHA__', $ExpectedHash).Replace('__EXPECTED_UNIT_SHA__', $ExpectedUnitHash).Replace('__TRANSPORT__', $Transport).Replace('__PROBE_HOST__', $ProbeHost).Replace('__HTTP_PORT__', [string]$Profile.HTTPPort).Replace('__CA_FILE__', $RemoteCAFile))
+    return ($template.Replace('__ROOT__', $Profile.RemoteRoot).Replace('__ARTIFACT__', $ArtifactPath).Replace('__UNIT_ARTIFACT__', $UnitArtifactPath).Replace('__SERVICE__', $Profile.ServiceName).Replace('__SERVICE_USER__', $Profile.ServiceUser).Replace('__SERVICE_GROUP__', $Profile.ServiceGroup).Replace('__DATA_ROOT__', $Profile.DataRoot).Replace('__WORKSPACE_ROOT__', $Profile.WorkspaceRoot).Replace('__EXPECTED_SHA__', $ExpectedHash).Replace('__EXPECTED_UNIT_SHA__', $ExpectedUnitHash).Replace('__TRANSPORT__', $Transport).Replace('__PROBE_HOST__', $ProbeHost).Replace('__HTTP_PORT__', [string]$Profile.HTTPPort).Replace('__CA_FILE__', $RemoteCAFile))
 }
 
 function Invoke-RemoteCommand {
@@ -375,8 +615,11 @@ if ($null -eq $profile) {
     throw "Deployment profile was not found: $Target"
 }
 
-if ($Transport -eq 'https' -and [string]::IsNullOrWhiteSpace($RemoteCAFile)) {
-    throw 'HTTPS deployment verification requires -RemoteCAFile; production verification never uses curl -k.'
+if ($profile.RequireTLS -and $Apply -and $Transport -ne 'https') {
+	throw 'The production profile requires HTTPS; plaintext deployment verification is disabled.'
+}
+if ($Transport -eq 'https' -and $Apply -and [string]::IsNullOrWhiteSpace($RemoteCAFile)) {
+	throw 'HTTPS deployment verification requires -RemoteCAFile when applying a release; production verification never uses curl -k.'
 }
 if ([string]::IsNullOrWhiteSpace($ProbeHost)) {
     $ProbeHost = $profile.Host
@@ -407,7 +650,7 @@ Write-Output "Local Linux/amd64 ELF SHA-256: $localHash"
 Write-Output "Local systemd unit SHA-256: $unitHash"
 Write-Output "Remote artifact path: $artifactPath"
 Write-Output "Remote systemd unit path: $unitArtifactPath"
-Write-Output "Verification transport: $Transport; probe host: $ProbeHost"
+Write-Output "Verification transport: $Transport; probe host: $ProbeHost; production TLS required: $($profile.RequireTLS)"
 
 if (-not $Apply) {
     Write-Output 'No remote action was taken. Add -Apply -ConfirmTarget <profile host> to deploy after reviewing this preflight.'

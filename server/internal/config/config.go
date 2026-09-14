@@ -71,10 +71,14 @@ type Config struct {
 	// DAPChildWSPort carries js-debug child sessions on a separate WebSocket
 	// listener. It is never a Docker adapter port and must use the same TLS
 	// policy as the primary API/WebSocket listeners.
-	DAPChildWSPort int    `json:"dap_child_ws_port"`
-	TLSEnabled     bool   `json:"tls_enabled"`
-	TLSCertFile    string `json:"tls_cert_file"`
-	TLSKeyFile     string `json:"tls_key_file"`
+	DAPChildWSPort int `json:"dap_child_ws_port"`
+	// TLSRequired is a deployment guard. Development configurations may keep
+	// TLS disabled, but a production unit can set this flag so an accidental
+	// plaintext listener fails closed during configuration loading.
+	TLSRequired bool   `json:"tls_required"`
+	TLSEnabled  bool   `json:"tls_enabled"`
+	TLSCertFile string `json:"tls_cert_file"`
+	TLSKeyFile  string `json:"tls_key_file"`
 	// Listener limits protect the public HTTP/WebSocket entry points without
 	// imposing a write deadline on long-running compilation or streaming flows.
 	HTTPReadHeaderTimeoutSeconds    int `json:"http_read_header_timeout_seconds"`
@@ -244,6 +248,7 @@ func Default() *Config {
 		HTTPPort:                        3100,
 		WSPort:                          3101,
 		DAPChildWSPort:                  3102,
+		TLSRequired:                     false,
 		TLSEnabled:                      false,
 		HTTPReadHeaderTimeoutSeconds:    10,
 		HTTPRequestBodyTimeoutSeconds:   15,
@@ -790,6 +795,9 @@ func Load(path string) (*Config, error) {
 	if cfg.TerminalWorkspaceCopyMaxBytes <= 0 {
 		cfg.TerminalWorkspaceCopyMaxBytes = 512 << 20
 	}
+	if cfg.TLSRequired && !cfg.TLSEnabled {
+		return nil, fmt.Errorf("tls_required requires tls_enabled=true")
+	}
 	if cfg.TLSEnabled && (strings.TrimSpace(cfg.TLSCertFile) == "" || strings.TrimSpace(cfg.TLSKeyFile) == "") {
 		return nil, fmt.Errorf("tls_enabled requires tls_cert_file and tls_key_file")
 	}
@@ -992,6 +1000,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("BOBOCLOUD_TLS_ENABLED"); v != "" {
 		cfg.TLSEnabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("BOBOCLOUD_TLS_REQUIRED"); v != "" {
+		cfg.TLSRequired = v == "true" || v == "1"
 	}
 	if v := os.Getenv("BOBOCLOUD_TLS_CERT_FILE"); v != "" {
 		cfg.TLSCertFile = v

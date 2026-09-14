@@ -70,6 +70,47 @@ func TestConfigRejectsUnboundedRunOutputFromJSONAndEnvironment(t *testing.T) {
 	}
 }
 
+func TestConfigTLSRequiredFailsClosedForPlaintextOrMissingCredentials(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "required without enabled", body: `{"tls_required":true}`, want: "tls_required"},
+		{name: "enabled without certificate", body: `{"tls_required":true,"tls_enabled":true,"tls_key_file":"/etc/bobocloud/tls/bobocloud.key"}`, want: "tls_enabled"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(test.body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("TLS config error = %v, want %s", err, test.want)
+			}
+		})
+	}
+
+	t.Setenv("BOBOCLOUD_TLS_REQUIRED", "true")
+	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "tls_required") {
+		t.Fatalf("environment TLS requirement was not enforced: %v", err)
+	}
+}
+
+func TestConfigTLSRequiredEnvironmentOverridesCompleteConfiguration(t *testing.T) {
+	t.Setenv("BOBOCLOUD_TLS_REQUIRED", "true")
+	t.Setenv("BOBOCLOUD_TLS_ENABLED", "true")
+	t.Setenv("BOBOCLOUD_TLS_CERT_FILE", "/etc/bobocloud/tls/bobocloud.crt")
+	t.Setenv("BOBOCLOUD_TLS_KEY_FILE", "/etc/bobocloud/tls/bobocloud.key")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.TLSRequired || !cfg.TLSEnabled || cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
+		t.Fatalf("TLS environment overrides = required:%v enabled:%v cert:%q key:%q", cfg.TLSRequired, cfg.TLSEnabled, cfg.TLSCertFile, cfg.TLSKeyFile)
+	}
+}
+
 func TestConfigRejectsInvalidWebSocketBounds(t *testing.T) {
 	tests := []struct {
 		field string

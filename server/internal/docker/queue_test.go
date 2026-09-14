@@ -134,6 +134,23 @@ func TestRequestQueueTimeoutStats(t *testing.T) {
 	}
 }
 
+func TestAcquireViaQueuePublishesDockerWaitTiming(t *testing.T) {
+	registry := metrics.New(true, 8)
+	pool := &Pool{queue: NewRequestQueue(1, time.Second), metrics: registry, maxTotal: 1, activeCount: 1}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := pool.acquireViaQueue(ctx, "alice", "python:3.11", "python:3.11", "", nil, nil, nil); err == nil {
+		t.Fatal("cancelled Docker queue request unexpectedly succeeded")
+	}
+	stage, ok := registry.Snapshot().Stages["queue.docker.wait"]
+	if !ok || stage.Count != 1 {
+		t.Fatalf("Docker queue wait stage = %+v, want one observation", stage)
+	}
+	if stage.P95MS < 0 || stage.P99MS < stage.P95MS {
+		t.Fatalf("Docker queue wait quantiles = %+v", stage)
+	}
+}
+
 func TestAcquireViaQueueSnapshotsCapacityUnderLock(t *testing.T) {
 	pool := &Pool{queue: NewRequestQueue(1, time.Second), maxTotal: 8}
 	output := &queueStatusOutput{}

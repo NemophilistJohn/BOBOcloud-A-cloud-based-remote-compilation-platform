@@ -373,6 +373,14 @@ func TestBOBOHTTPServerBoundsHeadersWithoutTimingOutStreams(t *testing.T) {
 	}
 }
 
+func TestBOBOHTTPServerRejectsRequiredPlaintext(t *testing.T) {
+	server := &http.Server{Addr: "127.0.0.1:0"}
+	cfg := &config.Config{TLSRequired: true, TLSEnabled: false}
+	if err := serveBOBOHTTP(server, cfg); err == nil || err.Error() != "TLS is required but disabled" {
+		t.Fatalf("plaintext listener error = %v", err)
+	}
+}
+
 func TestPeriodicLoopStopsWithServerContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	called := make(chan struct{}, 1)

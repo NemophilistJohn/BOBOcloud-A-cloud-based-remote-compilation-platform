@@ -1,13 +1,29 @@
 package resourcecontrol
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"bobocloud-server/internal/metrics"
 	"bobocloud-server/internal/resourcegovernor"
 )
+
+func testQueuePolicy() QueuePolicy {
+	policy := QueuePolicy{
+		Enabled:              true,
+		MaxWaiting:           8,
+		MaxWaitingPerOwner:   8,
+		MaxWaitingPerProject: 8,
+		AgingThreshold:       time.Second,
+	}
+	for workload := Workload(0); workload < workloadCount; workload++ {
+		policy.Workloads[workload] = QueueWorkloadPolicy{Weight: 1, MaxWaiting: 8, MaxWait: time.Second}
+	}
+	return policy
+}
 
 func testProfiles() Profiles {
 	profiles := make(Profiles)
@@ -65,6 +81,105 @@ func TestControllerAdmissionAndReleaseUpdateBoundedMetrics(t *testing.T) {
 		if resource.InUse != 0 {
 			t.Fatalf("resource remained in use: %+v", resource)
 		}
+	}
+}
+
+func TestControllerRecordsFairQueueWaitDistribution(t *testing.T) {
+	registry := metrics.New(true, 8)
+	governor, err := resourcegovernor.New(resourcegovernor.NodeResources{Capacity: resourcegovernor.Resources{
+		Slots: 1, CPUMillicores: 1000, MemoryBytes: 1024, PIDs: 16,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := NewWithQueue(governor, testProfiles(), registry, testQueuePolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := controller.TryAcquire(WorkloadRun, "owner-a", "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	type acquireResult struct {
+		lease *Lease
+		err   error
+	}
+	resultCh := make(chan acquireResult, 1)
+	go func() {
+		lease, acquireErr := controller.Acquire(ctx, Admission{
+			Workload: WorkloadRun, OwnerID: "owner-b", ScopeID: "project-b", WorkloadID: "run-2",
+		})
+		resultCh <- acquireResult{lease: lease, err: acquireErr}
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if controller.QueueSnapshot().Total > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if controller.QueueSnapshot().Total == 0 {
+		t.Fatal("request never entered the fair queue")
+	}
+	time.Sleep(5 * time.Millisecond)
+	if !first.Release() {
+		t.Fatal("first lease release failed")
+	}
+	result := <-resultCh
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if result.lease == nil {
+		t.Fatal("queued request returned a nil lease")
+	}
+	result.lease.Release()
+
+	stage, ok := registry.Snapshot().Stages["queue.resource.wait"]
+	if !ok || stage.Count != 1 {
+		t.Fatalf("queue wait stage = %+v, want one observation", stage)
+	}
+	if stage.P95MS <= 0 || stage.P99MS < stage.P95MS {
+		t.Fatalf("queue wait quantiles = %+v", stage)
+	}
+}
+
+func TestControllerRecordsQueueTimeoutWait(t *testing.T) {
+	registry := metrics.New(true, 8)
+	governor, err := resourcegovernor.New(resourcegovernor.NodeResources{Capacity: resourcegovernor.Resources{
+		Slots: 1, CPUMillicores: 1000, MemoryBytes: 1024, PIDs: 16,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queuePolicy := testQueuePolicy()
+	queuePolicy.Workloads[WorkloadRun].MaxWait = 20 * time.Millisecond
+	controller, err := NewWithQueue(governor, testProfiles(), registry, queuePolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := controller.TryAcquire(WorkloadRun, "owner-a", "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+
+	_, err = controller.Acquire(context.Background(), Admission{
+		Workload: WorkloadRun, OwnerID: "owner-b", ScopeID: "project-b", WorkloadID: "run-2",
+	})
+	if err == nil {
+		t.Fatal("queued request unexpectedly succeeded while capacity was held")
+	}
+	stage, ok := registry.Snapshot().Stages["queue.resource.wait"]
+	if !ok || stage.Count != 1 {
+		t.Fatalf("queue timeout wait stage = %+v, want one observation", stage)
+	}
+	if stage.P95MS <= 0 || stage.P99MS < stage.P95MS {
+		t.Fatalf("queue timeout quantiles = %+v", stage)
 	}
 }
 

@@ -73,6 +73,16 @@ type WSHandler struct {
 	AcquireWork     func(string) (func(), error)
 }
 
+// observeStage records an optional bounded timing sample for a WebSocket
+// operation. Stage names are fixed at call sites so metrics cannot grow with
+// user, project, or run identifiers.
+func (h *WSHandler) observeStage(name string, started time.Time) {
+	if h == nil || h.Metrics == nil {
+		return
+	}
+	h.Metrics.ObserveSince(name, started)
+}
+
 // HandleWebSocket 处理 WebSocket 连接
 func (h *WSHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	releaseWork, accepted := acquireLongLivedWork(w, h.Accepting, h.AcquireWork, "run-websocket")
@@ -527,6 +537,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 			TeamID: sess.TeamID, ProjectID: sess.ProjectID, Branch: sess.Branch,
 			Runtime: runtimeKey, Language: plugin.Language(),
 		})
+		h.observeStage("cache.team.prepare", cacheStarted)
 		if err != nil {
 			fail("Failed to prepare team build cache: " + err.Error())
 			return
@@ -536,6 +547,8 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 			teamCacheQuotaMB = team.CacheQuotaMB
 		}
 		cleanupGate.Add(func() {
+			started := time.Now()
+			defer h.observeStage("cache.team.release", started)
 			_ = os.RemoveAll(preparedCache.Buildspace)
 			preparedCache.Release()
 			h.BuildCache.RequestEnforce(sess.TeamID, teamCacheQuotaMB)
@@ -545,7 +558,9 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 	var personalLease *personalcache.Lease
 	executionCtx := ctx
 	if useDocker && preparedCache == nil {
+		cacheStarted := time.Now()
 		personalLease, err = h.prepareRunPersonalCache(ctx, sess, *rt, plugin.Language(), projectPath)
+		h.observeStage("cache.personal.prepare", cacheStarted)
 		if err != nil {
 			fail("Failed to prepare project dependency cache: " + err.Error())
 			return
@@ -587,6 +602,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 			tool = "npm"
 		}
 		if tool != "" {
+			cacheStarted := time.Now()
 			personalToolchainLease, err = h.PersonalCache.PrepareToolchainCache(executionCtx, personalcache.ToolchainRequest{
 				UserID: sess.UserID, RuntimeID: rt.RuntimeID,
 				RuntimeFingerprint: resolvedRuntimeFingerprint(ctx, h.RuntimeMetadata, rt.RuntimeID, rt.DockerImage, rt.Version),
@@ -594,6 +610,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 				SourcePolicyDigest: packageSourcePolicyDigest("setup-commands", strings.Join(sess.SetupCommands, "\x00")),
 				QuotaBytes:         userQuotaBytes(h.UserStore, sess.UserID),
 			})
+			h.observeStage("cache.personal.toolchain_prepare", cacheStarted)
 			if err != nil {
 				fail("Failed to prepare tool download cache: " + err.Error())
 				return
@@ -621,11 +638,13 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 			if targetID == "" {
 				targetID = "native"
 			}
+			cacheStarted := time.Now()
 			personalBuildLease, err = h.PersonalCache.PrepareBuild(ctx, personalcache.BuildRequest{
 				UserID: sess.UserID, WorkspaceID: lsp.StableWorkspaceIdentity(sess.UserID, "", "", "", folderKey), WorkspaceName: sess.FolderName,
 				RuntimeID: rt.RuntimeID, RuntimeFingerprint: personalBuildRuntimeFingerprint, Language: plugin.Language(),
 				DependencyDigest: personalBuildDependencyDigest, Target: targetID,
 			})
+			h.observeStage("cache.personal.build_prepare", cacheStarted)
 			if err != nil {
 				fail("Failed to prepare project build cache: " + err.Error())
 				return
@@ -880,6 +899,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 			}
 			var publishErr error
 			if preparedCache != nil && h.BuildCache != nil {
+				cacheStarted := time.Now()
 				publishErr = h.BuildCache.WithQuotaGuard(sess.TeamID, teamCacheQuotaMB, func(info buildcache.Info) error {
 					// Scratch contains the source node_modules tree that is moved into
 					// the immutable store, so it is not part of steady-state usage.
@@ -887,6 +907,7 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 					otherBytes := info.TotalBytes - info.ScratchBytes - nodeBytes
 					return publish(nodeDependencySnapshotPolicy(info.QuotaBytes, otherBytes))
 				})
+				h.observeStage("cache.team.publish", cacheStarted)
 			} else {
 				quotaBytes := int64(0)
 				if h.UserStore != nil {
@@ -926,11 +947,13 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 			}
 			var publishErr error
 			if preparedCache != nil && h.BuildCache != nil {
+				cacheStarted := time.Now()
 				publishErr = h.BuildCache.WithQuotaGuard(sess.TeamID, teamCacheQuotaMB, func(info buildcache.Info) error {
 					gradleBytes := dirSizeOnDisk(filepath.Join(snapshotRoot, "gradle"))
 					otherBytes := info.TotalBytes - info.ScratchBytes - gradleBytes
 					return publish(gradleDependencySnapshotPolicy(info.QuotaBytes, otherBytes))
 				})
+				h.observeStage("cache.team.publish", cacheStarted)
 			} else {
 				quotaBytes := int64(0)
 				if h.UserStore != nil {
