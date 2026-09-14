@@ -265,7 +265,9 @@ fi
 test "$(id -u "$service_user")" != 0
 getent group "$docker_group" >/dev/null 2>&1
 test "$(getent group "$docker_group" | cut -d: -f3)" != 0
-usermod --append --groups "$docker_group" "$service_user"
+# This service has one deliberate supplementary group. Reconcile the complete
+# list instead of appending stale groups from an older host configuration.
+usermod --groups "$docker_group" "$service_user"
 
 # Docker group membership is checked as the actual service identity. Merely
 # having a group entry while the socket is root-only would otherwise make a
@@ -311,11 +313,13 @@ secure_release_file() {
 }
 secure_release_file "$root/bobocloud-server" rx
 secure_release_file "$root/config.json" r
-for optional_file in compile_rules.json lsp_servers.json dap_adapters.json; do
-  if [ -f "$root/$optional_file" ]; then
-    secure_release_file "$root/$optional_file" r
-  fi
-done
+# Enabled protocol workers must have an explicit, validated catalog. A missing
+# catalog must stop provisioning rather than silently selecting local commands.
+secure_release_file "$root/lsp_servers.json" r
+secure_release_file "$root/dap_adapters.json" r
+if [ -f "$root/compile_rules.json" ]; then
+  secure_release_file "$root/compile_rules.json" r
+fi
 
 # Keep existing user state in place for this release. Ownership is repaired
 # only after the release command stops the service, so a running compiler can
@@ -473,18 +477,16 @@ systemd-analyze verify "$unit_artifact"
 # Refuse to install a unit that would silently revert to a root or plaintext
 # service. The unit itself carries the same values; this check protects the
 # release transaction if a stale/mismatched artifact is supplied.
-grep -Eq '^User=__SERVICE_USER__$' "$unit_artifact"
-grep -Eq '^SupplementaryGroups=docker$' "$unit_artifact"
-grep -Eq '^Environment=BOBOCLOUD_TLS_REQUIRED=true$' "$unit_artifact"
-grep -Eq '^Environment=BOBOCLOUD_TLS_ENABLED=true$' "$unit_artifact"
+grep -Eq '^User=__SERVICE_USER__[[:space:]]*$' "$unit_artifact"
+grep -Eq '^Group=__SERVICE_GROUP__[[:space:]]*$' "$unit_artifact"
+grep -Eq '^SupplementaryGroups=docker[[:space:]]*$' "$unit_artifact"
+grep -Eq '^Environment=BOBOCLOUD_TLS_REQUIRED=true[[:space:]]*$' "$unit_artifact"
+grep -Eq '^Environment=BOBOCLOUD_TLS_ENABLED=true[[:space:]]*$' "$unit_artifact"
 grep -Eq '^ExecStart=/usr/bin/env' "$unit_artifact"
 grep -Eq 'BOBOCLOUD_TLS_REQUIRED=true' "$unit_artifact"
 grep -Eq 'BOBOCLOUD_TLS_ENABLED=true' "$unit_artifact"
 grep -Eq 'BOBOCLOUD_DATA_DIR=/root/cloudeEditor/data' "$unit_artifact"
 test "$transport" = 'https'
-
-install -m 0644 "$unit_artifact" "/etc/systemd/system/$service"
-systemctl daemon-reload
 
 if systemctl is-active --quiet "$service"; then
   systemctl stop "$service"
@@ -493,6 +495,18 @@ if systemctl is-active --quiet "$service"; then
   echo "Service remained active after stop: $service" >&2
   exit 1
 fi
+
+# The previous release may have had host-level privileges. Re-check both
+# staged inputs after it is stopped so it cannot mutate an artifact between
+# validation and installation.
+actual_sha="$(sha256sum "$artifact" | awk '{print $1}')"
+test "$actual_sha" = "$expected_sha"
+actual_unit_sha="$(sha256sum "$unit_artifact" | awk '{print $1}')"
+test "$actual_unit_sha" = "$expected_unit_sha"
+systemd-analyze verify "$unit_artifact"
+
+install -m 0644 "$unit_artifact" "/etc/systemd/system/$service"
+systemctl daemon-reload
 
 # Repair ownership while the old process is stopped. Never follow a symlink,
 # and never walk the kernel mount anchors which Docker/LSP/DAP may have left in
@@ -510,12 +524,18 @@ repair_tree() {
 }
 repair_mount_root() {
   tree="$1"
+  # A stale bind mount at the anchor itself must be cleaned by the server's
+  # recovery path, never chmod/chown'ed as if it were an ordinary directory.
+  if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$tree"; then
+    echo "Refusing to repair a mounted cache anchor: $tree" >&2
+    exit 1
+  fi
+  test ! -L "$tree"
   if [ ! -e "$tree" ]; then
     install -d -o "$service_user" -g "$service_group" -m 0700 "$tree"
     return
   fi
   test -d "$tree"
-  test ! -L "$tree"
   # Child entries may be live bind mounts. Change only the anchor directory
   # itself so ownership repair never crosses into a mounted cache generation.
   chown --no-dereference "$service_user:$service_group" "$tree"
