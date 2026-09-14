@@ -73,6 +73,49 @@ func TestSnapshotAndProjectCopyIgnoreLinks(t *testing.T) {
 	}
 }
 
+func TestProjectCopyMakesStagingTreeReadableAcrossUmaskAndUserNamespaces(t *testing.T) {
+	if os.PathSeparator != '/' {
+		t.Skip("POSIX permission bits are not portable to this platform")
+	}
+	source := t.TempDir()
+	nested := filepath.Join(source, "nested")
+	if err := os.Mkdir(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	regular := filepath.Join(nested, "main.c")
+	if err := os.WriteFile(regular, []byte("int main(void) { return 0; }\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	destination := t.TempDir()
+	if err := os.Chmod(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := CopyProjectToTemp(context.Background(), source, destination, ProjectCopyLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	assertReadableStagingMode(t, destination, true)
+	assertReadableStagingMode(t, filepath.Join(destination, "nested"), true)
+	assertReadableStagingMode(t, filepath.Join(destination, "nested", "main.c"), false)
+}
+
+func assertReadableStagingMode(t *testing.T, path string, directory bool) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	perm := info.Mode().Perm()
+	if directory {
+		if !info.IsDir() || perm&0555 != 0555 || perm&0200 == 0 {
+			t.Fatalf("staging directory mode for %s = %04o, want read/traverse for all and owner write", path, perm)
+		}
+		return
+	}
+	if !info.Mode().IsRegular() || perm&0444 != 0444 || perm&0200 == 0 {
+		t.Fatalf("staging file mode for %s = %04o, want read for all and owner write", path, perm)
+	}
+}
+
 func TestProjectCopyEnforcesIndependentBudgets(t *testing.T) {
 	if DefaultProjectCopyMaxFiles <= 4096 {
 		t.Fatalf("default project file budget is too low: %d", DefaultProjectCopyMaxFiles)

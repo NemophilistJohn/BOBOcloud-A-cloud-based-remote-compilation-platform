@@ -199,6 +199,24 @@ func ProjectCopyScanEntries(limits ProjectCopyLimits) int {
 	return projectTreeWalkLimits(normalizeProjectCopyLimits(limits)).MaxScanEntries
 }
 
+// containerReadableDirectoryMode returns the mode required for a temporary
+// workspace directory that will be handed to a Docker daemon. The service
+// runs with UMask=0077, while a userns-remapped daemon may inspect the copied
+// tree through a UID that is different from the service account. Keep the
+// staging tree's owner writeable, but make every directory traversable by the
+// container-side identity.
+func containerReadableDirectoryMode(_ fs.FileMode) fs.FileMode {
+	return 0755
+}
+
+// containerReadableFileMode makes regular staging files readable by a
+// userns-remapped Docker process. Preserve executable bits from the source,
+// retain owner write access, and avoid carrying group/other write bits into
+// the container.
+func containerReadableFileMode(mode fs.FileMode) fs.FileMode {
+	return 0644 | (mode.Perm() & 0111)
+}
+
 func walkArtifactFiles(ctx context.Context, dir string, limits ArtifactLimits, visit func(string, fs.FileInfo) error) (treeWalkStats, error) {
 	return walkRegularTree(ctx, dir, regularTreeLimits{
 		MaxFileBytes: limits.MaxFileBytes, MaxPathBytes: limits.MaxPathBytes,
@@ -365,7 +383,14 @@ func CopyProjectToTemp(ctx context.Context, srcDir, dstDir string, limits Projec
 	} else if within {
 		return fmt.Errorf("isolated workspace must be outside the source workspace")
 	}
-	if err := os.MkdirAll(destinationPath, 0755); err != nil {
+	destinationMode := containerReadableDirectoryMode(0755)
+	if err := os.MkdirAll(destinationPath, destinationMode.Perm()); err != nil {
+		return err
+	}
+	// MkdirAll/OpenFile honor the service's restrictive umask. Explicitly
+	// repair the mode after creation so a remapped Docker identity can traverse
+	// this temporary staging root.
+	if err := os.Chmod(destinationPath, destinationMode.Perm()); err != nil {
 		return err
 	}
 	destinationRoot, err := safefile.RealDirectory(destinationPath)
@@ -384,7 +409,12 @@ func CopyProjectToTemp(ctx context.Context, srcDir, dstDir string, limits Projec
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			return os.MkdirAll(filepath.Join(destinationRoot, filepath.FromSlash(relative)), info.Mode().Perm())
+			target := filepath.Join(destinationRoot, filepath.FromSlash(relative))
+			directoryMode := containerReadableDirectoryMode(info.Mode())
+			if err := os.MkdirAll(target, directoryMode.Perm()); err != nil {
+				return err
+			}
+			return os.Chmod(target, directoryMode.Perm())
 		}, func(relative string, discovered fs.FileInfo) error {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -408,7 +438,7 @@ func CopyProjectToTemp(ctx context.Context, srcDir, dstDir string, limits Projec
 				_ = source.Close()
 				return err
 			}
-			written, copyErr := copyOpenedFileContext(ctx, source, target, info.Mode(), limits.MaxTotalBytes-copiedBytes)
+			written, copyErr := copyOpenedFileContext(ctx, source, target, containerReadableFileMode(info.Mode()), limits.MaxTotalBytes-copiedBytes)
 			closeErr := source.Close()
 			if copyErr != nil {
 				return copyErr
@@ -430,6 +460,7 @@ func CopyProjectToTemp(ctx context.Context, srcDir, dstDir string, limits Projec
 }
 
 func copyOpenedFileContext(ctx context.Context, source *os.File, destination string, mode os.FileMode, maxBytes int64) (int64, error) {
+	mode = containerReadableFileMode(mode)
 	destinationFile, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode.Perm())
 	if err != nil {
 		return 0, err
@@ -441,6 +472,12 @@ func copyOpenedFileContext(ctx context.Context, source *os.File, destination str
 			_ = os.Remove(destination)
 		}
 	}()
+	// OpenFile's mode is filtered by UMask and is ignored for an existing
+	// destination. Chmod after opening handles both cases while retaining the
+	// regular-file descriptor already selected by the caller.
+	if err := destinationFile.Chmod(mode.Perm()); err != nil {
+		return 0, err
+	}
 	buffer := projectCopyBuffers.Get().(*[]byte)
 	defer projectCopyBuffers.Put(buffer)
 	written, err := io.CopyBuffer(destinationFile, io.LimitReader(&contextBoundReader{ctx: ctx, reader: source}, maxBytes+1), *buffer)

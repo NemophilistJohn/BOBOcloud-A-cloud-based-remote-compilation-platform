@@ -109,11 +109,46 @@ try {
     if ($apostropheLiteral -cne $expectedApostropheLiteral) {
         throw "POSIX shell literal escaping is incorrect: $apostropheLiteral"
     }
+    $normalizedCommand = ConvertTo-PosixShellCommand -Command ("set -eu" + [char]13 + [char]10 + "echo ok" + [char]13 + [char]10)
+    if ($normalizedCommand.Contains([char]13) -or -not $normalizedCommand.Contains("`n")) {
+        throw 'Remote shell commands must be normalized to LF line endings.'
+    }
+    # Exercise the actual SSH boundary as well as the pure conversion helper.
+    # A mocked native invoker keeps this check offline while proving that a
+    # command assembled from CRLF PowerShell here-strings is normalized before
+    # it becomes the final ssh argument.
+    $originalNativeInvoker = (Get-Command Invoke-NativeCommand -CommandType Function).ScriptBlock
+    $capturedRemoteArguments = $null
+    function Invoke-NativeCommand {
+        param(
+            [string]$FilePath,
+            [string[]]$Arguments = @()
+        )
+        $script:capturedRemoteArguments = @($Arguments)
+    }
+    try {
+        Invoke-RemoteCommand -SshPath 'ssh.exe' -SshOptions @('-o', 'BatchMode=yes') -Profile $remoteProfile -Command ("set -eu" + [char]13 + [char]10 + "echo ok" + [char]13 + [char]10)
+        if ($null -eq $capturedRemoteArguments -or $capturedRemoteArguments.Count -eq 0) {
+            throw 'Remote command boundary did not invoke the native SSH wrapper.'
+        }
+        $capturedRemoteCommand = [string]$capturedRemoteArguments[$capturedRemoteArguments.Count - 1]
+        if ($capturedRemoteCommand.Contains([char]13) -or -not $capturedRemoteCommand.Contains("`n")) {
+            throw 'Invoke-RemoteCommand passed CRLF bytes to the SSH wrapper.'
+        }
+    } finally {
+        Set-Item -LiteralPath Function:\Invoke-NativeCommand -Value $originalNativeInvoker
+    }
     if (-not $releaseCommand.Contains("probe_host='81.70.51.43'") -or -not $releaseCommand.Contains("ca_file='/etc/bobocloud/tls/bobocloud.crt'") -or -not $releaseCommand.Contains('BOBOCLOUD_SERVER_ROOT=/shareOnling')) {
         throw 'Remote release command did not quote probe or CA parameters and pin the server root.'
     }
     if ($prepareCommand.Contains('__') -or -not $prepareCommand.Contains('flock -n 9') -or -not $prepareCommand.Contains('-mmin +1440')) {
         throw 'Remote preparation must lock and preserve fresh concurrent uploads.'
+    }
+    if (-not $prepareCommand.Contains('if [ -e "$root/bobocloud-server" ] || [ -L "$root/bobocloud-server" ]; then')) {
+        throw 'Remote preparation must allow an absent previous binary for first installation.'
+    }
+    if (-not $releaseCommand.Contains('command -v mountpoint >/dev/null 2>&1') -or -not $releaseCommand.Contains('mount_status=$?') -or -not $releaseCommand.Contains('32)')) {
+        throw 'Remote preparation must fail closed when mount status cannot be determined.'
     }
 
     $scriptText = Get-Content -LiteralPath $deployScript -Raw
