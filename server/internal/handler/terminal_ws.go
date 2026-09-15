@@ -473,18 +473,13 @@ func terminalShellCommand(ctx context.Context, containerID, workspaceDir string,
 	return exec.CommandContext(ctx, "docker", args...)
 }
 
-// terminalWorkspaceResetArguments clears only the pool's documented ephemeral
-// workspace. The values are server-owned argv items, never user input or shell
-// source, so a pooled container cannot retain a previous terminal snapshot.
+// terminalWorkspaceResetArguments is the compatibility path for Docker pool
+// implementations that do not expose the pool-owned reset operation. It
+// clears the contents while retaining /workspace (which may be a tmpfs mount)
+// and never restores world-writable permissions.
 func terminalWorkspaceResetArguments(containerID string) [][]string {
 	return [][]string{
-		// The runtime images use /workspace as their Docker WorkingDir. Removing
-		// it first means every reset command must explicitly run from a stable
-		// directory, otherwise Docker fails before it can recreate /workspace.
-		// These are container-management operations, so run them as uid 0 even
-		// though the interactive shell and user code run as the service UID.
-		{"docker", "exec", "--user", "0", "-w", "/", containerID, "rm", "-rf", terminalWorkspaceDir},
-		{"docker", "exec", "--user", "0", "-w", "/", containerID, "sh", "-c", "mkdir -p /workspace && chmod 0777 /workspace"},
+		{"docker", "exec", "-w", "/", containerID, "sh", "-c", "set -eu; mkdir -p /workspace; chmod 0700 /workspace; find /workspace -mindepth 1 \\( -type d \\( -name .bobocloud -o -name target \\) \\) -prune -o \\( -type f -o -type l \\) -exec rm -f -- {} +"},
 	}
 }
 
@@ -495,6 +490,17 @@ func resetTerminalWorkspace(ctx context.Context, containerID string) error {
 		}
 	}
 	return nil
+}
+
+type terminalWorkspaceResetter interface {
+	ResetWorkspace(context.Context, string) error
+}
+
+func resetTerminalWorkspaceWithPool(ctx context.Context, containerID string, pool any) error {
+	if resetter, ok := pool.(terminalWorkspaceResetter); ok {
+		return resetter.ResetWorkspace(ctx, containerID)
+	}
+	return resetTerminalWorkspace(ctx, containerID)
 }
 
 // copyTerminalWorkspaceFiles makes a bounded, no-follow snapshot. A terminal
@@ -599,6 +605,10 @@ func copyTerminalWorkspaceFile(ctx context.Context, sourceRoot, relative, destin
 }
 
 func copyTerminalWorkspace(ctx context.Context, source, containerID string, limits terminalLimits) (string, error) {
+	return copyTerminalWorkspaceWithReset(ctx, source, containerID, limits, nil)
+}
+
+func copyTerminalWorkspaceWithReset(ctx context.Context, source, containerID string, limits terminalLimits, reset func(context.Context, string) error) (string, error) {
 	copyCtx, cancel := context.WithTimeout(ctx, limits.CopyTimeout)
 	defer cancel()
 	tempDir, err := os.MkdirTemp("", "bobocloud-terminal-")
@@ -609,11 +619,17 @@ func copyTerminalWorkspace(ctx context.Context, source, containerID string, limi
 		os.RemoveAll(tempDir)
 		return "", fmt.Errorf("copy terminal workspace: %w", err)
 	}
-	if err := resetTerminalWorkspace(copyCtx, containerID); err != nil {
+	if reset == nil {
+		reset = resetTerminalWorkspace
+	}
+	if err := reset(copyCtx, containerID); err != nil {
 		os.RemoveAll(tempDir)
 		return "", err
 	}
-	copyCommand := exec.CommandContext(copyCtx, "docker", "cp", filepath.Clean(tempDir)+string(filepath.Separator)+".", containerID+":"+terminalWorkspaceDir)
+	// Preserve the service UID/GID from the temporary snapshot. Without
+	// archive mode Docker creates the copied files as root inside a hardened
+	// non-root terminal container.
+	copyCommand := exec.CommandContext(copyCtx, "docker", "cp", "-a", filepath.Clean(tempDir)+string(filepath.Separator)+".", containerID+":"+terminalWorkspaceDir)
 	if output, err := copyCommand.CombinedOutput(); err != nil {
 		os.RemoveAll(tempDir)
 		return "", fmt.Errorf("copy workspace into terminal: %s", strings.TrimSpace(string(output)))
@@ -985,7 +1001,9 @@ func (h *WSHandler) HandleTerminalWebSocket(w http.ResponseWriter, r *http.Reque
 	}()
 
 	copyStarted := time.Now()
-	tempDir, err := copyTerminalWorkspace(ctx, workspace.root, containerID, limits)
+	tempDir, err := copyTerminalWorkspaceWithReset(ctx, workspace.root, containerID, limits, func(resetCtx context.Context, resetContainerID string) error {
+		return resetTerminalWorkspaceWithPool(resetCtx, resetContainerID, h.DockerPool)
+	})
 	if h.Metrics != nil {
 		h.Metrics.Observe("workspace.copy.terminal", time.Since(copyStarted))
 	}

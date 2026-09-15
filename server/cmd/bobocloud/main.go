@@ -1364,7 +1364,7 @@ func makeEnvironmentSetupExecutor(pool *docker.Pool, policy security.Policy, cop
 		if _, _, _, err := pool.Exec(ctx, containerID, []string{"mkdir", "-p", "/workspace"}, "/"); err != nil {
 			return "", "", 0, fmt.Errorf("prepare environment workspace: %w", err)
 		}
-		copyCommand := exec.CommandContext(ctx, "docker", "cp", filepath.Clean(isolatedRoot)+string(os.PathSeparator)+".", containerID+":/workspace")
+		copyCommand := exec.CommandContext(ctx, "docker", "cp", "-a", filepath.Clean(isolatedRoot)+string(os.PathSeparator)+".", containerID+":/workspace")
 		if output, copyErr := copyCommand.CombinedOutput(); copyErr != nil {
 			return "", string(output), 0, fmt.Errorf("copy environment workspace: %w", copyErr)
 		}
@@ -1433,7 +1433,7 @@ func makePackageLockResolver(pool *docker.Pool, policy security.Policy, pnpmVers
 		if _, _, _, prepareErr := pool.Exec(ctx, containerID, []string{"mkdir", "-p", "/workspace"}, "/"); prepareErr != nil {
 			return result, fmt.Errorf("prepare lockfile container: %w", prepareErr)
 		}
-		copyCommand := exec.CommandContext(ctx, "docker", "cp", filepath.Clean(isolatedRoot)+string(os.PathSeparator)+".", containerID+":/workspace")
+		copyCommand := exec.CommandContext(ctx, "docker", "cp", "-a", filepath.Clean(isolatedRoot)+string(os.PathSeparator)+".", containerID+":/workspace")
 		if output, copyErr := copyCommand.CombinedOutput(); copyErr != nil {
 			return result, fmt.Errorf("copy lockfile workspace into container: %w: %s", copyErr, strings.TrimSpace(string(output)))
 		}

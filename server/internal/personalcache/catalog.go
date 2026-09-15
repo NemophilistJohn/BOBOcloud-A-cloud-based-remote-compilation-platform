@@ -119,8 +119,10 @@ func (m *Manager) catalogLocked(userID string, quotaBytes int64) (catalogSnapsho
 		}
 		return entries[i].ID < entries[j].ID
 	})
-	userUsage := m.directoryUsage(layout.UserRoot)
-	managedUsage := m.directoryUsage(layout.Root)
+	// User and cache-v2 usage are two views of the same tree. Collect them in
+	// one bounded walk so Catalog does not traverse the cache subtree twice.
+	usage := m.scanQuotaUsage(userID)
+	userUsage, managedUsage := usage.user, usage.persist
 	inventory := cachev2.Inventory{
 		Schema: cachev2.SchemaVersion, OwnerKind: cachev2.OwnerKindUser, OwnerID: userID,
 		QuotaBytes: quotaBytes, UsedBytes: userUsage.bytes, ReservedBytes: reservedBytes,

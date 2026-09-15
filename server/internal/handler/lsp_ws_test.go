@@ -367,8 +367,9 @@ func testFileURI(path string) string {
 }
 
 type bridgeTestStarter struct {
-	launches chan lsp.LaunchSpec
-	inbound  chan []byte
+	launches              chan lsp.LaunchSpec
+	inbound               chan []byte
+	emitDiagnosticsOnOpen bool
 }
 
 type bridgeDependencyAdapter struct{}
@@ -459,6 +460,16 @@ func (s *bridgeTestStarter) Start(_ context.Context, spec lsp.LaunchSpec) (lsp.P
 					"result": map[string]any{"changes": map[string]any{inside: []any{}, alternate: []any{}}},
 				})
 				_ = testWriteFrame(process.stdoutW, badResponse)
+			} else if env.Method == "textDocument/didOpen" && s.emitDiagnosticsOnOpen {
+				// Emit the notification immediately while didOpen is being handled.
+				// This models fast analyzers and makes the gateway's opened-document
+				// ordering observable in the integration test.
+				inside := testFileURI(filepath.Join(analyzerWorkspace, "main.go"))
+				diagnostics, _ := json.Marshal(map[string]any{
+					"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+					"params": map[string]any{"uri": inside, "diagnostics": []any{}},
+				})
+				_ = testWriteFrame(process.stdoutW, diagnostics)
 			}
 		}
 	}()
@@ -489,7 +500,7 @@ func TestLSPWebSocketHandshakeInitializePolicyAndCacheClear(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	starter := &bridgeTestStarter{launches: make(chan lsp.LaunchSpec, 1), inbound: make(chan []byte, 8)}
+	starter := &bridgeTestStarter{launches: make(chan lsp.LaunchSpec, 1), inbound: make(chan []byte, 8), emitDiagnosticsOnOpen: true}
 	manager := lsp.NewManager(catalog, lsp.NewCacheManager(filepath.Join(t.TempDir(), "lsp-cache"), 16, 7), starter, lsp.ManagerOptions{MaxSessions: 2, MaxPerUser: 2, IdleTTL: time.Minute, MaxMessageBytes: 1 << 20, CleanupInterval: time.Hour})
 	defer manager.Close()
 	dependencyViews, err := lsp.NewDependencyRegistry(bridgeDependencyAdapter{})
@@ -674,6 +685,22 @@ func TestLSPWebSocketHandshakeInitializePolicyAndCacheClear(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("unsafe server request rewrite did not receive an error response")
+	}
+
+	// A fast analyzer can publish diagnostics while it is still processing the
+	// didOpen frame. The gateway must register the document before forwarding
+	// that frame, otherwise standard mode drops the first diagnostics forever.
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"bobocloud-lsp:///main.go","languageId":"go","version":1,"text":"package main"}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-starter.inbound:
+	case <-time.After(2 * time.Second):
+		t.Fatal("didOpen was not forwarded to the analyzer")
+	}
+	diagnostics := readWSJSON(t, conn)
+	if diagnostics["method"] != "textDocument/publishDiagnostics" {
+		t.Fatalf("diagnostics emitted synchronously for didOpen were dropped: %+v", diagnostics)
 	}
 
 	_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":"bobocloud-lsp:///main.go"},"position":{"line":0,"character":0}}}`))

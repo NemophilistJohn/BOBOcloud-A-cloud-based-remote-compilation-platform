@@ -59,7 +59,7 @@ func TestVerifiedResetSkipsRestartForManagedBaseline(t *testing.T) {
 	}
 	want := []string{
 		"top container-a -eo pid,ppid,comm,args",
-		"exec --user 0 -w / container-a sh -c rm -rf /workspace; mkdir -p /workspace; chmod 0777 /workspace",
+		"exec --user 0 -w / container-a sh -c " + (&Pool{}).workspaceCleanupCommand(),
 	}
 	if !reflect.DeepEqual(commands, want) {
 		t.Fatalf("commands = %#v, want %#v", commands, want)
@@ -90,9 +90,53 @@ func TestVerifiedResetClearsAllWritableTmpfsMounts(t *testing.T) {
 		t.Fatalf("commands = %#v", commands)
 	}
 	cleanup := commands[1]
-	for _, path := range []string{"/workspace/*", "/tmp/*", "/home/*", "chmod 0777 /workspace", "chmod 1777 /tmp"} {
+	for _, path := range []string{"find /workspace", "find /tmp", "find /home", "chmod 0700 /workspace", "chmod 1777 /tmp"} {
 		if !strings.Contains(cleanup, path) {
 			t.Fatalf("cleanup command %q does not reset %q", cleanup, path)
+		}
+	}
+	if !strings.Contains(cleanup, "-name .bobocloud") || !strings.Contains(cleanup, "-name target") {
+		t.Fatalf("cleanup command does not protect compiler cache mount points: %q", cleanup)
+	}
+	if strings.Contains(cleanup, "rm -rf -- /workspace") || strings.Contains(cleanup, "rm -rf /workspace") {
+		t.Fatalf("cleanup command recursively removes the workspace mount: %q", cleanup)
+	}
+}
+
+func TestHardenedWorkspaceResetRunsAsOwnedUID(t *testing.T) {
+	commands := make([]string, 0)
+	pool := &Pool{resetStrategy: ResetStrategyVerified, hardening: true}
+	pool.runDockerCommand = func(_ context.Context, args ...string) ([]byte, error) {
+		commands = append(commands, strings.Join(args, " "))
+		if args[0] == "top" {
+			return []byte(managedTopWithoutInit), nil
+		}
+		return nil, nil
+	}
+	if err := pool.resetContainerForReuse("container-a"); err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 2 {
+		t.Fatalf("commands = %#v", commands)
+	}
+	wantUser := pool.workspaceExecUser()
+	if !strings.Contains(commands[1], "exec --user "+wantUser+" -w /") {
+		t.Fatalf("hardened reset user = %q, command = %q", wantUser, commands[1])
+	}
+	if strings.Contains(commands[1], "chown ") || !strings.Contains(commands[1], "chmod 0700 /workspace") {
+		t.Fatalf("hardened reset widened ownership or skipped mode repair: %q", commands[1])
+	}
+}
+
+func TestHardenedWorkspaceTmpfsBindsServiceIdentity(t *testing.T) {
+	spec := containerWorkspaceTmpfsSpec("")
+	if !strings.Contains(spec, ":rw,") || !strings.Contains(spec, "mode=0700") {
+		t.Fatalf("workspace tmpfs spec = %q", spec)
+	}
+	if identity := containerUser(); identity != "" {
+		parts := strings.Split(identity, ":")
+		if !strings.Contains(spec, "uid="+parts[0]) || !strings.Contains(spec, "gid="+parts[1]) {
+			t.Fatalf("workspace tmpfs spec %q does not bind identity %q", spec, identity)
 		}
 	}
 }

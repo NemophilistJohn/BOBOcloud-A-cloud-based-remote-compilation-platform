@@ -275,15 +275,14 @@ func TestTerminalSnapshotCopyRejectsSymbolicLinks(t *testing.T) {
 
 func TestTerminalWorkspaceResetOnlyTargetsEphemeralDirectory(t *testing.T) {
 	commands := terminalWorkspaceResetArguments("container-id")
-	if len(commands) != 2 {
+	if len(commands) != 1 {
 		t.Fatalf("workspace reset commands = %#v", commands)
 	}
-	// /workspace is the runtime WorkingDir and is deliberately removed by the
-	// first command. Both exec calls must therefore select / before Docker
-	// attempts to start either process.
-	wantRemove := []string{"docker", "exec", "--user", "0", "-w", "/", "container-id", "rm", "-rf", terminalWorkspaceDir}
-	wantCreate := []string{"docker", "exec", "--user", "0", "-w", "/", "container-id", "sh", "-c", "mkdir -p /workspace && chmod 0777 /workspace"}
-	if strings.Join(commands[0], "\x00") != strings.Join(wantRemove, "\x00") || strings.Join(commands[1], "\x00") != strings.Join(wantCreate, "\x00") {
+	// Keep the mount point in place: hardened containers mount /workspace as a
+	// UID-owned tmpfs, so removing the directory itself would require a
+	// capability the workload deliberately does not have.
+	want := []string{"docker", "exec", "-w", "/", "container-id", "sh", "-c", "set -eu; mkdir -p /workspace; chmod 0700 /workspace; find /workspace -mindepth 1 \\( -type d \\( -name .bobocloud -o -name target \\) \\) -prune -o \\( -type f -o -type l \\) -exec rm -f -- {} +"}
+	if strings.Join(commands[0], "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("workspace reset commands = %#v", commands)
 	}
 }

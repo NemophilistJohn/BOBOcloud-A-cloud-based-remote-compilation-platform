@@ -49,7 +49,10 @@ type containerWorkspaceCopier interface {
 type dockerCLIWorkspaceCopier struct{}
 
 func (dockerCLIWorkspaceCopier) CopyTo(ctx context.Context, containerID, hostDir, containerDir string) error {
-	cpCmd := exec.CommandContext(ctx, "docker", "cp", hostDir+"/.", containerID+":"+containerDir)
+	// Docker creates files copied into a container as root by default. Archive
+	// mode preserves the service-owned UID/GID from the isolated host tree so a
+	// hardened non-root workload can write compiler-generated files in /workspace.
+	cpCmd := exec.CommandContext(ctx, "docker", "cp", "-a", hostDir+"/.", containerID+":"+containerDir)
 	if out, err := cpCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s: %w", string(out), err)
 	}

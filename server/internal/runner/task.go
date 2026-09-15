@@ -16,6 +16,12 @@ import (
 	"bobocloud-server/internal/session"
 )
 
+// taskArtifactPruneCommand removes disposable dependency trees before Docker
+// copies artifacts back to the host. Persistent compiler mounts are pruned
+// before the cleanup branch is evaluated, so find never descends into a
+// bind-mounted .bobocloud or target directory and cannot delete its contents.
+const taskArtifactPruneCommand = `find . \( -type d \( -name .bobocloud -o -name target \) -prune \) -o \( -type d \( -name .git -o -name node_modules -o -name __pycache__ \) -prune -exec rm -rf -- {} \; \)`
+
 // RunTaskExecution executes a validated task DAG in one managed Docker
 // container. Independent dependency branches share a topological wave and run
 // concurrently, matching VS Code's default dependsOn behavior. Sequence edges
@@ -36,9 +42,13 @@ func (r *DockerRunner) RunTaskExecution(ctx context.Context, task *model.TaskExe
 	defer func() {
 		cleanupStarted := time.Now()
 		if ctx.Err() == nil {
+			// .bobocloud and target can be bind-mounted compiler caches. Never
+			// pass those mount points to rm -rf: Docker would follow the bind and
+			// erase the persistent host cache. The pool-owned reset handles the
+			// workspace mount separately, so this artifact pass leaves them alone.
 			pruneCtx, cancelPrune := context.WithTimeout(ctx, 15*time.Second)
 			_, pruneStderr, pruneCode, pruneErr := r.pool.Exec(pruneCtx, containerID, []string{
-				"sh", "-c", `find . -type d \( -name .git -o -name .bobocloud -o -name node_modules -o -name target -o -name __pycache__ \) -prune -exec rm -rf -- {} \;`,
+				"sh", "-c", taskArtifactPruneCommand,
 			}, containerWorkDir)
 			cancelPrune()
 			if pruneErr != nil || pruneCode != 0 {

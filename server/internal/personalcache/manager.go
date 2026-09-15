@@ -188,6 +188,11 @@ type Manager struct {
 	buildActive              map[string]int
 	testBeforeReleaseCleanup func([]string)
 	userGates                sync.Map
+	// quotaScans coalesces concurrent quota reads for one user. Scans are
+	// deliberately not cached: quota decisions must observe the current tree,
+	// while callers that arrive during the same traversal can share its result.
+	quotaScanMu sync.Mutex
+	quotaScans  map[string]*quotaScanFlight
 }
 
 type dependencyGeneration struct {
@@ -312,7 +317,7 @@ func NewManager(dataDir string, options Options) *Manager {
 		active: make(map[string]int), writers: make(map[string]int), mutations: make(map[string]uint64), activePaths: make(map[string]int),
 		activeUsers: make(map[string]int), reserved: make(map[string]int64), reservedFiles: make(map[string]int64), writerDone: make(map[string]chan struct{}),
 		protectedReaders: make(map[string]int), readers: make(map[dependencyGeneration]int), writerHasBase: make(map[string]bool), retired: make(map[dependencyGeneration][]string),
-		buildLocks: make(map[string]*cacheLock), buildActive: make(map[string]int),
+		buildLocks: make(map[string]*cacheLock), buildActive: make(map[string]int), quotaScans: make(map[string]*quotaScanFlight),
 	}
 }
 
@@ -637,7 +642,7 @@ func (l *Lease) StartGuard(parent context.Context) *Guard {
 
 func (m *Manager) newGuard(parent context.Context, userID string, quotaBytes int64, allowance directoryUsage) *Guard {
 	ctx, cancel := context.WithCancelCause(parent)
-	initial := m.directoryUsage(filepath.Join(m.root, userID))
+	initial := m.scanQuotaUsage(userID).user
 	guard := &Guard{
 		Context: ctx, cancel: cancel, done: make(chan struct{}),
 		manager: m, userID: userID,
@@ -653,7 +658,7 @@ func (m *Manager) newGuard(parent context.Context, userID string, quotaBytes int
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				usage := m.directoryUsage(filepath.Join(m.root, userID))
+				usage := m.scanQuotaUsage(userID).user
 				logicalBytes := subtractFloorZero(usage.bytes, guard.allowanceBytes)
 				logicalFiles := subtractFloorZero(usage.files, guard.allowanceFiles)
 				if (quotaBytes > 0 && logicalBytes > quotaBytes) || usage.truncated || logicalFiles > m.options.MaxFiles {
@@ -733,7 +738,7 @@ func (g *Guard) Stop() {
 		g.cancel(context.Canceled)
 		<-g.done
 		if g.manager != nil && g.manager.options.Metrics != nil {
-			after := g.manager.directoryUsage(filepath.Join(g.manager.root, g.userID))
+			after := g.manager.scanQuotaUsage(g.userID).user
 			g.manager.options.Metrics.AddBytes("persist.growth", subtractFloorZero(after.bytes, g.allowanceBytes)-g.before)
 		}
 	})
@@ -986,7 +991,7 @@ func (m *Manager) reserveLocked(userID string, quotaBytes int64) error {
 	}
 	targetFiles := m.options.MaxFiles - reservedFiles - m.options.ReservationFiles
 	m.enforceLocked(userID, quotaBytes, targetBytes, targetFiles)
-	usage := m.directoryUsage(filepath.Join(m.root, userID))
+	usage := m.scanQuotaUsage(userID).user
 	m.mu.Lock()
 	reservedBytes = m.reserved[userID]
 	reservedFiles = m.reservedFiles[userID]
@@ -1067,6 +1072,12 @@ func (m *Manager) Inspect(userID string, quotaBytes int64) Info {
 	if m == nil || strings.TrimSpace(userID) == "" {
 		return Info{}
 	}
+	// Inspect is a read-only API, but it still resolves a filesystem root. Use
+	// the cache-v2 path validator before taking a user gate so a malformed
+	// caller value can never escape the users/<id> namespace through filepath.Join.
+	if _, err := cachev2.NewUserLayout(m.dataDir, userID); err != nil {
+		return Info{}
+	}
 	gate := m.userGate(userID)
 	gate.Lock()
 	defer gate.Unlock()
@@ -1076,8 +1087,8 @@ func (m *Manager) Inspect(userID string, quotaBytes int64) Info {
 func (m *Manager) inspectLocked(userID string, quotaBytes int64) Info {
 	userRoot := filepath.Join(m.root, userID)
 	persistRoot := filepath.Join(userRoot, cacheRootDir)
-	userUsage := m.directoryUsage(userRoot)
-	persistUsage := m.directoryUsage(persistRoot)
+	usage := m.scanQuotaUsage(userID)
+	userUsage, persistUsage := usage.user, usage.persist
 	info := Info{
 		QuotaBytes: quotaBytes, UsedBytes: userUsage.bytes, PersistBytes: persistUsage.bytes,
 		QuotaFiles: m.options.MaxFiles, UsedFiles: userUsage.files, PersistFiles: persistUsage.files,
@@ -1818,6 +1829,20 @@ type directoryUsage struct {
 	truncated bool
 }
 
+// quotaUsage is collected from one walk of a user's root. The persist view is
+// the cache-v2 subtree and intentionally excludes that subtree's root entry,
+// matching boundedDirectoryStats(persistRoot), while user includes every
+// descendant below userRoot.
+type quotaUsage struct {
+	user    directoryUsage
+	persist directoryUsage
+}
+
+type quotaScanFlight struct {
+	done   chan struct{}
+	result quotaUsage
+}
+
 func (m *Manager) scanLimit() int64 {
 	if m == nil || m.options.MaxFiles <= 0 {
 		return defaultMaxFiles
@@ -1832,6 +1857,54 @@ func (m *Manager) directoryUsage(root string) directoryUsage {
 		m.options.Metrics.Observe("persist.quota.scan", time.Since(started))
 	}
 	return usage
+}
+
+// scanQuotaUsage performs the user and cache-v2 accounting walk together.
+// There is no stale-result cache here: a caller always gets a fresh walk, or
+// joins a walk that is already in progress for the same user. This preserves
+// quota correctness while removing the duplicate traversal that used to occur
+// in Inspect, Catalog, and the reservation/guard paths.
+func (m *Manager) scanQuotaUsage(userID string) quotaUsage {
+	if m == nil || strings.TrimSpace(userID) == "" {
+		return quotaUsage{}
+	}
+	layout, err := cachev2.NewUserLayout(m.dataDir, userID)
+	if err != nil {
+		// Callers normally validate through ensureUserLayout, but reservation and
+		// guard paths must fail closed if an invalid identity reaches this helper.
+		limit := m.scanLimit()
+		return quotaUsage{
+			user:    failedDirectoryUsage(directoryUsage{}, limit),
+			persist: failedDirectoryUsage(directoryUsage{}, limit),
+		}
+	}
+	userRoot := filepath.Clean(layout.UserRoot)
+	m.quotaScanMu.Lock()
+	if m.quotaScans == nil {
+		m.quotaScans = make(map[string]*quotaScanFlight)
+	}
+	if flight := m.quotaScans[userRoot]; flight != nil {
+		done := flight.done
+		m.quotaScanMu.Unlock()
+		<-done
+		return flight.result
+	}
+	flight := &quotaScanFlight{done: make(chan struct{})}
+	m.quotaScans[userRoot] = flight
+	m.quotaScanMu.Unlock()
+
+	started := time.Now()
+	result := boundedQuotaStats(userRoot, m.scanLimit())
+	if m.options.Metrics != nil {
+		m.options.Metrics.Observe("persist.quota.scan", time.Since(started))
+	}
+
+	m.quotaScanMu.Lock()
+	flight.result = result
+	delete(m.quotaScans, userRoot)
+	close(flight.done)
+	m.quotaScanMu.Unlock()
+	return result
 }
 
 // boundedDirectoryStats counts every descendant filesystem entry, including
@@ -1891,6 +1964,137 @@ func boundedDirectoryStats(root string, limit int64) directoryUsage {
 		}
 	}
 	return usage
+}
+
+// boundedQuotaStats counts both quota views in one depth-first walk. Each view
+// has its own limit, so a large non-cache workspace cannot prevent us from
+// obtaining the cache view. Once a view is over its bound we stop descending
+// branches that only belong to that view, but continue any branch needed by
+// the other view.
+func boundedQuotaStats(userRoot string, limit int64) quotaUsage {
+	if limit < 0 {
+		limit = 0
+	}
+	result := quotaUsage{}
+	userRoot = filepath.Clean(userRoot)
+	type node struct {
+		path    string
+		persist bool
+	}
+	stack := []node{{path: userRoot, persist: false}}
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		directory, exists, err := openRealDirectory(current.path)
+		if err != nil {
+			if current.path == userRoot {
+				result.user = failedDirectoryUsage(result.user, limit)
+				result.persist = failedDirectoryUsage(result.persist, limit)
+				return result
+			}
+			result.user = failedDirectoryUsage(result.user, limit)
+			if current.persist {
+				// This subtree belongs to both views. A rooted persist scan would
+				// fail here as well, so both results are now conservatively bounded.
+				result.persist = failedDirectoryUsage(result.persist, limit)
+				return result
+			}
+			// An inaccessible non-cache branch invalidates only the user view.
+			// Continue with any cache branch already queued so the managed view
+			// does not become an accidental zero/under-count.
+			continue
+		}
+		if !exists {
+			continue
+		}
+		for {
+			entries, readErr := directory.ReadDir(128)
+			for _, entry := range entries {
+				entryInfo, infoErr := entry.Info()
+				if infoErr != nil {
+					result.user = failedDirectoryUsage(result.user, limit)
+					if current.persist || (current.path == userRoot && entry.Name() == cacheRootDir) {
+						_ = directory.Close()
+						result.persist = failedDirectoryUsage(result.persist, limit)
+						return result
+					}
+					// Keep walking the user root after a non-cache metadata race;
+					// a later cache-v2 entry may still be accounted independently.
+					continue
+				}
+
+				// The cache root itself is included in the user view but is
+				// excluded from the persist view, just like a scan rooted at
+				// persistRoot. Its descendants belong to the persist view.
+				persistEntry := current.persist
+				childPersist := current.persist
+				if current.path == userRoot && entry.Name() == cacheRootDir {
+					if entryInfo.IsDir() && entryInfo.Mode()&os.ModeSymlink == 0 {
+						childPersist = true
+					} else {
+						// A malformed cache-v2 root is an accounting failure for
+						// the managed view, matching a bounded scan rooted at that
+						// path instead of silently reporting zero usage.
+						result.persist = failedDirectoryUsage(result.persist, limit)
+					}
+				}
+
+				if !result.user.truncated {
+					result.user.files = addOneSaturating(result.user.files)
+					if result.user.files > limit {
+						result.user.truncated = true
+					} else if !entryInfo.IsDir() || entryInfo.Mode()&os.ModeSymlink != 0 {
+						result.user.bytes += entryInfo.Size()
+					}
+				}
+				if persistEntry && !result.persist.truncated {
+					result.persist.files = addOneSaturating(result.persist.files)
+					if result.persist.files > limit {
+						result.persist.truncated = true
+					} else if !entryInfo.IsDir() || entryInfo.Mode()&os.ModeSymlink != 0 {
+						result.persist.bytes += entryInfo.Size()
+					}
+				}
+
+				if !entryInfo.IsDir() || entryInfo.Mode()&os.ModeSymlink != 0 {
+					continue
+				}
+				needUser := !result.user.truncated
+				needPersist := childPersist && !result.persist.truncated
+				if needUser || needPersist {
+					stack = append(stack, node{path: filepath.Join(current.path, entry.Name()), persist: childPersist})
+				}
+			}
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			if readErr != nil || len(entries) == 0 {
+				result.user = failedDirectoryUsage(result.user, limit)
+				if current.persist || current.path == userRoot {
+					// A root read can fail before the cache-v2 entry is observed.
+					// Do not report a clean persist view that may undercount it.
+					_ = directory.Close()
+					result.persist = failedDirectoryUsage(result.persist, limit)
+					return result
+				}
+				// The cache branch, if any, is already on the stack. Let it finish.
+				break
+			}
+		}
+		if closeErr := directory.Close(); closeErr != nil {
+			result.user = failedDirectoryUsage(result.user, limit)
+			if current.persist || current.path == userRoot {
+				// Closing the user root without a trustworthy directory stream has
+				// the same undercount risk as a read failure above.
+				result.persist = failedDirectoryUsage(result.persist, limit)
+				return result
+			}
+			// An inaccessible non-cache branch invalidates only the user view;
+			// continue any cache branch already queued.
+			continue
+		}
+	}
+	return result
 }
 
 type namespaceRoot struct {
