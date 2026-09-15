@@ -31,6 +31,17 @@ func hasDAPArgPair(args []string, flag, value string) bool {
 	return false
 }
 
+func TestNumericContainerUser(t *testing.T) {
+	if got := numericContainerUser("1001", "1002"); got != "1001:1002" {
+		t.Fatalf("unexpected container user: %q", got)
+	}
+	for _, invalid := range [][2]string{{"", "1"}, {"-1", "1"}, {"root", "1"}, {"1", "staff"}} {
+		if got := numericContainerUser(invalid[0], invalid[1]); got != "" {
+			t.Fatalf("accepted invalid uid/gid %q/%q: %q", invalid[0], invalid[1], got)
+		}
+	}
+}
+
 func TestDAPEnvironmentUsesDedicatedDownloadAndBuildCache(t *testing.T) {
 	env := dapEnvironment(LaunchSpec{Adapter: AdapterSpec{LanguageID: "python", RuntimeID: "python:3.11"}})
 	for _, key := range []string{"PYTHONPATH", "NODE_PATH", "NPM_CONFIG_PREFIX", "GOPATH", "GOMODCACHE"} {
@@ -91,6 +102,9 @@ func TestDockerRunArgsMountProjectDependenciesReadOnly(t *testing.T) {
 	}
 	if !hasDAPArgPair(args, "-e", "PYTHONPATH=/project-deps/python") {
 		t.Fatalf("dependency environment missing from %v", args)
+	}
+	if identity := containerUser(); identity != "" && !hasDAPArgPair(args, "--user", identity) {
+		t.Fatalf("hardened DAP container did not use service UID:GID %q: %v", identity, args)
 	}
 	if data, err := os.ReadFile(lspSentinel); err != nil || string(data) != "keep" {
 		t.Fatalf("DAP argument planning changed LSP cache sentinel: data=%q err=%v", data, err)

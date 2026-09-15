@@ -59,7 +59,7 @@ func TestVerifiedResetSkipsRestartForManagedBaseline(t *testing.T) {
 	}
 	want := []string{
 		"top container-a -eo pid,ppid,comm,args",
-		"exec -w / container-a sh -c rm -rf /workspace; mkdir -p /workspace",
+		"exec --user 0 -w / container-a sh -c rm -rf /workspace; mkdir -p /workspace; chmod 0777 /workspace",
 	}
 	if !reflect.DeepEqual(commands, want) {
 		t.Fatalf("commands = %#v, want %#v", commands, want)
@@ -90,7 +90,7 @@ func TestVerifiedResetClearsAllWritableTmpfsMounts(t *testing.T) {
 		t.Fatalf("commands = %#v", commands)
 	}
 	cleanup := commands[1]
-	for _, path := range []string{"/workspace/*", "/tmp/*", "/home/*", "chmod 1777 /tmp"} {
+	for _, path := range []string{"/workspace/*", "/tmp/*", "/home/*", "chmod 0777 /workspace", "chmod 1777 /tmp"} {
 		if !strings.Contains(cleanup, path) {
 			t.Fatalf("cleanup command %q does not reset %q", cleanup, path)
 		}
