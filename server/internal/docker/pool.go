@@ -2434,6 +2434,13 @@ func (dp *Pool) createContainer(ctx context.Context, runtimeID, image string, ex
 			"--init",                  // 用 tini 回收僵尸进程
 			"--memory-swap", memLimit, // 限制 swap（=memory 则无额外 swap）
 		)
+		// Bind-mounted build and dependency caches are owned by the service
+		// account. Once DAC_OVERRIDE is dropped, running the workload as root
+		// can no longer write those 0700 directories. Match the container UID/GID
+		// to the account that owns the mounts instead of widening host permissions.
+		if identity := containerUser(); identity != "" {
+			args = append(args, "--user", identity)
+		}
 		// seccomp：Docker 默认已启用 seccomp profile（未传 seccomp=unconfined 即默认开启），
 		// 已封锁 ~44 个危险 syscall（mount/keyctl/...），无需额外配置。
 	}
