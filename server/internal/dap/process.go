@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -339,6 +340,16 @@ func dapEnvironment(spec LaunchSpec) map[string]string {
 	return env
 }
 
+func numericContainerUser(uid, gid string) string {
+	if _, err := strconv.ParseUint(uid, 10, 32); err != nil {
+		return ""
+	}
+	if _, err := strconv.ParseUint(gid, 10, 32); err != nil {
+		return ""
+	}
+	return uid + ":" + gid
+}
+
 func dockerRunArgs(spec LaunchSpec, name string, detached bool) ([]string, error) {
 	workspace, err := safefile.RealDirectory(strings.TrimSpace(spec.Workspace))
 	if err != nil {
@@ -360,6 +371,9 @@ func dockerRunArgs(spec LaunchSpec, name string, detached bool) ([]string, error
 		"--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
 		"-v", workspace+":"+ContainerRoot+":rw", "-w", ContainerRoot,
 	)
+	if identity := containerUser(); identity != "" {
+		args = append(args, "--user", identity)
+	}
 	if !spec.NetworkEnable {
 		// An internal Docker network gives the server loopback access to the
 		// adapter while denying container egress to public networks.

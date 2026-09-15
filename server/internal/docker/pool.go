@@ -1797,14 +1797,17 @@ func (dp *Pool) cleanWorkspace(containerID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cleanupCommand := "rm -rf /workspace; mkdir -p /workspace"
+	cleanupCommand := "rm -rf /workspace; mkdir -p /workspace; chmod 0777 /workspace"
 	if dp.readOnlyRootfs {
 		// These paths are independent tmpfs mounts in read-only-rootfs mode.
 		// Restarting the container clears them; the verified fast path must
 		// provide the same isolation without trying to remove mount points.
-		cleanupCommand = "rm -rf -- /workspace/* /workspace/.[!.]* /workspace/..?* /tmp/* /tmp/.[!.]* /tmp/..?* /home/* /home/.[!.]* /home/..?*; mkdir -p /workspace /tmp /home; chmod 1777 /tmp"
+		cleanupCommand = "rm -rf -- /workspace/* /workspace/.[!.]* /workspace/..?* /tmp/* /tmp/.[!.]* /tmp/..?* /home/* /home/.[!.]* /home/..?*; mkdir -p /workspace /tmp /home; chmod 0777 /workspace; chmod 1777 /tmp"
 	}
-	output, err := dp.executeDockerCommand(ctx, "exec", "-w", "/", containerID, "sh", "-c", cleanupCommand)
+	// Workspace cleanup is a container-management operation. Run it as uid 0 so
+	// root-owned files left by an image entrypoint cannot survive into the next
+	// tenant, then restore the workload-writable mode on the fresh workspace.
+	output, err := dp.executeDockerCommand(ctx, "exec", "--user", "0", "-w", "/", containerID, "sh", "-c", cleanupCommand)
 	if err != nil {
 		return fmt.Errorf("workspace reset: %w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -2540,7 +2543,12 @@ func ensureDockerBindDirectory(path string) error {
 // image, and the terminal reset path deliberately removes it before recreating
 // a clean snapshot.
 func containerWorkspaceBootstrapArguments(containerID string) []string {
-	return []string{"exec", "-w", "/", containerID, "mkdir", "-p", "/workspace"}
+	// The workload runs as the service UID after hardening, while a number of
+	// upstream images ship without /workspace (or ship it owned by root). Run
+	// this one-time container-local bootstrap as uid 0, then make only the
+	// ephemeral workspace traversable/writable for the workload. The command
+	// does not touch any bind-mounted cache below /workspace.
+	return []string{"exec", "--user", "0", "-w", "/", containerID, "sh", "-c", "mkdir -p /workspace && chmod 0777 /workspace"}
 }
 
 func (dp *Pool) containerRunningState(containerID string) (bool, error) {

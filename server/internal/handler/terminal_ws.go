@@ -481,8 +481,10 @@ func terminalWorkspaceResetArguments(containerID string) [][]string {
 		// The runtime images use /workspace as their Docker WorkingDir. Removing
 		// it first means every reset command must explicitly run from a stable
 		// directory, otherwise Docker fails before it can recreate /workspace.
-		{"docker", "exec", "-w", "/", containerID, "rm", "-rf", terminalWorkspaceDir},
-		{"docker", "exec", "-w", "/", containerID, "mkdir", "-p", terminalWorkspaceDir},
+		// These are container-management operations, so run them as uid 0 even
+		// though the interactive shell and user code run as the service UID.
+		{"docker", "exec", "--user", "0", "-w", "/", containerID, "rm", "-rf", terminalWorkspaceDir},
+		{"docker", "exec", "--user", "0", "-w", "/", containerID, "sh", "-c", "mkdir -p /workspace && chmod 0777 /workspace"},
 	}
 }
 

@@ -281,8 +281,8 @@ func TestTerminalWorkspaceResetOnlyTargetsEphemeralDirectory(t *testing.T) {
 	// /workspace is the runtime WorkingDir and is deliberately removed by the
 	// first command. Both exec calls must therefore select / before Docker
 	// attempts to start either process.
-	wantRemove := []string{"docker", "exec", "-w", "/", "container-id", "rm", "-rf", terminalWorkspaceDir}
-	wantCreate := []string{"docker", "exec", "-w", "/", "container-id", "mkdir", "-p", terminalWorkspaceDir}
+	wantRemove := []string{"docker", "exec", "--user", "0", "-w", "/", "container-id", "rm", "-rf", terminalWorkspaceDir}
+	wantCreate := []string{"docker", "exec", "--user", "0", "-w", "/", "container-id", "sh", "-c", "mkdir -p /workspace && chmod 0777 /workspace"}
 	if strings.Join(commands[0], "\x00") != strings.Join(wantRemove, "\x00") || strings.Join(commands[1], "\x00") != strings.Join(wantCreate, "\x00") {
 		t.Fatalf("workspace reset commands = %#v", commands)
 	}
