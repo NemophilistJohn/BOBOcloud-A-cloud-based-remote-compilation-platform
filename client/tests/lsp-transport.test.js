@@ -523,6 +523,50 @@ test('local completion cache keys include bounded semantic context', () => {
   assert.notEqual(uriHelpers.clientCompletionCacheKey(first, context), uriHelpers.clientCompletionCacheKey(differentPrefix, context));
 });
 
+test('durable completion key changes when an import changes above an unchanged receiver', () => {
+  let source = 'from first import client\nclient.';
+  let version = 1;
+  const model = { getLanguageId: () => 'python', getValue: () => source, getVersionId: () => version };
+  const snapshot = { uri: 'bobocloud-lsp:///main.py', model, lineNumber: 2, column: 8, prefix: 'client.' };
+  const first = uriHelpers.clientCompletionCacheKey(snapshot, {});
+  source = 'from other import client\nclient.';
+  version += 1;
+  assert.notEqual(first, uriHelpers.clientCompletionCacheKey(snapshot, {}));
+  source = 'from first import client\nclient.';
+  version += 1;
+  assert.equal(first, uriHelpers.clientCompletionCacheKey(snapshot, {}), 'undo can reuse the same content');
+});
+
+test('LSP certificate mismatch blocks retries and credential reads until explicit restart', async () => {
+  let socket;
+  let credentialReads = 0;
+  let scheduled = 0;
+  let rejectPeer = true;
+  const transport = new LspTransport({
+    webSocketFactory: url => (socket = new MockSocket(url)),
+    verifyPeer: () => { if (rejectPeer) throw Object.assign(new Error('wrong pin'), { code: 'certificate_mismatch' }); },
+    getCredential: () => { credentialReads += 1; return 'secret'; },
+    setTimer: () => { scheduled += 1; return {}; }
+  });
+  try {
+    await transport.configure(teamConfig());
+    socket.fire('open');
+    await nextTurn();
+    assert.equal(transport.snapshot().code, 'certificate_mismatch');
+    assert.equal(transport.snapshot().retryBlocked, true);
+    assert.equal(credentialReads, 0);
+    assert.deepEqual(socket.sent, []);
+    assert.equal(scheduled, 0);
+    rejectPeer = false;
+    await transport.restart();
+    socket.fire('open');
+    await nextTurn();
+    assert.equal(credentialReads, 1);
+    assert.equal(socket.sent[0].type, 'lsp.start');
+    assert.equal(transport.snapshot().retryBlocked, false);
+  } finally { transport.dispose(); }
+});
+
 test('remote completion returns immediately, caches the result and retriggers only once', async () => {
   const pending = deferred();
   let loads = 0;

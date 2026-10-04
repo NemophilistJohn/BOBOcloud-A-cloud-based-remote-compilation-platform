@@ -112,6 +112,7 @@ function resolveConfigurationSection(configuration, rawSection) {
 class LspTransport {
   constructor(options = {}) {
     this.webSocketFactory = options.webSocketFactory || ((url) => new WebSocket(url));
+    this.verifyPeer = options.verifyPeer || (() => {});
     this.getCredential = options.getCredential || (() => '');
     this.emit = options.emit || (() => {});
     this.setTimer = options.setTimer || setTimeout;
@@ -141,6 +142,8 @@ class LspTransport {
     };
     this.state = 'local';
     this.lastError = '';
+    this.lastErrorCode = '';
+    this.retryBlocked = false;
     this.fastReconnect = false;
     this.lifecycleRevision = 0;
     this.lifecycleChain = Promise.resolve();
@@ -161,14 +164,17 @@ class LspTransport {
       capabilities: this.metrics.capabilities,
       gatewayCapabilities: this.metrics.gatewayCapabilities,
       sessionId: this.metrics.sessionId,
-      error: this.lastError
+      error: this.lastError,
+      code: this.lastErrorCode,
+      retryBlocked: this.retryBlocked
     }, extra);
   }
 
   _setState(state, extra) {
     this.state = state;
     if (extra && extra.error) this.lastError = String(extra.error);
-    if (state === 'ready' || state === 'local') this.lastError = '';
+    if (extra && extra.code !== undefined) this.lastErrorCode = String(extra.code);
+    if (state === 'ready' || state === 'local') { this.lastError = ''; this.lastErrorCode = ''; this.retryBlocked = false; }
     this.emit('status', this.snapshot(extra));
   }
 
@@ -203,6 +209,8 @@ class LspTransport {
       this.metrics.gatewayCapabilities = null;
       this.fastReconnect = false;
       this.lastError = '';
+      this.lastErrorCode = '';
+      this.retryBlocked = false;
       if (next.mode === 'local') {
         this._setState('local');
         return this.snapshot();
@@ -230,6 +238,8 @@ class LspTransport {
     const onOpen = async () => {
       if (generation !== this.generation || socket !== this.socket) return;
       try {
+        this.verifyPeer(socket, normalizeLspUrl(this.config.serverHost));
+        if (generation !== this.generation || socket !== this.socket) return;
         const token = await this.getCredential(this.config.serverHost);
         if (generation !== this.generation || socket !== this.socket) return;
         const start = {
@@ -243,7 +253,8 @@ class LspTransport {
         if (this.config.setupCommands && this.config.setupCommands.length) start.setupCommands = this.config.setupCommands.slice();
         this._send(start, true);
       } catch (error) {
-        this._setState('error', { error: error.message });
+        this.retryBlocked = true;
+        this._setState('error', { error: error.message, code: error.code || 'credential_error' });
         this._closeSocket(false, error.message);
       }
     };
@@ -254,7 +265,10 @@ class LspTransport {
     const onError = (event) => {
       if (generation !== this.generation || socket !== this.socket) return;
       const message = event && event.message ? event.message : 'LSP WebSocket error';
-      this._setState('error', { error: message });
+      const cause = event && (event.error || event);
+      const code = cause && cause.code || '';
+      this.retryBlocked = /CERT|SELF_SIGNED|UNABLE_TO_VERIFY|TLS_CERT/.test(code) || /Unexpected server response: (400|401|403|404|426)\b/.test(message);
+      this._setState('error', { error: message, code: this.retryBlocked ? (/Unexpected server response/.test(message) ? 'upgrade_rejected' : 'certificate_untrusted') : code });
     };
     const onClose = () => {
       if (generation !== this.generation || socket !== this.socket) return;
@@ -263,6 +277,7 @@ class LspTransport {
       this.metrics.gatewayCapabilities = null;
       this._rejectPending(new Error('Remote language service disconnected'));
       if (!this.intentionalStop && this.config.mode !== 'local') {
+        if (this.retryBlocked) { this._setState('error'); return; }
         const reconnectDelay = this.fastReconnect ? 75 : undefined;
         this.fastReconnect = false;
         this._setState('disconnected');
@@ -309,6 +324,7 @@ class LspTransport {
           : null;
         this._beginInitialize(message.capabilities || {});
       } else if (message.type === 'lsp.error') {
+        if (message.code === 'unauthorized') this.retryBlocked = true;
         this._setState('error', { error: message.message || 'Remote language service error', code: message.code || '' });
       } else if (message.type === 'lsp.cache') {
         if (message.cache) this.metrics.cache = message.cache;
@@ -590,13 +606,16 @@ class LspTransport {
       if (revision !== this.lifecycleRevision) return false;
       this.intentionalStop = false;
       this.reconnectAttempt = 0;
+      this.retryBlocked = false;
+      this.lastError = '';
+      this.lastErrorCode = '';
       await this._connect();
       return true;
     });
   }
 
   _scheduleReconnect(preferredDelay) {
-    if (this.reconnectTimer || this.intentionalStop || this.config.mode === 'local') return;
+    if (this.reconnectTimer || this.intentionalStop || this.retryBlocked || this.config.mode === 'local') return;
     this.reconnectAttempt += 1;
     const base = Math.min(15000, 500 * Math.pow(2, Math.min(this.reconnectAttempt - 1, 5)));
     const delay = preferredDelay === undefined

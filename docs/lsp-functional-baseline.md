@@ -1,0 +1,55 @@
+# LSP 连接与本地缓存基线
+
+## 2026-10-04 故障与证据
+
+本机实际服务器配置为 `81.70.51.43`，TLS 开启，WebSocket 端口为 3101，已配置证书指纹。
+在 Electron 主进程中直接使用全局 `WebSocket`，连接 `wss://81.70.51.43:3101/lsp`，可稳定复现 `Received network error or non-101 status code`。
+相同地址通过 Node `ws` 连接，在发送凭据前验证已配置的 SHA-256 指纹，TLS 和 WebSocket 升级成功。
+Electron 的 Chromium `setCertificateVerifyProc` 没有覆盖主进程全局 WebSocket 的 Node 网络路径。
+此前只修改端口和服务端代码不能解决这个客户端 TLS 问题；原界面测试替换了全局 WebSocket，也没有覆盖真实证书握手。
+
+修复后，真实 Electron 对云端 `tryjava` 的 Python 3.10 分析完成初始化，依赖状态为 `ready`；`import numpy as np` 后 `np.` 返回 660 个候选，包含 `array`。
+这是一次实际环境验证结果，不是所有负载下的延迟或吞吐保证。
+
+## 必须保持的连接行为
+
+- 主进程管理连接与凭据；renderer 不接触证书或 TLS 配置权限。
+- LSP 使用专用 WebSocket 端口。HTTPS 地址转换为 WSS，不能降级为 WS。
+- 无指纹的 WSS 使用正常 CA 校验。私有证书只能通过已配置指纹授权；先校验实际对端证书，再读取和发送凭据。
+- 错误指纹、不受信任证书、明确的永久 HTTP 升级拒绝和鉴权失败应停止自动重试，保留错误原因。修正配置或显式重启后才恢复。
+- 临时网络中断保留退避重连；重连后重新初始化并同步文档。旧连接、旧身份的回调不能写入新上下文。
+- 不要用 `NODE_TLS_REJECT_UNAUTHORIZED=0`、无条件关闭 TLS 检查或绕过身份校验修复连通性。
+
+## 缓存策略与边界
+
+现有缓存包含当前会话补全、磁盘补全提示和 Python 依赖 API 索引。库索引是公开模块/成员名称树，不是整个项目的引用图。
+
+- 磁盘缓存由 main 绑定服务器和账号，再按工作区、语言、运行时、依赖 revision 隔离。
+- 位置补全键加入当前文档内容摘要，防止同一位置和前缀在导入、类型声明变化后复用旧提示。每个 model/version 只计算一次摘要。
+- Active 缓存容量至少 30 MB 且开启“库 API 缓存”时，Python 可以本地补全模块、成员和简单顶层导入别名。
+- 同一工作区、语言、运行时的文件切换和连接恢复保留已验证索引；磁盘索引恢复后重新触发当前补全。
+- 临时断线期间只使用当前已验证依赖 revision 的库名称提示；不发送远端补全，不执行缓存 command/edit/resolve。
+- 身份、工作区、语言、运行时、依赖 revision 或用户缓存策略改变时重新验证/失效。依赖状态 `mixed`、`unavailable` 不用于库索引。
+- renderer 使用不可变共享索引视图，避免每次输入 JSON 序列化整棵树。保留原有最多 8 MiB 热索引容量、严格结构限额，并限制热索引有效期为 24 小时；读取不延长有效期。
+- 应用冷启动且远端完全不可达时，没有当前依赖 revision 的可靠证据，因此不猜测加载其他代次。缓存提示不是安装清单或语义分析结果。
+
+暂不持久化完整项目引用图：引用位置、作用域、跨文件重命名依赖源码和所有相关文件版本。当前缺少整个项目的语义依赖失效协议，直接重放引用图会产生错误跳转或修改。后续如需加入，应先建立文件内容摘要、项目变更版本和 analyzer/toolchain 版本，明确只读结果的失效规则，再评估收益。当前先优化已具备隔离边界的库 API 索引。
+
+## 回归入口
+
+```powershell
+npm test
+npm run typecheck
+npm --prefix client run test:ui:lsp
+npm --prefix client run test:ui:ci:core
+node scripts/ci/verify-test-routing.mjs
+go -C server test ./...
+go -C server vet ./...
+```
+
+`lsp-tls-ui.spec.js` 在真实 Electron 中使用本地自签证书和实际 `ws`，验证握手、初始化、文档同步、补全、错误指纹/无信任/错误 HTTP 端口拒绝以及更新配置后的恢复；需要 OpenSSL，缺少前置条件必须失败，不能跳过。
+`lsp-ui.spec.js` 检查三语言界面、库名称补全、断线本地回退、同 revision 重连不重复下载、磁盘恢复和依赖代次变化失效。
+Node 测试覆盖凭据发送顺序、连接生命周期、上下文隔离、取消、源码摘要键、不可变索引和有效期。
+新的 hermetic Electron spec 自动进入 CI 的 `core` 分片；`CI Gate` 必须成功。
+
+涉及服务端生命周期、Docker、缓存代次或资源治理时还需相应 Go race/privileged 测试及真实云端验证。仅 mock WebSocket 的 UI 测试或 Node 脚本直接访问服务器，均不能替代 Electron TLS 基线。

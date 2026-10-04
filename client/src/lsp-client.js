@@ -25,6 +25,7 @@
   var completionHintPrewarmTimer = null;
   var activeLanguage = '';
   var lastConfigSignature = '';
+  var lastAnalysisContext = '';
   var auxiliaryModels = new Map();
   var pendingCacheClear = null;
   var restartButtonTimer = null;
@@ -50,11 +51,13 @@
   var dependencyApiIndexUi = { state: 'disabled', error: '' };
   var dependencyApiIndexBuilds = new Map();
   var dependencyApiIndexSequence = 1;
+  var verifiedDependencyIndexScope = null;
+  var completionSourceHashes = new WeakMap();
 
   // Completion responses are asynchronous. Any identity or analysis-context
   // boundary must invalidate both cache tiers before a late response can be
   // replayed or persisted under the next context.
-  function invalidateCompletionContext() {
+  function invalidateCompletionContext(keepDependencyIndex) {
     completionContextGeneration += 1;
     if (completionHintPrewarmTimer) {
       clearTimeout(completionHintPrewarmTimer);
@@ -62,7 +65,10 @@
     }
     completionCoordinator.clear();
     completionHintCache.clear();
-    dependencyApiIndexCache.clear();
+    if (keepDependencyIndex !== true) {
+      dependencyApiIndexCache.clear();
+      verifiedDependencyIndexScope = null;
+    }
     cancelDependencyApiIndexBuilds();
   }
 
@@ -477,7 +483,9 @@
   // keyed by the server-derived dependency revision, have a small renderer
   // mirror, and contain only module names plus public identifiers. In
   // particular, they never retain source text, paths, edits or diagnostics.
-  function createDependencyApiIndexCache() {
+  function createDependencyApiIndexCache(options) {
+    var now = options && options.now || Date.now;
+    var ttlMs = 24 * 60 * 60 * 1000;
     var entries = new Map();
     var pending = new Map();
     var totalBytes = 0;
@@ -496,6 +504,26 @@
 
     function bytes(value) {
       try { return JSON.stringify(value).length; } catch (_) { return 0; }
+    }
+
+    function freeze(value) {
+      if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+      Object.keys(value).forEach(function(key) { freeze(value[key]); });
+      return Object.freeze(value);
+    }
+
+    function read(scopeId, key) {
+      var id = entryId(scopeId, key);
+      var entry = entries.get(id);
+      if (!entry) return null;
+      if (now() >= entry.expiresAt) {
+        entries.delete(id);
+        totalBytes -= entry.bytes;
+        return null;
+      }
+      entries.delete(id);
+      entries.set(id, entry);
+      return entry.value;
     }
 
     function evict() {
@@ -519,13 +547,11 @@
         evict();
       },
       peek: function(scopeId, key) {
-        var id = entryId(scopeId, key);
-        var entry = entries.get(id);
-        if (!entry) return null;
-        entries.delete(id);
-        entries.set(id, entry);
-        return clone(entry.value);
+        return clone(read(scopeId, key));
       },
+      // Completion only reads this immutable view. Avoid serializing a whole
+      // multi-megabyte library tree on every keystroke and cache probe.
+      peekView: read,
       prime: function(scopeId, key, value) {
         if (!scopeId || !key || !value) return false;
         var size = bytes(value);
@@ -534,7 +560,7 @@
         var previous = entries.get(id);
         if (previous) totalBytes -= previous.bytes || 0;
         entries.delete(id);
-        entries.set(id, { value: clone(value), bytes: size });
+        entries.set(id, { value: freeze(clone(value)), bytes: size, expiresAt: now() + ttlMs });
         totalBytes += size;
         evict();
         return entries.has(id);
@@ -1094,7 +1120,9 @@
     // A configuration boundary may switch workspace, runtime or authenticated
     // analyzer state. Durable entries remain safely namespaced, while the hot
     // renderer mirror is intentionally short-lived.
-    invalidateCompletionContext();
+    // Reconnection changes the socket, not the dependency generation.
+    if (signature !== lastAnalysisContext) invalidateCompletionContext();
+    lastAnalysisContext = signature;
     updateCompletionCapabilities({});
     openedDocuments.clear();
     clearChangeQueues();
@@ -1332,7 +1360,8 @@
     lspProtocolCapabilities = capabilities && typeof capabilities === 'object' ? capabilities : {};
     var advertised = completionTriggerCharacters(lspProtocolCapabilities);
     Object.keys(registeredCompletionProviders).forEach(function(language) {
-      var desired = status.state === 'ready' && language === activeLanguage ? advertised : [];
+      var desired = status.state === 'ready' && language === activeLanguage ? advertised :
+        (language === 'python' && verifiedDependencyIndexScope && clientCacheDependencyIndexEnabled() ? ['.'] : []);
       installRemoteCompletionProvider(language, desired);
     });
   }
@@ -1398,10 +1427,11 @@
     // The opaque key is made in the renderer. The IPC boundary only receives
     // this digest, never a workspace path, URI or source fragment.
     return stableCompletionHash(JSON.stringify({
-      schema: 2,
+      schema: 3,
       mode: settings.mode,
       uri: snapshot.uri,
       language: snapshot.model && snapshot.model.getLanguageId ? snapshot.model.getLanguageId() : '',
+      source: completionSourceHash(snapshot.model),
       trigger: protocolContext || {},
       line: snapshot.lineNumber,
       column: snapshot.column,
@@ -1410,6 +1440,15 @@
   }
 
   var dependencyApiIndexSchema = 'dependency-api-index-v1';
+  function completionSourceHash(model) {
+    if (!model || typeof model.getValue !== 'function') return '';
+    var version = typeof model.getVersionId === 'function' ? model.getVersionId() : null;
+    var cached = version !== null && completionSourceHashes.get(model);
+    if (cached && cached.version === version) return cached.hash;
+    var hash = stableCompletionHash(model.getValue());
+    if (version !== null) completionSourceHashes.set(model, { version: version, hash: hash });
+    return hash;
+  }
   var dependencyApiIdentifier = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
   function clientCacheDependencyIndexEnabled() {
@@ -1431,8 +1470,16 @@
     var workspace = workspaceIdentity();
     var language = model && model.getLanguageId ? model.getLanguageId() : desiredLanguage();
     var dependency = status && status.dependency;
-    if (!workspace || canonicalRuntimeLanguage(language) !== 'python' || status.state !== 'ready' ||
+    if (status.state !== 'ready') {
+      var verified = verifiedDependencyIndexScope;
+      if (!verified || !workspace || canonicalRuntimeLanguage(language) !== 'python' ||
+          JSON.stringify(workspace) !== JSON.stringify(verified.workspace) ||
+          runtimeForLanguage(language, S.selectedRuntime) !== verified.runtimeId) return null;
+      return verified;
+    }
+    if (!workspace || canonicalRuntimeLanguage(language) !== 'python' ||
         !dependency || !dependency.revision || canonicalRuntimeLanguage(status.languageId) !== 'python') return null;
+    if (!dependencyCanBackLocalCache(dependency)) return null;
     var runtimeId = runtimeForLanguage(language, status.runtimeId || S.selectedRuntime);
     if (!runtimeId || runtimeId === 'local') return null;
     return {
@@ -1455,7 +1502,8 @@
 
   function canUseDependencyApiIndex(model) {
     return clientCacheDependencyIndexEnabled() && settings.mode !== 'local' &&
-      !!dependencyApiIndexCapability() && !!dependencyApiIndexScope(model) && !!(global.api && global.api.lspClientCacheDependencyIndexGet &&
+      (status.state === 'ready' ? !!dependencyApiIndexCapability() : !!verifiedDependencyIndexScope) &&
+      !!dependencyApiIndexScope(model) && !!(global.api && global.api.lspClientCacheDependencyIndexGet &&
         global.api.lspClientCacheDependencyIndexPut && global.api.lspControl);
   }
 
@@ -1784,7 +1832,7 @@
   }
 
   function dependencyApiIndexRequestPage(build) {
-    if (!build || build.cancelled || !dependencyApiIndexCurrentScope(build.scopeId, build.key) ||
+    if (status.state !== 'ready' || !build || build.cancelled || !dependencyApiIndexCurrentScope(build.scopeId, build.key) ||
         !dependencyApiIndexCapability() || !global.api || typeof global.api.lspControl !== 'function') return false;
     if (build.pageCount >= 128 || build.approxBytes >= 6 * 1024 * 1024) {
       build.truncated = true;
@@ -1830,6 +1878,7 @@
     var value = dependencyApiIndexResult(build);
     if (!value || !dependencyApiIndexCurrentScope(build.scopeId, build.key) || !clientCacheDependencyIndexEnabled()) return false;
     if (!dependencyApiIndexCache.prime(build.scopeId, build.key, value)) return false;
+    verifiedDependencyIndexScope = build.scope;
     // A truncated response remains useful for this live session, but must not
     // masquerade as a complete cross-session durable API tree.
     if (!build.truncated) {
@@ -1845,6 +1894,7 @@
   }
 
   function startDependencyApiIndexBuild(scope, scopeId, key) {
+    if (status.state !== 'ready') return;
     var id = dependencyApiIndexBuildId(scopeId, key);
     if (dependencyApiIndexBuilds.has(id)) return;
     var build = {
@@ -1866,7 +1916,7 @@
   }
 
   function hydrateDependencyApiIndex(scope, scopeId, key) {
-    if (!scope || !scopeId || !key || dependencyApiIndexCache.peek(scopeId, key) || dependencyApiIndexCache.hasPending(scopeId, key)) return;
+    if (!scope || !scopeId || !key || dependencyApiIndexCache.peekView(scopeId, key) || dependencyApiIndexCache.hasPending(scopeId, key)) return;
     var epoch = dependencyApiIndexCache.epoch();
     dependencyApiIndexCache.begin(scopeId, key, function() {
       if (!dependencyApiIndexCache.isCurrent(epoch)) return false;
@@ -1875,8 +1925,13 @@
       }).then(function(value) {
         if (!dependencyApiIndexCache.isCurrent(epoch) || !dependencyApiIndexCurrentScope(scopeId, key) || !clientCacheDependencyIndexEnabled()) return false;
         if (value && dependencyApiIndexCache.prime(scopeId, key, value)) {
+          verifiedDependencyIndexScope = scope;
           dependencyApiIndexUi = { state: 'enabled', error: '' };
           renderClientCacheUi();
+          var model = currentModel();
+          var position = S.editor && S.editor.getPosition ? S.editor.getPosition() : null;
+          var snapshot = model && position ? completionSnapshot(model, position, null) : null;
+          if (snapshot && dependencyApiIndexCompletions(value, snapshot)) retriggerCompletion(snapshot);
           return true;
         }
         startDependencyApiIndexBuild(scope, scopeId, key);
@@ -1893,7 +1948,8 @@
     var scope = dependencyApiIndexScope(model);
     var scopeId = clientCompletionCacheScopeId(scope);
     var key = dependencyApiIndexKey(scope);
-    var value = dependencyApiIndexCache.peek(scopeId, key);
+    var value = dependencyApiIndexCache.peekView(scopeId, key);
+    if (value && status.state === 'ready') verifiedDependencyIndexScope = scope;
     if (!value) hydrateDependencyApiIndex(scope, scopeId, key);
     return { scope: scope, scopeId: scopeId, key: key, value: value };
   }
@@ -2035,11 +2091,20 @@
 
   function provideRemoteCompletion(model, position, context, token) {
     var providerCapability = completionProviderCapability(lspProtocolCapabilities);
-    if (settings.mode === 'local' || status.state !== 'ready' || !providerCapability || model.getLanguageId() !== activeLanguage || (token && token.isCancellationRequested)) {
+    if (settings.mode === 'local' || model.getLanguageId() !== activeLanguage || (token && token.isCancellationRequested)) {
       return { suggestions: [] };
     }
     var snapshot = completionSnapshot(model, position, token);
     if (!snapshot) return { suggestions: [] };
+    // Offline fallback only inserts sanitized library names, never edits or
+    // semantic references from a stale analyzer session.
+    if (status.state !== 'ready') {
+      if (status.retryBlocked) return { suggestions: [] };
+      var offlineIndex = canUseDependencyApiIndex(model) && ensureDependencyApiIndex(model);
+      var offlineHint = offlineIndex && offlineIndex.value && dependencyApiIndexCompletions(offlineIndex.value, snapshot);
+      return offlineHint ? completionList(offlineHint, model, position, true) : { suggestions: [] };
+    }
+    if (!providerCapability) return { suggestions: [] };
     var protocolContext = lspCompletionContext(context);
     var cacheScope = canUseClientCompletionCache(model) ? clientCompletionCacheScope(model, true) : null;
     var cacheScopeId = clientCompletionCacheScopeId(cacheScope);
@@ -2479,12 +2544,21 @@
     status = next || status;
     if (status.state === 'ready' || status.state === 'connecting' || status.state === 'initializing') remoteTransportActive = true;
     if (status.state === 'local' || status.state === 'disconnected' || status.state === 'error') remoteTransportActive = false;
-    if (capabilityReconnectCoordinator) {
+    if (capabilityReconnectCoordinator && !status.retryBlocked) {
       capabilityReconnectCoordinator.handle(previousState, status.state).catch(function(error) {
         console.error('LSP capability refresh:', error);
       });
     }
-    if (status.state === 'ready') updateCompletionCapabilities(status.capabilities || lspProtocolCapabilities);
+    if (status.state === 'ready') {
+      var readyIndexScope = dependencyApiIndexScope(currentModel());
+      if (verifiedDependencyIndexScope && (!readyIndexScope ||
+          clientCompletionCacheScopeId(readyIndexScope) !== clientCompletionCacheScopeId(verifiedDependencyIndexScope))) {
+        verifiedDependencyIndexScope = null;
+        completionCoordinator.clear();
+        completionHintCache.clear();
+      }
+      updateCompletionCapabilities(status.capabilities || lspProtocolCapabilities);
+    }
     else updateCompletionCapabilities({});
     if (next && next.dependencyRefresh) {
       if (next.dependencyRefresh.success !== false && next.dependencyRefresh.changed === true) {
@@ -2638,7 +2712,7 @@
   }
 
   function dependencyApiIndexSupportedHere() {
-    return !!dependencyApiIndexCapability() && !!dependencyApiIndexScope(currentModel());
+    return canUseDependencyApiIndex(currentModel()) || (!!dependencyApiIndexCapability() && !!dependencyApiIndexScope(currentModel()));
   }
 
   function renderDependencyApiIndexUi() {
@@ -2663,7 +2737,7 @@
     state.textContent = !eligible
       ? t('Library API cache is disabled')
       : (!enabled && !supported ? t('Library API cache is unavailable for the current analysis.') : (enabled
-      ? (stateValue === 'loading' ? t('Loading local cache...') : t('Library API cache is enabled'))
+      ? (status.state !== 'ready' ? t('Using verified library API cache while reconnecting') : (stateValue === 'loading' ? t('Loading local cache...') : t('Library API cache is enabled')))
       : t('Library API cache is disabled')));
     hint.textContent = mode !== 'active'
       ? t('Library API cache is available only with active cache.')
@@ -2945,11 +3019,15 @@
   }
 
   function renderStatus() {
+    var errorMessage = status.error;
+    if (status.code === 'certificate_mismatch') errorMessage = t('The server certificate does not match. Check the fingerprint in server settings, then restart analysis.');
+    if (status.code === 'certificate_untrusted' || status.code === 'certificate_unavailable') errorMessage = t('The server certificate is not trusted. Configure its verified fingerprint or a trusted certificate, then restart analysis.');
+    if (status.code === 'upgrade_rejected') errorMessage = t('The server refused the LSP WebSocket upgrade. Check the WebSocket port and proxy configuration.');
     var chip = document.getElementById('status-lsp');
     if (chip) {
       chip.dataset.state = settings.mode === 'local' ? 'local' : status.state;
       chip.textContent = settings.mode === 'local' ? t('LSP: Local') : (status.state === 'ready' ? t('LSP: Remote') : ((status.state === 'connecting' || status.state === 'initializing') ? t('LSP: Connecting') : t('LSP: Offline')));
-      chip.title = stateLabel() + (settings.mode !== 'local' && status.error ? '\n' + t('Reason: {message}', { message: status.error }) : '');
+      chip.title = stateLabel() + (settings.mode !== 'local' && errorMessage ? '\n' + t('Reason: {message}', { message: errorMessage }) : '');
     }
     var stateEl = document.getElementById('lsp-settings-state');
     if (stateEl) {
@@ -2960,7 +3038,7 @@
     if (detail) {
       var showError = settings.mode !== 'local' && !!status.error;
       detail.hidden = !showError;
-      detail.textContent = showError ? t('Reason: {message}', { message: status.error }) : '';
+      detail.textContent = showError ? t('Reason: {message}', { message: errorMessage }) : '';
     }
     var latency = document.getElementById('lsp-metric-latency');
     if (latency) latency.textContent = status.latencyMs === null || status.latencyMs === undefined ? '--' : Math.round(status.latencyMs) + ' ms';
@@ -3198,7 +3276,10 @@
     });
     if (S.editor) {
       S.editor.onDidChangeModel(function() {
-        invalidateCompletionContext();
+        // A file switch invalidates position/semantic completions; library
+        // names remain valid within the same analysis identity. configure()
+        // separately clears them when workspace, language or runtime changes.
+        invalidateCompletionContext(true);
         scheduleConfigure();
       });
       if (S.editor.onDidChangeCursorPosition) {

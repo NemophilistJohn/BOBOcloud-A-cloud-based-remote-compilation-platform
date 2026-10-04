@@ -229,6 +229,17 @@ jobs:
       - name: Build renderer
         shell: pwsh
         run: npm --prefix client run build:renderer:dev
+      - name: Prepare OpenSSL for real LSP TLS fixtures
+        shell: pwsh
+        run: |
+          if (-not (Get-Command openssl -ErrorAction SilentlyContinue)) {
+            $gitRoot = Split-Path (Split-Path (Get-Command git).Source)
+            $opensslDir = Join-Path $gitRoot 'usr/bin'
+            if (-not (Test-Path (Join-Path $opensslDir 'openssl.exe'))) {
+              throw 'OpenSSL is required for the Electron LSP TLS baseline'
+            }
+            $opensslDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
       - name: Run core UI shard
         shell: pwsh
         env:

@@ -4,6 +4,8 @@ const {
   normalizeScope: normalizeClientAnalysisScope
 } = require('../client-analysis-cache');
 const { endpoint: serverEndpoint } = require('./server-transport');
+const { createCloudWebSocketFactory, createCloudPeerVerifier } = require('./cloud-websocket');
+const { configuredFingerprints } = require('./secure-transport');
 const {
   credentialForServer,
   effectiveCredential,
@@ -32,6 +34,8 @@ function createLspController(options) {
     : createTrustedRendererSender({ getWindow }).send;
   const now = options.now || Date.now;
   let transport = null;
+  let transportTrust = '';
+  let transportConfigured = false;
   let analysisCache = null;
   let cacheNamespacePromise = null;
   let cacheNamespaceEpoch = 0;
@@ -116,9 +120,20 @@ function createLspController(options) {
     return serverSettings.apiKey || '';
   }
 
-  function ensureTransport() {
+  function ensureTransport(serverSettings) {
+    if (serverSettings) {
+      const trust = JSON.stringify([serverEndpoint(serverSettings, 'ws'), configuredFingerprints(serverSettings)]);
+      if (transport && (!transportConfigured || transportTrust !== trust)) {
+        transport.dispose();
+        transport = null;
+      }
+      transportTrust = trust;
+      transportConfigured = true;
+    }
     if (transport) return transport;
     transport = new LspTransport({
+      webSocketFactory: serverSettings ? createCloudWebSocketFactory(serverSettings) : undefined,
+      verifyPeer: serverSettings ? createCloudPeerVerifier(serverSettings) : undefined,
       getCredential: currentCredential,
       emit: (channel, payload) => {
         sendToRenderer('lsp:' + channel, payload);
@@ -133,6 +148,7 @@ function createLspController(options) {
     if (!transport) return;
     transport.dispose();
     transport = null;
+    transportConfigured = false;
   }
 
   function initializeRetentionPolicy() {
@@ -203,7 +219,7 @@ function createLspController(options) {
       // LSP is a WebSocket protocol. Use the dedicated listener so proxies and
       // deployments that keep the HTTP API and streaming sockets separate do
       // not answer the upgrade with an ordinary HTTP response (non-101).
-      return ensureTransport().configure(Object.assign({}, config, { serverHost: serverEndpoint(serverSettings, 'ws') }));
+      return ensureTransport(serverSettings).configure(Object.assign({}, config, { serverHost: serverEndpoint(serverSettings, 'ws') }));
     });
     ipcMain.handle('lsp:request', async (_event, payload) => {
       if (!payload || typeof payload.method !== 'string') throw new Error('Invalid LSP request');

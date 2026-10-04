@@ -2330,5 +2330,9 @@
   "Artifacts completed with {count} save error(s).": "成果物の処理は完了しましたが、{count} 件の保存エラーが発生しました。",
   "Run completed, but {count} artifact(s) could not be saved.": "実行は完了しましたが、{count} 件の成果物を保存できませんでした。",
   "Earlier output omitted: {count} lines (recent output kept within safety limits).": "古い出力を {count} 行省略しました（直近の出力は安全上限内で保持されます）。",
-  "[bobocloud] Live output line truncated at {limit} characters.": "[bobocloud] ライブ出力の 1 行が {limit} 文字を超えたため、以降を省略しました。"
+  "[bobocloud] Live output line truncated at {limit} characters.": "[bobocloud] ライブ出力の 1 行が {limit} 文字を超えたため、以降を省略しました。",
+  "Using verified library API cache while reconnecting": "再接続中は検証済みのライブラリ API キャッシュを使用します",
+  "The server certificate does not match. Check the fingerprint in server settings, then restart analysis.": "サーバー証明書が一致しません。サーバー設定のフィンガープリントを確認し、解析を再起動してください。",
+  "The server certificate is not trusted. Configure its verified fingerprint or a trusted certificate, then restart analysis.": "サーバー証明書が信頼されていません。確認済みのフィンガープリントまたは信頼できる証明書を設定し、解析を再起動してください。",
+  "The server refused the LSP WebSocket upgrade. Check the WebSocket port and proxy configuration.": "サーバーが LSP WebSocket のアップグレードを拒否しました。WebSocket ポートとプロキシ設定を確認してください。"
 }

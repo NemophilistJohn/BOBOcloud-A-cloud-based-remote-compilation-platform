@@ -206,6 +206,22 @@ test('dependency API hydration pending work is keyed, coalesced, and released on
   await invalidated;
 });
 
+test('library completion reads share an immutable tree without extending its freshness deadline', () => {
+  let time = 0;
+  const cache = createDependencyApiIndexCache({ now: () => time });
+  cache.configure({ enabled: true, sizeMiB: 30 });
+  const input = { schema: 'dependency-api-index-v1', roots: [{ name: 'numpy', members: [{ name: 'array', kind: 'function' }], modules: [] }] };
+  assert.equal(cache.prime('scope-a', 'revision-1', input), true);
+  const view = cache.peekView('scope-a', 'revision-1');
+  assert.equal(Object.isFrozen(view.roots[0].members[0]), true);
+  input.roots[0].members[0].name = 'changed';
+  assert.equal(view.roots[0].members[0].name, 'array');
+  assert.strictEqual(cache.peekView('scope-a', 'revision-1'), view);
+  assert.equal(cache.peekView('scope-b', 'revision-1'), null);
+  time = 24 * 60 * 60 * 1000;
+  assert.equal(cache.peekView('scope-a', 'revision-1'), null);
+});
+
 test('dependency API alias completions use only prior top-level imports from the current model version', () => {
   const index = {
     schema: 'dependency-api-index-v1',

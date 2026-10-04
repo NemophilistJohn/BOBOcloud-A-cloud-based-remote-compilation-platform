@@ -2330,5 +2330,9 @@
   "Artifacts completed with {count} save error(s).": "Artifacts completed with {count} save error(s).",
   "Run completed, but {count} artifact(s) could not be saved.": "Run completed, but {count} artifact(s) could not be saved.",
   "Earlier output omitted: {count} lines (recent output kept within safety limits).": "Earlier output omitted: {count} lines (recent output kept within safety limits).",
-  "[bobocloud] Live output line truncated at {limit} characters.": "[bobocloud] Live output line truncated at {limit} characters."
+  "[bobocloud] Live output line truncated at {limit} characters.": "[bobocloud] Live output line truncated at {limit} characters.",
+  "Using verified library API cache while reconnecting": "Using verified library API cache while reconnecting",
+  "The server certificate does not match. Check the fingerprint in server settings, then restart analysis.": "The server certificate does not match. Check the fingerprint in server settings, then restart analysis.",
+  "The server certificate is not trusted. Configure its verified fingerprint or a trusted certificate, then restart analysis.": "The server certificate is not trusted. Configure its verified fingerprint or a trusted certificate, then restart analysis.",
+  "The server refused the LSP WebSocket upgrade. Check the WebSocket port and proxy configuration.": "The server refused the LSP WebSocket upgrade. Check the WebSocket port and proxy configuration."
 }

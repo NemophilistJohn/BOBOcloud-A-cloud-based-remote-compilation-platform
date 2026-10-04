@@ -51,7 +51,9 @@ test('configured LSP address, strategy settings and status bar work in all built
         completionRequests: 0,
         completionContexts: [],
         completionDelayMs: 900,
-        dependencyIndexRequests: 0
+        dependencyIndexRequests: 0,
+        dependencyRevision: '',
+        ignoreDependencyIndex: false
       };
       globalThis.WebSocket = class TestWebSocket {
         constructor(url) {
@@ -101,7 +103,7 @@ test('configured LSP address, strategy settings and status bar work in all built
               cache: { sizeBytes: 128 },
               dependency: {
                 status: 'ready',
-                revision: 'deps-' + globalThis.__boboLspProbe.starts.length,
+                revision: globalThis.__boboLspProbe.dependencyRevision || 'deps-' + globalThis.__boboLspProbe.starts.length,
                 languageId: message.languageId,
                 runtimeId: message.runtimeId,
                 source: 'user',
@@ -128,6 +130,7 @@ test('configured LSP address, strategy settings and status bar work in all built
             }, globalThis.__boboLspProbe.dependencyRefreshDelayMs || 0);
           } else if (message.type === 'lsp.dependency.index.request') {
             globalThis.__boboLspProbe.dependencyIndexRequests += 1;
+            if (globalThis.__boboLspProbe.ignoreDependencyIndex) return;
             const start = this.startMessage || {};
             this.respond({
               type: 'lsp.dependency.index',
@@ -137,7 +140,7 @@ test('configured LSP address, strategy settings and status bar work in all built
                 schema: 'dependency-api-index-v1',
                 languageId: 'python',
                 runtimeId: start.runtimeId,
-                revision: 'deps-' + globalThis.__boboLspProbe.starts.length,
+                revision: globalThis.__boboLspProbe.dependencyRevision || 'deps-' + globalThis.__boboLspProbe.starts.length,
                 roots: ['numpy'],
                 entries: [{
                   module: 'numpy',
@@ -183,6 +186,10 @@ test('configured LSP address, strategy settings and status bar work in all built
           this.emit('close', { code, reason });
         }
       };
+      // This broad UI fixture mocks ws; lsp-tls-ui covers actual Node TLS.
+      const mainRequire = process.getBuiltinModule('module').createRequire(process.cwd() + '/package.json');
+      mainRequire('ws');
+      mainRequire.cache[mainRequire.resolve('ws')].exports = globalThis.WebSocket;
     });
     const page = await app.firstWindow();
     const pageErrors = [];
@@ -613,11 +620,46 @@ test('configured LSP address, strategy settings and status bar work in all built
     });
     await expect(page.locator('.suggest-widget.visible')).toContainText('array', { timeout: 700 });
     await app.evaluate(() => { globalThis.__boboLspProbe.completionDelayMs = 900; });
+    const indexesBeforeFileSwitch = await app.evaluate(() => globalThis.__boboLspProbe.dependencyIndexRequests);
+    await page.keyboard.press('Escape');
+    await page.evaluate(({ workspaceDir }) => {
+      const editor = window.BOBO.state.editor;
+      window.__originalPythonModel = editor.getModel();
+      const model = window.monaco.editor.createModel('numpy.', 'python', window.monaco.Uri.file(workspaceDir + '/second.py'));
+      editor.setModel(model);
+      editor.setPosition({ lineNumber: 1, column: 7 });
+      editor.focus();
+      editor.trigger('same-generation-file-switch', 'editor.action.triggerSuggest', {});
+    }, { workspaceDir });
+    await expect(page.locator('.suggest-widget.visible')).toContainText('array', { timeout: 700 });
+    expect(await app.evaluate(() => globalThis.__boboLspProbe.dependencyIndexRequests)).toBe(indexesBeforeFileSwitch);
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => {
+      const editor = window.BOBO.state.editor;
+      const temporary = editor.getModel();
+      editor.setModel(window.__originalPythonModel);
+      temporary.dispose();
+      editor.setPosition({ lineNumber: 1, column: 7 });
+    });
 
     const startsBeforeReconnect = await app.evaluate(() => globalThis.__boboLspProbe.starts.length);
+    const indexesBeforeReconnect = await app.evaluate(() => {
+      globalThis.__boboLspProbe.dependencyRevision = 'deps-' + globalThis.__boboLspProbe.starts.length;
+      return globalThis.__boboLspProbe.dependencyIndexRequests;
+    });
     await page.evaluate(() => { window.__boboServerInfoDelayMs = 850; });
     await app.evaluate(() => globalThis.__boboCurrentLspSocket.close(1012, 'catalog refresh test'));
     await expect.poll(async () => page.evaluate(() => window.__boboServerInfoProbes)).toBe(1);
+    const completionRequestsBeforeOffline = await app.evaluate(() => globalThis.__boboLspProbe.completionRequests);
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => {
+      const editor = window.BOBO.state.editor;
+      editor.focus();
+      editor.trigger('offline-library-api-test', 'editor.action.triggerSuggest', {});
+    });
+    await expect(page.locator('.suggest-widget.visible')).toContainText('array', { timeout: 600 });
+    expect(await app.evaluate(() => globalThis.__boboLspProbe.completionRequests)).toBe(completionRequestsBeforeOffline);
+    await page.keyboard.press('Escape');
     await page.waitForTimeout(700);
     expect(await app.evaluate(() => globalThis.__boboLspProbe.starts.length)).toBe(startsBeforeReconnect);
     await expect.poll(async () => app.evaluate(() => globalThis.__boboLspProbe.starts.length), { timeout: 5000 }).toBe(startsBeforeReconnect + 1);
@@ -627,6 +669,37 @@ test('configured LSP address, strategy settings and status bar work in all built
       fingerprint: window.BOBO.state.serverCapabilities.catalogFingerprints.lsp
     }));
     expect(refreshedCatalog).toEqual({ probes: 1, fingerprint: 'lsp-ui-reconnect-1' });
+    expect(await app.evaluate(() => globalThis.__boboLspProbe.dependencyIndexRequests)).toBe(indexesBeforeReconnect);
+
+    // A renderer mirror reset should hydrate the durable tree and show hints
+    // without downloading the same library generation again.
+    await page.evaluate(async () => {
+      await window.BOBO.lsp.setClientCachePolicy('active', 33);
+      const editor = window.BOBO.state.editor;
+      editor.focus();
+      editor.trigger('disk-library-api-test', 'editor.action.triggerSuggest', {});
+    });
+    await expect(page.locator('.suggest-widget.visible')).toContainText('array', { timeout: 700 });
+    expect(await app.evaluate(() => globalThis.__boboLspProbe.dependencyIndexRequests)).toBe(indexesBeforeReconnect);
+    await page.keyboard.press('Escape');
+
+    // A changed dependency revision must never fall back to the prior tree,
+    // even if the new index is unavailable during another disconnection.
+    await app.evaluate(() => {
+      globalThis.__boboLspProbe.dependencyRevision = 'changed-generation';
+      globalThis.__boboLspProbe.ignoreDependencyIndex = true;
+    });
+    await app.evaluate(() => globalThis.__boboCurrentLspSocket.close(1012, 'dependency generation changed'));
+    await expect.poll(async () => page.evaluate(() => window.BOBO.lsp.getStatus().dependency?.revision)).toBe('changed-generation');
+    await expect.poll(async () => page.evaluate(() => window.BOBO.lsp.getStatus().state)).toBe('ready');
+    await app.evaluate(() => globalThis.__boboCurrentLspSocket.close(1012, 'new index unavailable'));
+    await expect.poll(async () => page.evaluate(() => window.BOBO.lsp.getStatus().state)).not.toBe('ready');
+    await page.evaluate(() => {
+      const editor = window.BOBO.state.editor;
+      editor.focus();
+      editor.trigger('stale-library-api-test', 'editor.action.triggerSuggest', {});
+    });
+    await expect(page.locator('.suggest-widget.visible')).not.toContainText('array', { timeout: 600 });
 
     await page.screenshot({ path: testInfo.outputPath('lsp-settings-ja.png'), fullPage: true });
     expect(pageErrors).toEqual([]);
