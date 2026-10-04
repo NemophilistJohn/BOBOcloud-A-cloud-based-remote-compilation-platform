@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { readFileBounded } = require('./atomic-file');
+const { createTrustedRendererSender } = require('./trusted-ipc');
 
 // Package-manager transactions may bind a manifest and its lock file. Keep the
 // set deliberately small so every file can be inspected, CAS-written, and
@@ -230,6 +231,9 @@ function createPackageCenterController(options) {
   const ipcMain = options.ipcMain;
   const getWindow = options.getWindow;
   const getWorkspaceIdentity = options.getWorkspaceIdentity;
+  const sendToRenderer = typeof options.sendToRenderer === 'function'
+    ? options.sendToRenderer
+    : createTrustedRendererSender({ getWindow }).send;
   const onFilesChanged = options.onFilesChanged || (() => {});
   const configuredUserDataPath = String(options.userDataPath || '').trim();
   if (!configuredUserDataPath || !path.isAbsolute(configuredUserDataPath)) {
@@ -265,10 +269,8 @@ function createPackageCenterController(options) {
   }
 
   function notify(state, transaction, extra) {
-    const window = typeof getWindow === 'function' ? getWindow() : null;
-    if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return;
     try {
-      window.webContents.send('package-center:local-transaction', Object.assign({
+      sendToRenderer('package-center:local-transaction', Object.assign({
         state,
         transactionId: transaction && transaction.id || '',
         planId: transaction && transaction.planId || '',

@@ -18,7 +18,10 @@ function normalizeLspUrl(serverHost) {
   const parsed = new URL(input);
   const secure = parsed.protocol === 'https:' || parsed.protocol === 'wss:';
   parsed.protocol = secure ? 'wss:' : 'ws:';
-  if (!parsed.port) parsed.port = '3100';
+  // The LSP endpoint is served by the dedicated WebSocket listener. Keep the
+  // default aligned with server-settings and with terminal/DAP transports;
+  // callers that use an explicit reverse-proxy port still retain it.
+  if (!parsed.port) parsed.port = '3101';
   parsed.pathname = '/lsp';
   parsed.search = '';
   parsed.hash = '';

@@ -333,7 +333,7 @@ test('configured LSP address, strategy settings and status bar work in all built
     await expect(page.locator('#lsp-metric-dependency-runtime')).toHaveText('Local');
     await expect.poll(async () => (await app.evaluate(() => globalThis.__boboLspProbe.starts.length))).toBe(1);
     let probe = await app.evaluate(() => globalThis.__boboLspProbe);
-    expect(probe.starts[0].url).toBe('ws://compiler.example.test:3100/lsp');
+    expect(probe.starts[0].url).toBe('ws://compiler.example.test:3101/lsp');
     expect(probe.starts[0].message.token).toBe('ui-test-api-key');
     expect(probe.starts[0].message.mode).toBe('standard');
 
@@ -545,7 +545,7 @@ test('configured LSP address, strategy settings and status bar work in all built
     await expect(page.locator('#lsp-settings-detail')).toBeHidden();
     await expect.poll(async () => (await app.evaluate(() => globalThis.__boboLspProbe.starts.length))).toBe(2);
     probe = await app.evaluate(() => globalThis.__boboLspProbe);
-    expect(probe.starts[1].url).toBe('ws://compiler.example.test:3100/lsp');
+    expect(probe.starts[1].url).toBe('ws://compiler.example.test:3101/lsp');
     expect(probe.starts[1].message.token).toBe('ui-test-api-key');
     expect(probe.starts[1].message.mode).toBe('full');
 

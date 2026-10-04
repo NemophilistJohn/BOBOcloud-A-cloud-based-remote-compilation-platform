@@ -5,6 +5,7 @@ const { MAX_TEAM_MAPPING_BYTES, readTeamMapping: readTeamMappingFile } = require
 const { createWorkspaceWriteQueue, createWorkspaceWriteTracker } = require('./workspace-write-tracker');
 const { MAX_WORKSPACE_TEXT_FILE_BYTES } = require('./workspace-limits');
 const { RCLONE_IGNORED_DIRECTORIES } = require('../rclone-policy');
+const { createTrustedRendererSender } = require('./trusted-ipc');
 
 const IGNORED_DIRECTORIES = new Set([
   ...RCLONE_IGNORED_DIRECTORIES, '.hg', '.svn'
@@ -60,6 +61,9 @@ function createWorkspaceController(options) {
   const ipcMain = options.ipcMain;
   const dialog = options.dialog;
   const getWindow = options.getWindow;
+  const sendToRenderer = typeof options.sendToRenderer === 'function'
+    ? options.sendToRenderer
+    : createTrustedRendererSender({ getWindow }).send;
   const t = options.t;
   const disposeLsp = options.disposeLsp || (() => {});
   const stopTerminal = options.stopTerminal || (() => {});
@@ -103,8 +107,7 @@ function createWorkspaceController(options) {
   }
 
   function send(channel, payload) {
-    const window = windowAvailable();
-    if (window) window.webContents.send(channel, payload);
+    sendToRenderer(channel, payload);
   }
 
   function requestRendererLeave(reason, targetRoot) {
@@ -124,12 +127,12 @@ function createWorkspaceController(options) {
       pendingLeaveRequests.set(requestId, { reason: reason || 'switch', complete });
       timer = setTimeout(() => complete(false, true), leaveRequestTimeoutMs);
       try {
-        window.webContents.send('workspace-leave-request', {
+        if (!sendToRenderer('workspace-leave-request', {
           requestId,
           leaveToken,
           reason: reason || 'switch',
           targetRoot: targetRoot || null
-        });
+        })) complete(reason === 'window-close', false);
       } catch (_) {
         complete(reason === 'window-close', false);
       }

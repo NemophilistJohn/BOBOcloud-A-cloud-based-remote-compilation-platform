@@ -4,6 +4,7 @@ const { TerminalTransport, cleanSetupCommands, MAX_STDIN_CHARS, MAX_STDIN_BYTES 
 const { endpoint: serverEndpoint } = require('./server-transport');
 const { credentialForServer } = require('./server-identity');
 const { createTerminalWebSocketFactory, createTerminalPeerVerifier } = require('./terminal-websocket');
+const { createTrustedRendererSender } = require('./trusted-ipc');
 
 const MAX_DIMENSION = 500;
 
@@ -53,6 +54,9 @@ function createTerminalController(options) {
   const getWorkspaceIdentity = options.getWorkspaceIdentity;
   const settings = options.settings;
   const Transport = options.Transport || TerminalTransport;
+  const sendToRenderer = typeof options.sendToRenderer === 'function'
+    ? options.sendToRenderer
+    : createTrustedRendererSender({ getWindow }).send;
   let transport = null;
   let sessionContext = null;
 
@@ -84,9 +88,7 @@ function createTerminalController(options) {
   }
 
   function send(channel, payload) {
-    const window = currentWindow();
-    if (!window) return;
-    window.webContents.send('terminal:' + channel, Object.assign({}, payload || {}, {
+    sendToRenderer('terminal:' + channel, Object.assign({}, payload || {}, {
       context: publicContext(sessionContext)
     }));
   }

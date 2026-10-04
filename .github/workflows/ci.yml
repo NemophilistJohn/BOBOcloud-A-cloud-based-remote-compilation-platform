@@ -306,7 +306,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical
-          ref: fff5a8586ff037aec11ff80e8a2eb418257e5f6e
+          ref: 75376095c9685e5684669e49f614234b15f2a567
           path: .ci-plugins/ai-agent
           persist-credentials: false
       - name: Check out document preview plugin

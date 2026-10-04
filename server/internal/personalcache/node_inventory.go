@@ -44,6 +44,21 @@ func scanNodePackageTreeContext(ctx context.Context, root string) ([]InventoryPa
 	}
 
 	hash := sha256.New()
+	// The revision is an identity of the installed dependency tree, not of
+	// the host directory that happens to contain it.  In particular, a staged
+	// generation is renamed into the canonical path at publication time.  That
+	// operation legitimately changes directory mtimes (and can change mode
+	// bookkeeping on some filesystems), so those volatile attributes must never
+	// participate in the revision.  Keep stable records and hash them in path
+	// order after the walk below.
+	type stableRecord struct {
+		path   string
+		kind   string
+		size   int64
+		mode   string
+		value  string
+	}
+	records := make([]stableRecord, 0)
 	candidates := make([]nodeInventoryCandidate, 0)
 	latest := info.ModTime().UTC().UnixMilli()
 	visited := 0
@@ -73,7 +88,13 @@ func scanNodePackageTreeContext(ctx context.Context, root string) ([]InventoryPa
 		if entryInfo.ModTime().UTC().UnixMilli() > latest {
 			latest = entryInfo.ModTime().UTC().UnixMilli()
 		}
-		fmt.Fprintf(hash, "%s\x00%s\x00%d\x00%d\x00%d\x00", relative, entryInfo.Mode().String(), entryInfo.Size(), entryInfo.ModTime().UnixNano(), entryInfo.Mode().Perm())
+		kind := "file"
+		if entryInfo.IsDir() {
+			kind = "dir"
+		} else if entryInfo.Mode()&os.ModeSymlink != 0 {
+			kind = "symlink"
+		}
+		record := stableRecord{path: relative, kind: kind, size: entryInfo.Size(), mode: entryInfo.Mode().Type().String()}
 		if entryInfo.Mode()&os.ModeSymlink != 0 {
 			target, readErr := os.Readlink(current)
 			if readErr != nil {
@@ -86,9 +107,11 @@ func scanNodePackageTreeContext(ctx context.Context, root string) ([]InventoryPa
 			if resolvedTarget != root && !strings.HasPrefix(resolvedTarget, root+string(filepath.Separator)) {
 				return fmt.Errorf("Node package symlink escapes the dependency root: %s", relative)
 			}
-			hash.Write([]byte(target))
+			record.value = target
+			records = append(records, record)
 			return nil
 		}
+		records = append(records, record)
 		if entry.IsDir() && (entry.Name() == ".bin" || entry.Name() == ".cache") {
 			return filepath.SkipDir
 		}
@@ -102,7 +125,10 @@ func scanNodePackageTreeContext(ctx context.Context, root string) ([]InventoryPa
 		if readErr != nil || int64(len(data)) != entryInfo.Size() {
 			return fmt.Errorf("read Node package metadata %s: %w", relative, readErr)
 		}
-		hash.Write(data)
+		// Include package.json bytes in the stable record.  This is the
+		// authoritative package name/version source and also detects metadata
+		// changes even when the file length is unchanged.
+		records[len(records)-1].value = string(data)
 		var metadata struct {
 			Name    string `json:"name"`
 			Version string `json:"version"`
@@ -121,6 +147,20 @@ func scanNodePackageTreeContext(ctx context.Context, root string) ([]InventoryPa
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, "", 0, err
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].path != records[j].path {
+			return records[i].path < records[j].path
+		}
+		if records[i].kind != records[j].kind {
+			return records[i].kind < records[j].kind
+		}
+		return records[i].value < records[j].value
+	})
+	for _, record := range records {
+		if _, err := fmt.Fprintf(hash, "%s\x00%s\x00%s\x00%d\x00%s\x00", record.path, record.kind, record.mode, record.size, record.value); err != nil {
+			return nil, "", 0, err
+		}
 	}
 
 	sort.Slice(candidates, func(i, j int) bool {

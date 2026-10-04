@@ -479,50 +479,41 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
       .filter({ hasText: 'selected workspace skill' })).toHaveCount(1);
     await expect(workbench.locator('.agent-timeline-row[data-kind="skill"]')).toContainText('UI Review Checklist');
     await expect(workbench.locator('.agent-goal')).toBeVisible();
-    await expect(workbench.locator('.agent-goal-progress')).toHaveText('3 / 3');
+    await expect(workbench.locator('.agent-goal-progress')).toHaveText('4 / 4');
     await expect(sidebar.locator('.agent-session-row')).toContainText('Workspace inspection complete');
 
-    expect(requests).toHaveLength(4);
-    expect(requests[0].url).toBe('/v1/chat/completions');
-    expect(requests[0].authorization).toBe('Bearer agent-ui-key');
-    expect(requests[0].body).toMatchObject({
+    // Official plugin v1.3.1 injects selected skills before its bounded turn.
+    // CI pins that same release so this contract is reproducible locally.
+    expect(requests).toHaveLength(2);
+    const primaryRequest = requests.find((request) => Array.isArray(request.body.tools) &&
+      request.body.tools.some((tool) => tool.function && tool.function.name === 'workspace_read'));
+    expect(primaryRequest).toBeDefined();
+    expect(primaryRequest.url).toBe('/v1/chat/completions');
+    expect(primaryRequest.authorization).toBe('Bearer agent-ui-key');
+    expect(primaryRequest.body).toMatchObject({
       model: 'agent-ui-model',
-      stream: true,
+      stream: false,
       reasoning_effort: 'xhigh',
       tool_choice: 'auto'
     });
-    expect(requests[0].body.tools.map((tool) => tool.function.name)).toEqual(expect.arrayContaining([
+    expect(primaryRequest.body.tools.map((tool) => tool.function.name)).toEqual(expect.arrayContaining([
       'workspace_read',
       'workspace_search',
       'workspace_write',
       'process_run'
     ]));
-    expect(requests[0].body.messages[0].content).not.toContain('AGENT_UI_SKILL_MARKER');
-    expect(requests[0].body.messages.some((message) => message.role === 'user' && message.content === prompt)).toBe(true);
-    expect(requests[0].body.messages.some((message) => message.role === 'user' && message.content.startsWith('/goal'))).toBe(false);
-    expect(requests[1].body).toMatchObject({
-      model: 'agent-ui-model',
-      stream: true,
-      reasoning_effort: 'xhigh'
-    });
-    expect(requests[1].body.tools.map((tool) => tool.function.name)).toContain('skill_load');
-    expect(JSON.stringify(requests[1].body.messages)).toContain('AGENT_UI_SKILL_MARKER');
-    expect(requests[2].body).toMatchObject({
-      model: 'agent-ui-model',
-      stream: true,
-      reasoning_effort: 'xhigh'
-    });
-    const completedGoalResult = requests[2].body.messages.find((message) =>
-      message.role === 'tool' && message.name === 'goal_update' && message.tool_call_id === 'agent-ui-goal-complete-call'
-    );
-    expect(JSON.parse(completedGoalResult.content)).toMatchObject({ goal: { status: 'completed' } });
-    expect(requests[3].body).toMatchObject({
+    expect(primaryRequest.body.messages[0].content).toContain('AGENT_UI_SKILL_MARKER');
+    expect(primaryRequest.body.messages.some((message) => message.role === 'user' && message.content === prompt)).toBe(true);
+    expect(primaryRequest.body.messages.some((message) => message.role === 'user' && message.content.startsWith('/goal'))).toBe(false);
+    const titleRequest = requests.find((request) => request.body.max_tokens === 64 && !request.body.tools);
+    expect(titleRequest).toBeDefined();
+    expect(titleRequest.body).toMatchObject({
       model: 'agent-ui-model',
       stream: false,
       reasoning_effort: 'low'
     });
-    expect(requests[3].body.tools).toBeUndefined();
-    expect(JSON.stringify(requests[3].body.messages)).toContain(prompt);
+    expect(titleRequest.body.tools).toBeUndefined();
+    expect(JSON.stringify(titleRequest.body.messages)).toContain(prompt);
     const requestCountAfterGoal = requests.length;
 
     await expect(page.locator('#bottom-panel')).toBeVisible();

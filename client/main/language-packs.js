@@ -1,5 +1,6 @@
 const path = require('path');
 const { LanguagePackManager } = require('../language-pack-manager');
+const { createTrustedRendererSender } = require('./trusted-ipc');
 
 function createLanguagePackController(options) {
   const app = options.app;
@@ -7,6 +8,9 @@ function createLanguagePackController(options) {
   const dialog = options.dialog;
   const shell = options.shell;
   const getWindow = options.getWindow;
+  const sendToRenderer = typeof options.sendToRenderer === 'function'
+    ? options.sendToRenderer
+    : createTrustedRendererSender({ getWindow }).send;
   const onDidChange = options.onDidChange || (() => {});
   const builtinRoot = options.builtinRoot;
   let manager = null;
@@ -27,8 +31,7 @@ function createLanguagePackController(options) {
       userDataPath: app.getPath('userData'),
       isPackaged: app.isPackaged,
       onDidChange(payload) {
-        const window = getWindow();
-        if (window && !window.isDestroyed()) window.webContents.send('language-packs:changed', payload);
+        sendToRenderer('language-packs:changed', payload);
         onDidChange(payload);
       }
     });

@@ -24,9 +24,11 @@ const { createMarketplaceController } = require('./main/marketplace');
 const { createPackageCenterController } = require('./main/package-center');
 const { createLifecycleCoordinator } = require('./main/lifecycle-coordinator');
 const { attachWindowLifecycle } = require('./main/window-lifecycle');
-const { createTrustedIpcMain } = require('./main/trusted-ipc');
+const { createTrustedIpcMain, createTrustedRendererSender } = require('./main/trusted-ipc');
+const { IPC_CHANNEL_POLICY } = require('./main/ipc-channel-policy');
 let window = null, menu = null; const getWindow = () => window;
-const ipcMain = createTrustedIpcMain({ ipcMain: electronIpcMain, getWindow });
+const rendererEvents = createTrustedRendererSender({ getWindow, allowedChannels: IPC_CHANNEL_POLICY });
+const ipcMain = createTrustedIpcMain({ ipcMain: electronIpcMain, getWindow, allowedChannels: IPC_CHANNEL_POLICY });
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
 const settings = createSettingsStore({ app, safeStorage }), rcloneBinaries = createRcloneBinaryManager({ app, rclone }), localDirectories = createLocalDirectoryAuthority({ assertSafeLocalRoot: rcloneBinaries.assertSafeLocalRoot });
@@ -37,7 +39,7 @@ const lifecycle = createLifecycleCoordinator({
   onError: (name, error) => console.error(`[lifecycle] ${name} cleanup failed:`, error && error.message ? error.message : error)
 });
 const navigationSecurity = createNavigationSecurity({ shell, trustedRendererPath: path.join(__dirname, 'index.html') });
-const lsp = createLspController({ ipcMain, getWindow, settings });
+const lsp = createLspController({ ipcMain, getWindow, settings, sendToRenderer: rendererEvents.send });
 let dap = null, terminal = null, workspaceSettings = null, packageCenter = null, agentBroker = null;
 const disposeRemoteEditorServices = async (reason) => {
   lsp.dispose();
@@ -47,11 +49,13 @@ const disposeRemoteEditorServices = async (reason) => {
   ]);
 };
 const languagePacks = createLanguagePackController({ app, ipcMain, dialog, shell, getWindow,
+  sendToRenderer: rendererEvents.send,
   builtinRoot: path.join(__dirname, 'language-packs'), onDidChange: () => { if (menu) menu.rebuild(); } });
 const workspace = createWorkspaceController({
   ipcMain,
   dialog,
   getWindow,
+  sendToRenderer: rendererEvents.send,
   settings,
   t: languagePacks.t,
   assertSafeLocalRoot: rcloneBinaries.assertSafeLocalRoot, localDirectoryAuthority: localDirectories,
@@ -71,24 +75,25 @@ const workspace = createWorkspaceController({
 workspaceSettings = createWorkspaceSettingsController({
   ipcMain,
   getWindow,
+  sendToRenderer: rendererEvents.send,
   getWorkspaceIdentity: workspace.getIdentity
 });
-const ai = createAiController({ ipcMain, getWindow, settings });
+const ai = createAiController({ ipcMain, getWindow, settings, sendToRenderer: rendererEvents.send });
 agentBroker = createAgentPlatformBroker({ app, settings, getWorkspaceIdentity: workspace.getIdentity,
   runWorkspaceMutation: workspace.runMutation, notifyWorkspaceFiles: workspace.notifyExternalFileChanges,
   requestModel: ai.request, cancelModel: ai.cancel,
   emitModelEvent: (payload) => {
-    const win = getWindow();
-    if (win && !win.isDestroyed()) win.webContents.send('plugins:agent-model-event', payload);
+    rendererEvents.send('plugins:agent-model-event', payload);
   } });
 const plugins = createPluginController({ app, ipcMain, dialog, shell, getWindow, t: languagePacks.t,
+  sendToRenderer: rendererEvents.send,
   getWorkspaceIdentity: workspace.getIdentity,
   resolveWorkspaceFile: workspace.resolveWorkspaceFile,
   agentBroker,
   onDidChange: () => { if (menu) menu.rebuild(); }
 });
 const marketplace = createMarketplaceController({ app, ipcMain, getWindow, pluginManager: plugins, hostVersion: app.getVersion() });
-packageCenter = createPackageCenterController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity,
+packageCenter = createPackageCenterController({ ipcMain, getWindow, sendToRenderer: rendererEvents.send, getWorkspaceIdentity: workspace.getIdentity,
   onFilesChanged: (files, context) => workspace.notifyExternalFileChanges(files, context), userDataPath: app.getPath('userData') });
 const auth = createAuthController({ ipcMain, settings, disposeLsp: disposeRemoteEditorServices,
   onStateChanged: () => { if (menu) menu.rebuild(); },
@@ -98,12 +103,12 @@ const auth = createAuthController({ ipcMain, settings, disposeLsp: disposeRemote
   },
   onCredentialChanged: () => rcloneService.cancelAll('credential-changed')
 });
-menu = createMenuController({ Menu, dialog, getWindow, languagePacks, getAuthState: auth.getState,
+menu = createMenuController({ Menu, dialog, getWindow, sendToRenderer: rendererEvents.send, languagePacks, getAuthState: auth.getState,
   pickAndOpenWorkspace: workspace.pickAndOpenWorkspace });
 const tasks = createTasksController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity });
-dap = createDapController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity,
+dap = createDapController({ ipcMain, getWindow, sendToRenderer: rendererEvents.send, getWorkspaceIdentity: workspace.getIdentity,
   runWorkspaceMutation: workspace.runMutation, settings });
-terminal = createTerminalController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity, settings });
+terminal = createTerminalController({ ipcMain, getWindow, sendToRenderer: rendererEvents.send, getWorkspaceIdentity: workspace.getIdentity, settings });
 lifecycle.register('remote-editor-services', disposeRemoteEditorServices);
 lifecycle.register('ai', async () => { ai.dispose(); });
 lifecycle.register('agent-platform', async () => { agentBroker.dispose(); });
@@ -113,7 +118,7 @@ const windowState = createWindowState({ screen, filePath: settings.paths.windowS
 for (const controller of [workspace, workspaceSettings, lsp, auth, ai, tasks, dap, terminal,
   languagePacks, plugins, marketplace, packageCenter]) controller.registerIpc();
 registerDiagnosticsIpc({ ipcMain, settings });
-registerRcloneIpc({ ipcMain, BrowserWindow, dialog, getWindow, service: rcloneService, t: languagePacks.t,
+registerRcloneIpc({ ipcMain, BrowserWindow, dialog, getWindow, sendToRenderer: rendererEvents.send, sendToRendererWindow: rendererEvents.sendToWindow, service: rcloneService, t: languagePacks.t,
   getWorkspaceIdentity: workspace.getIdentity, localDirectoryAuthority: localDirectories,
   measureDirectory: workspace.calculateDirectorySize });
 function createWindow() {

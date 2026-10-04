@@ -1,15 +1,19 @@
+const { createTrustedRendererSender } = require('./trusted-ipc');
+
 function createMenuController(options) {
   const Menu = options.Menu;
   const dialog = options.dialog;
   const getWindow = options.getWindow;
+  const sendToRenderer = typeof options.sendToRenderer === 'function'
+    ? options.sendToRenderer
+    : createTrustedRendererSender({ getWindow }).send;
   const languagePacks = options.languagePacks;
   const getAuthState = options.getAuthState;
   const pickAndOpenWorkspace = options.pickAndOpenWorkspace;
   const t = languagePacks.t;
 
   function send(channel, payload) {
-    const window = getWindow();
-    if (window && !window.isDestroyed()) window.webContents.send(channel, payload);
+    sendToRenderer(channel, payload);
   }
 
   function runLanguagePackTask(task) {

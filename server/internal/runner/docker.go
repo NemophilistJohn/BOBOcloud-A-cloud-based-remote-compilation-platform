@@ -49,11 +49,18 @@ type containerWorkspaceCopier interface {
 type dockerCLIWorkspaceCopier struct{}
 
 func (dockerCLIWorkspaceCopier) CopyTo(ctx context.Context, containerID, hostDir, containerDir string) error {
-	cpCmd := exec.CommandContext(ctx, "docker", "cp", hostDir+"/.", containerID+":"+containerDir)
+	// Docker otherwise creates copied files as root. Preserve the ownership of
+	// the isolated host workspace so hardened containers running as the service
+	// UID can read and update source files across C, Python, and Node plans.
+	cpCmd := exec.CommandContext(ctx, "docker", dockerCopyToArguments(containerID, hostDir, containerDir)...)
 	if out, err := cpCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s: %w", string(out), err)
 	}
 	return nil
+}
+
+func dockerCopyToArguments(containerID, hostDir, containerDir string) []string {
+	return []string{"cp", "-a", hostDir + "/.", containerID + ":" + containerDir}
 }
 
 func (dockerCLIWorkspaceCopier) CopyFrom(ctx context.Context, containerID, hostDir, containerDir string) error {

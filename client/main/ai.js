@@ -1,6 +1,7 @@
 const http = require('http');
 const https = require('https');
 const { StringDecoder } = require('string_decoder');
+const { createTrustedRendererSender } = require('./trusted-ipc');
 
 const MAX_AI_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_AI_STREAM_OUTPUT_BYTES = 2 * 1024 * 1024;
@@ -501,6 +502,9 @@ function createAiController(options) {
   const ipcMain = options.ipcMain;
   const getWindow = options.getWindow;
   const settings = options.settings;
+  const sendToRenderer = typeof options.sendToRenderer === 'function'
+    ? options.sendToRenderer
+    : createTrustedRendererSender({ getWindow }).send;
   const maxStreamOutputBytes = Number.isSafeInteger(options.maxStreamOutputBytes) && options.maxStreamOutputBytes > 0
     ? options.maxStreamOutputBytes
     : MAX_AI_STREAM_OUTPUT_BYTES;
@@ -514,9 +518,7 @@ function createAiController(options) {
   let anonymousRequestSequence = 0;
 
   function send(channel, payload) {
-    const window = getWindow();
-    if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return;
-    window.webContents.send(channel, payload);
+    sendToRenderer(channel, payload);
   }
 
   function finishRequest(requestId, request) {

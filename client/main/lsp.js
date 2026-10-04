@@ -10,6 +10,7 @@ const {
   serverAccountIdentity,
   serverEndpointIdentity
 } = require('./server-identity');
+const { createTrustedRendererSender } = require('./trusted-ipc');
 
 function nonFatalLspRequestResult(error) {
   const message = String(error && error.message || '');
@@ -26,6 +27,9 @@ function createLspController(options) {
   const ipcMain = options.ipcMain;
   const getWindow = options.getWindow;
   const settings = options.settings;
+  const sendToRenderer = typeof options.sendToRenderer === 'function'
+    ? options.sendToRenderer
+    : createTrustedRendererSender({ getWindow }).send;
   const now = options.now || Date.now;
   let transport = null;
   let analysisCache = null;
@@ -117,10 +121,7 @@ function createLspController(options) {
     transport = new LspTransport({
       getCredential: currentCredential,
       emit: (channel, payload) => {
-        const window = getWindow();
-        if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) {
-          window.webContents.send('lsp:' + channel, payload);
-        }
+        sendToRenderer('lsp:' + channel, payload);
       }
     });
     return transport;
@@ -199,7 +200,10 @@ function createLspController(options) {
     });
     ipcMain.handle('lsp:configure', async (_event, config) => {
       const serverSettings = await settings.readServerSettings();
-      return ensureTransport().configure(Object.assign({}, config, { serverHost: serverEndpoint(serverSettings, 'http') }));
+      // LSP is a WebSocket protocol. Use the dedicated listener so proxies and
+      // deployments that keep the HTTP API and streaming sockets separate do
+      // not answer the upgrade with an ordinary HTTP response (non-101).
+      return ensureTransport().configure(Object.assign({}, config, { serverHost: serverEndpoint(serverSettings, 'ws') }));
     });
     ipcMain.handle('lsp:request', async (_event, payload) => {
       if (!payload || typeof payload.method !== 'string') throw new Error('Invalid LSP request');

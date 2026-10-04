@@ -9,6 +9,7 @@ const {
   readLaunchConfigurations,
   resolveLaunchConfiguration
 } = require('./dap-config');
+const { createTrustedRendererSender } = require('./trusted-ipc');
 
 const MAX_VARIABLE_NAME_CHARS = 1024;
 const MAX_VARIABLE_VALUE_CHARS = 16384;
@@ -51,6 +52,9 @@ function createDapController(options) {
   const getWorkspaceIdentity = options.getWorkspaceIdentity;
   const runWorkspaceMutation = options.runWorkspaceMutation;
   const settings = options.settings;
+  const sendToRenderer = typeof options.sendToRenderer === 'function'
+    ? options.sendToRenderer
+    : createTrustedRendererSender({ getWindow }).send;
   if (typeof runWorkspaceMutation !== 'function') throw new TypeError('DAP requires the workspace mutation coordinator');
   let transport = null;
   let sessionContext = null;
@@ -63,8 +67,6 @@ function createDapController(options) {
   }
 
   function send(channel, payload) {
-    const window = getWindow();
-    if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return;
     const value = Object.assign({}, payload);
     const contextToken = value.contextToken || (value.status && value.status.contextToken);
     const boundContext = contextToken && typeof contextToken === 'object'
@@ -75,7 +77,7 @@ function createDapController(options) {
       value.status = Object.assign({}, value.status);
       delete value.status.contextToken;
     }
-    window.webContents.send('dap:' + channel, Object.assign(value, { context: boundContext }));
+    sendToRenderer('dap:' + channel, Object.assign(value, { context: boundContext }));
   }
 
   function ensureTransport() {

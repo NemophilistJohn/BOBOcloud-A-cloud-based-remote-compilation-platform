@@ -474,127 +474,110 @@ if (!nativeHost || typeof nativeHost !== 'object') {
   throw new Error('The BOBOCLOUD native host bridge is unavailable.');
 }
 
-const diagnosticsRegistration = rendererPlatform.services.register(
+const diagnosticsRegistration = rendererPlatform.services.registerPrivate(
   DIAGNOSTICS_HOST_SERVICE_ID,
-  createDiagnosticsHost(nativeHost),
-  { owner: 'core', exposeToPlugins: false }
+  createDiagnosticsHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(diagnosticsRegistration);
 
-const documentViewsRegistration = rendererPlatform.services.register(
+const documentViewsRegistration = rendererPlatform.services.registerPrivate(
   DOCUMENT_VIEWS_HOST_SERVICE_ID,
-  createDocumentViewsHost(nativeHost),
-  { owner: 'core', exposeToPlugins: false }
+  createDocumentViewsHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(documentViewsRegistration);
 
-const environmentCenterRegistration = rendererPlatform.services.register(
+const environmentCenterRegistration = rendererPlatform.services.registerPrivate(
   ENVIRONMENT_CENTER_HOST_SERVICE_ID,
-  createEnvironmentCenterHost(nativeHost),
-  { owner: 'core', exposeToPlugins: false }
+  createEnvironmentCenterHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(environmentCenterRegistration);
 
-const viewsRegistration = rendererPlatform.services.register(
+const viewsRegistration = rendererPlatform.services.registerPrivate(
   VIEWS_HOST_SERVICE_ID,
-  createViewsHost(nativeHost),
-  { owner: 'core', exposeToPlugins: false }
+  createViewsHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(viewsRegistration);
 
-const workspaceLaunchHostRegistration = rendererPlatform.services.register(
+const workspaceLaunchHostRegistration = rendererPlatform.services.registerPrivate(
   WORKSPACE_LAUNCH_HOST_SERVICE_ID,
-  createWorkspaceLaunchHost(nativeHost),
-  { owner: 'core', exposeToPlugins: false }
+  createWorkspaceLaunchHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(workspaceLaunchHostRegistration);
 
-const workspaceSettingsHostRegistration = rendererPlatform.services.register(
+const workspaceSettingsHostRegistration = rendererPlatform.services.registerPrivate(
   WORKSPACE_SETTINGS_HOST_SERVICE_ID,
-  createWorkspaceSettingsHost(nativeHost),
-  { owner: 'core', exposeToPlugins: false }
+  createWorkspaceSettingsHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(workspaceSettingsHostRegistration);
 
-const languagePacksRegistration = rendererPlatform.services.register(
+const languagePacksRegistration = rendererPlatform.services.registerPrivate(
   LANGUAGE_PACKS_HOST_SERVICE_ID,
-  createLanguagePacksHost(nativeHost),
-  { owner: 'core', exposeToPlugins: false }
+  createLanguagePacksHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(languagePacksRegistration);
 
 const pluginManagementHost = createPluginManagementHost(nativeHost);
 if (pluginManagementHost) {
-  const pluginManagementRegistration = rendererPlatform.services.register(
+  const pluginManagementRegistration = rendererPlatform.services.registerPrivate(
     PLUGIN_MANAGEMENT_HOST_SERVICE_ID,
-    pluginManagementHost,
-    { owner: 'core', exposeToPlugins: false }
+    pluginManagementHost
   );
   rendererPlatform.lifecycle.add(pluginManagementRegistration);
 }
 
 const pluginExtensionsHost = createPluginExtensionNativeHost(nativeHost);
 if (pluginExtensionsHost) {
-  const pluginExtensionsRegistration = rendererPlatform.services.register(
+  const pluginExtensionsRegistration = rendererPlatform.services.registerPrivate(
     PLUGIN_EXTENSIONS_HOST_SERVICE_ID,
-    pluginExtensionsHost,
-    { owner: 'core', exposeToPlugins: false }
+    pluginExtensionsHost
   );
   rendererPlatform.lifecycle.add(pluginExtensionsRegistration);
 }
 
-const projectTasksRegistration = rendererPlatform.services.register(
+const projectTasksRegistration = rendererPlatform.services.registerPrivate(
   PROJECT_TASKS_HOST_SERVICE_ID,
-  createProjectTasksHost(nativeHost),
-  { owner: 'core', exposeToPlugins: false }
+  createProjectTasksHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(projectTasksRegistration);
 
-const projectsHostRegistration = rendererPlatform.services.register(
+const projectsHostRegistration = rendererPlatform.services.registerPrivate(
   PROJECTS_HOST_SERVICE_ID,
-  createProjectsHost(nativeHost),
-  { owner: 'core', exposeToPlugins: false }
+  createProjectsHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(projectsHostRegistration);
 
-const rcloneRegistration = rendererPlatform.services.register(
+const rcloneRegistration = rendererPlatform.services.registerPrivate(
   RCLONE_HOST_SERVICE_ID,
-  createRcloneNativeHost(nativeHost),
-  { owner: 'core', exposeToPlugins: false }
+  createRcloneNativeHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(rcloneRegistration);
 
-const aiHostRegistration = rendererPlatform.services.register(
+const aiHostRegistration = rendererPlatform.services.registerPrivate(
   AI_HOST_SERVICE_ID,
-  createAiHost(nativeHost),
-  { owner: 'core', exposeToPlugins: false }
+  createAiHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(aiHostRegistration);
 
-const aiUiHostRegistration = rendererPlatform.services.register(
+const aiUiHostRegistration = rendererPlatform.services.registerPrivate(
   AI_UI_HOST_SERVICE_ID,
-  createAiUiHost(nativeHost),
-  { owner: 'core', exposeToPlugins: false }
+  createAiUiHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(aiUiHostRegistration);
 
-const aiChatPanelHostRegistration = rendererPlatform.services.register(
+const aiChatPanelHostRegistration = rendererPlatform.services.registerPrivate(
   AI_CHAT_PANEL_HOST_SERVICE_ID,
-  createAiChatPanelHost(nativeHost),
-  { owner: 'core', exposeToPlugins: false }
+  createAiChatPanelHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(aiChatPanelHostRegistration);
 
-const agentWorkbenchHostRegistration = rendererPlatform.services.register(
+const agentWorkbenchHostRegistration = rendererPlatform.services.registerPrivate(
   AGENT_WORKBENCH_HOST_SERVICE_ID,
-  createAgentWorkbenchHost(nativeHost),
-  { owner: 'core', exposeToPlugins: false }
+  createAgentWorkbenchHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(agentWorkbenchHostRegistration);
 
-const collaborationHostRegistration = rendererPlatform.services.register(
+const collaborationHostRegistration = rendererPlatform.services.registerPrivate(
   COLLABORATION_HOST_SERVICE_ID,
-  createCollaborationHost(nativeHost),
-  { owner: 'core', exposeToPlugins: false }
+  createCollaborationHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(collaborationHostRegistration);

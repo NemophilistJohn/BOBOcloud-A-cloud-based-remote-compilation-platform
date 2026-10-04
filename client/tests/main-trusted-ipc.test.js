@@ -130,7 +130,8 @@ test('IPC fails closed while the workbench or its renderer is unavailable', () =
 test('main-process composition exposes only the guarded ipcMain facade to feature owners', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   assert.match(source, /ipcMain:\s*electronIpcMain/);
-  assert.match(source, /createTrustedIpcMain\(\{\s*ipcMain:\s*electronIpcMain,\s*getWindow\s*\}\)/);
+  assert.match(source,
+    /createTrustedIpcMain\(\{\s*ipcMain:\s*electronIpcMain,\s*getWindow(?:,\s*allowedChannels:\s*IPC_CHANNEL_POLICY)?\s*\}\)/);
   assert.equal((source.match(/\belectronIpcMain\b/g) || []).length, 2,
     'raw Electron ipcMain must only be imported and wrapped');
 });

@@ -4,12 +4,21 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
 	"bobocloud-server/internal/session"
 )
+
+func TestDockerCopyToPreservesWorkspaceOwnership(t *testing.T) {
+	got := dockerCopyToArguments("container-1", `C:\isolated\project`, "/workspace")
+	want := []string{"cp", "-a", `C:\isolated\project/.`, "container-1:/workspace"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("docker copy arguments = %#v, want %#v", got, want)
+	}
+}
 
 type captureOutput struct {
 	mu              sync.Mutex

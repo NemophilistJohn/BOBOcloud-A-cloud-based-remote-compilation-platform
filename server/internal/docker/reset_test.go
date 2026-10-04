@@ -3,7 +3,6 @@ package docker
 import (
 	"context"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -57,12 +56,14 @@ func TestVerifiedResetSkipsRestartForManagedBaseline(t *testing.T) {
 	if err := pool.resetContainerForReuse("container-a"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{
-		"top container-a -eo pid,ppid,comm,args",
-		"exec --user 0 -w / container-a sh -c rm -rf /workspace; mkdir -p /workspace; chmod 0777 /workspace",
+	if len(commands) != 2 || commands[0] != "top container-a -eo pid,ppid,comm,args" {
+		t.Fatalf("commands = %#v", commands)
 	}
-	if !reflect.DeepEqual(commands, want) {
-		t.Fatalf("commands = %#v, want %#v", commands, want)
+	if !strings.HasPrefix(commands[1], "exec --user 0 -w / container-a sh -c set -eu; find /workspace") ||
+		!strings.Contains(commands[1], "-name .bobocloud") ||
+		!strings.Contains(commands[1], "-name target") ||
+		!strings.Contains(commands[1], "chmod 0700 /workspace") {
+		t.Fatalf("workspace cleanup command = %q", commands[1])
 	}
 	stages := registry.Snapshot().Stages
 	if stages["container.recycle.verify"].Count != 1 || stages["container.recycle.workspace"].Count != 1 {
@@ -70,6 +71,29 @@ func TestVerifiedResetSkipsRestartForManagedBaseline(t *testing.T) {
 	}
 	if stages["container.recycle.restart"].Count != 0 {
 		t.Fatalf("restart metric = %#v", stages["container.recycle.restart"])
+	}
+}
+
+func TestWorkspaceCleanupPreservesPersistentBuildMounts(t *testing.T) {
+	pool := &Pool{}
+	command := pool.workspaceCleanupCommandFor(true)
+	if strings.Contains(command, "rm -rf /workspace") {
+		t.Fatalf("workspace cleanup recursively removes the workspace mount: %q", command)
+	}
+	for _, fragment := range []string{"-name .bobocloud", "-name target", "-exec rm -f", "mkdir -p /workspace"} {
+		if !strings.Contains(command, fragment) {
+			t.Fatalf("workspace cleanup missing %q: %s", fragment, command)
+		}
+	}
+}
+
+func TestHardenedWorkspaceBootstrapUsesValidatedIdentity(t *testing.T) {
+	args := containerWorkspaceBootstrapArgumentsFor("container-id", true)
+	if len(args) != 9 || args[0] != "exec" || args[1] != "--user" || args[3] != "-w" || args[4] != "/" || args[6] != "sh" || args[7] != "-c" {
+		t.Fatalf("hardened bootstrap arguments = %#v", args)
+	}
+	if !strings.Contains(args[8], "mkdir -p /workspace") || !strings.Contains(args[8], "chmod 0700 /workspace") {
+		t.Fatalf("hardened bootstrap does not restore workspace ownership: %q", args[8])
 	}
 }
 
@@ -90,7 +114,7 @@ func TestVerifiedResetClearsAllWritableTmpfsMounts(t *testing.T) {
 		t.Fatalf("commands = %#v", commands)
 	}
 	cleanup := commands[1]
-	for _, path := range []string{"/workspace/*", "/tmp/*", "/home/*", "chmod 0777 /workspace", "chmod 1777 /tmp"} {
+	for _, path := range []string{"find /workspace", "find /tmp", "find /home", "chmod 0700 /workspace", "chmod 1777 /tmp"} {
 		if !strings.Contains(cleanup, path) {
 			t.Fatalf("cleanup command %q does not reset %q", cleanup, path)
 		}

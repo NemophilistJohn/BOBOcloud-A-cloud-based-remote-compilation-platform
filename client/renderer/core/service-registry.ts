@@ -129,6 +129,19 @@ export class ServiceRegistry<
     return toDisposable(() => this._removeRecord(record));
   }
 
+  /**
+   * Register a host capability with the non-negotiable workbench boundary.
+   * Host projections must never become plugin-visible by accidentally passing
+   * `{ exposeToPlugins: true }`; keeping this path explicit also gives the
+   * architecture freeze line one stable API to audit.
+   */
+  registerPrivate<Id extends ServiceId<Services>>(
+    id: Id,
+    service: Services[Id]
+  ): Disposable {
+    return this.register(id, service, { owner: 'core', exposeToPlugins: false });
+  }
+
   has<Id extends ServiceId<Services>>(id: Id): boolean {
     return this._records.has(id);
   }

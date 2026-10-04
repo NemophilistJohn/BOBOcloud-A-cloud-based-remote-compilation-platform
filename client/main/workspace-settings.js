@@ -5,6 +5,7 @@ const path = require('path');
 const { parse } = require('jsonc-parser');
 const minimatch = require('minimatch');
 const { readFileBounded } = require('./atomic-file');
+const { createTrustedRendererSender } = require('./trusted-ipc');
 
 const SCHEMA_VERSION = 1;
 const MAX_SETTINGS_BYTES = 256 * 1024;
@@ -322,6 +323,9 @@ function createWorkspaceSettingsController(options) {
   const ipcMain = options.ipcMain;
   const getWindow = options.getWindow;
   const getWorkspaceIdentity = options.getWorkspaceIdentity;
+  const sendToRenderer = typeof options.sendToRenderer === 'function'
+    ? options.sendToRenderer
+    : createTrustedRendererSender({ getWindow }).send;
   const debounceMs = Number.isInteger(options.debounceMs) ? Math.max(0, options.debounceMs) : 120;
   let refreshTimer = null;
   let refreshSequence = 0;
@@ -382,8 +386,7 @@ function createWorkspaceSettingsController(options) {
         return;
       }
       if (sequence !== refreshSequence) return;
-      const window = currentWindow();
-      if (window) window.webContents.send('workspace-settings-changed', snapshot);
+      sendToRenderer('workspace-settings-changed', snapshot);
     }, debounceMs);
   }
 

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1796,22 +1797,78 @@ func (dp *Pool) cleanWorkspaceObserved(containerID string) error {
 func (dp *Pool) cleanWorkspace(containerID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	return dp.cleanWorkspaceContext(ctx, containerID)
+}
 
-	cleanupCommand := "rm -rf /workspace; mkdir -p /workspace; chmod 0777 /workspace"
-	if dp.readOnlyRootfs {
-		// These paths are independent tmpfs mounts in read-only-rootfs mode.
-		// Restarting the container clears them; the verified fast path must
-		// provide the same isolation without trying to remove mount points.
-		cleanupCommand = "rm -rf -- /workspace/* /workspace/.[!.]* /workspace/..?* /tmp/* /tmp/.[!.]* /tmp/..?* /home/* /home/.[!.]* /home/..?*; mkdir -p /workspace /tmp /home; chmod 0777 /workspace; chmod 1777 /tmp"
+func (dp *Pool) cleanWorkspaceContext(ctx context.Context, containerID string) error {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	// Workspace cleanup is a container-management operation. Run it as uid 0 so
-	// root-owned files left by an image entrypoint cannot survive into the next
-	// tenant, then restore the workload-writable mode on the fresh workspace.
-	output, err := dp.executeDockerCommand(ctx, "exec", "--user", "0", "-w", "/", containerID, "sh", "-c", cleanupCommand)
+	cleanupCommand := dp.workspaceCleanupCommandFor(true)
+	if dp.readOnlyRootfs {
+		// Keep the independent tmpfs mount points and never recursively remove a
+		// bind-mounted cache below /workspace.
+		prefix := "set -eu; "
+		if dp.hardening && containerUser() != "" {
+			prefix += "chmod 0700 /workspace; "
+		}
+		cleanupCommand = prefix + clearEphemeralTreeCommand("/workspace", true) + "; " +
+			clearEphemeralTreeCommand("/tmp", false) + "; " +
+			clearEphemeralTreeCommand("/home", false) + "; mkdir -p /workspace /tmp /home; " +
+			dp.workspaceOwnershipCommand()
+		if !(dp.hardening && containerUser() != "") {
+			cleanupCommand += "; chmod 1777 /tmp"
+		}
+	}
+	output, err := dp.executeDockerCommand(ctx, "exec", "--user", dp.workspaceExecUser(), "-w", "/", containerID, "sh", "-c", cleanupCommand)
 	if err != nil {
 		return fmt.Errorf("workspace reset: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func (dp *Pool) workspaceExecUser() string {
+	if dp != nil && dp.hardening && containerUser() != "" {
+		return containerUser()
+	}
+	return "0"
+}
+
+func (dp *Pool) workspaceOwnershipCommand() string {
+	if dp != nil && dp.hardening && containerUser() != "" {
+		return "chmod 0700 /workspace"
+	}
+	return containerWorkspaceOwnershipCommand()
+}
+
+func (dp *Pool) workspaceCleanupCommandFor(preserveBuildMounts bool) string {
+	return "set -eu; " + clearEphemeralTreeCommand("/workspace", preserveBuildMounts) + "; mkdir -p /workspace; " + dp.workspaceOwnershipCommand()
+}
+
+// clearEphemeralTreeCommand removes regular files and symlinks without
+// recursively entering persistent cache mounts. Empty directories are kept so
+// the command never attempts to remove a mount point on minimal images.
+func clearEphemeralTreeCommand(root string, preserveBuildMounts bool) string {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return "true"
+	}
+	if !preserveBuildMounts {
+		return "find " + root + " -mindepth 1 \\( -type f -o -type l \\) -exec rm -f -- {} +"
+	}
+	return "find " + root + " -mindepth 1 \\( -type d \\( -name .bobocloud -o -name target \\) \\) -prune -o \\( -type f -o -type l \\) -exec rm -f -- {} +"
+}
+
+func containerWorkspaceOwnershipCommand() string {
+	identity := strings.Split(containerUser(), ":")
+	if len(identity) == 2 {
+		if _, uidErr := strconv.ParseUint(identity[0], 10, 32); uidErr == nil {
+			if _, gidErr := strconv.ParseUint(identity[1], 10, 32); gidErr == nil {
+				return "chown " + identity[0] + ":" + identity[1] + " /workspace && chmod 0700 /workspace"
+			}
+		}
+	}
+	return "chmod 0700 /workspace"
 }
 
 // getContainerImage 获取容器对应的镜像
@@ -2437,10 +2494,9 @@ func (dp *Pool) createContainer(ctx context.Context, runtimeID, image string, ex
 			"--init",                  // 用 tini 回收僵尸进程
 			"--memory-swap", memLimit, // 限制 swap（=memory 则无额外 swap）
 		)
-		// Bind-mounted build and dependency caches are owned by the service
-		// account. Once DAC_OVERRIDE is dropped, running the workload as root
-		// can no longer write those 0700 directories. Match the container UID/GID
-		// to the account that owns the mounts instead of widening host permissions.
+		// Bind-mounted caches are owned by the server service account. Match the
+		// workload UID/GID so dropping DAC_OVERRIDE does not make every compiler
+		// unable to write its dependency or build cache.
 		if identity := containerUser(); identity != "" {
 			args = append(args, "--user", identity)
 		}
@@ -2451,12 +2507,15 @@ func (dp *Pool) createContainer(ctx context.Context, runtimeID, image string, ex
 	// 只读根文件系统：把可写需求转移到 tmpfs。
 	// 缓存目录由 buildPersistEnv 重定向到 /persist（可写卷），
 	// 这里再为无 /persist 的场景（如热池容器）以及 /tmp /home 提供可写 tmpfs。
+	if dp.hardening && !dp.readOnlyRootfs && containerUser() != "" {
+		args = append(args, "--tmpfs", containerWorkspaceTmpfsSpec(""))
+	}
 	if dp.readOnlyRootfs {
 		args = append(args,
 			"--read-only",
-			"--tmpfs", "/tmp:rw,nosuid,nodev,size=128m",
-			"--tmpfs", "/workspace:rw,nosuid,nodev,size=256m",
-			"--tmpfs", "/home:rw,nosuid,nodev,size=128m",
+			"--tmpfs", containerTmpfsSpec("/tmp", "1777", "size=128m"),
+			"--tmpfs", containerWorkspaceTmpfsSpec("size=256m"),
+			"--tmpfs", containerTmpfsSpec("/home", "0700", "size=128m"),
 		)
 	}
 
@@ -2513,7 +2572,7 @@ func (dp *Pool) createContainer(ctx context.Context, runtimeID, image string, ex
 	// directory is absent, so this bootstrap command must run from / explicitly.
 	mkdirCtx, mkdirCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer mkdirCancel()
-	mkdirCmd := exec.CommandContext(mkdirCtx, "docker", containerWorkspaceBootstrapArguments(containerID)...)
+	mkdirCmd := exec.CommandContext(mkdirCtx, "docker", containerWorkspaceBootstrapArgumentsFor(containerID, dp.hardening)...)
 	if output, err := mkdirCmd.CombinedOutput(); err != nil {
 		return containerID, fmt.Errorf("docker workspace initialization failed: %s", strings.TrimSpace(string(output)))
 	}
@@ -2543,12 +2602,38 @@ func ensureDockerBindDirectory(path string) error {
 // image, and the terminal reset path deliberately removes it before recreating
 // a clean snapshot.
 func containerWorkspaceBootstrapArguments(containerID string) []string {
-	// The workload runs as the service UID after hardening, while a number of
-	// upstream images ship without /workspace (or ship it owned by root). Run
-	// this one-time container-local bootstrap as uid 0, then make only the
-	// ephemeral workspace traversable/writable for the workload. The command
-	// does not touch any bind-mounted cache below /workspace.
-	return []string{"exec", "--user", "0", "-w", "/", containerID, "sh", "-c", "mkdir -p /workspace && chmod 0777 /workspace"}
+	return containerWorkspaceBootstrapArgumentsFor(containerID, false)
+}
+
+func containerWorkspaceBootstrapArgumentsFor(containerID string, hardened bool) []string {
+	user := "0"
+	command := "mkdir -p /workspace && " + containerWorkspaceOwnershipCommand()
+	if hardened && containerUser() != "" {
+		user = containerUser()
+		command = "mkdir -p /workspace && chmod 0700 /workspace"
+	}
+	return []string{"exec", "--user", user, "-w", "/", containerID, "sh", "-c", command}
+}
+
+func containerWorkspaceTmpfsSpec(extra string) string {
+	return containerTmpfsSpec("/workspace", "0700", extra)
+}
+
+func containerTmpfsSpec(path, mode, extra string) string {
+	options := []string{"rw", "nosuid", "nodev"}
+	identity := strings.Split(containerUser(), ":")
+	if len(identity) == 2 {
+		if _, uidErr := strconv.ParseUint(identity[0], 10, 32); uidErr == nil {
+			if _, gidErr := strconv.ParseUint(identity[1], 10, 32); gidErr == nil {
+				options = append(options, "uid="+identity[0], "gid="+identity[1])
+			}
+		}
+	}
+	options = append(options, "mode="+mode)
+	if strings.TrimSpace(extra) != "" {
+		options = append(options, extra)
+	}
+	return path + ":" + strings.Join(options, ",")
 }
 
 func (dp *Pool) containerRunningState(containerID string) (bool, error) {

@@ -13,6 +13,7 @@ const { SCM_GIT_METHODS, createScmGitBroker } = require('./scm-git');
 const { createPluginDocumentBroker } = require('./plugin-documents');
 const { capturePluginRpcResult } = require('./plugin-rpc-transport');
 const { compareSemver, isValidSemver, satisfiesVersionRange } = require('../shared/plugin-semver');
+const { createTrustedRendererSender } = require('./trusted-ipc');
 
 const PLUGIN_API_VERSION = '1.6.0';
 const PACKAGE_SCHEMA_VERSIONS = new Set([1, 2]);
@@ -784,6 +785,9 @@ function createPluginController(options) {
   const dialog = options.dialog;
   const shell = options.shell;
   const getWindow = options.getWindow;
+  const sendToRenderer = typeof options.sendToRenderer === 'function'
+    ? options.sendToRenderer
+    : createTrustedRendererSender({ getWindow }).send;
   const hostVersion = String(options.hostVersion || (typeof app.getVersion === 'function' ? app.getVersion() : '0.0.0'));
   const onDidChange = typeof options.onDidChange === 'function' ? options.onDidChange : () => {};
   const agentBroker = options.agentBroker && typeof options.agentBroker.request === 'function' ? options.agentBroker : null;
@@ -912,10 +916,7 @@ function createPluginController(options) {
       }
     }
     const payload = immutable({ reason, plugins: currentList() });
-    const window = getWindow();
-    if (window && !window.isDestroyed() && window.webContents && !window.webContents.isDestroyed()) {
-      window.webContents.send('plugins:changed', payload);
-    }
+    sendToRenderer('plugins:changed', payload);
     try { onDidChange(payload); } catch (_) {}
   }
 

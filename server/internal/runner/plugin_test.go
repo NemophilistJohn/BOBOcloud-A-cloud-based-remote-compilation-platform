@@ -519,6 +519,9 @@ func TestPythonPlugin_PythonpathAndArgs(t *testing.T) {
 	if step.Env["PYTHONUNBUFFERED"] != "1" {
 		t.Errorf("unexpected Python environment: %v", step.Env)
 	}
+	if step.Env["MPLCONFIGDIR"] != "{{projectRoot}}/.bobocloud/matplotlib" {
+		t.Errorf("Python must use a writable project-scoped Matplotlib cache: %v", step.Env)
+	}
 }
 
 func TestDockerPythonRuntimeBootstrapUsesScopedTargetWithoutMutatingLocalPlan(t *testing.T) {
@@ -539,6 +542,9 @@ func TestDockerPythonRuntimeBootstrapUsesScopedTargetWithoutMutatingLocalPlan(t 
 	}
 	if _, exists := wrapped.Steps[0].Env["PYTHONPATH"]; exists {
 		t.Fatalf("Docker step must not replace the container dependency PYTHONPATH: %v", wrapped.Steps[0].Env)
+	}
+	if got := wrapped.Steps[0].Env["MPLCONFIGDIR"]; got != "{{projectRoot}}/.bobocloud/matplotlib" {
+		t.Fatalf("Docker step must preserve the writable Matplotlib cache: %q", got)
 	}
 	if plan.Steps[0].Env["PYTHONPATH"] != "{{projectRoot}}" || plan.Steps[0].Cmd[0] != "python3" {
 		t.Fatalf("local Python plan was mutated: %+v", plan.Steps[0])
@@ -562,6 +568,7 @@ func TestDockerPythonRuntimeBootstrapPreservesReadOnlyProjectDependencies(t *tes
 	command.Env = []string{
 		"PATH=" + binRoot,
 		"PYTHONPATH=/project-deps/python",
+		"MPLCONFIGDIR=" + filepath.Join(projectRoot, ".bobocloud", "matplotlib"),
 	}
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -592,6 +599,38 @@ func TestDockerPythonRuntimeBootstrapPreservesReadOnlyProjectDependencies(t *tes
 	}
 }
 
+func TestDockerPythonRuntimeBootstrapDoesNotFallBackToRootConfig(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX shell is unavailable")
+	}
+	projectRoot := t.TempDir()
+	binRoot := t.TempDir()
+	pythonPath := filepath.Join(binRoot, "python3")
+	if err := os.WriteFile(pythonPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$MPLCONFIGDIR\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(shell, "-c", pythonRuntimeBootstrap, "python-runtime", "main.py")
+	command.Dir = projectRoot
+	command.Env = []string{
+		"PATH=" + binRoot,
+		"HOME=/",
+		"MPLCONFIGDIR=" + filepath.Join(projectRoot, ".bobocloud", "matplotlib"),
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("execute Python bootstrap: %v: %s", err, output)
+	}
+	got := strings.TrimSpace(string(output))
+	want := filepath.Join(projectRoot, ".bobocloud", "matplotlib")
+	if got != want {
+		t.Fatalf("MPLCONFIGDIR = %q, want %q", got, want)
+	}
+	if strings.HasPrefix(got, "/.config") {
+		t.Fatalf("Python bootstrap retained the unwritable root config path: %q", got)
+	}
+}
+
 func TestAutoPersistPipDefersToContainerPIPTarget(t *testing.T) {
 	for _, command := range []string{
 		"python3 -m pip install numpy",
@@ -614,6 +653,95 @@ func TestNodePlugin(t *testing.T) {
 	}
 	if strings.Join(plan.Steps[0].Cmd, " ") != "node app/index.js --port 8080" {
 		t.Errorf("unexpected node cmd: %v", plan.Steps[0].Cmd)
+	}
+}
+
+func TestCloudCompilerLanguageBaselinePlans(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		plugin   LanguagePlugin
+		entry    string
+		files    map[string]string
+		compile  string
+		run      string
+		envKey   string
+		envValue string
+	}{
+		{
+			name:    "c",
+			plugin:  CPlugin{},
+			entry:   "main.c",
+			files:   map[string]string{"main.c": "int main(void){return 0;}"},
+			compile: "gcc",
+			run:     "run:c",
+		},
+		{
+			name:     "python",
+			plugin:   PythonPlugin{},
+			entry:    "main.py",
+			files:    map[string]string{"main.py": "print('ok')"},
+			run:      "run:python",
+			envKey:   "MPLCONFIGDIR",
+			envValue: "{{projectRoot}}/.bobocloud/matplotlib",
+		},
+		{
+			name:   "node",
+			plugin: NodePlugin{},
+			entry:  "main.js",
+			files:  map[string]string{"main.js": "console.log('ok')"},
+			run:    "run:node",
+		},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			hostDir, files := writeTempProject(t, tc.files)
+			plan, err := tc.plugin.Plan(&PlanRequest{
+				EntryRelPath: tc.entry,
+				ProjectFiles: files,
+				HostWorkDir:  hostDir,
+				ProjectRoot:  "/workspace",
+				Timeouts:     testTimeouts(),
+			})
+			if err != nil {
+				t.Fatalf("baseline plan failed: %v", err)
+			}
+			if len(plan.Steps) < 1 {
+				t.Fatalf("baseline plan has no executable steps: %#v", plan.Steps)
+			}
+			stages := make([]string, 0, len(plan.Steps))
+			for _, step := range plan.Steps {
+				stages = append(stages, step.Stage)
+			}
+			if tc.compile != "" && !strings.Contains(strings.Join(stepCmds(plan), "\n"), tc.compile) {
+				t.Fatalf("baseline plan does not invoke %s: %v", tc.compile, stages)
+			}
+			if tc.run != "" {
+				found := false
+				for _, stage := range stages {
+					if stage == tc.run {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("baseline plan lost %s stage: %v", tc.run, stages)
+				}
+			}
+			if tc.envKey != "" {
+				found := false
+				for _, step := range plan.Steps {
+					if step.Env[tc.envKey] == tc.envValue {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("baseline plan lost %s=%s", tc.envKey, tc.envValue)
+				}
+			}
+		})
 	}
 }
 

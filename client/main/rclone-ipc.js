@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { normalizeRemotePath } = require('./rclone-remote-authority');
 const { readTeamMapping } = require('./team-mapping');
+const { createTrustedRendererSender } = require('./trusted-ipc');
 
 function readMappingMarker(directory) {
   return readTeamMapping(directory, { requireLocalPath: true });
@@ -69,6 +70,9 @@ function registerRcloneIpc(options) {
   const BrowserWindow = options.BrowserWindow;
   const dialog = options.dialog;
   const getWindow = options.getWindow;
+  const sendToRendererWindow = typeof options.sendToRendererWindow === 'function'
+    ? options.sendToRendererWindow
+    : createTrustedRendererSender({ getWindow }).sendToWindow;
   const getWorkspaceIdentity = options.getWorkspaceIdentity || (() => ({ rootPath: null, workspaceIdentity: 0 }));
   const localDirectoryAuthority = options.localDirectoryAuthority;
   const service = options.service;
@@ -202,7 +206,7 @@ function registerRcloneIpc(options) {
         onProgress(line) {
           if (local.isCurrent() && targetWindow && !targetWindow.isDestroyed() &&
               targetWindow.webContents && !targetWindow.webContents.isDestroyed?.()) {
-            targetWindow.webContents.send('rclone:progress', { operationId: id, line });
+            sendToRendererWindow(targetWindow, 'rclone:progress', { operationId: id, line });
           }
         }
       });

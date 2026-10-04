@@ -11,6 +11,7 @@ const {
 } = require('../lsp-transport');
 const { nonFatalLspRequestResult } = require('../main/lsp');
 const uriHelpers = require('../src/lsp-client');
+const lspControllerSource = fs.readFileSync(require.resolve('../main/lsp'), 'utf8');
 
 class MockSocket {
   constructor(url) {
@@ -32,7 +33,7 @@ class MockSocket {
 function teamConfig(mode = 'standard') {
   return {
     mode,
-    serverHost: 'compiler.example.com:3100',
+    serverHost: 'compiler.example.com:3101',
     languageId: 'rust',
     runtimeId: 'rust:1.87',
     workspace: { kind: 'team', teamId: 'team-1', projectId: 'project-1', branch: 'main' }
@@ -72,9 +73,19 @@ test('classifies superseded and timed-out LSP calls as normal IPC outcomes', () 
 });
 
 test('normalizes the dedicated LSP WebSocket endpoint', () => {
-  assert.equal(normalizeLspUrl('compiler.example.com:3100'), 'ws://compiler.example.com:3100/lsp');
-  assert.equal(normalizeLspUrl('https://compiler.example.com/api'), 'wss://compiler.example.com:3100/lsp');
+  assert.equal(normalizeLspUrl('compiler.example.com:3101'), 'ws://compiler.example.com:3101/lsp');
+  assert.equal(normalizeLspUrl('compiler.example.com'), 'ws://compiler.example.com:3101/lsp');
+  assert.equal(normalizeLspUrl('https://compiler.example.com:3101/api'), 'wss://compiler.example.com:3101/lsp');
+  assert.equal(normalizeLspUrl('https://compiler.example.com/api'), 'wss://compiler.example.com:3101/lsp');
   assert.equal(normalizeLspUrl('https://compiler.example.com:8443/api'), 'wss://compiler.example.com:8443/lsp');
+});
+
+test('main-process LSP configuration selects the dedicated WebSocket port', () => {
+  assert.match(
+    lspControllerSource,
+    /serverEndpoint\(serverSettings,\s*['"]ws['"]\)/,
+    'LSP must not be configured against the HTTP API port'
+  );
 });
 
 test('workspace identity never accepts a client absolute path', () => {
@@ -175,7 +186,7 @@ test('sends credential only in the main-process start frame', async () => {
   await transport.configure(teamConfig());
   socket.fire('open');
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(socket.url, 'ws://compiler.example.com:3100/lsp');
+  assert.equal(socket.url, 'ws://compiler.example.com:3101/lsp');
   assert.deepEqual(socket.sent[0], {
     type: 'lsp.start', token: 'secret-token', mode: 'standard', languageId: 'rust', runtimeId: 'rust:1.87',
     workspace: { kind: 'team', teamId: 'team-1', projectId: 'project-1', branch: 'main' }
