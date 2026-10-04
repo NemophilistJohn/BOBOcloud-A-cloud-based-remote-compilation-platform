@@ -32,8 +32,8 @@ func (PythonPlugin) Plan(req *PlanRequest) (*Plan, error) {
 				Cmd:   runCmd,
 				// Python runtimes commonly inherit HOME=/ when the container image
 				// has no passwd entry for the execution user. Matplotlib then falls
-				// back to /.config and spends the run budget retrying a permission
-				// denied cache creation. Keep the cache inside the writable project
+				// back to /.config and cannot persist its configuration/font cache.
+				// Keep the cache inside the writable project
 				// workspace for both local and Docker execution.
 				Env:        map[string]string{"PYTHONPATH": "{{projectRoot}}", "PYTHONUNBUFFERED": "1", "MPLCONFIGDIR": "{{projectRoot}}/.bobocloud/matplotlib"},
 				TimeoutSec: req.Timeouts.RunSec,
