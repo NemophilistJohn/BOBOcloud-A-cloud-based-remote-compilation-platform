@@ -105,7 +105,8 @@ test('run output separates program output from collapsible infrastructure detail
       window.BOBO.workbench.setPanelPosition('right');
       document.getElementById('layout').style.setProperty('--workbench-right-panel-size', '280px');
     });
-    await page.waitForTimeout(350);
+    await expect.poll(() => page.locator('#bottom-panel').evaluate((panel) =>
+      panel.getBoundingClientRect().width)).toBeGreaterThanOrEqual(279);
     const rightDockGeometry = await page.evaluate(() => {
       const tabs = document.getElementById('panel-tabs');
       const panel = document.getElementById('bottom-panel');
