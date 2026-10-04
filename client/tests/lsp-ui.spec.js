@@ -302,10 +302,13 @@ test('configured LSP address, strategy settings and status bar work in all built
       window.__boboServerCapabilityDescriptor = JSON.parse(JSON.stringify(appliedCapabilities));
       window.__boboServerInfoProbes = 0;
       window.__boboServerInfoDelayMs = 0;
+      window.__boboServerInfoGate = null;
       window.BOBO.sendToServer = async function(action) {
         if (action === 'serverInfo') {
           window.__boboServerInfoProbes += 1;
-          if (window.__boboServerInfoDelayMs) {
+          if (window.__boboServerInfoGate) {
+            await window.__boboServerInfoGate;
+          } else if (window.__boboServerInfoDelayMs) {
             await new Promise(resolve => setTimeout(resolve, window.__boboServerInfoDelayMs));
           }
           const descriptor = JSON.parse(JSON.stringify(window.__boboServerCapabilityDescriptor));
@@ -650,7 +653,10 @@ test('configured LSP address, strategy settings and status bar work in all built
       globalThis.__boboLspProbe.dependencyRevision = 'deps-' + globalThis.__boboLspProbe.starts.length;
       return globalThis.__boboLspProbe.dependencyIndexRequests;
     });
-    await page.evaluate(() => { window.__boboServerInfoDelayMs = 850; });
+    await page.evaluate(() => {
+      window.__boboServerInfoDelayMs = 850;
+      window.__boboServerInfoGate = new Promise(resolve => { window.__releaseBoboServerInfo = resolve; });
+    });
     await app.evaluate(() => globalThis.__boboCurrentLspSocket.close(1012, 'catalog refresh test'));
     await expect.poll(async () => page.evaluate(() => window.__boboServerInfoProbes)).toBe(1);
     const completionRequestsBeforeOffline = await app.evaluate(() => globalThis.__boboLspProbe.completionRequests);
@@ -665,6 +671,13 @@ test('configured LSP address, strategy settings and status bar work in all built
     await page.keyboard.press('Escape');
     await page.waitForTimeout(700);
     expect(await app.evaluate(() => globalThis.__boboLspProbe.starts.length)).toBe(startsBeforeReconnect);
+    // Keep refresh pending through all offline assertions regardless of runner
+    // speed, then explicitly allow exactly one reconnect to the same revision.
+    await page.evaluate(() => {
+      window.__releaseBoboServerInfo();
+      window.__boboServerInfoGate = null;
+      delete window.__releaseBoboServerInfo;
+    });
     await expect.poll(async () => app.evaluate(() => globalThis.__boboLspProbe.starts.length), { timeout: 5000 }).toBe(startsBeforeReconnect + 1);
     await expect.poll(async () => page.evaluate(() => window.BOBO.lsp.getStatus().state), { timeout: 5000 }).toBe('ready');
     const refreshedCatalog = await page.evaluate(() => ({
