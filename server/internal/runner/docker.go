@@ -1,10 +1,12 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"time"
 
@@ -49,24 +51,48 @@ type containerWorkspaceCopier interface {
 type dockerCLIWorkspaceCopier struct{}
 
 func (dockerCLIWorkspaceCopier) CopyTo(ctx context.Context, containerID, hostDir, containerDir string) error {
-	// Docker otherwise creates copied files as root. Preserve the ownership of
-	// the isolated host workspace so hardened containers running as the service
-	// UID can read and update source files across C, Python, and Node plans.
-	cpCmd := exec.CommandContext(ctx, "docker", dockerCopyToArguments(containerID, hostDir, containerDir)...)
-	if out, err := cpCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %w", string(out), err)
-	}
-	return nil
-}
-
-func dockerCopyToArguments(containerID, hostDir, containerDir string) []string {
-	return []string{"cp", "-a", hostDir + "/.", containerID + ":" + containerDir}
+	// The daemon's archive endpoint does not see the running container's tmpfs
+	// workspace. Extract in its mount namespace as the configured workload UID;
+	// neither root ownership nor a successful copy into the hidden image layer
+	// is sufficient for a hardened workload.
+	return streamDockerArchive(
+		exec.CommandContext(ctx, "tar", "-cf", "-", "-C", hostDir, "."),
+		exec.CommandContext(ctx, "docker", "exec", "-i", "-w", "/", containerID, "tar", "--no-same-owner", "-xf", "-", "-C", containerDir))
 }
 
 func (dockerCLIWorkspaceCopier) CopyFrom(ctx context.Context, containerID, hostDir, containerDir string) error {
-	cpCmd := exec.CommandContext(ctx, "docker", "cp", containerID+":"+containerDir+"/.", hostDir)
-	if out, err := cpCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %w", string(out), err)
+	// Read from that same live mount namespace and omit internal dependency and
+	// compiler caches that the artifact collector already excludes.
+	return streamDockerArchive(
+		exec.CommandContext(ctx, "docker", "exec", "-w", "/", containerID, "tar", "-cf", "-", "--exclude=.git", "--exclude=.bobocloud", "--exclude=target", "--exclude=node_modules", "--exclude=__pycache__", "--exclude=.venv", "--exclude=venv", "-C", containerDir, "."),
+		exec.CommandContext(ctx, "tar", "--no-same-owner", "-xf", "-", "-C", hostDir))
+}
+
+func streamDockerArchive(source, destination *exec.Cmd) error {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	defer writer.Close()
+	var sourceErrors, destinationErrors bytes.Buffer
+	source.Stdout, source.Stderr = writer, &sourceErrors
+	destination.Stdin, destination.Stderr = reader, &destinationErrors
+	if err := destination.Start(); err != nil {
+		return fmt.Errorf("start archive destination: %w", err)
+	}
+	_ = reader.Close()
+	if err := source.Start(); err != nil {
+		_ = writer.Close()
+		_ = destination.Process.Kill()
+		_ = destination.Wait()
+		return fmt.Errorf("start archive source: %w", err)
+	}
+	_ = writer.Close()
+	sourceErr := source.Wait()
+	destinationErr := destination.Wait()
+	if sourceErr != nil || destinationErr != nil {
+		return fmt.Errorf("workspace archive transfer: %w; source: %s; destination: %s", errors.Join(sourceErr, destinationErr), sourceErrors.String(), destinationErrors.String())
 	}
 	return nil
 }
