@@ -1282,10 +1282,9 @@ func TestAcquireRejectedAfterPoolShutdownBegins(t *testing.T) {
 
 func TestContainerWorkspaceBootstrapUsesStableRootWorkingDirectory(t *testing.T) {
 	got := containerWorkspaceBootstrapArguments("container-id")
-	if len(got) != 9 || got[0] != "exec" || got[1] != "--user" || got[2] != "0" ||
-		got[3] != "-w" || got[4] != "/" || got[5] != "container-id" ||
-		got[6] != "sh" || got[7] != "-c" || !strings.Contains(got[8], "/workspace") {
-		t.Fatalf("workspace bootstrap arguments = %#v", got)
+	want := []string{"exec", "--user", "0", "-w", "/", "container-id", "sh", "-c", "mkdir -p /workspace && " + containerWorkspaceOwnershipCommand()}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("workspace bootstrap arguments = %#v, want %#v", got, want)
 	}
 }
 

@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -56,14 +57,12 @@ func TestVerifiedResetSkipsRestartForManagedBaseline(t *testing.T) {
 	if err := pool.resetContainerForReuse("container-a"); err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 2 || commands[0] != "top container-a -eo pid,ppid,comm,args" {
-		t.Fatalf("commands = %#v", commands)
+	want := []string{
+		"top container-a -eo pid,ppid,comm,args",
+		"exec --user 0 -w / container-a sh -c " + (&Pool{}).workspaceCleanupCommand(),
 	}
-	if !strings.HasPrefix(commands[1], "exec --user 0 -w / container-a sh -c set -eu; find /workspace") ||
-		!strings.Contains(commands[1], "-name .bobocloud") ||
-		!strings.Contains(commands[1], "-name target") ||
-		!strings.Contains(commands[1], "chmod 0700 /workspace") {
-		t.Fatalf("workspace cleanup command = %q", commands[1])
+	if !reflect.DeepEqual(commands, want) {
+		t.Fatalf("commands = %#v, want %#v", commands, want)
 	}
 	stages := registry.Snapshot().Stages
 	if stages["container.recycle.verify"].Count != 1 || stages["container.recycle.workspace"].Count != 1 {
@@ -71,29 +70,6 @@ func TestVerifiedResetSkipsRestartForManagedBaseline(t *testing.T) {
 	}
 	if stages["container.recycle.restart"].Count != 0 {
 		t.Fatalf("restart metric = %#v", stages["container.recycle.restart"])
-	}
-}
-
-func TestWorkspaceCleanupPreservesPersistentBuildMounts(t *testing.T) {
-	pool := &Pool{}
-	command := pool.workspaceCleanupCommandFor(true)
-	if strings.Contains(command, "rm -rf /workspace") {
-		t.Fatalf("workspace cleanup recursively removes the workspace mount: %q", command)
-	}
-	for _, fragment := range []string{"-name .bobocloud", "-name target", "-exec rm -f", "mkdir -p /workspace"} {
-		if !strings.Contains(command, fragment) {
-			t.Fatalf("workspace cleanup missing %q: %s", fragment, command)
-		}
-	}
-}
-
-func TestHardenedWorkspaceBootstrapUsesValidatedIdentity(t *testing.T) {
-	args := containerWorkspaceBootstrapArgumentsFor("container-id", true)
-	if len(args) != 9 || args[0] != "exec" || args[1] != "--user" || args[3] != "-w" || args[4] != "/" || args[6] != "sh" || args[7] != "-c" {
-		t.Fatalf("hardened bootstrap arguments = %#v", args)
-	}
-	if !strings.Contains(args[8], "mkdir -p /workspace") || !strings.Contains(args[8], "chmod 0700 /workspace") {
-		t.Fatalf("hardened bootstrap does not restore workspace ownership: %q", args[8])
 	}
 }
 
@@ -117,6 +93,50 @@ func TestVerifiedResetClearsAllWritableTmpfsMounts(t *testing.T) {
 	for _, path := range []string{"find /workspace", "find /tmp", "find /home", "chmod 0700 /workspace", "chmod 1777 /tmp"} {
 		if !strings.Contains(cleanup, path) {
 			t.Fatalf("cleanup command %q does not reset %q", cleanup, path)
+		}
+	}
+	if !strings.Contains(cleanup, "-name .bobocloud") || !strings.Contains(cleanup, "-name target") {
+		t.Fatalf("cleanup command does not protect compiler cache mount points: %q", cleanup)
+	}
+	if strings.Contains(cleanup, "rm -rf -- /workspace") || strings.Contains(cleanup, "rm -rf /workspace") {
+		t.Fatalf("cleanup command recursively removes the workspace mount: %q", cleanup)
+	}
+}
+
+func TestHardenedWorkspaceResetRunsAsOwnedUID(t *testing.T) {
+	commands := make([]string, 0)
+	pool := &Pool{resetStrategy: ResetStrategyVerified, hardening: true}
+	pool.runDockerCommand = func(_ context.Context, args ...string) ([]byte, error) {
+		commands = append(commands, strings.Join(args, " "))
+		if args[0] == "top" {
+			return []byte(managedTopWithoutInit), nil
+		}
+		return nil, nil
+	}
+	if err := pool.resetContainerForReuse("container-a"); err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 2 {
+		t.Fatalf("commands = %#v", commands)
+	}
+	wantUser := pool.workspaceExecUser()
+	if !strings.Contains(commands[1], "exec --user "+wantUser+" -w /") {
+		t.Fatalf("hardened reset user = %q, command = %q", wantUser, commands[1])
+	}
+	if strings.Contains(commands[1], "chown ") || !strings.Contains(commands[1], "chmod 0700 /workspace") {
+		t.Fatalf("hardened reset widened ownership or skipped mode repair: %q", commands[1])
+	}
+}
+
+func TestHardenedWorkspaceTmpfsBindsServiceIdentity(t *testing.T) {
+	spec := containerWorkspaceTmpfsSpec("")
+	if !strings.Contains(spec, ":rw,") || !strings.Contains(spec, "mode=0700") {
+		t.Fatalf("workspace tmpfs spec = %q", spec)
+	}
+	if identity := containerUser(); identity != "" {
+		parts := strings.Split(identity, ":")
+		if !strings.Contains(spec, "uid="+parts[0]) || !strings.Contains(spec, "gid="+parts[1]) {
+			t.Fatalf("workspace tmpfs spec %q does not bind identity %q", spec, identity)
 		}
 	}
 }

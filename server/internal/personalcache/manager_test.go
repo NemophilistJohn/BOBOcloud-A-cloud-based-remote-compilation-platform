@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"bobocloud-server/internal/metrics"
 )
 
 func TestDependencyFingerprintChangesWithLockAndSetup(t *testing.T) {
@@ -1100,6 +1102,90 @@ func TestBoundedDirectoryStatsStopsAfterFileLimit(t *testing.T) {
 	usage := boundedDirectoryStats(root, 3)
 	if !usage.truncated || usage.files != 4 {
 		t.Fatalf("bounded usage = %+v", usage)
+	}
+}
+
+func TestBoundedQuotaStatsCountsUserAndPersistViewsInOneWalk(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "workspace.txt"), []byte("abc"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "nested.txt"), []byte("de"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, cacheRootDir, "artifacts", "results"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, cacheRootDir, "artifacts", "results", "result.bin"), []byte("hello"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	usage := boundedQuotaStats(root, 100)
+	// Directory entries count towards the inode view, while only regular files
+	// and symlinks contribute bytes. The cache-v2 root belongs to the user view
+	// but is excluded from the managed/persist view.
+	if usage.user.files != 6 || usage.user.bytes != 10 || usage.user.truncated {
+		t.Fatalf("user quota view = %+v, want files=6 bytes=10 without truncation", usage.user)
+	}
+	if usage.persist.files != 3 || usage.persist.bytes != 5 || usage.persist.truncated {
+		t.Fatalf("persist quota view = %+v, want files=3 bytes=5 without truncation", usage.persist)
+	}
+}
+
+func TestBoundedQuotaStatsMatchesIndependentBoundedViews(t *testing.T) {
+	root := t.TempDir()
+	paths := map[string]string{
+		"a/one.txt":        "one",
+		"a/two.txt":        "twotwo",
+		"b/deep/three.txt": "three",
+		filepath.Join(cacheRootDir, "a", "four.txt"):         "fourfour",
+		filepath.Join(cacheRootDir, "b", "deep", "five.txt"): "five",
+	}
+	for relative, content := range paths {
+		path := filepath.Join(root, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, limit := range []int64{0, 1, 3, 6, 100} {
+		merged := boundedQuotaStats(root, limit)
+		wantUser := boundedDirectoryStats(root, limit)
+		wantPersist := boundedDirectoryStats(filepath.Join(root, cacheRootDir), limit)
+		if merged.user != wantUser || merged.persist != wantPersist {
+			t.Fatalf("limit %d: merged=%+v want user=%+v persist=%+v", limit, merged, wantUser, wantPersist)
+		}
+	}
+}
+
+func TestQuotaScanCoalescesAnInFlightUserWalk(t *testing.T) {
+	manager := newTestManager(t.TempDir(), Options{})
+	userRoot := filepath.Clean(filepath.Join(manager.root, "u1"))
+	flight := &quotaScanFlight{done: make(chan struct{}), result: quotaUsage{
+		user: directoryUsage{bytes: 11, files: 4}, persist: directoryUsage{bytes: 7, files: 2},
+	}}
+	manager.quotaScanMu.Lock()
+	manager.quotaScans[userRoot] = flight
+	manager.quotaScanMu.Unlock()
+	close(flight.done)
+	got := manager.scanQuotaUsage("u1")
+	if got != flight.result {
+		t.Fatalf("coalesced quota result = %+v, want %+v", got, flight.result)
+	}
+	manager.quotaScanMu.Lock()
+	delete(manager.quotaScans, userRoot)
+	manager.quotaScanMu.Unlock()
+}
+
+func TestInspectUsesOneMergedQuotaScanObservation(t *testing.T) {
+	registry := metrics.New(true, 8)
+	manager := newTestManager(t.TempDir(), Options{Metrics: registry})
+	_ = manager.Inspect("u1", 1<<20)
+	stage := registry.Snapshot().Stages["persist.quota.scan"]
+	if stage.Count != 1 {
+		t.Fatalf("quota scan observations = %d, want one merged walk", stage.Count)
 	}
 }
 

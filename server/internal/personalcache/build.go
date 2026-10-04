@@ -250,6 +250,87 @@ func (lease *BuildLease) ResultHit(fingerprint string) bool {
 	return json.Unmarshal(data, &result) == nil && result.Schema == cacheSchema && result.Fingerprint == fingerprint
 }
 
+// ProbeBuildResultCandidate reads the currently bound result marker and its
+// stored dependency identity without creating cache state, taking a writer
+// lock, touching LRU metadata, or changing a binding. The returned request
+// carries the digest that was published with the result. Callers can therefore
+// reject a cold build before walking either the dependency or source tree, and
+// only calculate the expensive dependency fingerprint when a candidate exists.
+func (m *Manager) ProbeBuildResultCandidate(request BuildRequest) (BuildRequest, string, bool) {
+	if m == nil || strings.TrimSpace(request.UserID) == "" ||
+		strings.TrimSpace(request.WorkspaceID) == "" || strings.TrimSpace(request.RuntimeID) == "" ||
+		strings.TrimSpace(request.RuntimeFingerprint) == "" || strings.TrimSpace(request.Language) == "" {
+		return BuildRequest{}, "", false
+	}
+	// NewUserLayout is a pure path resolver. Unlike ensureUserLayout it does
+	// not create directories or validate/mutate the schema marker, which keeps
+	// this probe safe to run before resource admission.
+	layout, err := cachev2.NewUserLayout(m.dataDir, request.UserID)
+	if err != nil {
+		return BuildRequest{}, "", false
+	}
+	cacheRoot := layout.Root
+	binding, bound := readBuildCurrentBinding(cacheRoot, request)
+	if !bound || !validBuildResultIdentity(binding.Identity) || binding.ResultCacheID == "" {
+		return BuildRequest{}, "", false
+	}
+	identity := strings.TrimSpace(binding.Identity)
+	resultRoot := filepath.Join(layout.Results, safePart(request.WorkspaceID), safePart(request.RuntimeFingerprint), safePart(request.Language), identity)
+	meta, err := readBuildMetadata(resultRoot)
+	if err != nil || meta.UserID != request.UserID || meta.WorkspaceID != request.WorkspaceID ||
+		meta.RuntimeID != request.RuntimeID || meta.RuntimeFingerprint != request.RuntimeFingerprint ||
+		!strings.EqualFold(meta.Language, request.Language) || meta.Target != request.Target ||
+		identity != shortDigest(meta.DependencyDigest, request.Target) {
+		return BuildRequest{}, "", false
+	}
+	resultID, err := cachev2.ReadPersistentCacheID(resultRoot)
+	if err != nil || resultID != binding.ResultCacheID {
+		return BuildRequest{}, "", false
+	}
+	data, err := readSmallRegularFile(filepath.Join(resultRoot, buildResultFile), maxMetadataBytes)
+	if err != nil {
+		return BuildRequest{}, "", false
+	}
+	var result buildResult
+	if json.Unmarshal(data, &result) != nil || result.Schema != cacheSchema || strings.TrimSpace(result.Fingerprint) == "" {
+		return BuildRequest{}, "", false
+	}
+	request.DependencyDigest = meta.DependencyDigest
+	return request, result.Fingerprint, true
+}
+
+// ProbeBuildResultFingerprint reads the currently bound result marker without
+// creating cache state, taking a writer lock, touching LRU metadata, or
+// changing a binding. It is the exact-digest compatibility wrapper around the
+// wildcard candidate probe used by the early Docker-admission path.
+func (m *Manager) ProbeBuildResultFingerprint(request BuildRequest) (string, bool) {
+	candidate, fingerprint, ok := m.ProbeBuildResultCandidate(request)
+	return fingerprint, ok && candidate.DependencyDigest == request.DependencyDigest
+}
+
+// ProbeBuildResult is the read-only, admission-safe half of build-result
+// lookup. Callers may use it while deciding whether a Docker workload needs a
+// compilation-capable admission; the normal BuildLease.ResultHit check must
+// still be performed after PrepareBuild to close the race with a concurrent
+// publisher or invalidator.
+func (m *Manager) ProbeBuildResult(request BuildRequest, fingerprint string) bool {
+	candidate, ok := m.ProbeBuildResultFingerprint(request)
+	return ok && strings.TrimSpace(fingerprint) != "" && candidate == fingerprint
+}
+
+func validBuildResultIdentity(value string) bool {
+	if len(value) != 32 {
+		return false
+	}
+	for _, char := range value {
+		if (char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // ConfigureCargoTarget exposes the persistent Cargo target directory at the
 // project-relative location used by the generated run plan. Cargo and the run
 // step must resolve the same binary path for both cold builds and cache hits.

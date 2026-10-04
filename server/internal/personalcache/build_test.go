@@ -9,6 +9,42 @@ import (
 	"bobocloud-server/internal/cachev2"
 )
 
+func TestProbeBuildResultIsReadOnlyAndRequiresCurrentBinding(t *testing.T) {
+	manager := newTestManager(t.TempDir(), Options{})
+	request := BuildRequest{
+		UserID: "u1", WorkspaceID: "project", RuntimeID: "go:1.24",
+		RuntimeFingerprint: trustedTestRuntimeFingerprint, Language: "go", Target: "native",
+	}
+	lease, err := manager.PrepareBuild(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := "build-fingerprint-1"
+	if manager.ProbeBuildResult(request, fingerprint) {
+		t.Fatal("probe reported a hit before a result was committed")
+	}
+	if err := lease.CommitResult(fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	lease.Release()
+	candidate, marker, candidateOK := manager.ProbeBuildResultCandidate(request)
+	if !candidateOK || candidate.DependencyDigest != request.DependencyDigest || marker != fingerprint {
+		t.Fatalf("candidate probe = request=%+v marker=%q ok=%t, want the published result", candidate, marker, candidateOK)
+	}
+	if !manager.ProbeBuildResult(request, fingerprint) {
+		t.Fatal("probe missed a committed, currently bound result")
+	}
+	if manager.ProbeBuildResult(request, "different-fingerprint") {
+		t.Fatal("probe accepted a different fingerprint")
+	}
+	if err := os.Remove(filepath.Join(lease.ResultRoot, buildResultFile)); err != nil {
+		t.Fatal(err)
+	}
+	if manager.ProbeBuildResult(request, fingerprint) {
+		t.Fatal("probe accepted a result after its marker was removed")
+	}
+}
+
 func TestBuildLeaseConfiguresCargoTargetAtPlanWorkDir(t *testing.T) {
 	manager := newTestManager(t.TempDir(), Options{})
 	lease, err := manager.PrepareBuild(context.Background(), BuildRequest{

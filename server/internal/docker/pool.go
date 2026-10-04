@@ -1794,6 +1794,32 @@ func (dp *Pool) cleanWorkspaceObserved(containerID string) error {
 	return err
 }
 
+// ResetWorkspace clears the ephemeral workspace for callers that own a
+// container outside the normal Release path (for example the interactive
+// terminal). Keeping the operation in the pool is important: only the pool
+// knows whether the container is hardened, read-only-rootfs, and mounted with
+// the service UID/GID.
+func (dp *Pool) ResetWorkspace(parent context.Context, containerID string) error {
+	if dp == nil || strings.TrimSpace(containerID) == "" {
+		return fmt.Errorf("workspace reset requires a container")
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+	defer cancel()
+	started := time.Now()
+	// Keep the same mount-safe policy as the normal release path. Terminal
+	// containers normally have no build-result mount, but preserving the known
+	// mount names here makes this public reset operation fail closed if a caller
+	// hands it a cache-attached container.
+	err := dp.cleanWorkspaceContextWithOptions(ctx, containerID, true)
+	if dp.metrics != nil {
+		dp.metrics.Observe("container.recycle.workspace", time.Since(started))
+	}
+	return err
+}
+
 func (dp *Pool) cleanWorkspace(containerID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1801,74 +1827,37 @@ func (dp *Pool) cleanWorkspace(containerID string) error {
 }
 
 func (dp *Pool) cleanWorkspaceContext(ctx context.Context, containerID string) error {
+	return dp.cleanWorkspaceContextWithOptions(ctx, containerID, true)
+}
+
+func (dp *Pool) cleanWorkspaceContextWithOptions(ctx context.Context, containerID string, preserveBuildMounts bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	cleanupCommand := dp.workspaceCleanupCommandFor(true)
+	cleanupCommand := dp.workspaceCleanupCommandFor(preserveBuildMounts)
 	if dp.readOnlyRootfs {
-		// Keep the independent tmpfs mount points and never recursively remove a
-		// bind-mounted cache below /workspace.
-		prefix := "set -eu; "
+		// These paths are independent tmpfs mounts in read-only-rootfs mode.
+		// Restarting the container clears them; the verified fast path must
+		// provide the same isolation without trying to remove mount points.
+		workspaceResetPrefix := "set -eu; "
 		if dp.hardening && containerUser() != "" {
-			prefix += "chmod 0700 /workspace; "
+			workspaceResetPrefix += "chmod 0700 /workspace; "
 		}
-		cleanupCommand = prefix + clearEphemeralTreeCommand("/workspace", true) + "; " +
-			clearEphemeralTreeCommand("/tmp", false) + "; " +
-			clearEphemeralTreeCommand("/home", false) + "; mkdir -p /workspace /tmp /home; " +
-			dp.workspaceOwnershipCommand()
+		cleanupCommand = workspaceResetPrefix + clearEphemeralTreeCommand("/workspace", preserveBuildMounts) + "; " + clearEphemeralTreeCommand("/tmp", false) + "; " + clearEphemeralTreeCommand("/home", false) + "; mkdir -p /workspace /tmp /home; " + dp.workspaceOwnershipCommand()
 		if !(dp.hardening && containerUser() != "") {
 			cleanupCommand += "; chmod 1777 /tmp"
 		}
 	}
+	// Hardened workloads have a mode-0700 workspace owned by the service UID,
+	// and all files they can create are consequently owned by that UID. Run the
+	// reset as that owner; a capability-free root process cannot traverse the
+	// directory and would turn every verified recycle into a restart. Legacy
+	// non-hardened containers keep the root cleanup path for compatibility.
 	output, err := dp.executeDockerCommand(ctx, "exec", "--user", dp.workspaceExecUser(), "-w", "/", containerID, "sh", "-c", cleanupCommand)
 	if err != nil {
 		return fmt.Errorf("workspace reset: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
-}
-
-func (dp *Pool) workspaceExecUser() string {
-	if dp != nil && dp.hardening && containerUser() != "" {
-		return containerUser()
-	}
-	return "0"
-}
-
-func (dp *Pool) workspaceOwnershipCommand() string {
-	if dp != nil && dp.hardening && containerUser() != "" {
-		return "chmod 0700 /workspace"
-	}
-	return containerWorkspaceOwnershipCommand()
-}
-
-func (dp *Pool) workspaceCleanupCommandFor(preserveBuildMounts bool) string {
-	return "set -eu; " + clearEphemeralTreeCommand("/workspace", preserveBuildMounts) + "; mkdir -p /workspace; " + dp.workspaceOwnershipCommand()
-}
-
-// clearEphemeralTreeCommand removes regular files and symlinks without
-// recursively entering persistent cache mounts. Empty directories are kept so
-// the command never attempts to remove a mount point on minimal images.
-func clearEphemeralTreeCommand(root string, preserveBuildMounts bool) string {
-	root = strings.TrimSpace(root)
-	if root == "" {
-		return "true"
-	}
-	if !preserveBuildMounts {
-		return "find " + root + " -mindepth 1 \\( -type f -o -type l \\) -exec rm -f -- {} +"
-	}
-	return "find " + root + " -mindepth 1 \\( -type d \\( -name .bobocloud -o -name target \\) \\) -prune -o \\( -type f -o -type l \\) -exec rm -f -- {} +"
-}
-
-func containerWorkspaceOwnershipCommand() string {
-	identity := strings.Split(containerUser(), ":")
-	if len(identity) == 2 {
-		if _, uidErr := strconv.ParseUint(identity[0], 10, 32); uidErr == nil {
-			if _, gidErr := strconv.ParseUint(identity[1], 10, 32); gidErr == nil {
-				return "chown " + identity[0] + ":" + identity[1] + " /workspace && chmod 0700 /workspace"
-			}
-		}
-	}
-	return "chmod 0700 /workspace"
 }
 
 // getContainerImage 获取容器对应的镜像
@@ -2494,9 +2483,10 @@ func (dp *Pool) createContainer(ctx context.Context, runtimeID, image string, ex
 			"--init",                  // 用 tini 回收僵尸进程
 			"--memory-swap", memLimit, // 限制 swap（=memory 则无额外 swap）
 		)
-		// Bind-mounted caches are owned by the server service account. Match the
-		// workload UID/GID so dropping DAC_OVERRIDE does not make every compiler
-		// unable to write its dependency or build cache.
+		// Bind-mounted build and dependency caches are owned by the service
+		// account. Once DAC_OVERRIDE is dropped, running the workload as root
+		// can no longer write those 0700 directories. Match the container UID/GID
+		// to the account that owns the mounts instead of widening host permissions.
 		if identity := containerUser(); identity != "" {
 			args = append(args, "--user", identity)
 		}
@@ -2508,6 +2498,10 @@ func (dp *Pool) createContainer(ctx context.Context, runtimeID, image string, ex
 	// 缓存目录由 buildPersistEnv 重定向到 /persist（可写卷），
 	// 这里再为无 /persist 的场景（如热池容器）以及 /tmp /home 提供可写 tmpfs。
 	if dp.hardening && !dp.readOnlyRootfs && containerUser() != "" {
+		// A capability-free root process cannot chown a root-owned image
+		// directory. Mounting the ephemeral workspace with the service identity
+		// gives the non-root workload exactly the requested ownership without
+		// restoring a world-writable mode.
 		args = append(args, "--tmpfs", containerWorkspaceTmpfsSpec(""))
 	}
 	if dp.readOnlyRootfs {
@@ -2599,13 +2593,19 @@ func ensureDockerBindDirectory(path string) error {
 
 // containerWorkspaceBootstrapArguments intentionally chooses / rather than
 // inheriting the container WorkingDir. The workspace can be absent in a fresh
-// image, and the terminal reset path deliberately removes it before recreating
-// a clean snapshot.
+// image. Recycle and terminal reset paths clear its contents while retaining
+// the mount point so UID-owned tmpfs workspaces remain usable.
 func containerWorkspaceBootstrapArguments(containerID string) []string {
 	return containerWorkspaceBootstrapArgumentsFor(containerID, false)
 }
 
 func containerWorkspaceBootstrapArgumentsFor(containerID string, hardened bool) []string {
+	// The workload runs as the service UID after hardening, while a number of
+	// upstream images ship without /workspace (or ship it owned by root). Run
+	// this one-time container-local bootstrap as uid 0 for legacy containers.
+	// Hardened containers mount /workspace with the service UID/GID below; a
+	// capability-free root process cannot traverse that 0700 mount, so let the
+	// owner perform the harmless mkdir/mode check instead.
 	user := "0"
 	command := "mkdir -p /workspace && " + containerWorkspaceOwnershipCommand()
 	if hardened && containerUser() != "" {
@@ -2613,6 +2613,54 @@ func containerWorkspaceBootstrapArgumentsFor(containerID string, hardened bool) 
 		command = "mkdir -p /workspace && chmod 0700 /workspace"
 	}
 	return []string{"exec", "--user", user, "-w", "/", containerID, "sh", "-c", command}
+}
+
+func (dp *Pool) workspaceOwnershipCommand() string {
+	if dp != nil && dp.hardening && containerUser() != "" {
+		// createContainer mounts a UID/GID-owned tmpfs at /workspace for every
+		// hardened container. Restore the restrictive mode after every workload;
+		// the reset runs as that owner, so no CAP_CHOWN/CAP_FOWNER is required.
+		return "chmod 0700 /workspace"
+	}
+	return containerWorkspaceOwnershipCommand()
+}
+
+func (dp *Pool) workspaceExecUser() string {
+	if dp != nil && dp.hardening && containerUser() != "" {
+		return containerUser()
+	}
+	return "0"
+}
+
+func (dp *Pool) workspaceCleanupCommand() string {
+	return dp.workspaceCleanupCommandFor(true)
+}
+
+func (dp *Pool) workspaceCleanupCommandFor(preserveBuildMounts bool) string {
+	// Build-result and Cargo target caches are bind-mounted below /workspace.
+	// A recursive rm would follow those mounts and erase the host cache (and a
+	// failed rmdir could still leave a partially scrubbed tenant workspace).
+	// Remove regular files and symlinks one at a time, pruning those known cache
+	// directories; this never recursively enters a mount and keeps the root
+	// mount point itself intact for both hardened and legacy containers.
+	return "set -eu; " + clearEphemeralTreeCommand("/workspace", preserveBuildMounts) + "; mkdir -p /workspace; " + dp.workspaceOwnershipCommand()
+}
+
+// clearEphemeralTreeCommand removes files/symlinks below root without ever
+// recursively removing a directory. The two persistent compiler mounts used
+// by personal build leases live at /workspace/.bobocloud and */target; both
+// are pruned from the walk. Empty directories are intentionally retained:
+// they contain no tenant data and retaining them avoids rmdir crossing a
+// mount point on minimal images that do not ship mountpoint(8).
+func clearEphemeralTreeCommand(root string, preserveBuildMounts bool) string {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return "true"
+	}
+	if !preserveBuildMounts {
+		return "find " + root + " -mindepth 1 \\( -type f -o -type l \\) -exec rm -f -- {} +"
+	}
+	return "find " + root + " -mindepth 1 \\( -type d \\( -name .bobocloud -o -name target \\) \\) -prune -o \\( -type f -o -type l \\) -exec rm -f -- {} +"
 }
 
 func containerWorkspaceTmpfsSpec(extra string) string {
@@ -2634,6 +2682,25 @@ func containerTmpfsSpec(path, mode, extra string) string {
 		options = append(options, extra)
 	}
 	return path + ":" + strings.Join(options, ",")
+}
+
+// containerWorkspaceOwnershipCommand is assembled only from validated numeric
+// UID/GID components. Keeping the identity numeric prevents a runtime/image
+// supplied name from becoming shell input, and mode 0700 keeps one workload
+// from traversing another workload's pooled workspace.
+func containerWorkspaceOwnershipCommand() string {
+	identity := strings.Split(containerUser(), ":")
+	if len(identity) == 2 {
+		if _, uidErr := strconv.ParseUint(identity[0], 10, 32); uidErr == nil {
+			if _, gidErr := strconv.ParseUint(identity[1], 10, 32); gidErr == nil {
+				return "chown " + identity[0] + ":" + identity[1] + " /workspace && chmod 0700 /workspace"
+			}
+		}
+	}
+	// Non-Linux Docker daemons do not expose a portable host identity. Keep the
+	// image owner but still fail closed on permissions instead of restoring a
+	// world-writable workspace.
+	return "chmod 0700 /workspace"
 }
 
 func (dp *Pool) containerRunningState(containerID string) (bool, error) {

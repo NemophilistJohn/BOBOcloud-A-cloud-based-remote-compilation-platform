@@ -3,6 +3,9 @@ package runner
 import (
 	"context"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -120,6 +123,7 @@ type taskPoolFake struct {
 	mu             sync.Mutex
 	events         []string
 	pruneCtxActive bool
+	pruneCommand   string
 	runtimeID      string
 }
 
@@ -155,8 +159,9 @@ func (p *taskPoolFake) Release(string)                { p.add("release") }
 func (p *taskPoolFake) ReleaseForUser(string, string) { p.add("release") }
 func (p *taskPoolFake) DiscardForUser(string, string) { p.add("discard") }
 func (p *taskPoolFake) Exec(ctx context.Context, _ string, cmd []string, _ string) (string, string, int, error) {
-	if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" && strings.Contains(cmd[2], "find . -type d") {
+	if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" && strings.HasPrefix(cmd[2], "find .") {
 		p.pruneCtxActive = ctx.Err() == nil
+		p.pruneCommand = cmd[2]
 		p.add("prune")
 	} else {
 		p.add("mkdir")
@@ -223,6 +228,50 @@ func TestRunTaskSuccessPrunesBeforeArtifactCopyAndReleases(t *testing.T) {
 	}
 	if !pool.pruneCtxActive {
 		t.Fatal("task cleanup did not retain the shared execution budget")
+	}
+	if !strings.Contains(pool.pruneCommand, "-name .bobocloud") || !strings.Contains(pool.pruneCommand, "-name target") {
+		t.Fatalf("task cleanup did not prune persistent mount points before disposable trees: %q", pool.pruneCommand)
+	}
+}
+
+func TestTaskArtifactPrunePreservesPersistentMountTrees(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX shell is unavailable")
+	}
+	root := t.TempDir()
+	persistent := []string{filepath.Join(root, ".bobocloud", "result.bin"), filepath.Join(root, "target", "debug", "app")}
+	for _, path := range persistent {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("persistent"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{".git", "node_modules", "__pycache__"} {
+		path := filepath.Join(root, name, "remove.me")
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("disposable"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command := exec.Command(shell, "-c", taskArtifactPruneCommand)
+	command.Dir = root
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("run task artifact prune: %v: %s", err, output)
+	}
+	for _, path := range persistent {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("persistent compiler tree was modified at %s: %v", path, err)
+		}
+	}
+	for _, name := range []string{".git", "node_modules", "__pycache__"} {
+		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
+			t.Fatalf("disposable tree %s survived prune: %v", name, err)
+		}
 	}
 }
 

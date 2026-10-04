@@ -981,9 +981,21 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err := writeJSON(map[string]any{"type": "lsp.ready", "sessionId": session.ID, "capabilities": map[string]any{"mode": mode, "remote": true, "methods": lsp.AllowedMethods(mode), "virtualRootUri": lsp.VirtualRootURI, "languageId": strings.ToLower(start.LanguageID), "serverLanguageId": canonicalRuntimeLanguage(start.LanguageID), "dependencyApiIndex": session.DependencyAPIIndexCapability()}, "cache": session.Cache, "dependency": session.DependencyStatus()}); err != nil {
 		return
 	}
+	protocolStarted := time.Now()
+	protocolObserved := false
+	defer func() {
+		if !protocolObserved {
+			h.observeStage("lsp.websocket.protocol", protocolStarted)
+		}
+	}()
 
 	opened := make(map[string]bool)
 	var openedMu sync.RWMutex
+	var initializeMu sync.Mutex
+	initializeID := ""
+	initializeStarted := time.Time{}
+	initializeObserved := false
+	var diagnosticsOnce sync.Once
 	var closing atomic.Bool
 	serverDone := make(chan struct{})
 	closeBridge := func() {
@@ -1036,6 +1048,10 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 				}
 				continue
 			}
+			// Record the first diagnostic only after URI validation and the
+			// standard-mode opened-document gate below. This gives the baseline a
+			// useful server-ready-to-diagnostics phase instead of attributing the
+			// whole WebSocket lifetime to analyzer startup.
 			var configurationProxy *lsp.WorkspaceConfigurationProxy
 			if env.Method == "workspace/configuration" {
 				if lsp.WorkspaceConfigurationOwnedByDependencySettings(payload, dependencySettings) {
@@ -1081,6 +1097,24 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 				openedMu.RUnlock()
 				if !isOpen {
 					continue
+				}
+				diagnosticsOnce.Do(func() {
+					if h.Metrics != nil {
+						h.Metrics.Observe("lsp.protocol.first_diagnostics", time.Since(protocolStarted))
+					}
+				})
+			}
+			if env.Method == "" {
+				initializeMu.Lock()
+				if !initializeObserved && initializeID != "" && string(env.ID) == initializeID && !initializeStarted.IsZero() {
+					initializeObserved = true
+					started := initializeStarted
+					initializeMu.Unlock()
+					if h.Metrics != nil {
+						h.Metrics.Observe("lsp.protocol.initialize", time.Since(started))
+					}
+				} else {
+					initializeMu.Unlock()
 				}
 			}
 			if configurationProxy != nil {
@@ -1357,7 +1391,32 @@ clientLoop:
 			}
 			continue
 		}
+		method, uri := rpcMethodAndURI(payload)
+		openedAdded := method == "textDocument/didOpen" && uri != ""
+		if openedAdded {
+			// Publish the open state before writing to analyzer stdin. An analyzer
+			// may emit diagnostics synchronously while processing didOpen; updating
+			// afterwards loses that first notification in standard mode.
+			openedMu.Lock()
+			opened[uri] = true
+			openedMu.Unlock()
+		} else if method == "textDocument/didClose" && uri != "" {
+			openedMu.Lock()
+			delete(opened, uri)
+			openedMu.Unlock()
+		}
+		if isInitialize {
+			initializeMu.Lock()
+			initializeID = string(env.ID)
+			initializeStarted = time.Now()
+			initializeMu.Unlock()
+		}
 		if err := session.Send(rewritten); err != nil {
+			if openedAdded {
+				openedMu.Lock()
+				delete(opened, uri)
+				openedMu.Unlock()
+			}
 			break
 		}
 		if env.Method == "initialized" {
@@ -1378,18 +1437,13 @@ clientLoop:
 			_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 			continue
 		}
-		method, uri := rpcMethodAndURI(payload)
-		if method == "textDocument/didOpen" && uri != "" {
-			openedMu.Lock()
-			opened[uri] = true
-			openedMu.Unlock()
-		} else if method == "textDocument/didClose" && uri != "" {
-			openedMu.Lock()
-			delete(opened, uri)
-			openedMu.Unlock()
-		}
 	}
 	closing.Store(true)
+	if h.Metrics != nil {
+		h.Metrics.ObserveSince("lsp.websocket.protocol", protocolStarted)
+		protocolObserved = true
+	}
+	teardownStarted := time.Now()
 	select {
 	case <-session.Done():
 	case <-time.After(time.Second):
@@ -1403,6 +1457,7 @@ clientLoop:
 	case <-serverDone:
 	case <-time.After(time.Second):
 	}
+	h.observeStage("lsp.websocket.teardown", teardownStarted)
 	slog.Info("LSP session detached", "session_id", session.ID, "user_id", user.ID)
 }
 

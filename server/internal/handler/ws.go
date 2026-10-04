@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -514,6 +515,25 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		return
 	}
 
+	// A reusable build result is a read-only decision. Probe it after central
+	// resource admission but before the Docker pool admission in DockerRunner;
+	// a known hit can therefore avoid waiting behind a compilation-capable
+	// container path while all authoritative lease/fingerprint checks remain
+	// below. A concurrent source/cache change degrades to a normal build.
+	var buildPreflight *buildResultPreflight
+	if useDocker && buildResultEligible(h.Config, sess, plugin, useDocker) {
+		var preflightErr error
+		buildPreflight, preflightErr = h.preflightBuildResult(ctx, sess, *rt, plugin, buildTarget, entryRel, projectPath)
+		if h.Metrics != nil {
+			h.Metrics.Cache("build.result.preflight", buildPreflight != nil && buildPreflight.hit)
+		}
+		if preflightErr != nil {
+			// Preflight is advisory. Preserve the normal post-admission error
+			// path and avoid returning a filesystem detail to the client.
+			slog.Debug("Build result preflight unavailable", "error", preflightErr)
+		}
+	}
+
 	// Team builds use an exclusive branch/runtime cache namespace. This allows
 	// every member to reuse previous dependency and incremental compiler output
 	// without concurrent writers corrupting a Cargo/Go target directory.
@@ -675,9 +695,14 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		return
 	}
 
+	copyLimits := workspaceCopyLimits(h.Config)
+	var beforeSnapshot map[string]model.FileSig
+	var projectFiles []string
+	// A preflight hit is only an optimization hint for planning. The source is
+	// still copied into the isolated workspace: run steps may read project data,
+	// and the post-copy fingerprint remains the authoritative race-safe check.
 	copyStarted := time.Now()
 	output.WriteStatus("setup", fmt.Sprintf("Preparing isolated workspace for %s", entryRel))
-	copyLimits := workspaceCopyLimits(h.Config)
 	copyErr := files.CopyProjectToTemp(ctx, projectPath, tempDir, copyLimits)
 	if h.Metrics != nil {
 		h.Metrics.Observe("workspace.copy.host", time.Since(copyStarted))
@@ -705,24 +730,29 @@ func (h *WSHandler) runCodeTask(ctx context.Context, runID string, sess *model.R
 		fail("Project file inventory exceeds the server safety limit")
 		return
 	}
-	beforeSnapshot := projectSnapshot.Files
+	beforeSnapshot = projectSnapshot.Files
 
 	tempFilePath := filepath.Join(tempDir, filepath.FromSlash(entryRel))
-	if _, err := os.Stat(tempFilePath); os.IsNotExist(err) {
+	if _, statErr := os.Stat(tempFilePath); os.IsNotExist(statErr) {
 		fail(fmt.Sprintf("File missing in isolated workspace: %s", entryRel))
 		return
 	}
 
 	// ── 生成执行计划（Docker 与本地共用同一份 Plan）──
-	projectFiles := make([]string, 0, len(beforeSnapshot))
+	projectFiles = make([]string, 0, len(beforeSnapshot))
 	for rel := range beforeSnapshot {
 		projectFiles = append(projectFiles, rel)
 	}
-
+	sort.Strings(projectFiles)
 	projectRoot := tempDir
 	if useDocker {
 		projectRoot = "/workspace"
 	}
+	// Always build the authoritative plan from the copied tree. The read-only
+	// preflight plan is used only to probe the result marker; source contents
+	// can change while a request is waiting for admission even when the file
+	// names remain identical (for example a C main-selection or Java package
+	// change).
 	plan, err := plugin.Plan(&runner.PlanRequest{
 		EntryRelPath: entryRel,
 		ProjectFiles: projectFiles,
