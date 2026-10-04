@@ -7,9 +7,50 @@ const test = require('node:test');
 
 const {
   UNTRUSTED_WORKBENCH_IPC_CODE,
+  IPC_CHANNEL_NOT_ALLOWED_CODE,
   assertTrustedWorkbenchFrame,
-  createTrustedIpcMain
+  createTrustedIpcMain,
+  createTrustedRendererSender
 } = require('../main/trusted-ipc');
+
+test('renderer events enforce the preload policy and remain bound to their original window', () => {
+  const delivered = [];
+  const first = { webContents: { send: (...args) => delivered.push(args) } };
+  const second = { webContents: { send: (...args) => delivered.push(args) } };
+  let current = first;
+  let reads = 0;
+  const sender = createTrustedRendererSender({
+    getWindow: () => { reads += 1; return current; },
+    allowedChannels: { invoke: [], send: [], event: ['run-result'] }
+  });
+  assert.equal(sender.send('run-result', { code: 0 }), true);
+  assert.equal(reads, 1);
+  assert.throws(() => sender.send('undeclared-event', {}), { code: IPC_CHANNEL_NOT_ALLOWED_CODE });
+  current = second;
+  assert.equal(sender.sendToWindow(first, 'run-result', { code: 1 }), false);
+  assert.equal(sender.sendToWindow(second, 'run-result', { code: 2 }), true);
+  second.isDestroyed = () => true;
+  assert.equal(sender.send('run-result', { code: 3 }), false);
+  assert.deepEqual(delivered, [['run-result', { code: 0 }], ['run-result', { code: 2 }]]);
+});
+
+test('headless renderer sender safely drops optional notifications', () => {
+  const sender = createTrustedRendererSender({});
+  assert.equal(sender.send('run-result', {}), false);
+  assert.equal(sender.sendToWindow({}, 'run-result', {}), false);
+});
+
+test('trusted IPC rejects channels registered in the wrong preload direction', () => {
+  const registrations = [];
+  const ipc = createTrustedIpcMain({
+    ipcMain: { handle: (channel) => registrations.push(channel), on: (channel) => registrations.push(channel) },
+    getWindow: () => null,
+    allowedChannels: { invoke: ['workspace-read'], send: ['auth-state-update'], event: [] }
+  });
+  assert.throws(() => ipc.handle('auth-state-update', () => {}), { code: IPC_CHANNEL_NOT_ALLOWED_CODE });
+  assert.throws(() => ipc.on('workspace-read', () => {}), { code: IPC_CHANNEL_NOT_ALLOWED_CODE });
+  assert.deepEqual(registrations, []);
+});
 
 function harness() {
   const handlers = new Map();
