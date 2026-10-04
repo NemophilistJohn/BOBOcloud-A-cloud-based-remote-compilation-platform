@@ -251,7 +251,7 @@ test('dependency API alias completions use only prior top-level imports from the
   assert.equal(dependencyApiIndexCompletions(index, Object.assign({}, snapshot, { model: futureModel, lineNumber: 1 })), null);
 });
 
-test('truncated dependency pages remain memory-only and preserve the durable schema', () => {
+test('truncated dependency pages preserve the explicit coverage flag in the durable schema', () => {
   const build = {
     roots: Object.create(null),
     modules: Object.create(null),
@@ -276,7 +276,7 @@ test('truncated dependency pages remain memory-only and preserve the durable sch
   }), true);
   assert.equal(build.truncated, true);
   const summary = dependencyApiIndexResult(build);
-  assert.equal(summary.truncated, undefined);
+  assert.equal(summary.truncated, true);
   assert.equal(summary.roots.some((root) => root.name === 'numpy'), true);
   assert.deepEqual(sanitizeDependencyIndex(summary, {
     mode: 'active', sizeMiB: 30, dependencyIndexEnabled: true

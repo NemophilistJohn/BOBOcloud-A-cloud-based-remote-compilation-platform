@@ -53,7 +53,8 @@ test('configured LSP address, strategy settings and status bar work in all built
         completionDelayMs: 900,
         dependencyIndexRequests: 0,
         dependencyRevision: '',
-        ignoreDependencyIndex: false
+        ignoreDependencyIndex: false,
+        indexTruncated: false
       };
       globalThis.WebSocket = class TestWebSocket {
         constructor(url) {
@@ -150,7 +151,8 @@ test('configured LSP address, strategy settings and status bar work in all built
                     { name: 'ndarray', kind: 'class' }
                   ]
                 }],
-                complete: true
+                complete: true,
+                truncated: globalThis.__boboLspProbe.indexTruncated
               }
             });
           } else if (message.method === 'initialize') {
@@ -595,10 +597,11 @@ test('configured LSP address, strategy settings and status bar work in all built
     })).toBe(true);
     await page.locator('.lsp-client-cache-mode-option').filter({ has: page.locator('input[value="active"]') }).click();
     await expect(page.locator('#lsp-client-cache-dependency-index-toggle')).toBeEnabled();
+    await app.evaluate(() => { globalThis.__boboLspProbe.indexTruncated = true; });
     await page.locator('#lsp-client-cache-dependency-index-toggle').click();
     await expect.poll(async () => (await app.evaluate(() => globalThis.__boboLspProbe.dependencyIndexRequests))).toBeGreaterThan(0);
     await expect(page.locator('#lsp-client-cache-dependency-index-toggle')).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.locator('#lsp-client-cache-dependency-index-state')).toHaveText('Library API cache is enabled');
+    await expect(page.locator('#lsp-client-cache-dependency-index-state')).toHaveText('Library API cache is enabled (partial coverage)');
     await page.locator('#settings-close-lsp').click();
     await app.evaluate(() => { globalThis.__boboLspProbe.completionDelayMs = 1200; });
     await page.evaluate(() => {
@@ -681,6 +684,7 @@ test('configured LSP address, strategy settings and status bar work in all built
     });
     await expect(page.locator('.suggest-widget.visible')).toContainText('array', { timeout: 700 });
     expect(await app.evaluate(() => globalThis.__boboLspProbe.dependencyIndexRequests)).toBe(indexesBeforeReconnect);
+    await expect(page.locator('#lsp-client-cache-dependency-index-state')).toHaveText('Library API cache is enabled (partial coverage)');
     await page.keyboard.press('Escape');
 
     // A changed dependency revision must never fall back to the prior tree,

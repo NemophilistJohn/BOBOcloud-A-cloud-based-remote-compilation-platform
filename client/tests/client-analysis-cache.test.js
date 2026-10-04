@@ -309,6 +309,8 @@ test('a quota change bypasses the periodic cleanup throttle', async (t) => {
 test('sanitizes a bounded static dependency API tree and rejects source-like data', () => {
   const active = { mode: 'active', sizeMiB: MIN_DEPENDENCY_INDEX_SIZE_MIB, dependencyIndexEnabled: true };
   assert.deepEqual(sanitizeDependencyIndex(dependencyIndex(), active), dependencyIndex());
+  assert.deepEqual(sanitizeDependencyIndex({ ...dependencyIndex(), truncated: true }, active), { ...dependencyIndex(), truncated: true });
+  assert.equal(sanitizeDependencyIndex({ ...dependencyIndex(), truncated: 'false' }, active), null);
   assert.equal(sanitizeDependencyIndex(dependencyIndex(), { mode: 'lazy', sizeMiB: 1024, dependencyIndexEnabled: true }), null);
   assert.equal(sanitizeDependencyIndex(dependencyIndex(), { mode: 'active', sizeMiB: MIN_DEPENDENCY_INDEX_SIZE_MIB - 1, dependencyIndexEnabled: true }), null);
   assert.equal(sanitizeDependencyIndex(dependencyIndex(), { mode: 'active', sizeMiB: MIN_DEPENDENCY_INDEX_SIZE_MIB }), null);
@@ -337,6 +339,8 @@ test('dependency indexes require active mode and a 30 MiB capacity', async (t) =
   const stored = await cache.putDependencyIndex(scope, 'api:numpy', dependencyIndex(), { mode: 'active', sizeMiB: 30, dependencyIndexEnabled: true });
   assert.equal(stored.stored, true);
   assert.deepEqual(await cache.getDependencyIndex(scope, 'api:numpy', { mode: 'active', sizeMiB: 30, dependencyIndexEnabled: true }), dependencyIndex());
+  assert.equal((await cache.putDependencyIndex(scope, 'api:numpy', { ...dependencyIndex(), truncated: true }, { mode: 'active', sizeMiB: 30, dependencyIndexEnabled: true })).stored, true);
+  assert.deepEqual(await cache.getDependencyIndex(scope, 'api:numpy', { mode: 'active', sizeMiB: 30, dependencyIndexEnabled: true }), { ...dependencyIndex(), truncated: true });
   const stats = await cache.stats(scope, { mode: 'active', sizeMiB: 30, dependencyIndexEnabled: true });
   assert.equal(stats.entryCount, 1);
   assert.equal(stats.dependencyIndexEntries, 1);

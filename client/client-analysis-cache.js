@@ -413,11 +413,13 @@ function sanitizeDependencyIndexNode(rawNode, counters, depth, isRoot) {
 
 function sanitizeDependencyIndex(rawValue, policy) {
   const indexPolicy = createDependencyIndexPolicy(policy);
-  if (!indexPolicy.enabled || !isPlainRecord(rawValue) || !rejectUnexpectedKeys(rawValue, ['schema', 'roots']) ||
+  if (!indexPolicy.enabled || !isPlainRecord(rawValue) || !rejectUnexpectedKeys(rawValue, ['schema', 'roots', 'truncated']) ||
+      (rawValue.truncated !== undefined && typeof rawValue.truncated !== 'boolean') ||
       rawValue.schema !== DEPENDENCY_INDEX_SCHEMA || !Array.isArray(rawValue.roots) ||
       !rawValue.roots.length || rawValue.roots.length > MAX_DEPENDENCY_INDEX_ROOTS) return null;
   const counters = { modules: 0, members: 0 };
   const value = { schema: DEPENDENCY_INDEX_SCHEMA, roots: [] };
+  if (rawValue.truncated === true) value.truncated = true;
   for (let index = 0; index < rawValue.roots.length; index += 1) {
     const root = sanitizeDependencyIndexNode(rawValue.roots[index], counters, 1, true);
     if (!root) return null;

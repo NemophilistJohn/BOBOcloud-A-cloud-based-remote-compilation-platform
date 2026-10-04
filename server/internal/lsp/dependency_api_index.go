@@ -21,7 +21,9 @@ const (
 	// source path or analyzer-specific payload.
 	DependencyAPIIndexSchema = "dependency-api-index-v1"
 
-	dependencyAPIIndexFile = ".dependency-api-index-v1.json"
+	// Bump the private cache artifact after fixing exhausted scan finalization;
+	// old empty/truncated artifacts must not suppress a corrected rebuild.
+	dependencyAPIIndexFile = ".dependency-api-index-v2.json"
 	// Keep the complete, static payload below the client-side dependency-index
 	// transfer/cache envelope. The page minimum below guarantees <=128 pages.
 	dependencyAPIIndexMaxBytes                        = 5 << 20
@@ -43,6 +45,7 @@ const (
 	dependencyAPIIndexMaxSourceBytes            int64 = 256 << 10
 	dependencyAPIIndexMaxDepth                        = 8
 	dependencyAPIIndexScanBudget                      = 1500 * time.Millisecond
+	dependencyAPIIndexFinalizeBudget                  = 250 * time.Millisecond
 
 	// Every control response, including its wrapper, stays below this cap.
 	DependencyAPIIndexPageDefaultBytes = DependencyAPIIndexPageMaxBytes
@@ -689,6 +692,27 @@ func (b *dependencyAPIIndexBuild) scanPythonSitePackages(directory *dependencyAP
 		return
 	}
 	files := pythonSourceFiles(entries)
+	// Seed public package roots before descending into any large package. A
+	// bounded scan can still offer every discovered top-level import and its
+	// direct exports when deep modules exhaust the scan budget.
+	for _, entry := range entries {
+		if b.exhausted() {
+			b.truncated = true
+			return
+		}
+		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || !validPythonIdentifier(entry.Name()) || ignoredPythonTopLevelDirectory(entry.Name()) {
+			continue
+		}
+		child, openErr := directory.OpenChild(entry.Name())
+		if openErr != nil {
+			b.truncated = true
+			continue
+		}
+		if _, hasSource := readPythonModuleSource(child, "__init__"); hasSource {
+			b.addPythonModule(child, entry.Name(), "package", "__init__")
+		}
+		_ = child.Close()
+	}
 	for _, file := range files {
 		if b.exhausted() {
 			b.truncated = true
@@ -1322,6 +1346,10 @@ func pythonQuotedNames(value string) []string {
 }
 
 func (b *dependencyAPIIndexBuild) finalizePythonModules() ([]DependencyAPIIndexEntry, []string, bool) {
+	// Scanning is expected to stop at its deadline. Finalization needs its own
+	// bounded phase or every previously collected module is silently discarded.
+	// Keep all existing entry/symbol/resolve-step limits; never restart scanning.
+	b.deadline = time.Now().Add(dependencyAPIIndexFinalizeBudget)
 	keys := make([]string, 0, len(b.modules))
 	for module := range b.modules {
 		keys = append(keys, module)

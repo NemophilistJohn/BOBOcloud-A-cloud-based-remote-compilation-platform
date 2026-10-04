@@ -1693,10 +1693,9 @@
     var roots = Object.keys(build.roots).sort().map(function(root) {
       return dependencyApiIndexSerializableNode(build.roots[root]);
     });
-    // The persistent cache has a deliberately strict, path-safe schema. A
-    // partial page is tracked on the build and never serialized as a complete
-    // durable summary; callers can still use its bounded in-memory hints.
-    return roots.length ? { schema: dependencyApiIndexSchema, roots: roots } : null;
+    var value = { schema: dependencyApiIndexSchema, roots: roots };
+    if (build.truncated) value.truncated = true;
+    return roots.length ? value : null;
   }
 
   function dependencyApiIndexFindModule(index, path) {
@@ -1879,11 +1878,8 @@
     if (!value || !dependencyApiIndexCurrentScope(build.scopeId, build.key) || !clientCacheDependencyIndexEnabled()) return false;
     if (!dependencyApiIndexCache.prime(build.scopeId, build.key, value)) return false;
     verifiedDependencyIndexScope = build.scope;
-    // A truncated response remains useful for this live session, but must not
-    // masquerade as a complete cross-session durable API tree.
-    if (!build.truncated) {
-      try { Promise.resolve(global.api.lspClientCacheDependencyIndexPut(build.scope, build.key, value)).catch(function() {}); } catch (_) {}
-    }
+    // Persist partial library names with explicit coverage and exact revision.
+    try { Promise.resolve(global.api.lspClientCacheDependencyIndexPut(build.scope, build.key, value)).catch(function() {}); } catch (_) {}
     dependencyApiIndexUi = { state: 'enabled', error: '' };
     renderClientCacheUi();
     var model = currentModel();
@@ -2733,11 +2729,13 @@
     toggle.setAttribute('aria-pressed', configured ? 'true' : 'false');
     toggle.textContent = configured ? t('Disable library API cache') : t('Enable library API cache');
     var stateValue = enabled ? (dependencyApiIndexUi.state || 'enabled') : (supported ? 'disabled' : 'unavailable');
+    var indexScope = enabled && dependencyApiIndexScope(currentModel());
+    var indexValue = indexScope && dependencyApiIndexCache.peekView(clientCompletionCacheScopeId(indexScope), dependencyApiIndexKey(indexScope));
     state.dataset.state = stateValue === 'loading' ? 'loading' : (stateValue === 'error' ? 'error' : (enabled ? 'enabled' : 'disabled'));
     state.textContent = !eligible
       ? t('Library API cache is disabled')
       : (!enabled && !supported ? t('Library API cache is unavailable for the current analysis.') : (enabled
-      ? (status.state !== 'ready' ? t('Using verified library API cache while reconnecting') : (stateValue === 'loading' ? t('Loading local cache...') : t('Library API cache is enabled')))
+      ? (status.state !== 'ready' ? t('Using verified library API cache while reconnecting') : (stateValue === 'loading' ? t('Loading local cache...') : (indexValue && indexValue.truncated ? t('Library API cache is enabled (partial coverage)') : t('Library API cache is enabled'))))
       : t('Library API cache is disabled')));
     hint.textContent = mode !== 'active'
       ? t('Library API cache is available only with active cache.')

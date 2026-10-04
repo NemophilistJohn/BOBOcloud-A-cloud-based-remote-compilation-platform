@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeDependencyAPIIndexTestFile(t *testing.T, path, contents string) {
@@ -67,6 +68,7 @@ __all__ = ["visible", "Vector"]
 `)
 	writeDependencyAPIIndexTestFile(t, filepath.Join(packages, "requests.py"), "VERSION = '1'\n")
 	writeDependencyAPIIndexTestFile(t, filepath.Join(packages, "bad-name.py"), "x = 1\n")
+	writeDependencyAPIIndexTestFile(t, filepath.Join(packages, "bin", "helper"), "not a Python module\n")
 
 	index, err := buildPythonDependencyAPIIndex("python:3.10", testDependencyAPIIndexView(packages, "revision-one"))
 	if err != nil {
@@ -93,8 +95,35 @@ __all__ = ["visible", "Vector"]
 	if _, found := indexEntryByModule(index, "bad-name"); found {
 		t.Fatalf("invalid Python module reached index: %+v", index.Entries)
 	}
+	if _, found := indexEntryByModule(index, "bin"); found {
+		t.Fatal("non-Python auxiliary directory reached the seeded package roots")
+	}
 	if !validDependencyAPIIndex(index, "python", "python:3.10", "revision-one") {
 		t.Fatalf("built index failed validation: %+v", index)
+	}
+}
+
+func TestDependencyAPIIndexPreservesCollectedModulesAfterScanDeadline(t *testing.T) {
+	build := newDependencyAPIIndexBuild()
+	build.modules["numpy"] = &pythonIndexModule{
+		module: "numpy", kind: "package", symbols: map[string]string{"array": "function"},
+	}
+	build.deadline = time.Now().Add(-time.Second)
+	build.truncated = true
+	entries, roots, truncated := build.finalizePythonModules()
+	if !truncated || len(roots) != 1 || roots[0] != "numpy" || len(entries) != 1 ||
+		len(entries[0].Symbols) != 1 || entries[0].Symbols[0].Name != "array" {
+		t.Fatalf("scan deadline discarded collected API hints: roots=%v entries=%+v truncated=%v", roots, entries, truncated)
+	}
+}
+
+func TestDependencyAPIIndexFinalizationKeepsResolveStepBound(t *testing.T) {
+	build := newDependencyAPIIndexBuild()
+	build.modules["numpy"] = &pythonIndexModule{module: "numpy", kind: "package", symbols: map[string]string{"array": "function"}}
+	build.resolveSteps = dependencyAPIIndexMaxResolveSteps
+	entries, _, truncated := build.finalizePythonModules()
+	if !truncated || len(entries) != 0 || build.resolveSteps != dependencyAPIIndexMaxResolveSteps {
+		t.Fatalf("finalization bypassed its work limit: entries=%v steps=%d truncated=%v", entries, build.resolveSteps, truncated)
 	}
 }
 
