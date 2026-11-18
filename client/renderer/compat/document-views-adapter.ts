@@ -19,6 +19,7 @@ export const DOCUMENT_VIEWS_SERVICE_ID = 'workbench.documentViews';
 
 interface LegacyBobo {
   state?: DocumentViewState & { selectedRuntime?: string; setupCommands?: string[] };
+  runtime?: { autoSelectForLanguage?(language: string): { runtimeId?: string } };
   runner?: { ensureWorkspaceSyncedForRun(): Promise<boolean> };
   i18n?: DocumentViewI18n;
   views?: DocumentViewViewsPort;
@@ -86,7 +87,15 @@ const documentViews = createDocumentViewService({
   },
   onDirty: (path, dirty) => BOBO.workspace?.documentViewDirty?.(path, dirty),
   onSave: (path) => BOBO.workspace?.documentViewSaved?.(path),
-  kernelOptions: () => ({ runtimeId: BOBO.state?.selectedRuntime || '', setupCommands: BOBO.state?.setupCommands?.slice() || [] }),
+  kernelOptions: () => {
+    // Notebook cells are Python by contract. Reuse the workbench selector so
+    // the runtime button and Environment Center remain in the same context.
+    const selection = BOBO.runtime?.autoSelectForLanguage?.('python');
+    return {
+      runtimeId: selection?.runtimeId || BOBO.state?.selectedRuntime || '',
+      setupCommands: BOBO.state?.setupCommands?.slice() || []
+    };
+  },
   syncKernelWorkspace: async () => await BOBO.runner?.ensureWorkspaceSyncedForRun() === true,
   navigation: rendererPlatform.services.require(SOURCE_CONTROL_VIEW_SERVICE_ID).documentNavigation,
   contributions: Object.freeze({

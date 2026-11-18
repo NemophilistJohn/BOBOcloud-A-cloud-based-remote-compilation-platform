@@ -40,3 +40,13 @@ test('document views use one typed adapter while coupled workbench callers keep 
   assert.doesNotMatch(appSource, /from ['"][^'"]*document-views/);
   assert.doesNotMatch(workspaceSource, /from ['"][^'"]*document-views/);
 });
+
+test('Notebook execution follows the Python runtime selector', () => {
+  const adapterSource = fs.readFileSync(
+    path.join(ROOT, 'renderer', 'compat', 'document-views-adapter.ts'),
+    'utf8'
+  );
+  assert.match(adapterSource, /autoSelectForLanguage\?\.\('python'\)/);
+  assert.match(adapterSource, /runtimeId:\s*selection\?\.runtimeId\s*\|\|\s*BOBO\.state\?\.selectedRuntime/);
+  assert.match(workspaceSource, /else if \(\/\\\.ipynb\$\/i\.test\(tab\.name \|\| ''\)\) BOBO\.runtime\.autoSelectForLanguage\('python'\)/);
+});
