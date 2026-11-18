@@ -1,6 +1,6 @@
 # BOBOCloud Plugin Development Guide
 
-This guide covers BOBOCloud Plugin API through `1.8.0`. BOBOCloud `2.8.1` originally shipped with API `1.6.0`; check `context.apiVersion` for features added in later builds.
+This guide covers BOBOCloud Plugin API through `1.9.0`. BOBOCloud `2.8.1` originally shipped with API `1.6.0`; check `context.apiVersion` for features added in later builds.
 
 Plugins are installed locally. They run in an isolated sandbox and communicate with the workbench through a narrow, permission-gated API. A plugin is never given Node.js, Electron IPC, `window.api`, account credentials, the workspace path, or arbitrary DOM access.
 

@@ -1,4 +1,4 @@
-# BOBOCloud Plugin API 1.8.0
+# BOBOCloud Plugin API 1.9.0
 
 Status: public package and isolated extension-host contract. BOBOCloud desktop `2.8.1` implements API 1.6 while remaining compatible with packages that target an earlier API 1.x range. API 1.6 adds truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism.
 
@@ -264,6 +264,8 @@ interface DocumentViewContext {
 ```
 
 `read()` accepts only a bounded range and returns at most 2 MiB. `readAll()` and `readText()` reject above the caller-supplied bound and never exceed the host's 128 MiB ceiling. The main process revalidates the current workspace and file identity on every chunk. A workspace switch, file replacement, size/mtime change, permission revocation, plugin disable, sender destruction, or tab close invalidates the session. `assets.url()` returns a temporary Blob URL only for a resource declared by that viewer; no package path is exposed.
+
+In API 1.9, a document iframe can call `context.setNavigation({ providerId, activeMode, modes, outlineLabel, rows })` and register `context.onNavigate(handler)` to receive the selected mode or outline item ID. The host renders the buttons and outline in a sidebar registered by the same plugin with `sourceControl.register`. Only the active document can populate the panel or receive selections. Snapshots support up to four modes and 96 outline rows with plain text labels, unique IDs and fixed color tones. Closing or switching the document restores the sidebar's regular provider content.
 
 ## Source-Control Sidebar
 

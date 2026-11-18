@@ -1,5 +1,5 @@
 /**
- * BOBOCloud Plugin API 1.8.0 declarations.
+ * BOBOCloud Plugin API 1.9.0 declarations.
  *
  * Copy or reference this file from a plugin's TypeScript project. The runtime
  * is a sandboxed ES module; Node.js, Electron, DOM, and window APIs are not
@@ -995,6 +995,16 @@ export interface DocumentViewContext {
   onDiagnostics?(handler: (revision: number, items: readonly {
     readonly line: number; readonly character: number; readonly severity: number; readonly message: string;
   }[]) => void): void;
+  /** API 1.9. Populates navigation in a source-control sidebar owned by the same plugin. */
+  setNavigation?(value: {
+    readonly providerId: string;
+    readonly activeMode: string;
+    readonly modes: readonly { readonly id: string; readonly label: string }[];
+    readonly outlineLabel: string;
+    readonly rows: readonly { readonly id: string; readonly label: string; readonly number: number;
+      readonly tone: 'amber' | 'teal' | 'neutral' }[];
+  }): void;
+  onNavigate?(handler: (id: string) => void): void;
 }
 
 export type ActivateDocumentView = (context: DocumentViewContext) => ActivationResult;

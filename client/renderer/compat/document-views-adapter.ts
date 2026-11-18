@@ -13,6 +13,7 @@ import { THEME_SERVICE_ID } from '../../src/theme-manager';
 import { rendererPlatform } from '../core/bootstrap';
 import { ContributionPoint } from '../core/contribution-registry';
 import { DOCUMENT_VIEWS_HOST_SERVICE_ID } from '../core/native-host-adapter';
+import { SOURCE_CONTROL_VIEW_SERVICE_ID } from './source-control-view-adapter';
 
 export const DOCUMENT_VIEWS_SERVICE_ID = 'workbench.documentViews';
 
@@ -84,6 +85,7 @@ const documentViews = createDocumentViewService({
   },
   onDirty: (path, dirty) => BOBO.workspace?.documentViewDirty?.(path, dirty),
   onSave: (path) => BOBO.workspace?.documentViewSaved?.(path),
+  navigation: rendererPlatform.services.require(SOURCE_CONTROL_VIEW_SERVICE_ID).documentNavigation,
   contributions: Object.freeze({
     list: () => rendererPlatform.contributions.listEntries(ContributionPoint.DOCUMENT_VIEWS),
     onDidChange: (listener: (event: DocumentViewContributionChangeEventDto) => void) => (

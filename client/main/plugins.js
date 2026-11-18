@@ -15,7 +15,7 @@ const { capturePluginRpcResult } = require('./plugin-rpc-transport');
 const { compareSemver, isValidSemver, satisfiesVersionRange } = require('../shared/plugin-semver');
 const { createTrustedRendererSender } = require('./trusted-ipc');
 
-const PLUGIN_API_VERSION = '1.8.0';
+const PLUGIN_API_VERSION = '1.9.0';
 const SOURCE_CONTROL_ICONS = new Set(['git-branch', 'notebook']);
 const PACKAGE_SCHEMA_VERSIONS = new Set([1, 2]);
 const STATE_SCHEMA_VERSION = 1;

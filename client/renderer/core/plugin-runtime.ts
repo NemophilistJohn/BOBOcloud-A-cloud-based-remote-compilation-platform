@@ -69,7 +69,7 @@ interface PluginRuntimeRecord<PluginServices extends object> {
 
 const { isValidSemver, satisfiesVersionRange } = pluginSemver as PluginSemverModule;
 
-export const PLUGIN_API_VERSION: PluginApiVersionDto = '1.8.0';
+export const PLUGIN_API_VERSION: PluginApiVersionDto = '1.9.0';
 
 export const PluginPermission = Object.freeze({
   COMMANDS_REGISTER: 'commands.register',

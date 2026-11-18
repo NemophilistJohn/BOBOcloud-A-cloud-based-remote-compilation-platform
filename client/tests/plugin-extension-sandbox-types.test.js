@@ -44,7 +44,7 @@ test('extension sandbox contracts keep transport data untrusted and lifecycle di
     'sandbox.postMessage({',
     "  protocolVersion: 1, type: 'initialize',",
     "  extension: { id: 'acme.typed', version: '1.0.0' },",
-    "  apiVersion: '1.8.0', source: 'export function activate() {}',",
+    "  apiVersion: '1.9.0', source: 'export function activate() {}',",
     "  localization: { locale: 'en', messages: {} }",
     '});',
     '// @ts-expect-error Initialization messages require identity, source, API, and localization DTOs.',

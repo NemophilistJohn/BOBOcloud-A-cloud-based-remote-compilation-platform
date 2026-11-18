@@ -103,6 +103,22 @@ export interface DocumentAnalysisCompletion {
   readonly label: string;
   readonly insertText: string;
 }
+export interface DocumentNavigation {
+  readonly providerId: string;
+  readonly activeMode: string;
+  readonly modes: readonly { readonly id: string; readonly label: string }[];
+  readonly outlineLabel: string;
+  readonly rows: readonly {
+    readonly id: string;
+    readonly label: string;
+    readonly number: number;
+    readonly tone: 'amber' | 'teal' | 'neutral';
+  }[];
+}
+export interface DocumentNavigationPort {
+  show(owner: string, value: DocumentNavigation, select: (id: string) => void, reveal: boolean): boolean;
+  clear(): void;
+}
 export interface DocumentAnalysisPort {
   update(path: string, revision: number, text: string,
     diagnostics: (revision: number, items: readonly DocumentAnalysisDiagnostic[]) => void): void;
@@ -152,6 +168,7 @@ export interface SandboxedDocumentViewOptions {
   readonly write?: (text: string) => Promise<DocumentSaveResultDto>;
   readonly onDirty?: (dirty: boolean) => void;
   readonly analyze?: (request: DocumentAnalysisRequest) => unknown;
+  readonly onNavigation?: (navigation: DocumentNavigation) => void;
 }
 
 export interface SandboxedDocumentView extends Disposable {
@@ -161,6 +178,7 @@ export interface SandboxedDocumentView extends Disposable {
   hide(): void;
   save?(): Promise<boolean>;
   diagnostics?(revision: number, items: readonly DocumentAnalysisDiagnostic[]): void;
+  navigate?(id: string): void;
   updateLocalization(value: DocumentViewLocalizationDto): void;
   updateTheme(value: DocumentViewThemeDto): void;
 }
@@ -174,6 +192,7 @@ export interface DocumentViewInstance {
   readonly sandbox: SandboxedDocumentView;
   disposed: boolean;
   dirty?: boolean;
+  navigation?: DocumentNavigation;
 }
 
 export interface DocumentViewTabLike {
@@ -237,6 +256,7 @@ export interface DocumentViewDependencies {
   readonly analysis?: DocumentAnalysisPort;
   readonly onDirty?: (path: string, dirty: boolean) => void;
   readonly onSave?: (path: string) => void;
+  readonly navigation?: DocumentNavigationPort;
   readonly createSandboxedView?: (
     options: SandboxedDocumentViewOptions
   ) => SandboxedDocumentView;

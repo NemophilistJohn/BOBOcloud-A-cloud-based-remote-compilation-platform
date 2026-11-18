@@ -10,6 +10,7 @@ import type {
   SandboxedDocumentViewOptions,
   VerifiedDocumentViewFileDto
 } from '../../types/document-view';
+import { normalizeDocumentNavigation } from './document-navigation.js';
 
 export const DOCUMENT_VIEW_PROTOCOL_VERSION = 1;
 
@@ -114,6 +115,7 @@ function bootstrapSource(): string {
 
   let saveHandler;
   let diagnosticsHandler;
+  let navigationHandler;
 
   function updateLocalization(value) {
     const messages = Object.create(null);
@@ -224,6 +226,10 @@ function bootstrapSource(): string {
       ...(documentInfo.analyzable ? {
         analyze: (args) => request('analysis', args),
         onDiagnostics: (handler) => { diagnosticsHandler = handler; }
+      } : {}),
+      ...(message.navigation === true ? {
+        setNavigation: (value) => post({ type: 'navigation', value }),
+        onNavigate: (handler) => { navigationHandler = handler; }
       } : {})
       });
       const sourceUrl = URL.createObjectURL(new Blob([message.source], { type: 'text/javascript' }));
@@ -304,6 +310,9 @@ function bootstrapSource(): string {
     if (message.type === 'event' && message.event === 'theme.changed') applyTheme(message.value || {});
     if (message.type === 'event' && message.event === 'diagnostics') {
       if (typeof diagnosticsHandler === 'function') diagnosticsHandler(message.revision, message.items);
+    }
+    if (message.type === 'event' && message.event === 'navigate' && typeof navigationHandler === 'function') {
+      navigationHandler(message.id);
     }
     if (message.type === 'save') {
       Promise.resolve().then(() => typeof saveHandler === 'function' && saveHandler()).then(
@@ -568,6 +577,11 @@ export function createSandboxedDocumentView(
       options.onDirty?.(message.dirty);
       return;
     }
+    if (message.type === 'navigation' && options.onNavigation) {
+      const navigation = normalizeDocumentNavigation(message.value);
+      if (navigation) options.onNavigation(navigation);
+      return;
+    }
     if (message.type === 'saved' && savePending && message.id === savePending.id) {
       savePending.finish(message.ok === true);
       return;
@@ -683,6 +697,7 @@ export function createSandboxedDocumentView(
       source: options.entry.source,
       resources,
       document: documentInfo,
+      navigation: Boolean(options.onNavigation),
       viewer: publicViewer,
       localization: options.localization || { locale: 'en', messages: {} },
       theme: options.theme || {}
@@ -719,6 +734,9 @@ export function createSandboxedDocumentView(
     },
     diagnostics(revision: number, items: readonly DocumentAnalysisDiagnostic[]) {
       postToSandbox({ protocolVersion: DOCUMENT_VIEW_PROTOCOL_VERSION, type: 'event', event: 'diagnostics', revision, items });
+    },
+    navigate(id: string) {
+      postToSandbox({ protocolVersion: DOCUMENT_VIEW_PROTOCOL_VERSION, type: 'event', event: 'navigate', id });
     },
     updateLocalization(value: DocumentViewLocalizationDto) {
       postToSandbox({ protocolVersion: DOCUMENT_VIEW_PROTOCOL_VERSION, type: 'event', event: 'i18n.changed', value });

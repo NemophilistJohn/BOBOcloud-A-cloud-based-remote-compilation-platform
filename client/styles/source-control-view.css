@@ -2,6 +2,34 @@
  * text nodes by src/source-control-view.ts; this stylesheet has no plugin CSS
  * extension point. */
 .source-control-sidebar { background: var(--bg-surface); }
+.source-control-sidebar > [hidden] { display: none !important; }
+.document-navigation { flex: 1; min-height: 0; overflow: auto; padding: 8px; }
+.document-navigation-modes {
+  display: flex; gap: 2px; padding: 2px; position: sticky; top: 0; z-index: 1;
+  border: 1px solid var(--border-default); border-radius: 5px; background: var(--bg-surface);
+}
+.document-navigation-mode, .document-navigation-row {
+  font: inherit; color: var(--text-secondary); background: transparent; cursor: pointer;
+  border: 1px solid transparent; border-radius: 4px; min-width: 0;
+}
+.document-navigation-mode { flex: 1; padding: 5px 4px; overflow-wrap: anywhere; font-size: 12px; }
+.document-navigation-mode[aria-pressed="true"] {
+  color: var(--text-primary); border-color: var(--border-default);
+  background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+}
+.document-navigation-mode:hover, .document-navigation-row:hover {
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+}
+.document-navigation :focus-visible { outline: 1px solid var(--brand); outline-offset: -1px; }
+.document-navigation-title { font-size: 12px; font-weight: 600; margin: 13px 4px 5px; color: var(--text-secondary); }
+.document-navigation-row { display: flex; align-items: center; width: 100%; gap: 7px; padding: 4px; text-align: start; }
+.document-navigation-row::before { content: ''; flex: 0 0 2px; height: 14px; border-radius: 2px; background: var(--border-default); }
+.document-navigation-row[data-tone="amber"]::before { background: #eea66a; }
+.document-navigation-row[data-tone="teal"]::before { background: #68b5a9; }
+[data-theme="light"] .document-navigation-row[data-tone="amber"]::before { background: #a04715; }
+[data-theme="light"] .document-navigation-row[data-tone="teal"]::before { background: #167466; }
+.document-navigation-number { font: 11px var(--font-mono, monospace); font-variant-numeric: tabular-nums; }
+.document-navigation-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-primary); }
 .source-control-header { position: relative; z-index: 3; overflow: visible; }
 .source-control-header-actions { position: relative; z-index: 4; gap: 2px; }
 .source-control-tools { position: relative; display: inline-flex; align-items: center; gap: 2px; }

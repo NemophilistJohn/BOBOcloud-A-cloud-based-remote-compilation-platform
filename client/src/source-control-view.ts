@@ -4,6 +4,7 @@ import {
 } from '../renderer/core/source-control.js';
 import { toDisposable } from '../renderer/core/disposable.js';
 import type { Disposable } from '../types/lifecycle';
+import type { DocumentNavigation, DocumentNavigationPort } from '../types/document-view';
 import type {
   SourceControlActionDto,
   SourceControlButtonActionDto,
@@ -44,6 +45,7 @@ interface SourceControlPanel {
   readonly hide: HTMLButtonElement;
   readonly tools: HTMLDivElement;
   readonly body: HTMLDivElement;
+  readonly navigation: HTMLDivElement;
   readonly collapsed: Record<string, boolean>;
   readonly registration: Disposable;
   activeForm: string;
@@ -81,6 +83,59 @@ export function createSourceControlViewService(
   let initialized = false;
   let readyListenerAttached = false;
   let lifecycleEpoch = 0;
+  let navigationPanel: SourceControlPanel | undefined;
+
+  function clearNavigation(): void {
+    if (!navigationPanel) return;
+    navigationPanel.navigation.replaceChildren();
+    navigationPanel.navigation.hidden = true;
+    navigationPanel.body.hidden = false;
+    navigationPanel = undefined;
+  }
+
+  function showNavigation(owner: string, data: DocumentNavigation, select: (id: string) => void, reveal: boolean): boolean {
+    const panel = panels.get(data.providerId);
+    if (!panel || sourceControls.get(data.providerId)?.owner !== owner) {
+      clearNavigation();
+      return false;
+    }
+    if (panel !== navigationPanel) clearNavigation();
+    const active = hostDocument.activeElement;
+    const focusId = active && panel.navigation.contains(active) ? active.getAttribute('data-navigation-id') : null;
+    const top = panel.navigation.scrollTop;
+    const modes = element('div', 'document-navigation-modes');
+    const nav = element('nav', 'document-navigation-outline');
+    nav.setAttribute('aria-label', data.outlineLabel);
+    const makeButton = (id: string, label: string, className: string): HTMLButtonElement => {
+      const item = button(label, className, label);
+      item.dataset.navigationId = id;
+      item.addEventListener('click', () => { if (navigationPanel === panel) select(id); });
+      return item;
+    };
+    for (const mode of data.modes) {
+      const item = makeButton(mode.id, mode.label, 'document-navigation-mode');
+      item.setAttribute('aria-pressed', String(data.activeMode === mode.id));
+      modes.appendChild(item);
+    }
+    if (data.rows.length) nav.appendChild(element('h2', 'document-navigation-title', data.outlineLabel));
+    for (const row of data.rows) {
+      const item = makeButton(row.id, '', 'document-navigation-row');
+      item.title = row.label;
+      item.dataset.tone = row.tone;
+      item.append(element('span', 'document-navigation-number', String(row.number)),
+        element('span', 'document-navigation-label', row.label));
+      nav.appendChild(item);
+    }
+    panel.navigation.replaceChildren(modes, nav);
+    panel.body.hidden = true;
+    panel.navigation.hidden = false;
+    panel.navigation.scrollTop = top;
+    navigationPanel = panel;
+    if (reveal) workbench.setPrimaryView(panel.view);
+    if (focusId) Array.from(panel.navigation.querySelectorAll('button'))
+      .find((item) => item.dataset.navigationId === focusId)?.focus({ preventScroll: true });
+    return true;
+  }
 
   function t(key: string, values?: Readonly<Record<string, string | number>>): string {
     return i18n.t(key, values);
@@ -738,7 +793,10 @@ export function createSourceControlViewService(
     header.appendChild(heading);
     header.appendChild(headerActions);
     const body = element('div', 'source-control-body sidebar-scroll');
+    const navigation = element('div', 'document-navigation sidebar-scroll');
+    navigation.hidden = true;
     section.appendChild(header);
+    section.appendChild(navigation);
     section.appendChild(body);
     primary.appendChild(buttonNode);
     sidebar.appendChild(section);
@@ -752,6 +810,7 @@ export function createSourceControlViewService(
       hide,
       tools,
       body,
+      navigation,
       activeForm: '',
       renderedForm: '',
       formDraft: null,
@@ -780,6 +839,7 @@ export function createSourceControlViewService(
   function removePanel(id: string): void {
     const panel = panels.get(id);
     if (!panel) return;
+    if (navigationPanel === panel) clearNavigation();
     panels.delete(id);
     panel.disposed = true;
     panel.commandEpoch += 1;
@@ -922,7 +982,8 @@ export function createSourceControlViewService(
     Array.from(panels.keys()).forEach(removePanel);
   }
 
-  const service: SourceControlViewService = { init, dispose, refresh };
+  const documentNavigation: DocumentNavigationPort = Object.freeze({ show: showNavigation, clear: clearNavigation });
+  const service: SourceControlViewService = { init, dispose, refresh, documentNavigation };
   if (isWorkbenchReady()) init();
   else ensureReadyListener();
   return service;

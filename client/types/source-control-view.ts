@@ -1,4 +1,5 @@
 import type { Disposable, Dispose } from './lifecycle';
+import type { DocumentNavigationPort } from './document-view';
 import type {
   SourceControlCommandPayloadDto,
   SourceControlStateStoreContract
@@ -38,4 +39,5 @@ export interface SourceControlViewDependencies {
 export interface SourceControlViewService extends Disposable {
   init(): void;
   refresh(): void;
+  readonly documentNavigation: DocumentNavigationPort;
 }
