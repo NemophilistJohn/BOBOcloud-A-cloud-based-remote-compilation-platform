@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"bobocloud-server/internal/auth"
@@ -72,6 +73,7 @@ type WSHandler struct {
 	Resources       *resourcecontrol.Controller
 	Accepting       func() bool
 	AcquireWork     func(string) (func(), error)
+	notebookContainers atomic.Int32
 }
 
 // observeStage records an optional bounded timing sample for a WebSocket

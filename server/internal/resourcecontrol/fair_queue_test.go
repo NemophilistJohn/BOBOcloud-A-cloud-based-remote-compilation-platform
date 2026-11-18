@@ -450,7 +450,7 @@ func TestBuildUsesDockerMaxContainersAsIndependentCapacity(t *testing.T) {
 	if got := info.Node.Capacity.DockerContainers; got != int64(cfg.DockerMaxContainers) {
 		t.Fatalf("Docker container capacity = %d, want %d", got, cfg.DockerMaxContainers)
 	}
-	for _, workload := range []Workload{WorkloadTask, WorkloadTerminal, WorkloadPackage} {
+	for _, workload := range []Workload{WorkloadTask, WorkloadTerminal, WorkloadPackage, WorkloadNotebook} {
 		if got := info.Profiles[workload].DockerContainers; got != 1 {
 			t.Fatalf("%s Docker container demand = %d, want 1", workload, got)
 		}

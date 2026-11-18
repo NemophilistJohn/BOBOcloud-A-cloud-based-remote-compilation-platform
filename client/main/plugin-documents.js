@@ -98,6 +98,7 @@ function createPluginDocumentBroker(options = {}) {
   function forget(session) {
     if (!session || sessions.get(session.id) !== session) return false;
     sessions.delete(session.id);
+    options.kernels?.close(session.id);
     const owned = sessionsBySender.get(session.senderId);
     if (owned) {
       owned.delete(session.id);
@@ -208,11 +209,13 @@ function createPluginDocumentBroker(options = {}) {
       size: session.size,
       lastModified: new Date(stat.mtimeMs).toISOString(),
       ...(baseline ? { writable: true } : {}),
-      ...(finalViewer.canAnalyze ? { analyzable: true } : {})
+      ...(finalViewer.canAnalyze ? { analyzable: true } : {}),
+      ...(finalViewer.canExecute && options.kernels && path.extname(session.filePath).toLowerCase() === '.ipynb'
+        ? { executable: true } : {})
     });
   }
 
-  async function requireSession(event, payload, requireWrite = false) {
+  async function requireSession(event, payload, requireWrite = false, requireExecute = false) {
     if (disposed) throw documentError('DOCUMENT_VIEW_UNAVAILABLE', 'Document broker has been disposed.');
     if (!isPlainObject(payload)) {
       throw documentError('DOCUMENT_VIEW_INVALID_ARGUMENT', 'Document request must be an object.');
@@ -236,6 +239,9 @@ function createPluginDocumentBroker(options = {}) {
     }
     if (requireWrite && (!viewer.canWrite || !session.baseline || !options.runMutation)) {
       throw documentError('DOCUMENT_VIEW_DENIED', 'Document writing is not permitted.');
+    }
+    if (requireExecute && (!viewer.canExecute || !options.kernels || path.extname(session.filePath).toLowerCase() !== '.ipynb')) {
+      throw documentError('DOCUMENT_VIEW_DENIED', 'Document execution is not permitted.');
     }
     const identity = options.getWorkspaceIdentity();
     if (!identity || identity.workspaceIdentity !== session.workspaceIdentity) {
@@ -300,6 +306,12 @@ function createPluginDocumentBroker(options = {}) {
     } finally {
       session.saving = false;
     }
+  }
+
+  async function execute(event, payload) {
+    const session = await requireSession(event, payload, false, true);
+    if (!isPlainObject(payload.request)) return { ok: false, code: 'invalid_cell' };
+    return options.kernels.control(session, payload.request);
   }
 
   async function read(event, payload) {
@@ -395,12 +407,13 @@ function createPluginDocumentBroker(options = {}) {
   function dispose() {
     if (disposed) return;
     disposed = true;
+    for (const session of sessions.values()) forget(session);
     sessions.clear();
     sessionsBySender.clear();
     activeReadsBySender.clear();
   }
 
-  return Object.freeze({ open, read, save, close, closePlugin, closeSender, dispose });
+  return Object.freeze({ open, read, save, execute, close, closePlugin, closeSender, dispose });
 }
 
 module.exports = {

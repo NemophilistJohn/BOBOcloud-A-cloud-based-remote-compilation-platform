@@ -121,7 +121,9 @@ function createDocumentViewsHost(host: NativeHost): Readonly<DocumentViewHost> {
       host.plugins.documents.read(documentId, offset, length)
     ),
     closeDocument: (documentId: string) => host.plugins.documents.close(documentId),
-    saveDocument: (documentId: string, text: string) => host.plugins.documents.save(documentId, text)
+    saveDocument: (documentId: string, text: string) => host.plugins.documents.save(documentId, text),
+    executeDocument: (documentId: string, request: Parameters<NonNullable<DocumentViewHost['executeDocument']>>[1]) =>
+      host.plugins.documents.execute?.(documentId, request) ?? Promise.resolve({ ok: false as const, code: 'disabled' })
   });
 }
 

@@ -2438,10 +2438,20 @@ func (dp *Pool) doPull(ctx context.Context, pullName, originalName string, outpu
 
 // ---------- 容器生命周期 ----------
 
+type isolatedKernelContextKey struct{}
+
+// WithIsolatedKernel gives a uniquely keyed session the bounded, writable
+// tmpfs layout even when older project runtimes require a writable rootfs.
+func WithIsolatedKernel(ctx context.Context) context.Context {
+	return context.WithValue(ctx, isolatedKernelContextKey{}, true)
+}
+
 func (dp *Pool) createContainer(ctx context.Context, runtimeID, image string, extraVolumes map[string]string, extraEnv map[string]string) (string, error) {
 	if dp.createContainerHook != nil {
 		return dp.createContainerHook(ctx, image, extraVolumes, extraEnv)
 	}
+	isolatedKernel, _ := ctx.Value(isolatedKernelContextKey{}).(bool)
+	readOnlyRootfs := dp.readOnlyRootfs || isolatedKernel
 	policyRuntimeID := strings.TrimSpace(runtimeID)
 	if policyRuntimeID == "" {
 		policyRuntimeID = image
@@ -2497,14 +2507,14 @@ func (dp *Pool) createContainer(ctx context.Context, runtimeID, image string, ex
 	// 只读根文件系统：把可写需求转移到 tmpfs。
 	// 缓存目录由 buildPersistEnv 重定向到 /persist（可写卷），
 	// 这里再为无 /persist 的场景（如热池容器）以及 /tmp /home 提供可写 tmpfs。
-	if dp.hardening && !dp.readOnlyRootfs && containerUser() != "" {
+	if dp.hardening && !readOnlyRootfs && containerUser() != "" {
 		// A capability-free root process cannot chown a root-owned image
 		// directory. Mounting the ephemeral workspace with the service identity
 		// gives the non-root workload exactly the requested ownership without
 		// restoring a world-writable mode.
 		args = append(args, "--tmpfs", containerWorkspaceTmpfsSpec(""))
 	}
-	if dp.readOnlyRootfs {
+	if readOnlyRootfs {
 		args = append(args,
 			"--read-only",
 			"--tmpfs", containerTmpfsSpec("/tmp", "1777", "size=128m"),
@@ -2515,7 +2525,7 @@ func (dp *Pool) createContainer(ctx context.Context, runtimeID, image string, ex
 
 	// 环境变量：只读根文件系统下，为各语言缓存目录提供可写默认值。
 	// 若 buildPersistEnv 已为该 key 设置 /persist 值（extraEnv），则不覆盖。
-	if dp.readOnlyRootfs {
+	if readOnlyRootfs {
 		baseEnv := map[string]string{
 			"HOME":          "/home",
 			"TMPDIR":        "/tmp",

@@ -196,6 +196,7 @@ export function createDocumentViewService(
       const rootBeforeOpen = hostDocument.getElementById('document-view-host');
       if (!rootBeforeOpen) throw new Error('Document view host is unavailable.');
       const documentInfo = await host.openDocument(current.pluginId, current.id, pending.path);
+      let kernelEpoch = 0;
       documentId = documentInfo.documentId;
       current = assertCreationCurrent(pending, registration);
       const root = hostDocument.getElementById('document-view-host');
@@ -234,6 +235,22 @@ export function createDocumentViewService(
           if (saved.ok && !instance?.disposed) dependencies.onSave?.(pending.path);
           return saved;
         } : undefined,
+        execute: documentInfo.executable && host.executeDocument && dependencies.kernelOptions && dependencies.syncKernelWorkspace
+          ? async (request) => {
+            if (!instance || instance.disposed || activeInstance !== instance) return { ok: false, code: 'kernel_closed' };
+            if (request.kind === 'restart') {
+              kernelEpoch += 1;
+              return host.executeDocument!(documentId, request);
+            }
+            const generation = kernelEpoch;
+            const options = dependencies.kernelOptions!();
+            if (!/^python:3\.(9|10|11|12|13)$/.test(options.runtimeId)) return { ok: false, code: 'invalid_runtime' };
+            try {
+              if (!await dependencies.syncKernelWorkspace!()) return { ok: false, code: 'sync_failed' };
+            } catch (_) { return { ok: false, code: 'sync_failed' }; }
+            if (instance.disposed || activeInstance !== instance || generation !== kernelEpoch) return { ok: false, code: 'kernel_closed' };
+            return host.executeDocument!(documentId, { ...request, ...options });
+          } : undefined,
         onDirty: (dirty) => {
           if (!instance || instance.disposed) return;
           instance.dirty = dirty;

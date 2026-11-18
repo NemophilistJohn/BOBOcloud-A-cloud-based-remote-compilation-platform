@@ -46,6 +46,7 @@ func newTestResourceControllerWithMetrics(t *testing.T, slots int64, registry *m
 		resourcecontrol.WorkloadLSP:         unit,
 		resourcecontrol.WorkloadDAP:         unit,
 		resourcecontrol.WorkloadMaintenance: unit,
+		resourcecontrol.WorkloadNotebook: unit,
 	}, registry)
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +63,7 @@ func TestRuntimeResourceAdmissionMatchesCompilerMemoryFloor(t *testing.T) {
 		t.Fatal(err)
 	}
 	profiles := make(resourcecontrol.Profiles)
-	for workload := resourcecontrol.WorkloadRun; workload <= resourcecontrol.WorkloadMaintenance; workload++ {
+	for workload := resourcecontrol.WorkloadRun; workload <= resourcecontrol.WorkloadNotebook; workload++ {
 		profiles[workload] = resourcegovernor.Resources{Slots: 1, MemoryBytes: profileMemory}
 	}
 	controller, err := resourcecontrol.New(governor, profiles, nil)
@@ -97,7 +98,7 @@ func TestRuntimeResourceAdmissionChargesDockerOnlyWhenUsed(t *testing.T) {
 		t.Fatal(err)
 	}
 	profiles := make(resourcecontrol.Profiles)
-	for workload := resourcecontrol.WorkloadRun; workload <= resourcecontrol.WorkloadMaintenance; workload++ {
+	for workload := resourcecontrol.WorkloadRun; workload <= resourcecontrol.WorkloadNotebook; workload++ {
 		profiles[workload] = resourcegovernor.Resources{Slots: 1}
 	}
 	controller, err := resourcecontrol.New(governor, profiles, nil)

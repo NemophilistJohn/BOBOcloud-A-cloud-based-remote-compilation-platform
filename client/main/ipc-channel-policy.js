@@ -77,6 +77,7 @@ const IPC_CHANNEL_POLICY = Object.freeze({
     'plugins:disable',
     'plugins:document-close',
     'plugins:document-save',
+    'plugins:document-execute',
     'plugins:document-open',
     'plugins:document-read',
     'plugins:enable',

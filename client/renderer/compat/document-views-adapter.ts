@@ -18,7 +18,8 @@ import { SOURCE_CONTROL_VIEW_SERVICE_ID } from './source-control-view-adapter';
 export const DOCUMENT_VIEWS_SERVICE_ID = 'workbench.documentViews';
 
 interface LegacyBobo {
-  state?: DocumentViewState;
+  state?: DocumentViewState & { selectedRuntime?: string; setupCommands?: string[] };
+  runner?: { ensureWorkspaceSyncedForRun(): Promise<boolean> };
   i18n?: DocumentViewI18n;
   views?: DocumentViewViewsPort;
   workspace?: DocumentViewWorkspacePort & {
@@ -85,6 +86,8 @@ const documentViews = createDocumentViewService({
   },
   onDirty: (path, dirty) => BOBO.workspace?.documentViewDirty?.(path, dirty),
   onSave: (path) => BOBO.workspace?.documentViewSaved?.(path),
+  kernelOptions: () => ({ runtimeId: BOBO.state?.selectedRuntime || '', setupCommands: BOBO.state?.setupCommands?.slice() || [] }),
+  syncKernelWorkspace: async () => await BOBO.runner?.ensureWorkspaceSyncedForRun() === true,
   navigation: rendererPlatform.services.require(SOURCE_CONTROL_VIEW_SERVICE_ID).documentNavigation,
   contributions: Object.freeze({
     list: () => rendererPlatform.contributions.listEntries(ContributionPoint.DOCUMENT_VIEWS),

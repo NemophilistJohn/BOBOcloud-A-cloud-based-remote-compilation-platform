@@ -104,7 +104,7 @@ func Build(cfg *config.Config, detected hostresource.Capacity, registry *metrics
 			Devices: cloneDevices(profile.Devices),
 		}
 		switch workload {
-		case WorkloadTask, WorkloadTerminal, WorkloadPackage:
+		case WorkloadTask, WorkloadTerminal, WorkloadPackage, WorkloadNotebook:
 			resources.DockerContainers = 1
 		}
 		profiles[workload] = resources
@@ -129,7 +129,7 @@ func Build(cfg *config.Config, detected hostresource.Capacity, registry *metrics
 	if err != nil {
 		return nil, info, fmt.Errorf("configured maintenance slot: %w", err)
 	}
-	worstDocker := maximumResources(profiles[WorkloadRun], profiles[WorkloadTask], profiles[WorkloadTerminal], profiles[WorkloadPackage])
+	worstDocker := maximumResources(profiles[WorkloadRun], profiles[WorkloadTask], profiles[WorkloadTerminal], profiles[WorkloadPackage], profiles[WorkloadNotebook])
 	required, err := multiplyResources(worstDocker, dockerSlots)
 	if err != nil {
 		return nil, info, fmt.Errorf("docker resource capacity: %w", err)

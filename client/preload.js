@@ -211,6 +211,7 @@ contextBridge.exposeInMainWorld('api', {
       open: (pluginId, viewerId, filePath) => ipcRenderer.invoke('plugins:document-open', { pluginId, viewerId, filePath }),
       read: (documentId, offset, length) => ipcRenderer.invoke('plugins:document-read', { documentId, offset, length }),
       save: (documentId, text) => ipcRenderer.invoke('plugins:document-save', { documentId, text }),
+      execute: (documentId, request) => ipcRenderer.invoke('plugins:document-execute', { documentId, request }),
       close: (documentId) => ipcRenderer.invoke('plugins:document-close', { documentId })
     }),
     marketplace: Object.freeze({

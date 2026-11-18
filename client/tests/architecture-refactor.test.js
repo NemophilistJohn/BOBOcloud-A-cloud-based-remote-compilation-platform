@@ -106,6 +106,7 @@ const EXPECTED_IPC = new Map([
   ['plugins:document-read', 'handle'],
   ['plugins:document-close', 'handle'],
   ['plugins:document-save', 'handle'],
+  ['plugins:document-execute', 'handle'],
   ['plugins:marketplace-list', 'handle'],
   ['plugins:marketplace-refresh', 'handle'],
   ['plugins:marketplace-install', 'handle'],

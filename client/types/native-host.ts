@@ -12,6 +12,8 @@ import type {
 import type {
   DocumentCloseResultDto,
   DocumentInfoDto,
+  DocumentKernelHostRequest,
+  DocumentKernelResult,
   DocumentReadResultDto,
   DocumentSaveResultDto,
   DocumentViewLocalizationDto,
@@ -44,6 +46,7 @@ export interface NativeHostPluginDocuments {
   open(pluginId: string, viewerId: string, filePath: string): Promise<DocumentInfoDto>;
   read(documentId: string, offset: number, length: number): Promise<DocumentReadResultDto>;
   save(documentId: string, text: string): Promise<DocumentSaveResultDto>;
+  execute?(documentId: string, request: DocumentKernelHostRequest): Promise<DocumentKernelResult>;
   close(documentId: string): Promise<DocumentCloseResultDto>;
 }
 

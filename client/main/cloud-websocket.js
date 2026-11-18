@@ -36,6 +36,7 @@ function createCloudWebSocketFactory(settings, options = {}) {
   return url => new WebSocket(url, {
     perMessageDeflate: false,
     handshakeTimeout: 10000,
+    ...(options.maxPayload ? { maxPayload: options.maxPayload } : {}),
     // Private TLS is permitted only with an explicit pin, verified before
     // credentials by the owning transport. Unpinned servers retain CA checks.
     rejectUnauthorized: new URL(String(url)).protocol === 'wss:' ? expected.length === 0 : undefined

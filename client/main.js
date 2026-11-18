@@ -20,6 +20,7 @@ const { createTerminalController } = require('./main/terminal');
 const { createSecureTransportGuard } = require('./main/secure-transport');
 const { createNavigationSecurity } = require('./main/navigation-security');
 const { createPluginController } = require('./main/plugins');
+const { createNotebookKernels } = require('./main/notebook-kernels');
 const { createMarketplaceController } = require('./main/marketplace');
 const { createPackageCenterController } = require('./main/package-center');
 const { createLifecycleCoordinator } = require('./main/lifecycle-coordinator');
@@ -40,9 +41,10 @@ const lifecycle = createLifecycleCoordinator({
 });
 const navigationSecurity = createNavigationSecurity({ shell, trustedRendererPath: path.join(__dirname, 'index.html') });
 const lsp = createLspController({ ipcMain, getWindow, settings, sendToRenderer: rendererEvents.send });
-let dap = null, terminal = null, workspaceSettings = null, packageCenter = null, agentBroker = null;
+let dap = null, terminal = null, workspaceSettings = null, packageCenter = null, agentBroker = null, notebookKernels = null;
 const disposeRemoteEditorServices = async (reason) => {
   lsp.dispose();
+  notebookKernels?.closeAll();
   await Promise.allSettled([
     dap ? dap.dispose(reason) : Promise.resolve(),
     terminal ? terminal.dispose(reason) : Promise.resolve()
@@ -85,12 +87,14 @@ agentBroker = createAgentPlatformBroker({ app, settings, getWorkspaceIdentity: w
   emitModelEvent: (payload) => {
     rendererEvents.send('plugins:agent-model-event', payload);
   } });
+notebookKernels = createNotebookKernels({ settings, getWorkspaceIdentity: workspace.getIdentity });
 const plugins = createPluginController({ app, ipcMain, dialog, shell, getWindow, t: languagePacks.t,
   sendToRenderer: rendererEvents.send,
   getWorkspaceIdentity: workspace.getIdentity,
   resolveWorkspaceFile: workspace.resolveWorkspaceFile,
   runWorkspaceMutation: workspace.runMutation,
   notifyWorkspaceFiles: workspace.notifyExternalFileChanges,
+  notebookKernels,
   agentBroker,
   onDidChange: () => { if (menu) menu.rebuild(); }
 });
@@ -103,7 +107,7 @@ const auth = createAuthController({ ipcMain, settings, disposeLsp: disposeRemote
     secureTransport.update(value);
     await rcloneService.reconfigure(value, 'server-settings-changed');
   },
-  onCredentialChanged: () => rcloneService.cancelAll('credential-changed')
+  onCredentialChanged: () => { notebookKernels.closeAll(); return rcloneService.cancelAll('credential-changed'); }
 });
 menu = createMenuController({ Menu, dialog, getWindow, sendToRenderer: rendererEvents.send, languagePacks, getAuthState: auth.getState,
   pickAndOpenWorkspace: workspace.pickAndOpenWorkspace });

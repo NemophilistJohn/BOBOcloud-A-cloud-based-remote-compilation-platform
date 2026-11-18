@@ -18,6 +18,8 @@ import type {
 import type {
   DocumentCloseResultDto,
   DocumentInfoDto,
+  DocumentKernelHostRequest,
+  DocumentKernelResult,
   DocumentReadResultDto,
   DocumentSaveResultDto,
   DocumentViewLocalizationDto,
@@ -203,6 +205,9 @@ export interface IpcInvokeContracts {
   'plugins:document-save': IpcInvokeContract<[
     request: { readonly documentId: string; readonly text: string }
   ], DocumentSaveResultDto>;
+  'plugins:document-execute': IpcInvokeContract<[
+    request: { readonly documentId: string; readonly request: DocumentKernelHostRequest }
+  ], DocumentKernelResult>;
   'plugins:marketplace-list': IpcInvokeContract<[], PluginMarketplaceSnapshotDto>;
   'plugins:marketplace-refresh': IpcInvokeContract<[], PluginMarketplaceSnapshotDto>;
   'plugins:marketplace-install': IpcInvokeContract<

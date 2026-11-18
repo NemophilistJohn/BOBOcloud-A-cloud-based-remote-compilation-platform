@@ -1,5 +1,5 @@
 /**
- * BOBOCloud Plugin API 1.9.0 declarations.
+ * BOBOCloud Plugin API 1.10.0 declarations.
  *
  * Copy or reference this file from a plugin's TypeScript project. The runtime
  * is a sandboxed ES module; Node.js, Electron, DOM, and window APIs are not
@@ -32,6 +32,7 @@ export type PluginPermission =
   | 'documents.read'
   | 'documents.write'
   | 'documents.analyze'
+  | 'documents.execute'
   | 'agents.register'
   | 'models.generate'
   | 'workspace.read'
@@ -966,6 +967,7 @@ export interface DocumentViewContext {
     readonly lastModified: string;
     readonly writable?: boolean;
     readonly analyzable?: boolean;
+    readonly executable?: boolean;
   }>;
   readonly viewer: Readonly<{
     readonly id: string;
@@ -995,6 +997,17 @@ export interface DocumentViewContext {
   onDiagnostics?(handler: (revision: number, items: readonly {
     readonly line: number; readonly character: number; readonly severity: number; readonly message: string;
   }[]) => void): void;
+  /** API 1.10, documents.execute. Sends one cell to the selected cloud Python runtime. */
+  execute?(request: { readonly kind: 'execute'; readonly code: string } | { readonly kind: 'restart' }): Promise<
+    { readonly ok: false; readonly code: string } | {
+      readonly ok: true; readonly cellOk?: boolean; readonly executionCount?: number;
+      readonly outputs?: readonly (
+        | { readonly output_type: 'stream'; readonly name: 'stdout' | 'stderr'; readonly text: string }
+        | { readonly output_type: 'execute_result'; readonly data: Readonly<{ 'text/plain': string }>; readonly execution_count: number; readonly metadata: Readonly<Record<string, never>> }
+        | { readonly output_type: 'display_data'; readonly data: Readonly<{ 'image/png': string }>; readonly metadata: Readonly<Record<string, never>> }
+        | { readonly output_type: 'error'; readonly ename: string; readonly evalue: string; readonly traceback: readonly string[] }
+      )[];
+    }>;
   /** API 1.9. Populates navigation in a source-control sidebar owned by the same plugin. */
   setNavigation?(value: {
     readonly providerId: string;

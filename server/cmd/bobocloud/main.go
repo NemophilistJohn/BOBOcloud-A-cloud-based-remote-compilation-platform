@@ -978,6 +978,7 @@ func main() {
 	wsMux.HandleFunc("/term", wsHandler.HandleTerminalWebSocket)
 	wsMux.HandleFunc("/lsp", wsHandler.HandleLSPWebSocket)
 	wsMux.HandleFunc("/dap", dapHandler.HandleWebSocket)
+	wsMux.HandleFunc("/notebook", wsHandler.HandleNotebookWebSocket)
 	wsAddr := fmt.Sprintf(":%d", cfg.WSPort)
 	wsServer := newBOBOHTTPServer(wsAddr, wsMux, cfg, serverRuntime.Context())
 
@@ -987,6 +988,7 @@ func main() {
 	httpMux := http.NewServeMux()
 	httpMux.HandleFunc("/lsp", wsHandler.HandleLSPWebSocket)
 	httpMux.HandleFunc("/dap", dapHandler.HandleWebSocket)
+	httpMux.HandleFunc("/notebook", wsHandler.HandleNotebookWebSocket)
 	httpMux.Handle("/", httpHandler)
 	httpServer := newBOBOHTTPServer(addr, httpMux, cfg, serverRuntime.Context())
 

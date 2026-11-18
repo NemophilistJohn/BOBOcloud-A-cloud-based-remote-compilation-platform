@@ -47,6 +47,7 @@ func newDAPResourceController(t *testing.T, slots int64) *resourcecontrol.Contro
 		resourcecontrol.WorkloadLSP,
 		resourcecontrol.WorkloadDAP,
 		resourcecontrol.WorkloadMaintenance,
+		resourcecontrol.WorkloadNotebook,
 	} {
 		profiles[workload] = resourcegovernor.Resources{Slots: 1}
 	}

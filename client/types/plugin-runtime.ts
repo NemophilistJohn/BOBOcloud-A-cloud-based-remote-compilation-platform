@@ -14,7 +14,7 @@ import type {
   SourceControlVersionDto
 } from './source-control';
 
-export type PluginApiVersionDto = '1.9.0';
+export type PluginApiVersionDto = '1.10.0';
 
 export type PluginPermissionDto =
   | 'commands.register'
@@ -29,6 +29,7 @@ export type PluginPermissionDto =
   | 'documents.read'
   | 'documents.write'
   | 'documents.analyze'
+  | 'documents.execute'
   | 'agents.register'
   | 'models.generate'
   | 'workspace.read'

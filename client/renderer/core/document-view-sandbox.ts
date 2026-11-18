@@ -227,6 +227,7 @@ function bootstrapSource(): string {
         analyze: (args) => request('analysis', args),
         onDiagnostics: (handler) => { diagnosticsHandler = handler; }
       } : {}),
+      ...(documentInfo.executable ? { execute: (args) => request('document.execute', args) } : {}),
       ...(message.navigation === true ? {
         setNavigation: (value) => post({ type: 'navigation', value }),
         onNavigate: (handler) => { navigationHandler = handler; }
@@ -437,7 +438,8 @@ function projectDocumentInfo(value: DocumentInfoDto): DocumentInfoDto {
     size: value.size,
     lastModified: value.lastModified,
     ...(value.writable === true ? { writable: true } : {}),
-    ...(value.analyzable === true ? { analyzable: true } : {})
+    ...(value.analyzable === true ? { analyzable: true } : {}),
+    ...(value.executable === true ? { executable: true } : {})
   });
 }
 
@@ -587,14 +589,15 @@ export function createSandboxedDocumentView(
       return;
     }
     if (message.type === 'request' && Number.isSafeInteger(message.id) &&
-        (message.method === 'document.write' || message.method === 'analysis')) {
+        (message.method === 'document.write' || message.method === 'analysis' || message.method === 'document.execute')) {
       const args = message.args;
       const respond = (ok: boolean, value?: unknown, error?: unknown): void => {
         postToSandbox({ protocolVersion: DOCUMENT_VIEW_PROTOCOL_VERSION, type: 'response',
           id: message.id, ok, value, error: ok ? undefined : serializedError(error) });
       };
       const method = message.method;
-      if (operationsInProgress.has(method)) {
+      const operation = method === 'document.execute' && isRecord(args) && args.kind === 'restart' ? 'kernel.restart' : method;
+      if (operationsInProgress.has(operation)) {
         respond(false, undefined, Object.assign(new Error('Document operation in progress.'), { code: 'DOCUMENT_VIEW_BUSY' }));
         return;
       }
@@ -602,6 +605,12 @@ export function createSandboxedDocumentView(
       if (message.method === 'document.write' && documentInfo.writable && options.write &&
           typeof args === 'string' && args.length <= 24 * 1024 * 1024) {
         run = () => options.write!(args);
+      } else if (method === 'document.execute' && documentInfo.executable && options.execute && isRecord(args)) {
+        if (args.kind === 'restart') run = () => options.execute!({ kind: 'restart' });
+        else if (args.kind === 'execute' && typeof args.code === 'string' && args.code.length <= 256 * 1024) {
+          const code = args.code;
+          run = () => options.execute!({ kind: 'execute', code });
+        }
       } else if (message.method === 'analysis' && documentInfo.analyzable && options.analyze &&
           isRecord(args) && typeof args.revision === 'number' && Number.isSafeInteger(args.revision) && args.revision > 0) {
         const revision = args.revision;
@@ -617,10 +626,10 @@ export function createSandboxedDocumentView(
         respond(false, undefined, new Error('Invalid or unavailable document operation.'));
         return;
       }
-      operationsInProgress.add(method);
+      operationsInProgress.add(operation);
       Promise.resolve().then(() => disposed ? undefined : run!()).then(
         (value) => respond(true, value), (error: unknown) => respond(false, undefined, error)
-      ).finally(() => { operationsInProgress.delete(method); });
+      ).finally(() => { operationsInProgress.delete(operation); });
       return;
     }
     if (message.type !== 'request' || message.method !== 'document.read' || !Number.isSafeInteger(message.id)) return;

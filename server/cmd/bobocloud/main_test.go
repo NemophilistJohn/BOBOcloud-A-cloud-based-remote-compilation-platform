@@ -420,6 +420,7 @@ func TestRunMaintenanceSkipsBusyNodeAndReleasesAcceptedLease(t *testing.T) {
 		resourcecontrol.WorkloadTerminal: profile, resourcecontrol.WorkloadPackage: profile,
 		resourcecontrol.WorkloadLSP: profile, resourcecontrol.WorkloadDAP: profile,
 		resourcecontrol.WorkloadMaintenance: profile,
+		resourcecontrol.WorkloadNotebook: profile,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)

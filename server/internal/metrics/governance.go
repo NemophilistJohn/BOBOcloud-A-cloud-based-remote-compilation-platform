@@ -18,12 +18,13 @@ const (
 	WorkloadLSP
 	WorkloadDAP
 	WorkloadMaintenance
+	WorkloadNotebook
 	WorkloadOther
 	workloadCount
 )
 
 var workloadNames = [...]string{
-	"run", "task", "terminal", "package", "docker", "lsp", "dap", "maintenance", "other",
+	"run", "task", "terminal", "package", "docker", "lsp", "dap", "maintenance", "notebook", "other",
 }
 
 func normalizeWorkload(value Workload) Workload {

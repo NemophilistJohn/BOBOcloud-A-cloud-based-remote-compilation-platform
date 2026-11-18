@@ -381,6 +381,7 @@ Every permission must appear in `manifest.permissions`. After a verified install
 | `documents.read` | Read only the current user-opened document from that viewer through a scoped opaque handle. |
 | `documents.write` | Optionally edit the current document. Register a save handler and mark dirty changes so the workbench can guard tab and workspace closes. |
 | `documents.analyze` | Optionally submit a Python text projection (up to 256 Ki UTF-16 code units) and request completion at a position. Only the visible document can use the configured remote analyzer. |
+| `documents.execute` | API 1.10: call `context.execute({ kind: 'execute', code })` (up to 256 KiB UTF-8), or `context.execute({ kind: 'restart' })` to discard the current kernel. Only the visible Notebook can execute. Runtime, workspace, synchronization, credentials, and transport are controlled by the host. |
 | `agents.register` | Register a bounded host-rendered Agent provider and publish its state. |
 | `models.generate` | List opaque model refs, generate turns, and cancel this plugin's requests. |
 | `workspace.read` | Invoke bounded workspace list, read, and search tools. |

@@ -25,11 +25,12 @@ const (
 	WorkloadLSP
 	WorkloadDAP
 	WorkloadMaintenance
+	WorkloadNotebook
 	workloadCount
 )
 
 var workloadNames = [...]string{
-	"run", "task", "terminal", "package", "lsp", "dap", "maintenance",
+	"run", "task", "terminal", "package", "lsp", "dap", "maintenance", "notebook",
 }
 
 func (workload Workload) String() string {
@@ -718,6 +719,8 @@ func metricsWorkload(workload Workload) metrics.Workload {
 		return metrics.WorkloadDAP
 	case WorkloadMaintenance:
 		return metrics.WorkloadMaintenance
+	case WorkloadNotebook:
+		return metrics.WorkloadNotebook
 	default:
 		return metrics.WorkloadOther
 	}

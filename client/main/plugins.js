@@ -15,7 +15,7 @@ const { capturePluginRpcResult } = require('./plugin-rpc-transport');
 const { compareSemver, isValidSemver, satisfiesVersionRange } = require('../shared/plugin-semver');
 const { createTrustedRendererSender } = require('./trusted-ipc');
 
-const PLUGIN_API_VERSION = '1.9.0';
+const PLUGIN_API_VERSION = '1.10.0';
 const SOURCE_CONTROL_ICONS = new Set(['git-branch', 'notebook']);
 const PACKAGE_SCHEMA_VERSIONS = new Set([1, 2]);
 const STATE_SCHEMA_VERSION = 1;
@@ -56,6 +56,7 @@ const PluginPermission = Object.freeze({
   DOCUMENTS_READ: 'documents.read',
   DOCUMENTS_WRITE: 'documents.write',
   DOCUMENTS_ANALYZE: 'documents.analyze',
+  DOCUMENTS_EXECUTE: 'documents.execute',
   AGENTS_REGISTER: 'agents.register',
   MODELS_GENERATE: 'models.generate',
   WORKSPACE_READ: 'workspace.read',
@@ -891,11 +892,13 @@ function createPluginController(options) {
       getWorkspaceIdentity: options.getWorkspaceIdentity,
       runMutation: options.runWorkspaceMutation,
       notifyFiles: options.notifyWorkspaceFiles,
+      kernels: options.notebookKernels,
       authorize: (pluginId, viewerId) => {
         const viewer = authorizeDocumentViewer(pluginId, viewerId, true);
         const grants = effectiveGrantedPermissions(records.get(pluginId));
         return { ...viewer, canWrite: grants.includes(PluginPermission.DOCUMENTS_WRITE),
-          canAnalyze: grants.includes(PluginPermission.DOCUMENTS_ANALYZE) };
+          canAnalyze: grants.includes(PluginPermission.DOCUMENTS_ANALYZE),
+          canExecute: grants.includes(PluginPermission.DOCUMENTS_EXECUTE) };
       }
     })
     : null;
@@ -1300,7 +1303,7 @@ function createPluginController(options) {
     if (granted !== true) {
       advancePluginRuntimeRevision(pluginId);
       if ([PluginPermission.DOCUMENT_VIEWS_REGISTER, PluginPermission.DOCUMENTS_READ,
-        PluginPermission.DOCUMENTS_WRITE, PluginPermission.DOCUMENTS_ANALYZE].includes(permission)) {
+        PluginPermission.DOCUMENTS_WRITE, PluginPermission.DOCUMENTS_ANALYZE, PluginPermission.DOCUMENTS_EXECUTE].includes(permission)) {
         revokeDocumentViews(pluginId);
       }
     }
@@ -1840,6 +1843,15 @@ function createPluginController(options) {
       } catch (error) {
         return { ok: false, code: typeof error?.code === 'string' && error.code.startsWith('DOCUMENT_VIEW_')
           ? error.code : 'DOCUMENT_VIEW_SAVE_FAILED' };
+      }
+    });
+    ipcMain.handle('plugins:document-execute', async (event, payload) => {
+      trustedSender(event);
+      try {
+        return documentBroker ? await documentBroker.execute(event, payload) : { ok: false, code: 'disabled' };
+      } catch (error) {
+        return { ok: false, code: typeof error?.code === 'string' && error.code.startsWith('DOCUMENT_VIEW_')
+          ? error.code : 'kernel_failed' };
       }
     });
     ipcMain.handle('plugins:rpc', async (event, payload) => {

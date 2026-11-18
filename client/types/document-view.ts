@@ -87,7 +87,19 @@ export interface DocumentInfoDto {
   readonly lastModified: string;
   readonly writable?: boolean;
   readonly analyzable?: boolean;
+  readonly executable?: boolean;
 }
+
+export type DocumentKernelRequest = { readonly kind: 'execute'; readonly code: string } | { readonly kind: 'restart' };
+export type DocumentKernelOptions = { readonly runtimeId: string; readonly setupCommands: readonly string[] };
+export type DocumentKernelHostRequest = DocumentKernelRequest & Partial<DocumentKernelOptions>;
+export type DocumentKernelOutput =
+  | { readonly output_type: 'stream'; readonly name: 'stdout' | 'stderr'; readonly text: string }
+  | { readonly output_type: 'execute_result'; readonly data: Readonly<{ 'text/plain': string }>; readonly execution_count: number; readonly metadata: Readonly<Record<string, never>> }
+  | { readonly output_type: 'display_data'; readonly data: Readonly<{ 'image/png': string }>; readonly metadata: Readonly<Record<string, never>> }
+  | { readonly output_type: 'error'; readonly ename: string; readonly evalue: string; readonly traceback: readonly string[] };
+export type DocumentKernelResult = { readonly ok: false; readonly code: string } |
+  { readonly ok: true; readonly cellOk?: boolean; readonly executionCount?: number; readonly outputs?: readonly DocumentKernelOutput[] };
 
 export type DocumentSaveResultDto = { readonly ok: true } | { readonly ok: false; readonly code: string };
 export type DocumentAnalysisRequest =
@@ -150,6 +162,7 @@ export interface DocumentViewHost {
   openDocument(pluginId: string, viewerId: string, filePath: string): Promise<DocumentInfoDto>;
   readDocument(documentId: string, offset: number, length: number): Promise<DocumentReadResultDto>;
   saveDocument?(documentId: string, text: string): Promise<DocumentSaveResultDto>;
+  executeDocument?(documentId: string, request: DocumentKernelHostRequest): Promise<DocumentKernelResult>;
   closeDocument(documentId: string): Promise<DocumentCloseResultDto>;
 }
 
@@ -168,6 +181,7 @@ export interface SandboxedDocumentViewOptions {
   readonly write?: (text: string) => Promise<DocumentSaveResultDto>;
   readonly onDirty?: (dirty: boolean) => void;
   readonly analyze?: (request: DocumentAnalysisRequest) => unknown;
+  readonly execute?: (request: DocumentKernelRequest) => Promise<DocumentKernelResult>;
   readonly onNavigation?: (navigation: DocumentNavigation) => void;
 }
 
@@ -245,6 +259,8 @@ export interface DocumentViewContributionPort {
 }
 
 export interface DocumentViewDependencies {
+  readonly kernelOptions?: () => DocumentKernelOptions;
+  readonly syncKernelWorkspace?: () => Promise<boolean>;
   readonly document: Document;
   readonly state: DocumentViewState;
   readonly i18n: DocumentViewI18n;
