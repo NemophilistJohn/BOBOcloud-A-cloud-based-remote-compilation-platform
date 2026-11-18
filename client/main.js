@@ -89,6 +89,8 @@ const plugins = createPluginController({ app, ipcMain, dialog, shell, getWindow,
   sendToRenderer: rendererEvents.send,
   getWorkspaceIdentity: workspace.getIdentity,
   resolveWorkspaceFile: workspace.resolveWorkspaceFile,
+  runWorkspaceMutation: workspace.runMutation,
+  notifyWorkspaceFiles: workspace.notifyExternalFileChanges,
   agentBroker,
   onDidChange: () => { if (menu) menu.rebuild(); }
 });

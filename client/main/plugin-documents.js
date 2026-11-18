@@ -4,11 +4,16 @@ const crypto = require('node:crypto');
 const { constants: fsConstants } = require('node:fs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { readFileBounded, writeFileAtomic } = require('./atomic-file');
 
 const MAX_DOCUMENT_BYTES = 128 * 1024 * 1024;
 const MAX_DOCUMENT_CHUNK_BYTES = 2 * 1024 * 1024;
 const MAX_DOCUMENT_SESSION_READS = 4;
 const MAX_DOCUMENT_SENDER_READS = 16;
+const MAX_EDIT_BYTES = 24 * 1024 * 1024;
+const digest = (data) => crypto.createHash('sha256').update(data).digest('hex');
+const sameFile = (left, right) => left.size === right.size && left.mtimeMs === right.mtimeMs &&
+  left.ctimeMs === right.ctimeMs && left.dev === right.dev && left.ino === right.ino;
 
 function documentError(code, message) {
   const error = new Error(message);
@@ -157,6 +162,17 @@ function createPluginDocumentBroker(options = {}) {
     }
     const finalViewer = await options.authorize(pluginId, viewerId);
     if (!finalViewer) throw documentError('DOCUMENT_VIEW_DENIED', 'Document viewer is not authorized.');
+    if (Array.isArray(finalViewer.extensions) &&
+        !finalViewer.extensions.includes(path.extname(resolved.filePath).toLowerCase())) {
+      throw documentError('DOCUMENT_VIEW_DENIED', 'Document extension is not registered by this viewer.');
+    }
+    let baseline;
+    if (finalViewer.canWrite && options.runMutation && stat.size <= MAX_EDIT_BYTES) {
+      baseline = digest(await readFileBounded(resolved.filePath, { maxBytes: MAX_EDIT_BYTES }));
+      if (!sameFile(stat, await fileSystem.lstat(resolved.filePath))) {
+        throw documentError('DOCUMENT_VIEW_CHANGED', 'Document changed while it was being opened.');
+      }
+    }
     const finalIdentity = options.getWorkspaceIdentity();
     if (disposed || revisionOf(senderRevisions, id) !== senderRevision ||
         revisionOf(pluginRevisions, pluginId) !== pluginRevision) {
@@ -178,6 +194,8 @@ function createPluginDocumentBroker(options = {}) {
       ctimeMs: stat.ctimeMs,
       dev: stat.dev,
       ino: stat.ino,
+      baseline,
+      mode: stat.mode & 0o777,
       activeReads: 0
     };
     sessions.set(session.id, session);
@@ -188,11 +206,13 @@ function createPluginDocumentBroker(options = {}) {
       name: path.basename(session.filePath),
       extension: path.extname(session.filePath).toLowerCase(),
       size: session.size,
-      lastModified: new Date(stat.mtimeMs).toISOString()
+      lastModified: new Date(stat.mtimeMs).toISOString(),
+      ...(baseline ? { writable: true } : {}),
+      ...(finalViewer.canAnalyze ? { analyzable: true } : {})
     });
   }
 
-  async function requireSession(event, payload) {
+  async function requireSession(event, payload, requireWrite = false) {
     if (disposed) throw documentError('DOCUMENT_VIEW_UNAVAILABLE', 'Document broker has been disposed.');
     if (!isPlainObject(payload)) {
       throw documentError('DOCUMENT_VIEW_INVALID_ARGUMENT', 'Document request must be an object.');
@@ -213,6 +233,9 @@ function createPluginDocumentBroker(options = {}) {
     if (!viewer || sessions.get(session.id) !== session) {
       forget(session);
       throw documentError('DOCUMENT_VIEW_STALE', 'Document handle was revoked.');
+    }
+    if (requireWrite && (!viewer.canWrite || !session.baseline || !options.runMutation)) {
+      throw documentError('DOCUMENT_VIEW_DENIED', 'Document writing is not permitted.');
     }
     const identity = options.getWorkspaceIdentity();
     if (!identity || identity.workspaceIdentity !== session.workspaceIdentity) {
@@ -235,8 +258,7 @@ function createPluginDocumentBroker(options = {}) {
       forget(session);
       throw documentError('DOCUMENT_VIEW_NOT_FOUND', 'Document is no longer available.');
     }
-    if (stat.size !== session.size || stat.mtimeMs !== session.mtimeMs || stat.ctimeMs !== session.ctimeMs ||
-        stat.dev !== session.dev || stat.ino !== session.ino) {
+    if (!sameFile(stat, session)) {
       forget(session);
       throw documentError('DOCUMENT_VIEW_CHANGED', 'Document changed after the preview was opened.');
     }
@@ -247,6 +269,37 @@ function createPluginDocumentBroker(options = {}) {
       throw documentError('DOCUMENT_VIEW_STALE', 'Document handle was revoked.');
     }
     return session;
+  }
+
+  async function save(event, payload) {
+    if (typeof payload?.text !== 'string' || Buffer.byteLength(payload.text) > MAX_EDIT_BYTES) {
+      throw documentError('DOCUMENT_VIEW_INVALID_ARGUMENT', 'Document text exceeds the editing limit.');
+    }
+    const session = await requireSession(event, payload, true);
+    if (session.saving) throw documentError('DOCUMENT_VIEW_BUSY', 'Document save already in progress.');
+    session.saving = true;
+    try {
+      return await options.runMutation(session.filePath, async (mutation) => {
+        const data = Buffer.from(payload.text, 'utf8');
+        const check = async () => {
+          await requireSession(event, payload, true);
+          if (digest(await readFileBounded(session.filePath, { maxBytes: MAX_EDIT_BYTES })) !== session.baseline) {
+            throw documentError('DOCUMENT_VIEW_CHANGED', 'Document changed after the preview was opened.');
+          }
+          await requireSession(event, payload, true);
+          mutation.assertCurrent();
+        };
+        await check();
+        await writeFileAtomic(session.filePath, data, { maxBytes: MAX_EDIT_BYTES, mode: session.mode, beforeReplace: check });
+        const stat = await fileSystem.lstat(session.filePath);
+        Object.assign(session, { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, dev: stat.dev,
+          ino: stat.ino, baseline: digest(data) });
+        options.notifyFiles?.([{ path: session.filePath, event: 'file-changed' }], mutation);
+        return { ok: true };
+      });
+    } finally {
+      session.saving = false;
+    }
   }
 
   async function read(event, payload) {
@@ -347,7 +400,7 @@ function createPluginDocumentBroker(options = {}) {
     activeReadsBySender.clear();
   }
 
-  return Object.freeze({ open, read, close, closePlugin, closeSender, dispose });
+  return Object.freeze({ open, read, save, close, closePlugin, closeSender, dispose });
 }
 
 module.exports = {

@@ -15,7 +15,7 @@ const { capturePluginRpcResult } = require('./plugin-rpc-transport');
 const { compareSemver, isValidSemver, satisfiesVersionRange } = require('../shared/plugin-semver');
 const { createTrustedRendererSender } = require('./trusted-ipc');
 
-const PLUGIN_API_VERSION = '1.7.0';
+const PLUGIN_API_VERSION = '1.8.0';
 const SOURCE_CONTROL_ICONS = new Set(['git-branch', 'notebook']);
 const PACKAGE_SCHEMA_VERSIONS = new Set([1, 2]);
 const STATE_SCHEMA_VERSION = 1;
@@ -54,6 +54,8 @@ const PluginPermission = Object.freeze({
   FILE_DECORATIONS_SCM: 'fileDecorations.scm',
   DOCUMENT_VIEWS_REGISTER: 'documentViews.register',
   DOCUMENTS_READ: 'documents.read',
+  DOCUMENTS_WRITE: 'documents.write',
+  DOCUMENTS_ANALYZE: 'documents.analyze',
   AGENTS_REGISTER: 'agents.register',
   MODELS_GENERATE: 'models.generate',
   WORKSPACE_READ: 'workspace.read',
@@ -887,7 +889,14 @@ function createPluginController(options) {
     ? createPluginDocumentBroker({
       resolveWorkspaceFile: options.resolveWorkspaceFile,
       getWorkspaceIdentity: options.getWorkspaceIdentity,
-      authorize: (pluginId, viewerId) => authorizeDocumentViewer(pluginId, viewerId, true)
+      runMutation: options.runWorkspaceMutation,
+      notifyFiles: options.notifyWorkspaceFiles,
+      authorize: (pluginId, viewerId) => {
+        const viewer = authorizeDocumentViewer(pluginId, viewerId, true);
+        const grants = effectiveGrantedPermissions(records.get(pluginId));
+        return { ...viewer, canWrite: grants.includes(PluginPermission.DOCUMENTS_WRITE),
+          canAnalyze: grants.includes(PluginPermission.DOCUMENTS_ANALYZE) };
+      }
     })
     : null;
 
@@ -1290,7 +1299,8 @@ function createPluginController(options) {
     permissions.grants[pluginId] = Array.from(next).sort();
     if (granted !== true) {
       advancePluginRuntimeRevision(pluginId);
-      if (permission === PluginPermission.DOCUMENT_VIEWS_REGISTER || permission === PluginPermission.DOCUMENTS_READ) {
+      if ([PluginPermission.DOCUMENT_VIEWS_REGISTER, PluginPermission.DOCUMENTS_READ,
+        PluginPermission.DOCUMENTS_WRITE, PluginPermission.DOCUMENTS_ANALYZE].includes(permission)) {
         revokeDocumentViews(pluginId);
       }
     }
@@ -1821,6 +1831,16 @@ function createPluginController(options) {
     ipcMain.handle('plugins:document-close', async (event, payload) => {
       trustedSender(event);
       return documentBroker ? documentBroker.close(event, payload) : { closed: false };
+    });
+    ipcMain.handle('plugins:document-save', async (event, payload) => {
+      trustedSender(event);
+      try {
+        if (!documentBroker) return { ok: false, code: 'DOCUMENT_VIEW_UNAVAILABLE' };
+        return await documentBroker.save(event, payload);
+      } catch (error) {
+        return { ok: false, code: typeof error?.code === 'string' && error.code.startsWith('DOCUMENT_VIEW_')
+          ? error.code : 'DOCUMENT_VIEW_SAVE_FAILED' };
+      }
     });
     ipcMain.handle('plugins:rpc', async (event, payload) => {
       trustedSender(event);

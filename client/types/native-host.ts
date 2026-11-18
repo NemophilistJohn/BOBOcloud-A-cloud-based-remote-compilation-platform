@@ -13,6 +13,7 @@ import type {
   DocumentCloseResultDto,
   DocumentInfoDto,
   DocumentReadResultDto,
+  DocumentSaveResultDto,
   DocumentViewLocalizationDto,
   LoadedDocumentViewDto
 } from './document-view';
@@ -42,6 +43,7 @@ export interface WorkspaceTextFileWrite {
 export interface NativeHostPluginDocuments {
   open(pluginId: string, viewerId: string, filePath: string): Promise<DocumentInfoDto>;
   read(documentId: string, offset: number, length: number): Promise<DocumentReadResultDto>;
+  save(documentId: string, text: string): Promise<DocumentSaveResultDto>;
   close(documentId: string): Promise<DocumentCloseResultDto>;
 }
 

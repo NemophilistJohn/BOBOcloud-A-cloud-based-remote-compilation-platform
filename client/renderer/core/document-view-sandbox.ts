@@ -1,4 +1,5 @@
 import type {
+  DocumentAnalysisDiagnostic,
   DocumentInfoDto,
   DocumentReadRangeDto,
   DocumentReadResultDto,
@@ -111,6 +112,9 @@ function bootstrapSource(): string {
     });
   }
 
+  let saveHandler;
+  let diagnosticsHandler;
+
   function updateLocalization(value) {
     const messages = Object.create(null);
     const raw = value && value.messages && typeof value.messages === 'object' ? value.messages : {};
@@ -211,7 +215,16 @@ function bootstrapSource(): string {
       async readText(maximumBytes, encoding) {
         const bytes = await readAll(documentInfo, maximumBytes);
         return new TextDecoder(encoding || 'utf-8', { fatal: false }).decode(bytes);
-      }
+      },
+      ...(documentInfo.writable ? {
+        writeText: (text) => request('document.write', text),
+        setDirty: (dirty) => post({ type: 'dirty', dirty: dirty === true }),
+        onSave: (handler) => { saveHandler = handler; }
+      } : {}),
+      ...(documentInfo.analyzable ? {
+        analyze: (args) => request('analysis', args),
+        onDiagnostics: (handler) => { diagnosticsHandler = handler; }
+      } : {})
       });
       const sourceUrl = URL.createObjectURL(new Blob([message.source], { type: 'text/javascript' }));
       try { moduleValue = await import(sourceUrl); }
@@ -289,6 +302,15 @@ function bootstrapSource(): string {
     }
     if (message.type === 'event' && message.event === 'i18n.changed') updateLocalization(message.value || {});
     if (message.type === 'event' && message.event === 'theme.changed') applyTheme(message.value || {});
+    if (message.type === 'event' && message.event === 'diagnostics') {
+      if (typeof diagnosticsHandler === 'function') diagnosticsHandler(message.revision, message.items);
+    }
+    if (message.type === 'save') {
+      Promise.resolve().then(() => typeof saveHandler === 'function' && saveHandler()).then(
+        (ok) => { if (!disposed) post({ type: 'saved', id: message.id, ok: ok === true }); },
+        () => { if (!disposed) post({ type: 'saved', id: message.id, ok: false }); }
+      );
+    }
     if (message.type === 'event' && message.event === 'dispose') disposeView().catch(() => {});
   }
 
@@ -404,7 +426,9 @@ function projectDocumentInfo(value: DocumentInfoDto): DocumentInfoDto {
     name: value.name,
     extension: value.extension,
     size: value.size,
-    lastModified: value.lastModified
+    lastModified: value.lastModified,
+    ...(value.writable === true ? { writable: true } : {}),
+    ...(value.analyzable === true ? { analyzable: true } : {})
   });
 }
 
@@ -480,6 +504,9 @@ export function createSandboxedDocumentView(
   const channel = new MessageChannel();
   let disposed = false;
   let inflightReads = 0;
+  const operationsInProgress = new Set<string>();
+  let saveSequence = 0;
+  let savePending: { id: number; finish: (ok: boolean) => void; promise: Promise<boolean> } | undefined;
   let readySettled = false;
   let resolveReady!: () => void;
   let rejectReady!: (reason?: unknown) => void;
@@ -504,6 +531,7 @@ export function createSandboxedDocumentView(
       });
     } catch (_) {}
     disposed = true;
+    savePending?.finish(false);
     try { channel.port1.close(); } catch (_) {}
     try { channel.port2.close(); } catch (_) {}
     iframe.remove();
@@ -534,6 +562,51 @@ export function createSandboxedDocumentView(
         code: detail && typeof detail.code === 'string' ? detail.code : 'DOCUMENT_VIEW_FAILED'
       });
       terminate(error, true);
+      return;
+    }
+    if (message.type === 'dirty' && documentInfo.writable && typeof message.dirty === 'boolean') {
+      options.onDirty?.(message.dirty);
+      return;
+    }
+    if (message.type === 'saved' && savePending && message.id === savePending.id) {
+      savePending.finish(message.ok === true);
+      return;
+    }
+    if (message.type === 'request' && Number.isSafeInteger(message.id) &&
+        (message.method === 'document.write' || message.method === 'analysis')) {
+      const args = message.args;
+      const respond = (ok: boolean, value?: unknown, error?: unknown): void => {
+        postToSandbox({ protocolVersion: DOCUMENT_VIEW_PROTOCOL_VERSION, type: 'response',
+          id: message.id, ok, value, error: ok ? undefined : serializedError(error) });
+      };
+      const method = message.method;
+      if (operationsInProgress.has(method)) {
+        respond(false, undefined, Object.assign(new Error('Document operation in progress.'), { code: 'DOCUMENT_VIEW_BUSY' }));
+        return;
+      }
+      let run: (() => unknown) | undefined;
+      if (message.method === 'document.write' && documentInfo.writable && options.write &&
+          typeof args === 'string' && args.length <= 24 * 1024 * 1024) {
+        run = () => options.write!(args);
+      } else if (message.method === 'analysis' && documentInfo.analyzable && options.analyze &&
+          isRecord(args) && typeof args.revision === 'number' && Number.isSafeInteger(args.revision) && args.revision > 0) {
+        const revision = args.revision;
+        const { kind, text, line, character } = args;
+        if (kind === 'update' && typeof text === 'string' && text.length <= 256 * 1024) {
+          run = () => options.analyze!({ kind, text, revision });
+        } else if (kind === 'complete' && typeof line === 'number' && typeof character === 'number' &&
+                   Number.isSafeInteger(line) && line >= 0 && Number.isSafeInteger(character) && character >= 0) {
+          run = () => options.analyze!({ kind, revision, line, character });
+        }
+      }
+      if (!run) {
+        respond(false, undefined, new Error('Invalid or unavailable document operation.'));
+        return;
+      }
+      operationsInProgress.add(method);
+      Promise.resolve().then(() => disposed ? undefined : run!()).then(
+        (value) => respond(true, value), (error: unknown) => respond(false, undefined, error)
+      ).finally(() => { operationsInProgress.delete(method); });
       return;
     }
     if (message.type !== 'request' || message.method !== 'document.read' || !Number.isSafeInteger(message.id)) return;
@@ -628,6 +701,25 @@ export function createSandboxedDocumentView(
     ready,
     show() { if (!disposed) iframe.hidden = false; },
     hide() { iframe.hidden = true; },
+    save() {
+      if (disposed || !documentInfo.writable) return Promise.resolve(false);
+      if (savePending) return savePending.promise;
+      const id = ++saveSequence;
+      let settle!: (ok: boolean) => void;
+      const promise = new Promise<boolean>((resolve) => { settle = resolve; });
+      const timer = setTimeout(() => finish(false), 30_000);
+      function finish(ok: boolean): void {
+        clearTimeout(timer);
+        savePending = undefined;
+        settle(ok);
+      }
+      savePending = { id, finish, promise };
+      if (!postToSandbox({ protocolVersion: DOCUMENT_VIEW_PROTOCOL_VERSION, type: 'save', id })) finish(false);
+      return promise;
+    },
+    diagnostics(revision: number, items: readonly DocumentAnalysisDiagnostic[]) {
+      postToSandbox({ protocolVersion: DOCUMENT_VIEW_PROTOCOL_VERSION, type: 'event', event: 'diagnostics', revision, items });
+    },
     updateLocalization(value: DocumentViewLocalizationDto) {
       postToSandbox({ protocolVersion: DOCUMENT_VIEW_PROTOCOL_VERSION, type: 'event', event: 'i18n.changed', value });
     },

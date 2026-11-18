@@ -355,7 +355,7 @@
   async function canLeaveWorkspace(options) {
     options = options || {};
     if (S.workspaceTransitionLocked) return false;
-    var dirtyTabs = S.tabs.filter(function(tab) { return tab.dirty && tab.model; });
+    var dirtyTabs = S.tabs.filter(function(tab) { return tab.dirty && (tab.model || tab.documentView); });
     if (dirtyTabs.length) {
       var choice = global.api && global.api.chooseWorkspaceLeave
         ? await global.api.chooseWorkspaceLeave({ dirtyCount: dirtyTabs.length, reason: options.reason || 'switch' })
@@ -1531,6 +1531,7 @@
   async function saveActiveTab() {
     if (S.workspaceTransitionLocked) return false;
     var tab = S.tabs.find(function(t) { return t.path === S.activeTabPath; });
+    if (tab && tab.documentView) return await tab.documentView.sandbox.save();
     if (!tab || !tab.model) return false;
     var savedWorkspaceIdentity = S.workspaceIdentity;
     var savedWorkspaceGeneration = S.workspaceGeneration || 0;
@@ -1567,13 +1568,18 @@
   async function saveAllTabs(options) {
     options = options || {};
     if (S.workspaceTransitionLocked && !options.allowDuringTransition) return false;
-    var dirtyTabs = S.tabs.filter(function(tab) { return tab.dirty && tab.model; });
+    var dirtyTabs = S.tabs.filter(function(tab) { return tab.dirty && (tab.model || tab.documentView); });
     var savedWorkspaceIdentity = S.workspaceIdentity;
     var savedWorkspaceGeneration = S.workspaceGeneration || 0;
     var allCurrent = true;
     try {
       for (var i = 0; i < dirtyTabs.length; i++) {
         var tab = dirtyTabs[i];
+        if (tab.documentView) {
+          if (!(await tab.documentView.sandbox.save())) allCurrent = false;
+          if (S.workspaceIdentity !== savedWorkspaceIdentity || (S.workspaceGeneration || 0) !== savedWorkspaceGeneration) return false;
+          continue;
+        }
         var savedPath = tab.path;
         var savedModel = tab.model;
         var savedVersion = savedModel.getVersionId();
@@ -1939,6 +1945,14 @@
     activateTab: activateTab,
     closeTab: closeTab,
     saveActiveTab: saveActiveTab,
+    documentViewDirty: function(path, dirty) {
+      var index = S.tabs.findIndex(function(tab) { return tab.path === path && tab.documentView; });
+      if (index < 0 || S.tabs[index].dirty === dirty) return;
+      S.tabs[index].dirty = dirty;
+      updateTabDirtyFlag(index, dirty);
+      updateTitlebar();
+    },
+    documentViewSaved: function(path) { recordSavedFileChange(path, nextWorkspaceSaveMutationId()); },
     saveAllTabs: saveAllTabs,
     updateTabbar: updateTabbar,
     updateTitlebar: updateTitlebar,

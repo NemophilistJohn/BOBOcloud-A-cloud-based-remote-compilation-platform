@@ -124,6 +124,7 @@ export function createDocumentViewService(
 
   function showFailure(instance: DocumentViewInstance, error: unknown): void {
     if (instance.disposed) return;
+    dependencies.analysis?.close(instance.path);
     try { instance.sandbox.dispose(); } catch (_) {}
     releaseDocument(instance);
     instance.error.hidden = activeInstance !== instance;
@@ -216,6 +217,27 @@ export function createDocumentViewService(
         localization,
         theme: theme.snapshot(),
         read: (range) => host.readDocument(documentId, range.offset, range.length),
+        write: documentInfo.writable && host.saveDocument ? async (text) => {
+          if (instance?.disposed) return { ok: false, code: 'DOCUMENT_VIEW_STALE' };
+          const saved = await host.saveDocument!(documentId, text);
+          if (saved.ok && !instance?.disposed) dependencies.onSave?.(pending.path);
+          return saved;
+        } : undefined,
+        onDirty: (dirty) => {
+          if (!instance || instance.disposed) return;
+          instance.dirty = dirty;
+          dependencies.onDirty?.(pending.path, dirty);
+        },
+        analyze: documentInfo.analyzable && dependencies.analysis ? (request) => {
+          if (!instance || instance.disposed || activeInstance !== instance) return;
+          if (request.kind === 'update') {
+            dependencies.analysis!.update(pending.path, request.revision, request.text, (revision, items) => {
+              if (activeInstance === instance && !instance?.disposed) sandbox?.diagnostics?.(revision, items);
+            });
+          } else {
+            return dependencies.analysis!.complete(pending.path, request.revision, request.line, request.character);
+          }
+        } : undefined,
         onError: (error) => showFailure(instance as DocumentViewInstance, error)
       });
       sandbox = createdSandbox;
@@ -283,6 +305,7 @@ export function createDocumentViewService(
     root?.classList.remove('hidden');
 
     if (activeInstance && activeInstance !== instance && !activeInstance.disposed) {
+      dependencies.analysis?.close(activeInstance.path);
       activeInstance.sandbox.hide();
       activeInstance.error.hidden = true;
     }
@@ -296,6 +319,7 @@ export function createDocumentViewService(
   function hideAll(options: { readonly restoreEditor?: boolean } = {}): void {
     hostDocument.getElementById('document-view-host')?.classList.add('hidden');
     if (activeInstance && !activeInstance.disposed) {
+      dependencies.analysis?.close(activeInstance.path);
       activeInstance.sandbox.hide();
       activeInstance.error.hidden = true;
     }
@@ -310,6 +334,7 @@ export function createDocumentViewService(
   function disposeInstance(instance: DocumentViewInstance | null | undefined): void {
     if (!instance || instance.disposed) return;
     instance.disposed = true;
+    dependencies.analysis?.close(instance.path);
     instances.delete(instance);
     if (instancesByPath.get(instance.path) === instance) instancesByPath.delete(instance.path);
     if (activeInstance === instance) activeInstance = null;

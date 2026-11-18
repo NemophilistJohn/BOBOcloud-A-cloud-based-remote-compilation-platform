@@ -120,7 +120,8 @@ function createDocumentViewsHost(host: NativeHost): Readonly<DocumentViewHost> {
     readDocument: (documentId: string, offset: number, length: number) => (
       host.plugins.documents.read(documentId, offset, length)
     ),
-    closeDocument: (documentId: string) => host.plugins.documents.close(documentId)
+    closeDocument: (documentId: string) => host.plugins.documents.close(documentId),
+    saveDocument: (documentId: string, text: string) => host.plugins.documents.save(documentId, text)
   });
 }
 

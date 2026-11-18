@@ -1098,7 +1098,7 @@ test('plugin IPC surface is explicit and sender-bound', async (t) => {
   const expected = [
     'plugins:list', 'plugins:get', 'plugins:install', 'plugins:enable', 'plugins:disable', 'plugins:uninstall',
     'plugins:grant', 'plugins:revoke', 'plugins:runtime-descriptors', 'plugins:load-entry', 'plugins:load-localization',
-    'plugins:load-document-view', 'plugins:document-open', 'plugins:document-read', 'plugins:document-close', 'plugins:rpc',
+    'plugins:load-document-view', 'plugins:document-open', 'plugins:document-read', 'plugins:document-close', 'plugins:document-save', 'plugins:rpc',
     'plugins:agent-approval-describe', 'plugins:agent-approval-decide', 'plugins:agent-approval-cancel',
     'plugins:agent-access-get', 'plugins:agent-access-set', 'plugins:agent-access-clear',
     'plugins:open-folder', 'plugins:refresh'

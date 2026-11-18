@@ -19,6 +19,7 @@ import type {
   DocumentCloseResultDto,
   DocumentInfoDto,
   DocumentReadResultDto,
+  DocumentSaveResultDto,
   DocumentViewLocalizationDto,
   LoadedDocumentViewDto
 } from './document-view';
@@ -199,6 +200,9 @@ export interface IpcInvokeContracts {
   'plugins:document-close': IpcInvokeContract<[
     request: { readonly documentId: string }
   ], DocumentCloseResultDto>;
+  'plugins:document-save': IpcInvokeContract<[
+    request: { readonly documentId: string; readonly text: string }
+  ], DocumentSaveResultDto>;
   'plugins:marketplace-list': IpcInvokeContract<[], PluginMarketplaceSnapshotDto>;
   'plugins:marketplace-refresh': IpcInvokeContract<[], PluginMarketplaceSnapshotDto>;
   'plugins:marketplace-install': IpcInvokeContract<

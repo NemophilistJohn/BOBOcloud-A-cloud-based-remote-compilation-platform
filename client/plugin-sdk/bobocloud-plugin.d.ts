@@ -1,5 +1,5 @@
 /**
- * BOBOCloud Plugin API 1.7.0 declarations.
+ * BOBOCloud Plugin API 1.8.0 declarations.
  *
  * Copy or reference this file from a plugin's TypeScript project. The runtime
  * is a sandboxed ES module; Node.js, Electron, DOM, and window APIs are not
@@ -30,6 +30,8 @@ export type PluginPermission =
   | 'scm.git.write'
   | 'documentViews.register'
   | 'documents.read'
+  | 'documents.write'
+  | 'documents.analyze'
   | 'agents.register'
   | 'models.generate'
   | 'workspace.read'
@@ -962,6 +964,8 @@ export interface DocumentViewContext {
     readonly extension: string;
     readonly size: number;
     readonly lastModified: string;
+    readonly writable?: boolean;
+    readonly analyzable?: boolean;
   }>;
   readonly viewer: Readonly<{
     readonly id: string;
@@ -979,6 +983,18 @@ export interface DocumentViewContext {
   /** Reads the current document only when it is within the supplied bounded limit. */
   readAll(maximumBytes?: number): Promise<Uint8Array>;
   readText(maximumBytes?: number, encoding?: string): Promise<string>;
+  /** API 1.8, documents.write. Compares the opened disk version and atomically replaces it. Limit 24 MiB. */
+  writeText?(text: string): Promise<{ readonly ok: true } | { readonly ok: false; readonly code: string }>;
+  setDirty?(dirty: boolean): void;
+  onSave?(handler: () => boolean | Promise<boolean>): void;
+  /** API 1.8, documents.analyze. Uses the configured Python analyzer for the visible document. */
+  analyze?(request:
+    | { readonly kind: 'update'; readonly revision: number; readonly text: string }
+    | { readonly kind: 'complete'; readonly revision: number; readonly line: number; readonly character: number }
+  ): Promise<readonly { readonly label: string; readonly insertText: string }[] | undefined>;
+  onDiagnostics?(handler: (revision: number, items: readonly {
+    readonly line: number; readonly character: number; readonly severity: number; readonly message: string;
+  }[]) => void): void;
 }
 
 export type ActivateDocumentView = (context: DocumentViewContext) => ActivationResult;

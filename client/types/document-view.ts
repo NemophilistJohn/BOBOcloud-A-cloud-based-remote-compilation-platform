@@ -85,8 +85,30 @@ export interface DocumentInfoDto {
   readonly extension: string;
   readonly size: number;
   readonly lastModified: string;
+  readonly writable?: boolean;
+  readonly analyzable?: boolean;
 }
 
+export type DocumentSaveResultDto = { readonly ok: true } | { readonly ok: false; readonly code: string };
+export type DocumentAnalysisRequest =
+  | { readonly kind: 'update'; readonly text: string; readonly revision: number }
+  | { readonly kind: 'complete'; readonly revision: number; readonly line: number; readonly character: number };
+export interface DocumentAnalysisDiagnostic {
+  readonly line: number;
+  readonly character: number;
+  readonly severity: number;
+  readonly message: string;
+}
+export interface DocumentAnalysisCompletion {
+  readonly label: string;
+  readonly insertText: string;
+}
+export interface DocumentAnalysisPort {
+  update(path: string, revision: number, text: string,
+    diagnostics: (revision: number, items: readonly DocumentAnalysisDiagnostic[]) => void): void;
+  complete(path: string, revision: number, line: number, character: number): Promise<readonly DocumentAnalysisCompletion[]>;
+  close(path: string): void;
+}
 export interface DocumentReadRangeDto {
   readonly offset: number;
   readonly length: number;
@@ -111,6 +133,7 @@ export interface DocumentViewHost {
   loadLocalization(pluginId: string, locale: string): Promise<DocumentViewLocalizationDto>;
   openDocument(pluginId: string, viewerId: string, filePath: string): Promise<DocumentInfoDto>;
   readDocument(documentId: string, offset: number, length: number): Promise<DocumentReadResultDto>;
+  saveDocument?(documentId: string, text: string): Promise<DocumentSaveResultDto>;
   closeDocument(documentId: string): Promise<DocumentCloseResultDto>;
 }
 
@@ -126,6 +149,9 @@ export interface SandboxedDocumentViewOptions {
     range: DocumentReadRangeDto
   ) => DocumentReadResultDto | PromiseLike<DocumentReadResultDto>;
   readonly onError?: (error: Error) => void;
+  readonly write?: (text: string) => Promise<DocumentSaveResultDto>;
+  readonly onDirty?: (dirty: boolean) => void;
+  readonly analyze?: (request: DocumentAnalysisRequest) => unknown;
 }
 
 export interface SandboxedDocumentView extends Disposable {
@@ -133,6 +159,8 @@ export interface SandboxedDocumentView extends Disposable {
   readonly ready: Promise<void>;
   show(): void;
   hide(): void;
+  save?(): Promise<boolean>;
+  diagnostics?(revision: number, items: readonly DocumentAnalysisDiagnostic[]): void;
   updateLocalization(value: DocumentViewLocalizationDto): void;
   updateTheme(value: DocumentViewThemeDto): void;
 }
@@ -145,11 +173,13 @@ export interface DocumentViewInstance {
   readonly error: HTMLElement;
   readonly sandbox: SandboxedDocumentView;
   disposed: boolean;
+  dirty?: boolean;
 }
 
 export interface DocumentViewTabLike {
   readonly path: string;
   documentView?: DocumentViewInstance | null;
+  dirty?: boolean;
 }
 
 export interface DocumentViewState {
@@ -204,6 +234,9 @@ export interface DocumentViewDependencies {
   readonly workspace: DocumentViewWorkspacePort;
   readonly contributions: DocumentViewContributionPort;
   readonly host: DocumentViewHost;
+  readonly analysis?: DocumentAnalysisPort;
+  readonly onDirty?: (path: string, dirty: boolean) => void;
+  readonly onSave?: (path: string) => void;
   readonly createSandboxedView?: (
     options: SandboxedDocumentViewOptions
   ) => SandboxedDocumentView;

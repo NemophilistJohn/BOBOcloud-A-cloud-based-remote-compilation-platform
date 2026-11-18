@@ -1,6 +1,6 @@
 # BOBOCloud Plugin Development Guide
 
-This guide covers BOBOCloud Plugin API `1.6.0` and `1.7.0`. BOBOCloud `2.8.1` originally shipped with API `1.6.0`; check `context.apiVersion` for features added in later builds.
+This guide covers BOBOCloud Plugin API through `1.8.0`. BOBOCloud `2.8.1` originally shipped with API `1.6.0`; check `context.apiVersion` for features added in later builds.
 
 Plugins are installed locally. They run in an isolated sandbox and communicate with the workbench through a narrow, permission-gated API. A plugin is never given Node.js, Electron IPC, `window.api`, account credentials, the workspace path, or arbitrary DOM access.
 
@@ -379,6 +379,8 @@ Every permission must appear in `manifest.permissions`. After a verified install
 | `scm.git.write` | Call structured local SCM mutation operations. |
 | `documentViews.register` | Register a document viewer already authorized by schema-2 manifest metadata. |
 | `documents.read` | Read only the current user-opened document from that viewer through a scoped opaque handle. |
+| `documents.write` | Optionally edit the current document. Register a save handler and mark dirty changes so the workbench can guard tab and workspace closes. |
+| `documents.analyze` | Optionally submit a Python text projection (up to 256 Ki UTF-16 code units) and request completion at a position. Only the visible document can use the configured remote analyzer. |
 | `agents.register` | Register a bounded host-rendered Agent provider and publish its state. |
 | `models.generate` | List opaque model refs, generate turns, and cancel this plugin's requests. |
 | `workspace.read` | Invoke bounded workspace list, read, and search tools. |

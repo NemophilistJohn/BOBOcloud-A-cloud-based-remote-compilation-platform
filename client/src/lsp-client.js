@@ -772,6 +772,10 @@
     return {
       readOrRefresh: readOrRefresh,
       read: read,
+      store: function(uri, key, requestContextKey, value) {
+        invalidate(uri);
+        states.set(uri, { generation: 0, cache: { key: key, requestContextKey: requestContextKey, value: value }, inFlight: null });
+      },
       invalidate: invalidate,
       clear: function() {
         states.forEach(function(state) { cancelRun(state.inFlight); });
@@ -834,8 +838,17 @@
     return file === root || file.indexOf(root + '/') === 0;
   }
 
+  var activeVirtualDocument = null;
+  var virtualDocumentVersion = 0;
+
+  function wireVersion(model) {
+    return activeVirtualDocument && activeVirtualDocument.model === model
+      ? activeVirtualDocument.wireVersion : model.getVersionId();
+  }
+
   function relativePathForModel(model) {
     if (!model || !S.workspaceRoot) return '';
+    if (activeVirtualDocument && activeVirtualDocument.model === model) return activeVirtualDocument.relativePath;
     var tab = (S.tabs || []).find(function(item) { return item.model === model; });
     var filePath = tab && tab.path;
     if (!filePath && model.uri && model.uri.scheme === 'file') filePath = model.uri.fsPath;
@@ -960,7 +973,124 @@
   }
 
   function currentModel() {
+    if (activeVirtualDocument) return activeVirtualDocument.model;
     return S.editor && S.editor.getModel ? S.editor.getModel() : null;
+  }
+
+  function closeVirtualDocument(path) {
+    var document = activeVirtualDocument;
+    if (!document || document.path !== path) return;
+    cancelRequestKey(document.requestKey);
+    // Dispose while the model still owns its wire URI so didClose can be sent.
+    document.model.dispose();
+    activeVirtualDocument = null;
+    invalidateCompletionContext(true);
+    scheduleConfigure();
+  }
+
+  function updateVirtualDocument(path, revision, text, diagnostics) {
+    if (!monacoRef || !S.workspaceRoot || !pathInsideRoot(path, S.workspaceRoot)) return;
+    var document = activeVirtualDocument;
+    if (document && document.path !== path) {
+      closeVirtualDocument(document.path);
+      document = null;
+    }
+    if (!document) {
+      var relative = path.slice(String(S.workspaceRoot).length).replace(/^[/\\]+/, '').replace(/\\/g, '/');
+      var slash = relative.lastIndexOf('/');
+      var synthetic = relative.slice(0, slash + 1) + '__bobo_notebook_' + stableCompletionHash(relative) + '.py';
+      var model = monacoRef.editor.createModel(text, 'python');
+      document = activeVirtualDocument = { path: path, relativePath: synthetic, model: model,
+        revision: revision, wireVersion: ++virtualDocumentVersion, diagnostics: diagnostics, requestKey: '' };
+      if (BOBO.runtime && BOBO.runtime.autoSelectForLanguage) BOBO.runtime.autoSelectForLanguage('python');
+      invalidateCompletionContext(true);
+      scheduleConfigure();
+      openDocument(model);
+      return;
+    }
+    if (revision <= document.revision) return;
+    cancelRequestKey(document.requestKey);
+    document.revision = revision;
+    document.wireVersion = ++virtualDocumentVersion;
+    if (text !== document.model.getValue()) document.model.setValue(text);
+    else {
+      // A reorder can keep the text identical while changing its cell owners.
+      // Force a full sync so only diagnostics for the new mapping are accepted.
+      closeDocument(document.model);
+      openDocument(document.model);
+    }
+  }
+
+  function virtualCompletionItems(value, model, position) {
+    var items = Array.isArray(value) ? value : value && value.items;
+    if (!Array.isArray(items)) return [];
+    var word = model?.getWordUntilPosition(position);
+    var wordRange = word && { startLineNumber: position.lineNumber, endLineNumber: position.lineNumber,
+      startColumn: word.startColumn, endColumn: word.endColumn };
+    return items.filter(function(item) {
+      return item && typeof item.label === 'string' && item.label.length <= 256 &&
+        item.insertTextFormat !== 2 && !item.additionalTextEdits?.length && !item.command &&
+        (!item.textEdit || textEditMatchesWordRange(item.textEdit, wordRange));
+    }).slice(0, 60).map(function(item) {
+      var text = item.textEdit?.newText || item.insertText || item.label;
+      return typeof text === 'string' && text.length <= 256 && !/[\r\n\0]/.test(text)
+        ? { label: item.label, insertText: text } : null;
+    }).filter(Boolean);
+  }
+
+  async function completeVirtualDocument(path, revision, line, character) {
+    var document = activeVirtualDocument;
+    if (!document || document.path !== path || document.revision !== revision) return [];
+    var model = document.model;
+    if (line >= model.getLineCount() || character >= model.getLineMaxColumn(line + 1)) return [];
+    var position = { lineNumber: line + 1, column: character + 1 };
+    var snapshot = completionSnapshot(model, position);
+    if (!snapshot || settings.mode === 'local') return [];
+    var index = ensureDependencyApiIndex(model);
+    var apiHint = index && index.value ? dependencyApiIndexCompletions(index.value, snapshot) : null;
+    if (status.state !== 'ready' || activeLanguage !== 'python' || !completionProviderCapability(lspProtocolCapabilities)) {
+      return virtualCompletionItems(apiHint);
+    }
+    var current = function() {
+      return activeVirtualDocument === document && document.revision === revision &&
+        completionContextGeneration === snapshot.contextGeneration && status.state === 'ready' &&
+        String(status.sessionId || '') === snapshot.sessionId && activeLanguage === 'python';
+    };
+    var protocolContext = { triggerKind: 1 };
+    var cacheScope = canUseClientCompletionCache(model) ? clientCompletionCacheScope(model, true) : null;
+    var requestContextKey = JSON.stringify(protocolContext);
+    var answer = completionCoordinator.read(snapshot.uri, snapshot.key, requestContextKey);
+    if (answer !== null) return virtualCompletionItems(mergeLocalCompletionResults(answer, apiHint));
+    var scopeId = clientCompletionCacheScopeId(cacheScope);
+    var cacheKey = cacheScope ? clientCompletionCacheKey(snapshot, protocolContext) : '';
+    var hint = cacheScope && completionHintCache.peek(scopeId, cacheKey);
+    if (cacheScope && !hint) {
+      try { hint = await readDurableCompletionHint(cacheScope, cacheKey); } catch (_) {}
+      if (!current()) return [];
+      if (hint) primeCompletionHint(scopeId, cacheKey, hint, 'durable');
+    }
+    if (hint && clientCacheMode() === 'lazy') return virtualCompletionItems(mergeLocalCompletionResults(hint, apiHint));
+    var requestKey = 'virtual-completion:' + requestSequence++;
+    document.requestKey = requestKey;
+    try {
+      if (await ensureDocumentSynchronized(model) && current()) {
+        var params = textDocumentPosition(model, position);
+        params.context = protocolContext;
+        var result = await request('textDocument/completion', params, null, 1800, requestKey, true);
+        if (!current()) return [];
+        if (result != null) {
+          var items = virtualCompletionItems(result, model, position);
+          // Only the projected editor's plain insertions may enter the local cache.
+          var safe = { items: items };
+          completionCoordinator.store(snapshot.uri, snapshot.key, requestContextKey, safe);
+          if (cacheScope) persistCompletionHint(cacheScope, scopeId, cacheKey, safe, model, position);
+          return virtualCompletionItems(mergeLocalCompletionResults(safe, apiHint));
+        }
+      }
+      return current() ? virtualCompletionItems(mergeLocalCompletionResults(hint || null, apiHint)) : [];
+    } finally {
+      if (document.requestKey === requestKey) document.requestKey = '';
+    }
   }
 
   function desiredLanguage() {
@@ -1180,7 +1310,7 @@
     var uri = wireUriForModel(model);
     if (!uri) return Promise.resolve(false);
     if (openedDocuments.has(uri)) return documentSyncQueue.wait(uri);
-    var version = model.getVersionId();
+    var version = wireVersion(model);
     var languageId = model.getLanguageId();
     var text = model.getValue();
     var syncGeneration = documentSyncGeneration;
@@ -1247,7 +1377,7 @@
     if (!queue) return documentSyncQueue.wait(uri);
     if (queue.timer) clearTimeout(queue.timer);
     changeQueues.delete(uri);
-    var version = queue.model.getVersionId();
+    var version = wireVersion(queue.model);
     var syncGeneration = documentSyncGeneration;
     openedDocuments.set(uri, version);
     return documentSyncQueue.enqueue(uri, function() {
@@ -1999,10 +2129,14 @@
     return completionHintCache.prime(scopeId, key, value, source);
   }
 
+  function readDurableCompletionHint(scope, key) {
+    return global.api.lspClientCacheGet(scope, key);
+  }
+
   function hydrateCompletionHint(scope, scopeId, key, snapshot, retriggerOnHit) {
     if (!scope || !scopeId || !key || completionHintCache.peek(scopeId, key) || completionHintCache.hasPending(scopeId, key)) return;
     var cacheEpoch = completionHintCache.epoch();
-    var hydration = Promise.resolve(global.api.lspClientCacheGet(scope, key)).then(function(value) {
+    var hydration = Promise.resolve(readDurableCompletionHint(scope, key)).then(function(value) {
       if (!completionHintCache.isCurrent(cacheEpoch) || !value || !completionSnapshotIsValid(snapshot)) return false;
       if (!primeCompletionHint(scopeId, key, value, 'durable')) return false;
       if (retriggerOnHit !== false) retriggerCompletion(snapshot);
@@ -2501,6 +2635,20 @@
 
   function applyDiagnostics(params) {
     if (!params || !params.uri || !monacoRef || !activeLspDecision().available) return;
+    var virtual = activeVirtualDocument;
+    if (virtual && params.uri === wireUriForModel(virtual.model)) {
+      if (params.version !== virtual.wireVersion || status.state !== 'ready') return;
+      virtual.diagnostics(virtual.revision, (Array.isArray(params.diagnostics) ? params.diagnostics : []).slice(0, 200)
+        .filter(function(item) {
+          return item && Number.isSafeInteger(item.range?.start?.line) && item.range.start.line >= 0 &&
+            Number.isSafeInteger(item.range.start.character) && item.range.start.character >= 0 &&
+            typeof item.message === 'string';
+        }).map(function(item) {
+          return { line: item.range.start.line, character: item.range.start.character,
+            severity: Number(item.severity) || 3, message: item.message.slice(0, 512) };
+        }));
+      return;
+    }
     var resource = localUriFromWire(params.uri);
     if (!resource) return;
     var model = monacoRef.editor.getModel(resource);
@@ -3310,6 +3458,11 @@
     },
     dependenciesChanged: dependenciesChanged,
     documentSaved: documentSaved,
+    virtualDocuments: Object.freeze({
+      update: updateVirtualDocument,
+      complete: completeVirtualDocument,
+      close: closeVirtualDocument
+    }),
     renderStatus: renderStatus,
     getClientCacheScope: getClientCacheScope,
     getClientCacheStats: getClientCacheStats,

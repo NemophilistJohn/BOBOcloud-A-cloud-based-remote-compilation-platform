@@ -1,4 +1,4 @@
-# BOBOCloud Plugin API 1.7.0
+# BOBOCloud Plugin API 1.8.0
 
 Status: public package and isolated extension-host contract. BOBOCloud desktop `2.8.1` implements API 1.6 while remaining compatible with packages that target an earlier API 1.x range. API 1.6 adds truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism.
 
@@ -156,6 +156,8 @@ For API 1.6.0, a package may request only these permissions:
 | `scm.git.write` | Local SCM mutation requests through `context.scm.git` |
 | `documentViews.register` | Register a manifest-declared document viewer with the workbench. |
 | `documents.read` | Let that viewer read only the document the user opened through a scoped opaque handle. |
+| `documents.write` | Save only the open document via version-checked replacement (up to 24 MiB). |
+| `documents.analyze` | Send a Python projection of the visible document to the configured LSP, when remote analysis is enabled. |
 | `agents.register` | Register one host-rendered Agent workbench provider and publish bounded state. |
 | `models.generate` | List opaque host model references and generate through a configured local AI profile. |
 | `workspace.read` | Invoke the bounded `workspace_list`, `workspace_read`, and `workspace_search` tools. |

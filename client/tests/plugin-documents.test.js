@@ -2,6 +2,9 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 
 const {
   MAX_DOCUMENT_SESSION_READS,
@@ -98,6 +101,39 @@ async function openDocument(harness, suffix = 'sample.bin') {
 function readDocument(harness, documentId) {
   return harness.broker.read(harness.event, { documentId, offset: 0, length: 1 });
 }
+
+test('document writes are sender-bound, refresh the disk version and reject external changes', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bobo-document-save-'));
+  const filePath = path.join(root, 'report.ipynb');
+  t.after(async () => { await fs.unlink(filePath); await fs.rmdir(root); });
+  await fs.writeFile(filePath, 'original');
+  let grant = true;
+  let notifications = 0;
+  const broker = createPluginDocumentBroker({
+    authorize: async () => ({ extensions: ['.ipynb'], canWrite: grant }),
+    getWorkspaceIdentity: () => ({ workspaceIdentity: 1 }),
+    resolveWorkspaceFile: (requested) => ({ filePath: requested, workspaceIdentity: 1 }),
+    runMutation: (_path, task) => task({ assertCurrent() {} }),
+    notifyFiles: () => { notifications++; }
+  });
+  const sender = { sender: { id: 1 } };
+  const open = () => broker.open(sender, { pluginId: 'acme.preview', viewerId: 'acme.viewer', filePath });
+  const { documentId, writable } = await open();
+  assert.equal(writable, true);
+  await assert.rejects(broker.save({ sender: { id: 2 } }, { documentId, text: 'wrong sender' }),
+    { code: 'DOCUMENT_VIEW_NOT_FOUND' });
+  grant = false;
+  await assert.rejects(broker.save(sender, { documentId, text: 'missing permission' }), { code: 'DOCUMENT_VIEW_DENIED' });
+  grant = true;
+  for (const text of ['first save', 'second save']) {
+    assert.deepEqual(await broker.save(sender, { documentId, text }), { ok: true });
+    assert.equal(await fs.readFile(filePath, 'utf8'), text);
+  }
+  await fs.writeFile(filePath, 'outside edit');
+  await assert.rejects(broker.save(sender, { documentId, text: 'should not overwrite' }), { code: 'DOCUMENT_VIEW_CHANGED' });
+  assert.equal(await fs.readFile(filePath, 'utf8'), 'outside edit');
+  assert.equal(notifications, 2);
+});
 
 test('document broker bounds reads per session and restores capacity after settlement', async () => {
   const harness = createHarness();

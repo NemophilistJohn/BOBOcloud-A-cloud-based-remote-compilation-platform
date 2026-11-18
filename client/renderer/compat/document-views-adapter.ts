@@ -1,5 +1,6 @@
 import { createDocumentViewService } from '../../src/document-views';
 import type {
+  DocumentAnalysisPort,
   DocumentViewContributionChangeEventDto,
   DocumentViewI18n,
   DocumentViewService,
@@ -19,7 +20,11 @@ interface LegacyBobo {
   state?: DocumentViewState;
   i18n?: DocumentViewI18n;
   views?: DocumentViewViewsPort;
-  workspace?: DocumentViewWorkspacePort;
+  workspace?: DocumentViewWorkspacePort & {
+    documentViewDirty?(path: string, dirty: boolean): void;
+    documentViewSaved?(path: string): void;
+  };
+  lsp?: { virtualDocuments?: DocumentAnalysisPort };
   documentViews?: DocumentViewService;
 }
 
@@ -72,6 +77,13 @@ const documentViews = createDocumentViewService({
       BOBO.workspace?.closeTab(path, options)
     )
   }),
+  analysis: {
+    update: (...args) => BOBO.lsp?.virtualDocuments?.update(...args),
+    complete: async (...args) => await BOBO.lsp?.virtualDocuments?.complete(...args) ?? [],
+    close: (path) => BOBO.lsp?.virtualDocuments?.close(path)
+  },
+  onDirty: (path, dirty) => BOBO.workspace?.documentViewDirty?.(path, dirty),
+  onSave: (path) => BOBO.workspace?.documentViewSaved?.(path),
   contributions: Object.freeze({
     list: () => rendererPlatform.contributions.listEntries(ContributionPoint.DOCUMENT_VIEWS),
     onDidChange: (listener: (event: DocumentViewContributionChangeEventDto) => void) => (
