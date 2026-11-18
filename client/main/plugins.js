@@ -15,7 +15,8 @@ const { capturePluginRpcResult } = require('./plugin-rpc-transport');
 const { compareSemver, isValidSemver, satisfiesVersionRange } = require('../shared/plugin-semver');
 const { createTrustedRendererSender } = require('./trusted-ipc');
 
-const PLUGIN_API_VERSION = '1.6.0';
+const PLUGIN_API_VERSION = '1.7.0';
+const SOURCE_CONTROL_ICONS = new Set(['git-branch', 'notebook']);
 const PACKAGE_SCHEMA_VERSIONS = new Set([1, 2]);
 const STATE_SCHEMA_VERSION = 1;
 const PERMISSIONS_SCHEMA_VERSION = 2;
@@ -1643,7 +1644,7 @@ function createPluginController(options) {
       if (Object.keys(payload).some((key) => !allowed.has(key)) ||
           !isNonEmptyString(payload.id, 180) || !payload.id.startsWith(pluginId + '.') ||
           !isNonEmptyString(payload.title, 96) ||
-          (payload.icon !== undefined && payload.icon !== 'git-branch') ||
+          (payload.icon !== undefined && !SOURCE_CONTROL_ICONS.has(payload.icon)) ||
           (payload.order !== undefined && (!Number.isInteger(payload.order) || payload.order < -1000 || payload.order > 1000)) ||
           (payload.openCommand !== undefined && payload.openCommand !== null &&
             (!isNonEmptyString(payload.openCommand, 180) || !payload.openCommand.startsWith(pluginId + '.')))) {

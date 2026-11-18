@@ -441,7 +441,7 @@ test('renderer platform bootstrap exposes the precise runtime contract without a
     'declare const compatibility: RendererPlatformCompatibilityFacade;',
     'const bootstrapped: RendererPlatform = rendererPlatform;',
     'const created: RendererPlatform = createRendererPlatform();',
-    "const apiVersion: '1.6.0' = created.apiVersion;",
+    "const apiVersion: '1.7.0' = created.apiVersion;",
     'const disposed: boolean = created.disposed;',
     'const disposal: Promise<void> = created.dispose();',
     "created.services.require('workbench.projectTasks').refresh();",
@@ -483,7 +483,7 @@ test('renderer platform bootstrap exposes the precise runtime contract without a
     'created.sourceControls.list();',
     'created.agents.list();',
     'created.plugins.list();',
-    "const compatibilityApiVersion: '1.6.0' = compatibility.apiVersion;",
+    "const compatibilityApiVersion: '1.7.0' = compatibility.apiVersion;",
     "const compatibilityService: unknown = compatibility.services.get('host.pluginExtensions');",
     "const compatibilityCommand: Promise<unknown> = compatibility.commands.execute('plugin.dynamic', { value: 1 });",
     "const compatibilityContribution: Disposable = compatibility.contributions.register('plugin.dynamic', { id: 'acme.dynamic' });",
@@ -2365,7 +2365,7 @@ test('thin BOBO adapters project registered file icon and command palette servic
   vm.runInNewContext(compatibilityBundle, context);
 
   const BOBO = context.window.BOBO;
-  assert.equal(BOBO.platform.apiVersion, '1.6.0');
+  assert.equal(BOBO.platform.apiVersion, '1.7.0');
   assert.equal(Object.isFrozen(BOBO.platform), true);
   for (const key of [
     'fileDecorations', 'sourceControl', 'agents', 'services', 'commands', 'contributions', 'plugins'

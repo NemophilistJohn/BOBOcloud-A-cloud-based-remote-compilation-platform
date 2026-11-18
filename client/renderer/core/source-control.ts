@@ -50,7 +50,8 @@ const MAX_SELECT_OPTIONS = 80;
 // They never supply HTML, styles, a renderer callback, URL, path, or workbench
 // object. The host owns all DOM creation and command dispatch.
 export const SourceControlIcon = Object.freeze({
-  GIT_BRANCH: 'git-branch'
+  GIT_BRANCH: 'git-branch',
+  NOTEBOOK: 'notebook'
 } as const);
 
 export const SourceControlPhase = Object.freeze({

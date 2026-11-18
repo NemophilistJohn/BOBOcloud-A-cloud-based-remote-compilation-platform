@@ -1,6 +1,6 @@
 # BOBOCloud Plugin Development Guide
 
-This guide targets BOBOCloud Plugin API `1.6.0`, whose minimum desktop host is BOBOCloud `2.8.1`.
+This guide covers BOBOCloud Plugin API `1.6.0` and `1.7.0`. BOBOCloud `2.8.1` originally shipped with API `1.6.0`; check `context.apiVersion` for features added in later builds.
 
 Plugins are installed locally. They run in an isolated sandbox and communicate with the workbench through a narrow, permission-gated API. A plugin is never given Node.js, Electron IPC, `window.api`, account credentials, the workspace path, or arbitrary DOM access.
 
@@ -305,7 +305,7 @@ Services return an immutable snapshot or narrow data view. They never provide di
 
 ### Source-control sidebar
 
-`sourceControl.register` needs `sourceControl.register`. It creates a lifecycle-owned, host-rendered sidebar provider rather than a plugin webview. The provider publishes only a bounded `SourceControlState`: localized heading and status strings, one summary, bounded sections and items, optional load-more commands, and bounded host-rendered forms/actions. The host owns the activity-bar icon, panel DOM, styles, accessibility behavior, and form validation.
+`sourceControl.register` needs `sourceControl.register`. It creates a lifecycle-owned, host-rendered sidebar provider rather than a plugin webview. The provider publishes only a bounded `SourceControlState`: localized heading and status strings, one summary, bounded sections and items, optional load-more commands, and bounded host-rendered forms/actions. The host owns the activity-bar icon, panel DOM, styles, accessibility behavior, and form validation. Sidebar providers can request `icon: 'notebook'` on API 1.7.0 or later; omit it to use the default icon on older hosts.
 
 Every referenced command must be registered by the same plugin and use its namespace. The host invokes it with one `SourceControlCommandPayload`, never arbitrary arguments. `clearState()` returns the provider to its waiting state; disabling, refreshing, or uninstalling the plugin also disposes it. See [Plugin API: Source-Control Sidebar](./plugin-api.md#source-control-sidebar) and the SDK declarations for the exact shape.
 

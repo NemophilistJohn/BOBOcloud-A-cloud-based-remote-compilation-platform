@@ -12,6 +12,7 @@ import type {
   SourceControlFormDto,
   SourceControlFormFieldDto,
   SourceControlFormValues,
+  SourceControlIconDto,
   SourceControlMenuActionDto,
   SourceControlRawFormValues,
   SourceControlSectionDto,
@@ -118,10 +119,14 @@ export function createSourceControlViewService(
     svg.appendChild(path);
   }
 
-  // A compact, conventional source-control branch mark. The host owns this
-  // graphic; an extension can request only the semantic `git-branch` icon.
-  function icon(): SVGSVGElement {
+  function icon(kind: SourceControlIconDto): SVGSVGElement {
     const svg = svgElement();
+    svg.setAttribute('data-sidebar-icon', kind);
+    if (kind === 'notebook') {
+      svgPath(svg, 'M6.5 3h11a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2ZM7.5 3v18');
+      svgPath(svg, 'M12 7.5h4M14.5 7.5v6a2 2 0 0 1-4 0');
+      return svg;
+    }
     svgPath(svg, 'M7 4v16M7 7h4a4 4 0 0 0 4-4V2M7 16h4a4 4 0 0 1 4 4v1');
     ['4', '20', '2'].forEach((cy) => {
       const node = hostDocument.createElementNS('http://www.w3.org/2000/svg', 'circle');
@@ -706,7 +711,7 @@ export function createSourceControlViewService(
     buttonNode.setAttribute('data-workbench-view', view);
     buttonNode.setAttribute('data-i18n-skip', '');
     buttonNode.setAttribute('aria-pressed', 'false');
-    buttonNode.appendChild(icon());
+    buttonNode.appendChild(icon(record.descriptor.icon));
 
     const section = element('section', 'sidebar-view source-control-sidebar');
     section.setAttribute('data-sidebar-view', view);

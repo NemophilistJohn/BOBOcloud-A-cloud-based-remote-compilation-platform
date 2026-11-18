@@ -1,5 +1,5 @@
 /**
- * BOBOCloud Plugin API 1.6.0 declarations.
+ * BOBOCloud Plugin API 1.7.0 declarations.
  *
  * Copy or reference this file from a plugin's TypeScript project. The runtime
  * is a sandboxed ES module; Node.js, Electron, DOM, and window APIs are not
@@ -103,7 +103,8 @@ export interface PluginContributions {
 export interface SourceControlDescriptor {
   readonly id: string;
   readonly title: string;
-  readonly icon?: 'git-branch';
+  /** The notebook icon is available since API 1.7.0. */
+  readonly icon?: 'git-branch' | 'notebook';
   readonly order?: number;
   readonly openCommand?: string;
 }

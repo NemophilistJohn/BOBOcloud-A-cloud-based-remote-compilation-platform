@@ -1237,6 +1237,16 @@ test('SCM and static source-control permissions remain main-process authorized',
     }),
     { authorized: true, method: 'fileDecorations.scm.register', permission: 'fileDecorations.scm' }
   );
+  const sidebar = { id: 'acme.sample-plugin.notebooks', title: 'Notebooks' };
+  assert.equal((await harness.controller.rpc('acme.sample-plugin', 'sourceControl.register', {
+    ...sidebar, icon: 'notebook'
+  })).authorized, true);
+  await assert.rejects(
+    () => harness.controller.rpc('acme.sample-plugin', 'sourceControl.register', {
+      ...sidebar, icon: '<svg />'
+    }),
+    { code: 'plugins.rpc.sourceControl' }
+  );
   await assert.rejects(
     () => harness.controller.rpc('acme.sample-plugin', 'fileDecorations.scm.set', {}),
     { code: 'plugins.rpc.denied' }

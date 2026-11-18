@@ -72,7 +72,7 @@ export async function activate(context) {
   view = await context.sourceControl.register({
     id: 'example.source-control-host.view',
     title: context.i18n.t('Workspace records'),
-    icon: 'git-branch',
+    icon: 'notebook',
     order: 25
   });
   await publish();
@@ -188,6 +188,9 @@ test('installed source-control providers receive a host-rendered sidebar with fo
 
     const activity = page.locator('.source-control-activity');
     await expect(activity).toBeVisible();
+    const icon = activity.locator('svg[data-sidebar-icon="notebook"]');
+    await expect(icon).toBeVisible();
+    await expect(icon.locator('path')).toHaveCount(2);
     await activity.click();
     const panel = page.locator('.source-control-sidebar.active');
     await expect(panel).toBeVisible();
@@ -355,6 +358,7 @@ test('source-control view keeps provider order, form payloads, targeted renders,
 
     const activities = page.locator('.source-control-activity');
     await expect(activities).toHaveCount(3);
+    await expect(activities.first().locator('svg[data-sidebar-icon="git-branch"] circle')).toHaveCount(3);
     await expect.poll(() => activities.evaluateAll((nodes) => (
       nodes.map((node) => node.getAttribute('data-workbench-view'))
     ))).toEqual([

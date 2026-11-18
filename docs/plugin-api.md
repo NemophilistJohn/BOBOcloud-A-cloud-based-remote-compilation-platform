@@ -1,4 +1,4 @@
-# BOBOCloud Plugin API 1.6.0
+# BOBOCloud Plugin API 1.7.0
 
 Status: public package and isolated extension-host contract. BOBOCloud desktop `2.8.1` implements API 1.6 while remaining compatible with packages that target an earlier API 1.x range. API 1.6 adds truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism.
 
@@ -300,7 +300,7 @@ await view.setState({
 });
 ```
 
-`id`, `openCommand`, every section-item command, every action command, and every load-more command must use the calling plugin namespace. `icon` currently accepts only `git-branch`; `order` is an integer from `-1000` through `1000`. Disabling, refreshing, or uninstalling a package disposes the provider and removes its activity item and panel.
+`id`, `openCommand`, every section-item command, every action command, and every load-more command must use the calling plugin namespace. The host renders the icon from a fixed set: `git-branch` (default) and `notebook` (since API 1.7.0). Plugins supporting older hosts can check `context.apiVersion` and omit the icon on those hosts. `order` is an integer from -1000 to 1000. Disabling, refreshing, or uninstalling a package disposes the provider and removes its activity item and panel.
 
 `SourceControlState` accepts `phase` (`idle`, `loading`, `ready`, `empty`, or `error`), optional localized `title` and `message`, one bounded summary, at most 8 bounded sections, and at most 16 actions. Each section contains bounded item data and may contain one `loadMore` command. An action can be immediate or carry one bounded host-rendered form containing text, textarea, select, and checkbox fields. Actions may request the host-owned `button`, compact `toolbar`, or overflow `menu` placement. Toolbar actions must use a supported semantic icon token; plugins cannot provide SVG, HTML, CSS, or their own menu DOM. The exact TypeScript shapes are in [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts).
 

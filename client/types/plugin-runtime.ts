@@ -14,7 +14,7 @@ import type {
   SourceControlVersionDto
 } from './source-control';
 
-export type PluginApiVersionDto = '1.6.0';
+export type PluginApiVersionDto = '1.7.0';
 
 export type PluginPermissionDto =
   | 'commands.register'

@@ -1,6 +1,6 @@
 import type { Disposable } from './lifecycle';
 
-export type SourceControlIconDto = 'git-branch';
+export type SourceControlIconDto = 'git-branch' | 'notebook';
 
 export type SourceControlPhaseDto =
   | 'idle'
