@@ -78,6 +78,7 @@ export interface WorkbenchSettingsPort {
 
 export interface WorkbenchProjectsPort {
   open?(): unknown;
+  close?(): unknown;
 }
 
 export interface WorkbenchCollaborationCurrentDto {

@@ -470,50 +470,6 @@
 }
 #chpwd-modal.open { display: flex; }
 
-/* ── Server Projects 弹窗 ── */
-#projects-modal {
-  display: none; position: fixed; inset: 0; z-index: 4500;
-  background: rgba(0,0,0,0.55);
-  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
-  justify-content: center; align-items: center;
-}
-#projects-modal.open { display: flex; }
-.projects-card {
-  width: 840px; max-width: 96vw; max-height: 88vh;
-  background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-xl);
-  display: flex; flex-direction: column; overflow: hidden;
-}
-
-/* ── 头部 ── */
-.projects-head {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 14px var(--space-5) var(--space-3) var(--space-5);
-}
-
-/* ── 顶部摘要 ── */
-.projects-summary {
-  padding: 0 var(--space-5) var(--space-4) var(--space-5);
-  font-size: var(--text-base); color: var(--text-secondary);
-}
-.storage-big { font-size: var(--text-xl); font-weight: var(--weight-bold); color: var(--text-primary); }
-.storage-big.warn { color: var(--red); }
-.storage-pct { margin-left: var(--space-1); font-size: var(--text-sm); color: var(--text-secondary); }
-.storage-pct.warn { color: var(--red); font-weight: var(--weight-semibold); }
-.storage-bar {
-  height: 6px; border-radius: var(--radius-full); background: rgba(255,255,255,0.06);
-  margin: var(--space-2) 0 6px 0; overflow: hidden;
-}
-.storage-bar-fill {
-  height: 100%; border-radius: var(--radius-full);
-  background: linear-gradient(90deg, var(--blue), var(--green));
-  transition: width 0.4s var(--ease-out);
-}
-.storage-bar-fill.warn {
-  background: linear-gradient(90deg, var(--yellow), var(--red));
-}
-.storage-sub { font-size: var(--text-xs); color: var(--text-secondary); }
-
 /* ── 子标签 ── */
 .projects-tabs {
   display: flex; gap: 2px; padding: 0 var(--space-4);
@@ -529,11 +485,7 @@
 .projects-pane { display: none; flex: 1; overflow: hidden; flex-direction: column; }
 .projects-pane.active { display: flex; }
 
-/* ── Projects 标签页 ── */
-.projects-pie-row {
-  display: flex; align-items: center; gap: var(--space-5);
-  padding: 14px var(--space-5); border-bottom: 1px solid var(--border-default);
-}
+/* Shared storage visualization primitives used by the Cloud sidebar. */
 .quota-pie-wrap {
   position: relative; width: 90px; height: 90px; flex-shrink: 0;
 }
@@ -558,7 +510,6 @@
   display: inline-block; width: 9px; height: 9px; border-radius: 50%;
   margin-right: 7px; vertical-align: middle; flex-shrink: 0;
 }
-.proj-pct { color: var(--text-secondary); font-size: var(--text-xs); margin-left: 6px; }
 .admin-table .dim { color: var(--text-secondary); }
 
 /* ── Cache 标签页 ── */

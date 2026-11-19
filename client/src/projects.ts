@@ -23,7 +23,15 @@ const PROJECT_COLORS = [
   '#e06c75', '#56b6c2', '#d19a66', '#ff6b9d',
   '#7ee787', '#79c0ff', '#f0883e', '#a371f7'
 ] as const;
-const FREE_COLOR = 'rgba(255,255,255,0.06)';
+const QUOTA_COLORS = {
+  projects: '#4ca8ed',
+  projectsMuted: '#315f79',
+  cache: '#42c58b',
+  cacheMuted: '#315f58',
+  other: '#9a8fc1',
+  free: 'rgba(255,255,255,0.055)'
+} as const;
+type ProjectSort = 'size' | 'modified' | 'name';
 
 interface ProjectView extends ProjectsProjectDto {
   readonly color: string;
@@ -142,10 +150,11 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
   let disposed = false;
   let projectNamesLoadVersion = 0;
   let projectsLoadVersion = 0;
-  let previouslyFocused: Element | null = null;
+  let connectionLoadVersion = 0;
   let localProjectNames: ProjectsProjectNamesDto = Object.freeze(Object.create(null));
-  let focusTimer: number | null = null;
-  let quotaBannerTimer: number | null = null;
+  let projectSort: ProjectSort = 'size';
+  let lastProjects: readonly ProjectView[] = Object.freeze([]);
+  let lastStorageInfo: ProjectsStorageInfoDto | null = null;
 
   function byId<ElementType extends HTMLElement = HTMLElement>(id: string): ElementType {
     const element = documentRef.getElementById(id);
@@ -155,6 +164,14 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
 
   function optionalCacheCenter(): ProjectsCacheCenterPort | null {
     return dependencies.getCacheCenter() || null;
+  }
+
+  function t(source: string, replacements?: Readonly<Record<string, unknown>>): string {
+    const i18n = dependencies.getI18n();
+    if (i18n && typeof i18n.t === 'function') return i18n.t(source, replacements);
+    return String(source).replace(/\{([^}]+)\}/g, (match, key: string) => (
+      replacements && replacements[key] !== undefined ? String(replacements[key]) : match
+    ));
   }
 
   function projectViewIdentity(): string {
@@ -168,61 +185,32 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
     ].join('\n');
   }
 
-  function projectsModalOpen(): boolean {
-    return Boolean(documentRef.getElementById('projects-modal')?.classList.contains('open'));
-  }
-
-  function clearFocusTimer(): void {
-    if (focusTimer === null) return;
-    dependencies.clearTimer(focusTimer);
-    focusTimer = null;
-  }
-
-  function clearQuotaBannerTimer(): void {
-    if (quotaBannerTimer === null) return;
-    dependencies.clearTimer(quotaBannerTimer);
-    quotaBannerTimer = null;
+  function cloudViewOpen(): boolean {
+    return Boolean(documentRef.getElementById('cloud-sidebar-view')?.classList.contains('active'));
   }
 
   function removeQuotaBanner(): void {
     documentRef.getElementById('quota-warn-banner')?.remove();
   }
 
-  function scheduleFocus(): void {
-    clearFocusTimer();
-    focusTimer = dependencies.setTimer(() => {
-      focusTimer = null;
-      if (disposed) return;
-      const activeTab = documentRef.querySelector<HTMLElement>('.projects-tab.active');
-      activeTab?.focus();
-    }, 0);
-  }
-
   function open(options: ProjectsOpenOptionsDto = {}): void {
     if (disposed) return;
     removeQuotaBanner();
-    previouslyFocused = documentRef.activeElement;
-    const modal = byId('projects-modal');
-    modal.classList.add('open');
-    modal.setAttribute('aria-hidden', 'false');
-    switchTab(options.tab || 'projects');
+    const workbench = dependencies.getWorkbench();
+    if (!cloudViewOpen()) workbench?.setPrimaryView?.('cloud');
+    workbench?.setPrimaryVisible?.(true);
+    switchTab(options.tab || activeTabName());
     void loadAll();
-    scheduleFocus();
+    void refreshConnectionLatency();
   }
 
   function close(): void {
     if (disposed) return;
     projectNamesLoadVersion += 1;
     projectsLoadVersion += 1;
-    clearQuotaBannerTimer();
-    const modal = byId('projects-modal');
-    modal.classList.remove('open');
-    modal.setAttribute('aria-hidden', 'true');
+    connectionLoadVersion += 1;
     optionalCacheCenter()?.setVisible(false);
-    if (previouslyFocused && typeof (previouslyFocused as HTMLElement).focus === 'function') {
-      (previouslyFocused as HTMLElement).focus();
-    }
-    previouslyFocused = null;
+    closeSortMenu();
   }
 
   function activeTabName(): 'projects' | 'cache' {
@@ -243,8 +231,12 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
       pane.classList.toggle('active', active);
       pane.hidden = !active;
     });
-    documentRef.querySelector<HTMLElement>('.projects-card')?.classList.toggle('cache-active', name === 'cache');
-    optionalCacheCenter()?.setVisible(name === 'cache' && projectsModalOpen());
+    const cloudView = documentRef.getElementById('cloud-sidebar-view');
+    cloudView?.classList.toggle('cache-active', name === 'cache');
+    cloudView?.classList.toggle('quota-projects-active', name === 'projects');
+    cloudView?.classList.toggle('quota-cache-active', name === 'cache');
+    optionalCacheCenter()?.setVisible(name === 'cache' && cloudViewOpen());
+    renderQuota(lastStorageInfo);
   }
 
   async function loadAll(): Promise<void> {
@@ -258,7 +250,7 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
       names = Object.freeze(Object.create(null));
     }
     if (disposed || requestVersion !== projectNamesLoadVersion ||
-        requestIdentity !== projectViewIdentity() || !projectsModalOpen()) return;
+        requestIdentity !== projectViewIdentity() || !cloudViewOpen()) return;
     localProjectNames = names;
     optionalCacheCenter()?.setProjectNames(names);
     const cacheCenter = optionalCacheCenter();
@@ -270,103 +262,110 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
     ]);
   }
 
-  function renderSummary(
-    summary: HTMLElement,
-    totalUsed: number,
-    quotaBytes: number,
-    persistBytes: number,
-    projectsTotal: number
-  ): void {
-    if (quotaBytes > 0) {
-      const percentage = Math.min(100, Math.round(totalUsed / quotaBytes * 100));
-      const warningClass = percentage >= 90 ? 'warn' : '';
-      summary.innerHTML =
-        '<span class="storage-big ' + warningClass + '">' + formatBytes(totalUsed) + '</span>' +
-        ' / ' + formatBytes(quotaBytes) +
-        ' <span class="storage-pct ' + warningClass + '">(' + percentage + '%)</span>' +
-        '<div class="storage-bar">' +
-          '<div class="storage-bar-fill ' + warningClass + '" style="width:' + percentage + '%"></div>' +
-        '</div>' +
-        '<div class="storage-sub">Projects ' + formatBytes(projectsTotal) +
-        ' · Cache ' + formatBytes(persistBytes) +
-        (quotaBytes > totalUsed ? ' · Free ' + formatBytes(quotaBytes - totalUsed) : '') +
-        '</div>';
-    } else {
-      summary.innerHTML =
-        '<span class="storage-big">' + formatBytes(totalUsed) + '</span> used' +
-        '<div class="storage-bar">' +
-          '<div class="storage-bar-fill" style="width:100%"></div>' +
-        '</div>' +
-        '<div class="storage-sub">Projects ' + formatBytes(projectsTotal) +
-        ' · Cache ' + formatBytes(persistBytes) + ' · No quota limit</div>';
-    }
-  }
-
-  function renderPie(
-    pie: HTMLElement,
-    center: HTMLElement,
-    text: HTMLElement,
-    projects: readonly ProjectView[],
-    projectsTotal: number
-  ): void {
-    if (projectsTotal > 0) {
-      const segments: string[] = [];
-      let cursor = 0;
-      for (const project of projects) {
-        if (project.sizeBytes <= 0) continue;
-        const percentage = project.sizeBytes / projectsTotal * 100;
-        segments.push(project.color + ' ' + cursor.toFixed(2) + '% ' + (cursor + percentage).toFixed(2) + '%');
-        cursor += percentage;
-      }
-      if (segments.length > 0) {
-        const lastSegment = segments[segments.length - 1];
-        if (lastSegment) {
-          const last = lastSegment.split(' ');
-          last[last.length - 1] = '100%';
-          segments[segments.length - 1] = last.join(' ');
-        }
-      }
-      pie.style.background = 'conic-gradient(' + segments.join(', ') + ')';
-      center.innerHTML = projects.length + '<span style="font-size:9px;opacity:0.6">proj</span>';
-      text.innerHTML = '<div style="font-weight:600;color:var(--text)">' + formatBytes(projectsTotal) + '</div>' +
-        '<div style="font-size:10px;color:var(--text-dim)">total project size</div>';
-    } else {
-      pie.style.background = 'conic-gradient(' + FREE_COLOR + ' 0% 100%)';
+  function renderQuota(storageInfo: ProjectsStorageInfoDto | null): void {
+    const summary = documentRef.getElementById('projects-summary');
+    const pie = documentRef.getElementById('quota-pie');
+    const center = documentRef.getElementById('quota-pie-center');
+    const legend = documentRef.getElementById('quota-pie-text');
+    if (!summary || !pie || !center || !legend) return;
+    if (!storageInfo) {
+      summary.textContent = t('Loading...');
       center.textContent = '—';
-      text.innerHTML = '<div style="font-size:11px;color:var(--text-dim)">No project data</div>';
-    }
-  }
-
-  function renderProjectList(list: HTMLElement, projects: readonly ProjectView[], projectsTotal: number): void {
-    if (projects.length === 0) {
-      list.innerHTML = '<div class="projects-empty">No projects on server yet.</div>';
+      pie.style.background = 'conic-gradient(' + QUOTA_COLORS.free + ' 0% 100%)';
+      legend.textContent = '';
       return;
     }
 
-    let html = '<table class="admin-table"><thead><tr>' +
-      '<th>Project</th><th>Size</th><th>Files</th><th>Modified</th><th></th>' +
-      '</tr></thead><tbody>';
-    for (const project of projects) {
-      const displayName = resolveProjectDisplayName(project, localProjectNames);
-      const modTime = project.modTime ? new Date(project.modTime * 1000).toLocaleDateString() : '-';
-      const percentage = projectsTotal > 0
-        ? (project.sizeBytes / projectsTotal * 100).toFixed(1) + '%'
-        : '';
-      html += '<tr>' +
-        '<td>' +
-          '<span class="proj-dot" style="background:' + project.color + '"></span>' +
-          '<code>' + escapeHtml(displayName) + '</code>' +
-          (percentage ? '<span class="proj-pct">' + percentage + '</span>' : '') +
-        '</td>' +
-        '<td>' + formatBytes(project.sizeBytes) + '</td>' +
-        '<td class="dim">' + project.files + '</td>' +
-        '<td class="dim">' + modTime + '</td>' +
-        '<td><button class="admin-mini-btn danger proj-del" data-key="' + escapeHtml(project.key) +
-          '" data-name="' + escapeHtml(displayName) + '">Delete</button></td>' +
-      '</tr>';
+    const used = Math.max(0, storageInfo.totalUsedBytes);
+    const quota = Math.max(0, storageInfo.quotaBytes);
+    const projects = Math.max(0, storageInfo.projectsTotalBytes);
+    const cache = Math.max(0, storageInfo.persistBytes);
+    const other = Math.max(0, used - projects - cache);
+    const free = quota > 0 ? Math.max(0, quota - used) : 0;
+    const totalForChart = quota > 0 ? Math.max(quota, used) : used;
+    const chartTotal = totalForChart || 1;
+    const projectColor = activeTabName() === 'projects' ? QUOTA_COLORS.projects : QUOTA_COLORS.projectsMuted;
+    const cacheColor = activeTabName() === 'cache' ? QUOTA_COLORS.cache : QUOTA_COLORS.cacheMuted;
+    const slices: Array<readonly [string, number]> = [
+      [projectColor, projects],
+      [cacheColor, cache],
+      [QUOTA_COLORS.other, other]
+    ];
+    if (quota > 0) slices.push([QUOTA_COLORS.free, free]);
+    const gradients: string[] = [];
+    let cursor = 0;
+    slices.forEach(([color, bytes]) => {
+      const value = Math.max(0, Math.min(bytes, chartTotal - cursor));
+      if (value <= 0) return;
+      const next = Math.min(100, cursor / chartTotal * 100 + value / chartTotal * 100);
+      gradients.push(color + ' ' + (cursor / chartTotal * 100).toFixed(2) + '% ' + next.toFixed(2) + '%');
+      cursor += value;
+    });
+    if (cursor < chartTotal) gradients.push(QUOTA_COLORS.free + ' ' + (cursor / chartTotal * 100).toFixed(2) + '% 100%');
+    pie.style.background = 'conic-gradient(' + (gradients.length ? gradients.join(', ') : QUOTA_COLORS.free + ' 0% 100%') + ')';
+    pie.setAttribute('aria-label', quota > 0
+      ? t('Account storage {used} / {quota}', { used: formatBytes(used), quota: formatBytes(quota) })
+      : t('Account storage {used}', { used: formatBytes(used) }));
+    center.innerHTML = '<strong>' + escapeHtml(formatBytes(used)) + '</strong>' +
+      '<small>' + escapeHtml(quota > 0 ? '/ ' + formatBytes(quota) : t('Unlimited')) + '</small>';
+    const percent = quota > 0 ? Math.min(100, Math.round(used / quota * 100)) : 0;
+    summary.innerHTML = quota > 0
+      ? '<strong>' + escapeHtml(formatBytes(used)) + '</strong><small>' + escapeHtml(t('of {quota}', { quota: formatBytes(quota) })) + '</small>'
+      : '<strong>' + escapeHtml(formatBytes(used)) + '</strong><small>' + escapeHtml(t('Unlimited')) + '</small>';
+    const rows: Array<readonly [string, string, number]> = [
+      [t('Projects'), QUOTA_COLORS.projects, projects],
+      [t('Cache'), QUOTA_COLORS.cache, cache]
+    ];
+    if (other > 0) rows.push([t('Other'), QUOTA_COLORS.other, other]);
+    if (quota > 0) rows.push([t('Free'), QUOTA_COLORS.free, free]);
+    legend.innerHTML = rows.map(([label, color, bytes]) => (
+      '<div class="cloud-storage-legend-row"><span class="cloud-storage-swatch" style="background:' + color + '"></span>' +
+      '<span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(formatBytes(bytes)) + '</strong></div>'
+    )).join('');
+  }
+
+  function sortedProjects(): readonly ProjectView[] {
+    return lastProjects.slice().sort((left, right) => {
+      if (projectSort === 'modified') return right.modTime - left.modTime || right.sizeBytes - left.sizeBytes;
+      if (projectSort === 'name') {
+        return resolveProjectDisplayName(left, localProjectNames).localeCompare(
+          resolveProjectDisplayName(right, localProjectNames),
+          documentRef.documentElement.lang || undefined,
+          { sensitivity: 'base' }
+        );
+      }
+      return right.sizeBytes - left.sizeBytes || right.modTime - left.modTime;
+    });
+  }
+
+  function renderProjectList(): void {
+    const list = documentRef.getElementById('projects-list');
+    if (!list) return;
+    const count = documentRef.getElementById('cloud-project-count');
+    if (count) count.textContent = t('Projects {count}', { count: lastProjects.length });
+    const projects = sortedProjects();
+    if (projects.length === 0) {
+      list.innerHTML = '<div class="projects-empty">' + escapeHtml(t('No projects on server yet.')) + '</div>';
+      return;
     }
-    html += '</tbody></table>';
-    list.innerHTML = html;
+
+    list.innerHTML = projects.map((project) => {
+      const displayName = resolveProjectDisplayName(project, localProjectNames);
+      const modTime = project.modTime
+        ? new Date(project.modTime * 1000).toLocaleDateString(documentRef.documentElement.lang || undefined)
+        : '—';
+      return '<article class="cloud-project-row" title="' + escapeHtml(displayName) + '">' +
+        '<span class="proj-dot" style="background:' + project.color + '"></span>' +
+        '<span class="cloud-project-copy"><strong>' + escapeHtml(displayName) + '</strong>' +
+          '<small><span>' + escapeHtml(formatBytes(project.sizeBytes)) + '</span><span>' +
+          escapeHtml(t('{count} files', { count: project.files })) + '</span><span>' +
+          escapeHtml(t('Modified {date}', { date: modTime })) + '</span></small></span>' +
+        '<button type="button" class="cloud-project-delete proj-del" data-key="' + escapeHtml(project.key) +
+          '" data-name="' + escapeHtml(displayName) + '" aria-label="' + escapeHtml(t('Delete project')) +
+          '" title="' + escapeHtml(t('Delete project')) + '"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+          '<path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>' +
+        '</article>';
+    }).join('');
   }
 
   async function deleteProject(button: HTMLButtonElement): Promise<void> {
@@ -375,15 +374,14 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
     const confirm = dependencies.getConfirm();
     if (!confirm) return;
     const ok = await confirm({
-      title: 'Delete project',
-      message: '"' + displayName + '"\nThis cannot be undone.',
-      confirmLabel: 'Delete',
+      title: t('Delete project'),
+      message: '"' + displayName + '"\n' + t('This cannot be undone.'),
+      confirmLabel: t('Delete'),
       danger: true
     });
     if (!ok) return;
     projectsLoadVersion += 1;
     button.disabled = true;
-    button.textContent = '...';
     try {
       const response = await dependencies.sendToServer('deleteProject', { folderKey: key }, { quiet: true });
       if (responseSuccess(response)) {
@@ -391,12 +389,10 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
       } else {
         dependencies.alert?.(errorMessage(isRecord(response) ? response.error : undefined, 'Delete failed'));
         button.disabled = false;
-        button.textContent = 'Delete';
       }
     } catch (error) {
       dependencies.alert?.(errorMessage(error, 'Delete failed'));
       button.disabled = false;
-      button.textContent = 'Delete';
     }
   }
 
@@ -404,38 +400,27 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
     if (disposed) return;
     const requestVersion = ++projectsLoadVersion;
     const requestIdentity = projectViewIdentity();
-    const summary = byId('projects-summary');
-    const pie = byId('quota-pie');
-    const pieCenter = byId('quota-pie-center');
-    const pieText = byId('quota-pie-text');
     const list = byId('projects-list');
 
-    summary.textContent = 'Loading...';
-    pie.style.background = '';
-    pieCenter.textContent = '...';
-    pieText.textContent = '';
+    renderQuota(lastStorageInfo);
     list.innerHTML = '<div class="projects-loading">Loading…</div>';
 
     const rawResponse = await dependencies.sendToServer('listProjects', {}, { quiet: true });
     const response = rawResponse as ProjectsListResponseWireDto;
     if (disposed || requestVersion !== projectsLoadVersion ||
-        requestIdentity !== projectViewIdentity() || !projectsModalOpen()) return;
+        requestIdentity !== projectViewIdentity() || !cloudViewOpen()) return;
 
     const storageInfo = responseSuccess(response) ? normalizeStorageInfo(response.storageInfo) : null;
     if (!storageInfo) {
       const error = errorMessage(isRecord(response) ? response.error : undefined, 'Failed to load');
-      summary.textContent = error;
+      const summary = documentRef.getElementById('projects-summary');
+      if (summary) summary.innerHTML = '<small class="cloud-storage-error">' + escapeHtml(error) + '</small>';
       list.innerHTML = '<div class="projects-empty">' + escapeHtml(error) + '</div>';
       return;
     }
 
-    const totalUsed = storageInfo.totalUsedBytes;
-    const quotaBytes = storageInfo.quotaBytes;
-    const persistBytes = storageInfo.persistBytes;
-    const projectsTotal = storageInfo.projectsTotalBytes;
-    const projects = storageInfo.projects
-      .slice()
-      .sort((left, right) => right.sizeBytes - left.sizeBytes)
+    lastStorageInfo = storageInfo;
+    lastProjects = storageInfo.projects
       .map((project, index) => Object.freeze({
         ...project,
         color: PROJECT_COLORS[index % PROJECT_COLORS.length] || PROJECT_COLORS[0]
@@ -460,21 +445,58 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
       }
     }
 
-    renderSummary(summary, totalUsed, quotaBytes, persistBytes, projectsTotal);
-    renderPie(pie, pieCenter, pieText, projects, projectsTotal);
-    renderProjectList(list, projects, projectsTotal);
+    renderQuota(storageInfo);
+    renderProjectList();
   }
 
-  function refreshActiveTab(): Promise<void> {
-    if (activeTabName() === 'cache') {
-      const cacheCenter = optionalCacheCenter();
-      if (cacheCenter) {
-        return Promise.resolve(cacheCenter.load({ force: true }))
-          .then(() => undefined)
-          .catch(() => undefined);
+  async function refreshConnectionLatency(): Promise<void> {
+    const latency = documentRef.getElementById('cloud-server-latency');
+    const endpoint = documentRef.getElementById('cloud-server-ip');
+    if (!latency || !endpoint) return;
+    const server = stringValue(state.serverSettings?.ip);
+    endpoint.textContent = server || t('Not configured');
+    endpoint.title = server;
+    latency.title = '';
+    const requestVersion = ++connectionLoadVersion;
+    const requestIdentity = projectViewIdentity();
+    if (!server) {
+      latency.textContent = '—';
+      return;
+    }
+    latency.textContent = t('Checking...');
+    const startedAt = Date.now();
+    try {
+      const response = await dependencies.sendToServer('whoami', {}, { quiet: true });
+      if (disposed || requestVersion !== connectionLoadVersion ||
+          requestIdentity !== projectViewIdentity() || !cloudViewOpen()) return;
+      latency.textContent = responseSuccess(response)
+        ? t('{latency} ms', { latency: Math.max(0, Date.now() - startedAt) })
+        : t('Unavailable');
+      latency.title = latency.textContent;
+    } catch (_) {
+      if (!disposed && requestVersion === connectionLoadVersion &&
+          requestIdentity === projectViewIdentity() && cloudViewOpen()) {
+        latency.textContent = t('Unavailable');
+        latency.title = latency.textContent;
       }
     }
-    return loadAll();
+  }
+
+  function closeSortMenu(): void {
+    const menu = documentRef.getElementById('projects-sort-menu');
+    const button = documentRef.getElementById('projects-sort-toggle');
+    if (menu) menu.hidden = true;
+    button?.setAttribute('aria-expanded', 'false');
+  }
+
+  function selectProjectSort(value: string): void {
+    if (value !== 'size' && value !== 'modified' && value !== 'name') return;
+    projectSort = value;
+    documentRef.querySelectorAll<HTMLElement>('[data-project-sort]').forEach((item) => {
+      item.setAttribute('aria-checked', item.dataset.projectSort === value ? 'true' : 'false');
+    });
+    closeSortMenu();
+    renderProjectList();
   }
 
   function listen(
@@ -492,17 +514,33 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
     const cacheCenter = optionalCacheCenter();
     cacheCenter?.init();
 
-    const closeX = byId('projects-close-x');
-    const closeButton = byId('projects-close');
     const refresh = byId('projects-refresh');
-    const modal = byId('projects-modal');
     const list = byId('projects-list');
+    const sortButton = byId('projects-sort-toggle');
+    const sortMenu = byId('projects-sort-menu');
 
-    listen(closeX, 'click', () => close());
-    listen(closeButton, 'click', () => close());
-    listen(refresh, 'click', () => { void refreshActiveTab(); });
-    listen(modal, 'click', (event) => {
-      if (event.target === modal) close();
+    listen(refresh, 'click', () => {
+      void loadAll();
+      void refreshConnectionLatency();
+    });
+    listen(sortButton, 'click', (event) => {
+      event.stopPropagation();
+      const open = sortMenu.hidden;
+      sortMenu.hidden = !open;
+      sortButton.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    listen(sortMenu, 'click', (event) => {
+      const target = (event as MouseEvent).target as Element | null;
+      const option = target?.closest<HTMLElement>('[data-project-sort]');
+      if (option && sortMenu.contains(option)) selectProjectSort(option.dataset.projectSort || '');
+    });
+    listen(documentRef, 'click', (event) => {
+      const target = (event as MouseEvent).target as Element | null;
+      if (target?.closest('.cloud-project-sort')) return;
+      closeSortMenu();
+    });
+    listen(documentRef, 'keydown', (event) => {
+      if ((event as KeyboardEvent).key === 'Escape') closeSortMenu();
     });
     // A single delegated listener replaces one closure per project row while
     // retaining the exact button data attributes and click semantics.
@@ -512,7 +550,7 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
       if (!button || !list.contains(button)) return;
       void deleteProject(button);
     });
-    documentRef.querySelectorAll<HTMLElement>('.projects-tab').forEach((tab) => {
+    documentRef.querySelectorAll<HTMLElement>('#cloud-sidebar-view .projects-tab').forEach((tab) => {
       listen(tab, 'click', () => switchTab(tab.dataset.ptab || 'projects'));
       listen(tab, 'keydown', (event) => {
         const keyboardEvent = event as KeyboardEvent;
@@ -523,17 +561,12 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
         documentRef.querySelector<HTMLElement>('.projects-tab[data-ptab="' + next + '"]')?.focus();
       });
     });
-    listen(modal, 'keydown', (event) => {
-      const keyboardEvent = event as KeyboardEvent;
-      if (keyboardEvent.key === 'Escape') {
-        keyboardEvent.preventDefault();
-        close();
-      }
-    });
     listen(dependencies.events, 'bobo:language-changed', () => {
-      if (!projectsModalOpen()) return;
+      if (!cloudViewOpen()) return;
       if (activeTabName() === 'cache') optionalCacheCenter()?.render();
-      else void loadProjects();
+      else renderProjectList();
+      renderQuota(lastStorageInfo);
+      void refreshConnectionLatency();
     });
     listeners.add(dependencies.host.onOpenServerProjects(() => open()));
   }
@@ -541,20 +574,15 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
   function openWithQuotaError(errorMsg?: string | null): void {
     if (disposed) return;
     removeQuotaBanner();
-    clearQuotaBannerTimer();
     open();
     if (!errorMsg) return;
-    quotaBannerTimer = dependencies.setTimer(() => {
-      quotaBannerTimer = null;
-      if (disposed) return;
-      removeQuotaBanner();
-      const warning = documentRef.createElement('div');
-      warning.id = 'quota-warn-banner';
-      warning.className = 'quota-warn-banner';
-      warning.textContent = errorMsg;
-      const card = documentRef.querySelector<HTMLElement>('.projects-card');
-      if (card) card.insertBefore(warning, card.children[1] || null);
-    }, 400);
+    const slot = documentRef.getElementById('quota-warn-slot');
+    if (!slot) return;
+    const warning = documentRef.createElement('div');
+    warning.id = 'quota-warn-banner';
+    warning.className = 'quota-warn-banner';
+    warning.textContent = errorMsg;
+    slot.replaceChildren(warning);
   }
 
   function dispose(): void {
@@ -563,18 +591,11 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
     initialized = false;
     projectNamesLoadVersion += 1;
     projectsLoadVersion += 1;
-    clearFocusTimer();
-    clearQuotaBannerTimer();
+    connectionLoadVersion += 1;
     listeners.dispose();
     optionalCacheCenter()?.setVisible(false);
     removeQuotaBanner();
-    const modal = documentRef.getElementById('projects-modal');
-    modal?.classList.remove('open');
-    modal?.setAttribute('aria-hidden', 'true');
-    if (previouslyFocused && typeof (previouslyFocused as HTMLElement).focus === 'function') {
-      (previouslyFocused as HTMLElement).focus();
-    }
-    previouslyFocused = null;
+    closeSortMenu();
   }
 
   const service: ProjectsService = {

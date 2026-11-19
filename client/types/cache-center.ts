@@ -74,6 +74,7 @@ export type CacheCenterConfirmPort = (
 
 export interface CacheCenterProjectsPort {
   close?: () => unknown;
+  loadProjects?: () => Promise<unknown> | unknown;
 }
 
 export interface CacheCenterWorkbenchPort {

@@ -269,8 +269,10 @@ test('environment view switches, persists, localizes, and fits at 180px', async 
         { id: 'shared-toolchain', category: 'toolchains', state: 'ready', runtime_id: 'go:1.24', size_bytes: 1024, files: 2 }
       ];
       window.__cacheActions = [];
+      const sendEnvironmentAction = window.BOBO.sendToServer;
       window.BOBO.sendToServer = async (action, data) => {
         window.__cacheActions.push({ action, data });
+        if (action === 'whoami') return { success: true, user: { id: 'root' } };
         if (action === 'listProjects') {
 		  return { success: true, storageInfo: { total_used_bytes: 7680, quota_bytes: 1048576, persist_bytes: 7680, projects_total_bytes: 0, projects: [] } };
         }
@@ -284,12 +286,12 @@ test('environment view switches, persists, localizes, and fits at 180px', async 
             entries: window.__cacheEntries
           } } };
         }
-        throw new Error('unexpected storage action: ' + action);
+        return sendEnvironmentAction.call(window.BOBO, action, data);
       };
       window.BOBO.cacheStore.reset();
       window.BOBO.projects.open({ tab: 'cache' });
     });
-    await expect(page.locator('#projects-modal')).toHaveClass(/open/);
+    await expect(page.locator('#cloud-sidebar-view')).toHaveClass(/active/);
     await expect(page.locator('#projects-tab-cache')).toHaveAttribute('aria-selected', 'true');
     await expect.poll(() => page.evaluate(() => window.__cacheActions.some((entry) => entry.action === 'getCacheInventory'))).toBe(true);
     const fixtureGroup = page.locator('.cache-v2-project').filter({ hasText: 'Fixture project' });
@@ -329,7 +331,9 @@ test('environment view switches, persists, localizes, and fits at 180px', async 
     await page.screenshot({ path: path.join(os.tmpdir(), 'bobo-project-cache-narrow.png'), fullPage: false });
     await page.setViewportSize({ width: 1024, height: 720 });
     await page.screenshot({ path: path.join(os.tmpdir(), 'bobo-project-dependency-cache.png'), fullPage: false });
-    await page.locator('#projects-close').click();
+    await page.locator('#activity-environment').click();
+    await page.evaluate(() => window.BOBO.environmentCenter.refresh({ force: true }));
+    await page.waitForTimeout(180);
 
     await page.evaluate(() => {
       window.BOBO.sendToServer = async (action) => {

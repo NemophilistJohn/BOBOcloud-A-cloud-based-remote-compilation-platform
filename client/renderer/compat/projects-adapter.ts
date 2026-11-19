@@ -4,13 +4,15 @@ import {
 } from '../../src/projects';
 import { CACHE_CENTER_SERVICE_ID } from '../../src/cache-center';
 import { CONFIRM_SERVICE_ID } from '../../src/confirm-dialog';
+import { WORKBENCH_LAYOUT_SERVICE_ID } from '../../src/workbench-layout';
 import type {
   ProjectsCacheCenterPort,
   ProjectsConfirmPort,
   ProjectsFacade,
   ProjectsI18nPort,
   ProjectsRendererState,
-  ProjectsSendToServer
+  ProjectsSendToServer,
+  ProjectsWorkbenchPort
 } from '../../types/projects';
 import { rendererPlatform } from '../core/bootstrap';
 import { PROJECTS_HOST_SERVICE_ID } from '../core/native-host-adapter';
@@ -21,6 +23,7 @@ interface LegacyProjectsNamespace {
   i18n?: ProjectsI18nPort;
   confirm?: ProjectsConfirmPort;
   cacheCenter?: ProjectsCacheCenterPort;
+  workbench?: ProjectsWorkbenchPort;
   projectKey?: (workspaceRoot: string) => string;
   sendToServer?: ProjectsSendToServer;
   projects?: ProjectsFacade;
@@ -37,6 +40,7 @@ const host = rendererPlatform.services.require(PROJECTS_HOST_SERVICE_ID);
 const registeredCacheCenter = rendererPlatform.services.require(CACHE_CENTER_SERVICE_ID);
 const registeredConfirm = rendererPlatform.services.require(CONFIRM_SERVICE_ID);
 const registeredI18n = rendererPlatform.services.require(I18N_SERVICE_ID);
+const registeredWorkbench = rendererPlatform.services.require(WORKBENCH_LAYOUT_SERVICE_ID);
 
 const sendToServer: ProjectsSendToServer = (action, payload, options) => {
   const sender = BOBO.sendToServer;
@@ -60,9 +64,8 @@ const projects = createProjectsService({
   getI18n: () => BOBO.i18n || registeredI18n,
   getConfirm: () => confirm,
   getCacheCenter: () => BOBO.cacheCenter || registeredCacheCenter,
+  getWorkbench: () => BOBO.workbench || registeredWorkbench,
   projectKey: (workspaceRoot) => BOBO.projectKey ? BOBO.projectKey(workspaceRoot) : '',
-  setTimer: (callback, delayMs) => legacyWindow.setTimeout(callback, delayMs),
-  clearTimer: (timer) => legacyWindow.clearTimeout(timer),
   alert: (message) => {
     if (typeof legacyWindow.alert === 'function') return legacyWindow.alert(message);
     return undefined;

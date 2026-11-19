@@ -401,9 +401,6 @@ export function createWorkbenchLayoutService(
       workspaceName.textContent = pathName(state.workspaceRoot);
       workspaceName.title = state.workspaceRoot || '';
     }
-    const sync = document.getElementById('cloud-view-sync') as HTMLButtonElement | null;
-    if (sync) sync.disabled = !state.workspaceRoot;
-
     const current = state.collaboration?.current as WorkbenchCollaborationCurrentDto | null | undefined;
     const project = document.getElementById('team-sidebar-project');
     const branch = document.getElementById('team-sidebar-branch');
@@ -767,6 +764,8 @@ export function createWorkbenchLayoutService(
       listen(button, 'click', () => {
         const view = button.getAttribute('data-workbench-view');
         if (view) setPrimaryView(view);
+        if (view === 'cloud') dependencies.getProjects()?.open?.();
+        else dependencies.getProjects()?.close?.();
         if (view === 'team') {
           if (teamRevealFrame !== null && dependencies.cancelAnimationFrame) {
             dependencies.cancelAnimationFrame(teamRevealFrame);
@@ -793,15 +792,8 @@ export function createWorkbenchLayoutService(
     if (ai) listen(ai, 'click', () => toggleAuxiliary());
     const settings = document.getElementById('activity-settings');
     if (settings) listen(settings, 'click', () => dependencies.getSettings()?.open?.('workbench'));
-    const cloudStorage = document.getElementById('cloud-open-storage');
-    if (cloudStorage) listen(cloudStorage, 'click', () => dependencies.getProjects()?.open?.());
-    const cloudSettings = document.getElementById('cloud-open-settings');
-    if (cloudSettings) listen(cloudSettings, 'click', () => dependencies.getSettings()?.open?.('server'));
-    const cloudSync = document.getElementById('cloud-view-sync');
-    if (cloudSync) listen(cloudSync, 'click', () => {
-      const button = document.getElementById('cloud-sync-btn') as HTMLButtonElement | null;
-      button?.click();
-    });
+    const cloudConnection = document.getElementById('cloud-connection-settings');
+    if (cloudConnection) listen(cloudConnection, 'click', () => dependencies.getSettings()?.open?.('server'));
     const teamPanel = document.getElementById('team-sidebar-panel');
     if (teamPanel) listen(teamPanel, 'click', () => dependencies.getSwitchToPanel()?.('team'));
 
@@ -932,6 +924,7 @@ export function createWorkbenchLayoutService(
     observeContext();
     renderPrimaryView(workbenchState.activity);
     apply({ persist: false, layoutEditor: false });
+    if (workbenchState.activity === 'cloud') dependencies.getProjects()?.open?.();
 
     const commands = dependencies.getCommands();
     if (commands) {

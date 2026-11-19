@@ -660,6 +660,7 @@ export function createCacheCenterService(
       invalidateDetailRequest(cacheId);
       delete details[cacheId];
       notify('success', t('Cache entry deleted.'));
+      void Promise.resolve(dependencies.getProjects()?.loadProjects?.()).catch(() => undefined);
     } catch (error) {
       if (operationIntentCurrent(operation)) {
         notify('error', safeErrorMessage(error, t('Failed to delete cache entry.')));
@@ -712,6 +713,7 @@ export function createCacheCenterService(
       invalidateAllDetailRequests();
       details = Object.create(null) as Record<string, MutableDetailState>;
       notify('success', t('Selected cache cleared.'));
+      void Promise.resolve(dependencies.getProjects()?.loadProjects?.()).catch(() => undefined);
     } catch (error) {
       if (operationIntentCurrent(operation)) {
         notify('error', safeErrorMessage(error, t('Failed to clear cache.')));

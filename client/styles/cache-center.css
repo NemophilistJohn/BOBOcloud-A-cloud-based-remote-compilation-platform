@@ -1,8 +1,4 @@
 /* Cache Inventory v2: project-first operational storage view. */
-.projects-card.cache-active .projects-summary { display: none; }
-.projects-card.cache-active { width: min(1040px, 96vw); }
-.projects-card.cache-active #projects-pane-cache { min-height: 0; }
-.projects-card.cache-active .cache-tree { padding: 0; }
 .projects-tabs .projects-tab {
   border: 0;
   border-bottom: 2px solid transparent;
@@ -306,7 +302,6 @@
 @keyframes cache-v2-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 760px) {
-  .projects-card.cache-active { width: 98vw; max-width: 98vw; }
   .cache-v2-overview { grid-template-columns: 1fr; }
   .cache-v2-usage { border-right: 0; border-bottom: 1px solid var(--border-default); }
   .cache-v2-metrics { min-height: 58px; }

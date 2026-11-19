@@ -71,11 +71,13 @@ export type ProjectsProjectNamesDto = CacheProjectNamesDto;
 
 export interface ProjectsServerRequestMap {
   readonly listProjects: Record<string, never>;
+  readonly whoami: Record<string, never>;
   readonly deleteProject: Readonly<{ folderKey: string }>;
 }
 
 export interface ProjectsServerResponseMap {
   readonly listProjects: ProjectsListResponseWireDto;
+  readonly whoami: Readonly<{ success?: unknown; [key: string]: unknown }>;
   readonly deleteProject: ProjectsDeleteResponseWireDto;
 }
 
@@ -123,6 +125,11 @@ export interface ProjectsCacheCenterPort {
   setProjectNames(names?: ProjectsProjectNamesDto | null): void;
 }
 
+export interface ProjectsWorkbenchPort {
+  setPrimaryView?(view: string): unknown;
+  setPrimaryVisible?(visible: boolean): unknown;
+}
+
 export interface ProjectsDependencies {
   readonly document: Document;
   readonly events: Pick<EventTarget, 'addEventListener' | 'removeEventListener'>;
@@ -132,9 +139,8 @@ export interface ProjectsDependencies {
   readonly getI18n: () => ProjectsI18nPort | null | undefined;
   readonly getConfirm: () => ProjectsConfirmPort | null | undefined;
   readonly getCacheCenter: () => ProjectsCacheCenterPort | null | undefined;
+  readonly getWorkbench: () => ProjectsWorkbenchPort | null | undefined;
   readonly projectKey: (workspaceRoot: string) => string;
-  readonly setTimer: (callback: () => void, delayMs: number) => number;
-  readonly clearTimer: (timer: number) => void;
   readonly alert?: (message: string) => unknown;
 }
 

@@ -21,6 +21,7 @@
   <link rel="stylesheet" href="./styles/plugin-details.css">
   <link rel="stylesheet" href="./styles/source-control-view.css">
   <link rel="stylesheet" href="./styles/agent-workbench.css">
+  <link rel="stylesheet" href="./styles/cloud-resources.css">
 </head>
 <body>
   <div id="layout" class="workbench-shell" data-panel-position="bottom" data-density="comfortable">
@@ -99,9 +100,54 @@
         <div id="quick-file-search-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
         <div id="quick-file-search-results" class="sidebar-scroll quick-file-search-results" role="listbox" aria-label="Quick file search"></div>
       </section>
-      <section class="sidebar-view" data-sidebar-view="cloud" aria-label="Cloud resources">
-        <div class="sidebar-header"><span>Cloud</span><button class="sidebar-hide" title="Hide primary sidebar" aria-label="Hide primary sidebar"><svg viewBox="0 0 16 16" fill="none"><path d="m10 3-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
-        <div class="sidebar-scroll sidebar-command-list"><div class="sidebar-section-title">Workspace</div><button id="cloud-view-sync" class="sidebar-command" disabled><span>Sync workspace</span><small>Upload local changes</small></button><div class="sidebar-section-title">Server</div><button id="cloud-open-storage" class="sidebar-command"><span>Storage and cache</span><small>Projects, quota and build cache</small></button><button id="cloud-open-settings" class="sidebar-command"><span>Connection settings</span><small>Server and file synchronization</small></button></div>
+      <section id="cloud-sidebar-view" class="sidebar-view cloud-sidebar-view" data-sidebar-view="cloud" aria-label="Cloud resources">
+        <div class="sidebar-header cloud-sidebar-header">
+          <span>Cloud resources</span>
+          <div class="sidebar-header-actions">
+            <button id="projects-refresh" type="button" title="Refresh" aria-label="Refresh"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.6 9a7 7 0 0 1 11.7-2L20 12M4 12l2.7 5a7 7 0 0 0 11.7-2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button class="sidebar-hide" title="Hide primary sidebar" aria-label="Hide primary sidebar"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m10 3-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          </div>
+        </div>
+        <button id="cloud-connection-settings" class="cloud-connection" type="button" title="Open server settings" aria-label="Open server settings">
+          <span class="cloud-connection-endpoint"><small>Server</small><strong id="cloud-server-ip">—</strong></span>
+          <span class="cloud-connection-latency"><small>Latency</small><strong id="cloud-server-latency">—</strong></span>
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m6 3 5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div id="quota-warn-slot"></div>
+        <section class="cloud-storage-overview" aria-label="Account storage quota">
+          <div class="quota-pie-wrap">
+            <div class="quota-pie" id="quota-pie" role="img" aria-label="Account storage quota">
+              <div class="quota-pie-center" id="quota-pie-center"></div>
+            </div>
+          </div>
+          <div class="cloud-storage-copy">
+            <div class="cloud-storage-total" id="projects-summary">Loading...</div>
+            <div class="quota-pie-text" id="quota-pie-text"></div>
+          </div>
+        </section>
+        <div class="projects-tabs cloud-resource-tabs" role="tablist" aria-label="Cloud storage views">
+          <button type="button" class="projects-tab active" id="projects-tab-projects" data-ptab="projects" role="tab" aria-selected="true" aria-controls="projects-pane-projects">Projects</button>
+          <button type="button" class="projects-tab" id="projects-tab-cache" data-ptab="cache" role="tab" aria-selected="false" aria-controls="projects-pane-cache" tabindex="-1">Cache</button>
+        </div>
+        <div class="projects-pane active cloud-resource-pane" id="projects-pane-projects" role="tabpanel" aria-labelledby="projects-tab-projects">
+          <div class="cloud-project-toolbar">
+            <span id="cloud-project-count" class="cloud-project-count"></span>
+            <div class="cloud-project-sort">
+              <button id="projects-sort-toggle" class="cloud-sort-button" type="button" title="Sort projects" aria-label="Sort projects" aria-haspopup="menu" aria-expanded="false">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 5v14m0 0-3-3m3 3 3-3M16 19V5m0 0 3 3m-3-3-3 3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div id="projects-sort-menu" class="cloud-sort-menu" role="menu" hidden>
+                <button type="button" role="menuitemradio" aria-checked="true" data-project-sort="size">Largest first</button>
+                <button type="button" role="menuitemradio" aria-checked="false" data-project-sort="modified">Recently modified</button>
+                <button type="button" role="menuitemradio" aria-checked="false" data-project-sort="name">Name</button>
+              </div>
+            </div>
+          </div>
+          <div class="projects-list" id="projects-list"></div>
+        </div>
+        <div class="projects-pane cloud-resource-pane" id="projects-pane-cache" role="tabpanel" aria-labelledby="projects-tab-cache" hidden>
+          <div class="cache-tree" id="cache-tree"></div>
+        </div>
       </section>
       <section class="sidebar-view" data-sidebar-view="team" aria-label="Team workspace">
         <div class="sidebar-header"><span>Team</span><button class="sidebar-hide" title="Hide primary sidebar" aria-label="Hide primary sidebar"><svg viewBox="0 0 16 16" fill="none"><path d="m10 3-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
@@ -1179,42 +1225,6 @@
           <div id="invite-list"></div>
         </div>
         <div class="admin-pane" id="admin-pane-audit"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ══════════ Server Projects 管理弹窗 ══════════ -->
-  <div id="projects-modal" role="dialog" aria-modal="true" aria-labelledby="projects-dialog-title" aria-hidden="true">
-    <div class="projects-card">
-      <div class="projects-head">
-        <div class="ss-title" id="projects-dialog-title">Server Storage</div>
-        <button id="projects-close-x" class="close-btn" type="button" title="Close" aria-label="Close">&times;</button>
-      </div>
-      <!-- 顶部摘要 -->
-      <div class="projects-summary" id="projects-summary">Loading...</div>
-      <!-- 子标签 -->
-      <div class="projects-tabs" role="tablist" aria-label="Server Storage">
-        <button type="button" class="projects-tab active" id="projects-tab-projects" data-ptab="projects" role="tab" aria-selected="true" aria-controls="projects-pane-projects">Projects</button>
-        <button type="button" class="projects-tab" id="projects-tab-cache" data-ptab="cache" role="tab" aria-selected="false" aria-controls="projects-pane-cache" tabindex="-1">Cache</button>
-      </div>
-      <!-- Projects 标签页 -->
-      <div class="projects-pane active" id="projects-pane-projects" role="tabpanel" aria-labelledby="projects-tab-projects">
-        <div class="projects-pie-row">
-          <div class="quota-pie-wrap">
-            <div class="quota-pie" id="quota-pie"></div>
-            <div class="quota-pie-center" id="quota-pie-center"></div>
-          </div>
-          <div class="quota-pie-text" id="quota-pie-text"></div>
-        </div>
-        <div class="projects-list" id="projects-list"></div>
-      </div>
-      <!-- Cache 标签页 -->
-      <div class="projects-pane" id="projects-pane-cache" role="tabpanel" aria-labelledby="projects-tab-cache" hidden>
-        <div class="cache-tree" id="cache-tree"></div>
-      </div>
-      <div class="ss-foot">
-        <button id="projects-refresh" class="ss-btn ss-btn-ghost">Refresh</button>
-        <button id="projects-close" class="ss-btn ss-btn-primary">Close</button>
       </div>
     </div>
   </div>

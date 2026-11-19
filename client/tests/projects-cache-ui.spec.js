@@ -44,6 +44,7 @@ test('cache inventory v2 is project-first, type-first and lifecycle-safe', async
       S.workspaceRoot = 'C:\\fixture\\workspace-a';
       S.workspaceIdentity = 'local-workspace-identity';
       S.selectedRuntime = 'python:3.10';
+      S.serverSettings = { ip: '198.51.100.25' };
       const folderKey = window.BOBO.projectKey(S.workspaceRoot);
       const currentWorkspaceId = 'root\u0000' + folderKey;
       window.__cacheRevision = 'revision-1';
@@ -51,6 +52,7 @@ test('cache inventory v2 is project-first, type-first and lifecycle-safe', async
       window.__cacheConfirms = [];
       window.__packageCenterOpen = null;
       window.__primaryView = '';
+      const setPrimaryView = window.BOBO.workbench.setPrimaryView.bind(window.BOBO.workbench);
       window.__cacheEntries = [
         {
           id: 'dep-current', category: 'dependencies', state: 'current', workspace_id: currentWorkspaceId,
@@ -88,12 +90,19 @@ test('cache inventory v2 is project-first, type-first and lifecycle-safe', async
         return true;
       };
       window.BOBO.packageCenter.open = (options) => { window.__packageCenterOpen = options; };
-      window.BOBO.workbench.setPrimaryView = (view) => { window.__primaryView = view; };
+      window.BOBO.workbench.setPrimaryView = (view) => { window.__primaryView = view; setPrimaryView(view); };
       window.BOBO.sendToServer = async (action, data) => {
         window.__cacheActions.push({ action, data });
         if (action === 'listProjects') {
-          return { success: true, storageInfo: { total_used_bytes: 16384, quota_bytes: 1048576, persist_bytes: 16384, projects_total_bytes: 0, projects: [] } };
+          return { success: true, storageInfo: {
+            total_used_bytes: 16384, quota_bytes: 1048576, persist_bytes: 16384, projects_total_bytes: 12288,
+            projects: [
+              { key: 'recent-project', name: 'Recent project', size_bytes: 4096, files: 5, mod_time: 1790000000 },
+              { key: 'large-project', name: 'Large project', size_bytes: 8192, files: 18, mod_time: 1780000000 }
+            ]
+          } };
         }
+        if (action === 'whoami') return { success: true, user: { id: 'root' } };
         if (action === 'getCacheInventory') {
           const used = window.__cacheEntries.reduce((sum, entry) => sum + (entry.size_bytes || 0), 0);
           return { success: true, data: { cacheInventory: {
@@ -125,9 +134,17 @@ test('cache inventory v2 is project-first, type-first and lifecycle-safe', async
       window.BOBO.projects.open({ tab: 'cache' });
     });
 
-    await expect(page.locator('#projects-modal')).toHaveClass(/open/);
-    await expect(page.locator('#projects-modal')).toHaveAttribute('aria-hidden', 'false');
+    await expect(page.locator('#cloud-sidebar-view')).toHaveClass(/active/);
     await expect(page.locator('#projects-tab-cache')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#cloud-server-ip')).toHaveText('198.51.100.25');
+    await expect(page.locator('#cloud-server-latency')).toContainText('ms');
+    await expect(page.locator('#quota-pie-text')).toContainText('12.0 KB');
+    await expect(page.locator('#quota-pie')).toHaveAttribute('aria-label', /Account storage/);
+    await page.locator('#cloud-connection-settings').click();
+    await expect(page.locator('#settings-modal')).toBeVisible();
+    await expect(page.locator('.settings-tab[data-stab="server"]')).toHaveAttribute('aria-selected', 'true');
+    await page.locator('#settings-close-x').click();
+    await expect(page.locator('#settings-modal')).toBeHidden();
     await expect(page.locator('.cache-v2-shell')).toBeVisible();
     await expect(page.locator('.cache-v2-usage > span strong')).not.toContainText('/');
     await expect(page.locator('.cache-v2-usage > small')).toContainText('Account storage');
@@ -152,6 +169,37 @@ test('cache inventory v2 is project-first, type-first and lifecycle-safe', async
     await expect(page.locator('.cache-v2-services .cache-v2-icon-btn[data-cache-action="delete"]')).toHaveCount(0);
     await expect(page.locator('.cache-v2-shared')).not.toContainText('analysis-lsp');
     await expect(page.locator('.cache-v2-metrics').locator('span').first()).toContainText('6');
+
+    await page.locator('#projects-tab-projects').click();
+    await expect(page.locator('#quota-pie-text')).toContainText('Projects');
+    await expect(page.locator('#projects-list .cloud-project-row').first()).toContainText('Large project');
+    await page.locator('#projects-sort-toggle').click();
+    await page.locator('[data-project-sort="modified"]').click();
+    await expect(page.locator('#projects-list .cloud-project-row').first()).toContainText('Recent project');
+    await expect(page.locator('[data-project-sort="modified"]')).toHaveAttribute('aria-checked', 'true');
+    const sidebarResizer = page.locator('#sidebar-resizer');
+    await sidebarResizer.focus();
+    await sidebarResizer.press('Home');
+    await expect(sidebarResizer).toHaveAttribute('aria-valuenow', '180');
+    await expect(page.locator('#sidebar')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => {
+      const cloud = document.getElementById('cloud-sidebar-view');
+      const rows = [...cloud.querySelectorAll('.cloud-project-row')];
+      return cloud.scrollWidth <= cloud.clientWidth + 1 && rows.every((row) => row.scrollWidth <= row.clientWidth + 1);
+    })).toBe(true);
+    await page.screenshot({ path: path.join(os.tmpdir(), 'bobo-cloud-projects-sidebar-180.png'), fullPage: false });
+    await page.locator('#projects-tab-cache').click();
+    await expect.poll(() => page.evaluate(() => {
+      const cloud = document.getElementById('cloud-sidebar-view');
+      const cache = document.getElementById('cache-tree');
+      const rows = [...cache.querySelectorAll('.cache-v2-entry-main,.cache-v2-project-head,.cache-v2-toolbar')];
+      return cloud.scrollWidth <= cloud.clientWidth + 1 && cache.scrollWidth <= cache.clientWidth + 1 &&
+        rows.every((row) => row.scrollWidth <= row.clientWidth + 1);
+    })).toBe(true);
+    await page.screenshot({ path: path.join(os.tmpdir(), 'bobo-cloud-cache-sidebar-180.png'), fullPage: false });
+    await page.locator('#sidebar-resizer').focus();
+    await page.locator('#sidebar-resizer').press('End');
+    await page.setViewportSize({ width: 1120, height: 760 });
 
     const currentEntry = page.locator('.cache-v2-entry[data-cache-entry="dep-current"]');
     await currentEntry.locator('[data-cache-action="details"]').click();
@@ -207,7 +255,7 @@ test('cache inventory v2 is project-first, type-first and lifecycle-safe', async
 
     await page.locator('#cache-v2-scope').selectOption('all');
     await page.locator('.cache-v2-entry[data-cache-entry="dep-current"] [data-cache-action="packages"]').click();
-    await expect(page.locator('#projects-modal')).not.toHaveClass(/open/);
+    await expect(page.locator('#cloud-sidebar-view.active')).toHaveCount(0);
     const packageRoute = await page.evaluate(() => ({ mode: window.__packageCenterOpen, view: window.__primaryView }));
     expect(packageRoute).toEqual({ mode: { mode: 'installed' }, view: 'environment' });
     expect(errors).toEqual([]);

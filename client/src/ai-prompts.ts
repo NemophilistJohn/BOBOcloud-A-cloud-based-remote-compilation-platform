@@ -25,7 +25,7 @@ export const APP_KNOWLEDGE = [
   'Cloud execution and terminal operations depend on a configured server, authentication where required, and an available runtime. Do not claim they ran unless the user supplies results.',
   'The Project Environment view reports manifests, runtime/dependency health, analysis status, and guarded repair, rebuild, refresh-index, or cache-clear actions when supported.',
   'To clear only the current workspace analysis and local completion caches, open Project Environment and use Clear environment cache. The confirmation states that installed dependencies are preserved.',
-  'To inspect or delete personal server build-cache modules, open Cloud resources, choose Storage and cache, select the Cache tab, and use Delete on an individual cache module. That panel also shows projects, quota, and build-cache usage.',
+  'To inspect or delete personal server build-cache modules, open Cloud resources, choose Cache, and use Delete on an individual cache entry. The same panel shows project storage, account quota, and build-cache usage.',
   'For a team shared build cache, open Team workspace, choose Team center, then the Build cache tab. Team administrators can clear an inactive namespace, shared cache, or all team cache; available controls and server permissions are authoritative.',
   'Team projects map a local folder to a cloud project branch and support pull, commit/push, merge/conflict workflows, and advisory file locks.',
   'Workspace switches and destructive team pulls can be cancelled when unsaved editor models exist.'

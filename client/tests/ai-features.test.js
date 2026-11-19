@@ -646,8 +646,8 @@ test('application knowledge gives exact cache paths without inventing an action'
   assert.match(knowledge, /Project Environment.*Clear environment cache/);
   assert.match(knowledge, /analysis and local completion caches/);
   assert.match(knowledge, /installed dependencies are preserved/);
-  assert.match(knowledge, /Cloud resources.*Storage and cache.*Cache tab/);
-  assert.match(knowledge, /Delete on an individual cache module/);
+  assert.match(knowledge, /Cloud resources.*choose Cache.*build-cache usage/);
+  assert.match(knowledge, /Delete on an individual cache entry/);
   assert.match(knowledge, /Team workspace.*Team center.*Build cache tab/);
   assert.match(knowledge, /inactive namespace, shared cache, or all team cache/);
 });
