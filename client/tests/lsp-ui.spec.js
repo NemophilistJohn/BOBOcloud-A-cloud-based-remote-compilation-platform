@@ -580,6 +580,24 @@ test('configured LSP address, strategy settings and status bar work in all built
     await expect(page.locator('#status-lsp')).toContainText('LSP: Local');
     await expect(page.locator('#lsp-settings-actions')).toBeHidden();
 
+    const notebookSuggestions = await page.evaluate(async (root) => {
+      const virtualDocuments = window.BOBO.lsp.virtualDocuments;
+      const notebook = root + '/work.ipynb';
+      virtualDocuments.update(notebook, 1, 'score_total = 1\n\nscore_t\n\n');
+      try {
+        const symbol = await virtualDocuments.complete(notebook, 1, 2, 7);
+        virtualDocuments.update(notebook, 2, 'pri\n\n');
+        const builtin = await virtualDocuments.complete(notebook, 2, 0, 3);
+        const stale = await virtualDocuments.complete(notebook, 1, 2, 7);
+        return { symbol, builtin, stale };
+      } finally {
+        virtualDocuments.close(notebook);
+      }
+    }, workspaceDir);
+    expect(notebookSuggestions.symbol).toContainEqual({ label: 'score_total', insertText: 'score_total' });
+    expect(notebookSuggestions.builtin).toContainEqual({ label: 'print', insertText: 'print' });
+    expect(notebookSuggestions.stale).toEqual([]);
+
     await page.evaluate(async () => { await window.BOBO.i18n.setLocale('zh-CN'); window.BOBO.lsp.renderStatus(); });
     await expect(page.locator('.settings-tab[data-stab="lsp"]')).toHaveText('代码智能');
     await expect(page.locator('.lsp-mode-option').nth(1).locator('strong')).toHaveText('标准');

@@ -17,6 +17,7 @@ import type {
   ProjectEnvironmentSnapshotDto,
   ProjectEnvironmentWireDto
 } from '../types/environment-center';
+import { languageForActiveTab } from './file-language.js';
 import type { Disposable, Dispose } from '../types/lifecycle';
 import {
   canonicalLanguage,
@@ -119,7 +120,10 @@ export function createEnvironmentCenterService(
 
   function currentLanguage(): string {
     const tab = (S.tabs || []).find((item) => item.path === S.activeTabPath);
-    if (tab && tab.language && tab.language !== 'image') return String(tab.language);
+    if (tab) {
+      const language = languageForActiveTab(tab.language, tab.path);
+      if (language && language !== 'image') return language;
+    }
     const model = S.editor && typeof S.editor.getModel === 'function' ? S.editor.getModel() : null;
     return model && typeof model.getLanguageId === 'function' ? String(model.getLanguageId() || '') : '';
   }

@@ -200,6 +200,32 @@ test('a delayed runtime catalog reconciles the already-active source file', asyn
   assert.equal(fixture.notifications.length, 1);
 });
 
+test('Notebook document views use the same Python runtime selection as Python source files', () => {
+  const fixture = loadRuntime({
+    selectedRuntime: 'node:22',
+    activeTabPath: '/workspace/analysis.ipynb',
+    tabs: [{ path: '/workspace/analysis.ipynb', name: 'analysis.ipynb', language: 'document-view' }]
+  });
+
+  const result = fixture.BOBO.runtime.autoSelectForActiveFile();
+
+  assert.deepEqual(plain(result), { changed: true, runtimeId: 'python:3.13', usedLatest: true });
+  assert.equal(fixture.state.selectedRuntime, 'python:3.13');
+});
+
+test('Python source files keep the same active-tab runtime selection path', () => {
+  const fixture = loadRuntime({
+    selectedRuntime: 'node:22',
+    activeTabPath: '/workspace/main.py',
+    tabs: [{ path: '/workspace/main.py', name: 'main.py', language: 'python' }]
+  });
+
+  const result = fixture.BOBO.runtime.autoSelectForActiveFile();
+
+  assert.deepEqual(plain(result), { changed: true, runtimeId: 'python:3.13', usedLatest: true });
+  assert.equal(fixture.state.selectedRuntime, 'python:3.13');
+});
+
 test('runtime version comparison is numeric rather than lexical', () => {
   const fixture = loadRuntime({ availableRuntimes: [
     { language: 'python', version: '3.9', runtimeId: 'python:3.9' },

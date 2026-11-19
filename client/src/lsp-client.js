@@ -1002,7 +1002,6 @@
       var model = monacoRef.editor.createModel(text, 'python');
       document = activeVirtualDocument = { path: path, relativePath: synthetic, model: model,
         revision: revision, wireVersion: ++virtualDocumentVersion, diagnostics: diagnostics, requestKey: '' };
-      if (BOBO.runtime && BOBO.runtime.autoSelectForLanguage) BOBO.runtime.autoSelectForLanguage('python');
       invalidateCompletionContext(true);
       scheduleConfigure();
       openDocument(model);
@@ -1038,6 +1037,22 @@
     }).filter(Boolean);
   }
 
+  async function localVirtualCompletionItems(model, position) {
+    var provider = global.editorRuleRegistry?.getCompletionProvider?.('python');
+    if (!provider) return [];
+    var result = await provider.provideCompletionItems(model, position);
+    var snippetFlag = monacoRef.languages.CompletionItemInsertTextRule.InsertAsSnippet;
+    return virtualCompletionItems(result?.suggestions?.filter(function(item) {
+      return !item.additionalTextEdits?.length && !item.command;
+    }).map(function(item) {
+      var label = completionItemLabel(item);
+      // The cell editor inserts plain text. Offer identifier snippets by name.
+      var snippet = (item.insertTextRules & snippetFlag) !== 0;
+      if (snippet && !/^[_\p{ID_Start}][_\p{ID_Continue}]*$/u.test(label)) return null;
+      return { label: label, insertText: snippet ? label : item.insertText };
+    }));
+  }
+
   async function completeVirtualDocument(path, revision, line, character) {
     var document = activeVirtualDocument;
     if (!document || document.path !== path || document.revision !== revision) return [];
@@ -1045,11 +1060,23 @@
     if (line >= model.getLineCount() || character >= model.getLineMaxColumn(line + 1)) return [];
     var position = { lineNumber: line + 1, column: character + 1 };
     var snapshot = completionSnapshot(model, position);
-    if (!snapshot || settings.mode === 'local') return [];
+    if (!snapshot) return [];
+    var fallback = async function(value) {
+      var items = virtualCompletionItems(value);
+      if (items.length) return items;
+      var isCurrent = function() {
+        return activeVirtualDocument === document && document.revision === revision &&
+          completionContextGeneration === snapshot.contextGeneration;
+      };
+      if (!isCurrent()) return [];
+      var local = await localVirtualCompletionItems(model, position);
+      return isCurrent() ? local : [];
+    };
+    if (settings.mode === 'local') return fallback(null);
     var index = ensureDependencyApiIndex(model);
     var apiHint = index && index.value ? dependencyApiIndexCompletions(index.value, snapshot) : null;
     if (status.state !== 'ready' || activeLanguage !== 'python' || !completionProviderCapability(lspProtocolCapabilities)) {
-      return virtualCompletionItems(apiHint);
+      return fallback(apiHint);
     }
     var current = function() {
       return activeVirtualDocument === document && document.revision === revision &&
@@ -1060,7 +1087,7 @@
     var cacheScope = canUseClientCompletionCache(model) ? clientCompletionCacheScope(model, true) : null;
     var requestContextKey = JSON.stringify(protocolContext);
     var answer = completionCoordinator.read(snapshot.uri, snapshot.key, requestContextKey);
-    if (answer !== null) return virtualCompletionItems(mergeLocalCompletionResults(answer, apiHint));
+    if (answer !== null) return fallback(mergeLocalCompletionResults(answer, apiHint));
     var scopeId = clientCompletionCacheScopeId(cacheScope);
     var cacheKey = cacheScope ? clientCompletionCacheKey(snapshot, protocolContext) : '';
     var hint = cacheScope && completionHintCache.peek(scopeId, cacheKey);
@@ -1069,7 +1096,7 @@
       if (!current()) return [];
       if (hint) primeCompletionHint(scopeId, cacheKey, hint, 'durable');
     }
-    if (hint && clientCacheMode() === 'lazy') return virtualCompletionItems(mergeLocalCompletionResults(hint, apiHint));
+    if (hint && clientCacheMode() === 'lazy') return fallback(mergeLocalCompletionResults(hint, apiHint));
     var requestKey = 'virtual-completion:' + requestSequence++;
     document.requestKey = requestKey;
     try {
@@ -1084,10 +1111,10 @@
           var safe = { items: items };
           completionCoordinator.store(snapshot.uri, snapshot.key, requestContextKey, safe);
           if (cacheScope) persistCompletionHint(cacheScope, scopeId, cacheKey, safe, model, position);
-          return virtualCompletionItems(mergeLocalCompletionResults(safe, apiHint));
+          return fallback(mergeLocalCompletionResults(safe, apiHint));
         }
       }
-      return current() ? virtualCompletionItems(mergeLocalCompletionResults(hint || null, apiHint)) : [];
+      return current() ? fallback(mergeLocalCompletionResults(hint || null, apiHint)) : [];
     } finally {
       if (document.requestKey === requestKey) document.requestKey = '';
     }

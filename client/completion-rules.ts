@@ -646,6 +646,7 @@ type UnknownRecord = Record<string, unknown>;
   // prefix and cursor scope. Typing on the current line does not invalidate the
   // declarations above it, which avoids a full-file regex scan per keystroke.
   const symbolCompletionCache = new WeakMap<EditorRuleTextModelPort, SymbolCacheEntry>();
+  const completionProviders = new Map<EditorRuleLanguageId, EditorRuleCompletionProvider>();
 
   function prefixFingerprint(model: EditorRuleTextModelPort, lineNumber: number): string {
     let prefix: string;
@@ -717,6 +718,7 @@ type UnknownRecord = Record<string, unknown>;
   }
 
   function disposeCompletionProviders(): void {
+    completionProviders.clear();
     while (completionDisposables.length) {
       const disposable = completionDisposables.pop();
       if (!disposable) continue;
@@ -753,6 +755,7 @@ type UnknownRecord = Record<string, unknown>;
         }
       });
       const disposable = monacoRef.languages.registerCompletionItemProvider(plugin.language, provider);
+      completionProviders.set(plugin.language, provider);
       completionDisposables.push(disposable);
     });
   }
@@ -811,6 +814,7 @@ type UnknownRecord = Record<string, unknown>;
     listLanguageRulePlugins,
     getLanguageRulePlugin,
     registerCompletionProviders,
+    getCompletionProvider: (language) => completionProviders.get(language),
     getSyntaxMarkers,
     setDiagnosticsSettings,
     getDiagnosticsSettings,

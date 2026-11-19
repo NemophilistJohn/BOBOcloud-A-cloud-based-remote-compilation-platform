@@ -5,6 +5,7 @@
 // adapter. Runtime catalog reads are fenced by the service lifecycle so a late
 // response cannot repopulate a disposed renderer.
 import { DisposableStore, toDisposable } from '../renderer/core/disposable.js';
+import { languageForActiveTab } from './file-language.js';
 import type {
   RuntimeDefinitionDto,
   RuntimeDependencies,
@@ -397,7 +398,7 @@ export function createRuntimeService(dependencies: RuntimeDependencies): Runtime
   function autoSelectForActiveFile(): RuntimeSelectionResultDto {
     const active = (state.tabs || []).find((tab) => tab.path === state.activeTabPath);
     return active
-      ? autoSelectForLanguage(stringValue(active.language))
+      ? autoSelectForLanguage(languageForActiveTab(active.language, active.path))
       : { changed: false, reason: 'no-active-file' };
   }
 

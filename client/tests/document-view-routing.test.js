@@ -48,5 +48,5 @@ test('Notebook execution follows the Python runtime selector', () => {
   );
   assert.match(adapterSource, /autoSelectForLanguage\?\.\('python'\)/);
   assert.match(adapterSource, /runtimeId:\s*selection\?\.runtimeId\s*\|\|\s*BOBO\.state\?\.selectedRuntime/);
-  assert.match(workspaceSource, /else if \(\/\\\.ipynb\$\/i\.test\(tab\.name \|\| ''\)\) BOBO\.runtime\.autoSelectForLanguage\('python'\)/);
+  assert.match(workspaceSource, /BOBO\.runtime\.autoSelectForActiveFile\(\)/);
 });

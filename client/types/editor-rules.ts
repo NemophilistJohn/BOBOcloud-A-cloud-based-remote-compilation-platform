@@ -460,6 +460,7 @@ export interface EditorRuleRegistryPort extends EditorRuleDiagnosticsPort, Dispo
   listLanguageRulePlugins(): readonly EditorRuleLanguagePlugin[];
   getLanguageRulePlugin(language: EditorRuleLanguageId): EditorRuleLanguagePlugin | null;
   registerCompletionProviders(monaco: EditorRuleMonacoPort): void;
+  getCompletionProvider(language: EditorRuleLanguageId): EditorRuleCompletionProvider | undefined;
   getSyntaxMarkers(
     model: EditorRuleTextModelPort,
     monaco: EditorRuleMonacoPort,

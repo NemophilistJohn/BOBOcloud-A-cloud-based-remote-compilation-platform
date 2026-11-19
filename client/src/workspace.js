@@ -1437,10 +1437,7 @@
     S.activeTabPath = filePath;
     // Docker mode follows the active source language, while an explicit Local
     // choice remains untouched inside the runtime selector.
-    if (BOBO.runtime && BOBO.runtime.autoSelectForLanguage) {
-      if (tab.language !== 'document-view') BOBO.runtime.autoSelectForLanguage(tab.language);
-      else if (/\.ipynb$/i.test(tab.name || '')) BOBO.runtime.autoSelectForLanguage('python');
-    }
+    if (BOBO.runtime && BOBO.runtime.autoSelectForActiveFile) BOBO.runtime.autoSelectForActiveFile();
     if (BOBO.runConfig && BOBO.runConfig.refreshForActiveFile) BOBO.runConfig.refreshForActiveFile();
 
     if (tab.language === 'document-view') {

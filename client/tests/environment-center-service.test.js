@@ -226,6 +226,29 @@ test('environment center core is global-free and the adapter is its sole exact f
   assert.doesNotMatch(adapter, /\bwindow\.api\b/);
 });
 
+test('Notebook and Python tabs send the same Python environment context and expose real mismatches', async (t) => {
+  const root = 'C:\\work\\demo';
+  const tabs = [
+    { path: root + '\\analysis.IPYNB', language: 'document-view' },
+    { path: root + '\\main.py', language: 'python' }
+  ];
+  const { service, state, calls } = createHarness({
+    state: { tabs, workspaceRoot: root, serverSettings: { ip: 'example.test' }, selectedRuntime: 'python:3.11' }
+  });
+  t.after(() => service.dispose());
+  for (const tab of tabs) {
+    state.activeTabPath = tab.path;
+    const result = await service.refresh();
+    assert.equal(result.language.id, 'python');
+    assert.equal(result.consistency.languageRuntime.status, 'ready');
+    assert.equal(calls.send.at(-1).payload.language, 'python');
+  }
+  state.activeTabPath = tabs[0].path;
+  state.selectedRuntime = 'node:22';
+  const mismatch = await service.refresh();
+  assert.equal(mismatch.consistency.languageRuntime.status, 'mismatch');
+});
+
 test('environment center lifecycle owns every subscription and remains reversibly single-owner', () => {
   const harness = createHarness();
   const { calls, events, service } = harness;
