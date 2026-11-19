@@ -364,6 +364,38 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
     await expect(agentTab).toHaveAttribute('data-tab-path', 'agent-workbench:' + PROVIDER_ID);
     await expect(agentTab).toHaveClass(/active/);
     await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title')).toHaveText('main.js');
+    const agentTitle = agentTab.locator('.tab-title');
+    await expect(agentTitle).toHaveAttribute('draggable', 'true');
+    const agentBounds = await agentTitle.boundingBox();
+    const sourceBounds = await page.locator('#tabbar .tab:not([data-tab-provider])').boundingBox();
+    if (!agentBounds || !sourceBounds) throw new Error('Agent and file tabs must be visible for drag regression');
+    await page.mouse.move(agentBounds.x + agentBounds.width / 2, agentBounds.y + agentBounds.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(agentBounds.x + agentBounds.width / 2 + 8, agentBounds.y + agentBounds.height / 2, { steps: 2 });
+    await page.mouse.move(sourceBounds.x + 4, sourceBounds.y + sourceBounds.height / 2, { steps: 8 });
+    await expect(page.locator('#tabbar .tab:not([data-tab-provider])')).toHaveClass(/drop-before/);
+    await page.mouse.up();
+    expect(await page.locator('#tabbar .tab').evaluateAll((tabs) => tabs.map((tab) => tab.dataset.tabPath))).toEqual([
+      'agent-workbench:' + PROVIDER_ID, path.join(workspace, 'main.js')
+    ]);
+
+    await page.locator('#activity-extensions').click();
+    await page.locator('#extensions-installed-tab').click();
+    await page.locator('.extensions-installed-item[data-plugin-id="' + PLUGIN_ID + '"]').click();
+    await expect(page.locator('#plugin-details-view.active .plugin-details-page[data-plugin-id="' + PLUGIN_ID + '"]')).toBeVisible();
+    await expect(agentTab).not.toHaveClass(/active/);
+    const agentDetailsTab = page.locator('#tabbar .workbench-tab[data-tab-provider="plugin-details"]');
+    await expect(agentDetailsTab).toHaveAttribute('data-tab-path', 'plugin-details:' + PLUGIN_ID);
+    await agentTab.click();
+    await expect(page.locator('#agent-workbench-view.active')).toBeVisible();
+    await expect(page.locator('#plugin-details-view.active')).toHaveCount(0);
+    await agentDetailsTab.click();
+    await expect(page.locator('#plugin-details-view.active')).toBeVisible();
+    await agentTab.click();
+    await expect(page.locator('#agent-workbench-view.active')).toBeVisible();
+    await agentDetailsTab.locator('.close').click();
+    await expect(agentDetailsTab).toHaveCount(0);
+    await activity.click();
 
     await expect(workbench.locator('.agent-toolbar .agent-mode-control')).toHaveCount(0);
     await expect(workbench.locator('.agent-toolbar .agent-effort-field')).toHaveCount(0);

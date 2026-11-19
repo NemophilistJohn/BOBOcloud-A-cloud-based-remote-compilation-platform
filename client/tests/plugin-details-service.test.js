@@ -177,7 +177,7 @@ function pluginStatus() {
   };
 }
 
-function createHarness() {
+function createHarness(getDetail = async () => pluginStatus()) {
   const document = new FakeDocument();
   const window = new FakeEventTarget();
   const fileModel = { id: 'original-model' };
@@ -198,7 +198,7 @@ function createHarness() {
   const activatedPaths = [];
 
   const host = {
-    get: async () => pluginStatus(),
+    get: getDetail,
     onDidChange(listener) {
       hostListeners.add(listener);
       let active = true;
@@ -228,6 +228,10 @@ function createHarness() {
     },
     activateTab(filePath) {
       assert.ok(provider, 'the provider must remain registered while the underlying view is restored');
+      if (filePath.indexOf('plugin-details:') === 0) {
+        provider.activate(filePath);
+        return;
+      }
       activatedPaths.push(filePath);
       provider.deactivate();
       state.activeTabPath = filePath;
@@ -315,4 +319,26 @@ test('dispose restores the underlying workbench view and releases every owned re
   harness.service.dispose();
   assert.equal(harness.hostDisposals, 1);
   assert.equal(harness.providerDisposals, 1);
+});
+
+test('a late detail refresh cannot resurrect a closed tab or replace a reopened one', async () => {
+  const requests = [];
+  const harness = createHarness(() => new Promise((resolve) => requests.push(resolve)));
+  harness.service.init();
+  const opened = harness.service.open('acme.details');
+  requests.shift()(pluginStatus());
+  assert.equal(await opened, true);
+
+  const late = harness.service.open('acme.details');
+  assert.equal(harness.provider.close(harness.state.activeTabPath), true);
+  const reopened = harness.service.open('acme.details');
+  const [completeLate, completeReopen] = requests;
+  completeLate({ ...pluginStatus(), displayName: 'Stale details' });
+  assert.equal(await late, false);
+  assert.deepEqual(harness.provider.getTabs(), []);
+  assert.equal(harness.state.activeTabPath, harness.fileTab.path);
+  completeReopen(pluginStatus());
+  assert.equal(await reopened, true);
+  assert.equal(harness.provider.getTabs()[0].name, 'Details');
+  harness.service.dispose();
 });

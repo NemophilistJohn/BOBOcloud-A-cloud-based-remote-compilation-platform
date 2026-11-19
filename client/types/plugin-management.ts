@@ -292,7 +292,7 @@ export interface PluginDetailsWorkbenchTabDto {
   readonly title: string;
   readonly category: string;
   readonly closeable: true;
-  readonly draggable: false;
+  readonly draggable: boolean;
 }
 
 export interface PluginDetailsTabProvider {

@@ -28,10 +28,10 @@
   var workspaceSaveSequence = 0;
   var fileDecorationSubscription = null;
   var FILE_DECORATION_LANES = ['sync', 'scm', 'diagnostic'];
-  // Workbench pages such as extension details are deliberately kept outside
-  // the file-tab model. Providers get the tab chrome lifecycle without ever
-  // receiving a Monaco model or a workspace path.
+  // Provider pages stay out of the file model, while sharing the same tab
+  // order and chrome as files.
   var workbenchTabProviders = new Map();
+  var workbenchTabOrder = [];
 
   function normalizeWorkbenchTab(tab, providerId) {
     if (!tab || typeof tab !== 'object') return null;
@@ -45,7 +45,7 @@
       category: String(tab.category || '').slice(0, 80),
       providerId: providerId,
       closeable: tab.closeable !== false,
-      draggable: tab.draggable === true
+      draggable: tab.draggable !== false
     };
   }
 
@@ -88,7 +88,10 @@
         if (providerId === match.tab.providerId || !provider || typeof provider.deactivate !== 'function') return;
         try { provider.deactivate(); } catch (error) {}
       });
-      match.provider.activate(key);
+      if (match.provider.activate(key) === false) {
+        updateTabbar();
+        return false;
+      }
       return true;
     } catch (error) {
       return false;
@@ -1277,8 +1280,11 @@
           if (BOBO.dap && BOBO.dap.renameBreakpoints) BOBO.dap.renameBreakpoints(oldPath, result.path);
           for (var i = 0; i < S.tabs.length; i++) {
             if (isPathAtOrBelow(S.tabs[i].path, oldPath)) {
-              var suffix = S.tabs[i].path.slice(oldPath.length);
+              var oldTabPath = S.tabs[i].path;
+              var suffix = oldTabPath.slice(oldPath.length);
               S.tabs[i].path = result.path + suffix;
+              var orderIndex = workbenchTabOrder.indexOf(oldTabPath);
+              if (orderIndex >= 0) workbenchTabOrder[orderIndex] = S.tabs[i].path;
               if (!suffix) S.tabs[i].name = newName;
             }
           }
@@ -1430,7 +1436,10 @@
   }
 
   function activateTab(filePath) {
-    if (activateWorkbenchTab(filePath)) return;
+    if (activateWorkbenchTab(filePath)) {
+      revealActiveTab();
+      return true;
+    }
     var tab = S.tabs.find(function(t) { return t.path === filePath; });
     if (!tab) return;
     deactivateWorkbenchTabs();
@@ -1472,18 +1481,42 @@
     BOBO.editorCore.updateStatusBar(tab.model, tab.model ? S.editor.getPosition() : null);
     if (BOBO.environmentActivity) BOBO.environmentActivity.contextChanged('language');
     if (BOBO.collaboration && BOBO.collaboration.onFileActivated) BOBO.collaboration.onFileActivated(filePath);
+    revealActiveTab();
+    return true;
   }
 
   async function closeTab(filePath, options) {
     var workbenchClose = closeWorkbenchTab(filePath);
-    if (workbenchClose) return workbenchClose;
+    if (workbenchClose) {
+      return workbenchClose.then(function(result) {
+        updateTabbar();
+        return result;
+      }, function(error) {
+        updateTabbar();
+        throw error;
+      });
+    }
     if (S.workspaceTransitionLocked) return false;
     options = options || {};
     var idx = -1;
     for (var i = 0; i < S.tabs.length; i++) {
       if (S.tabs[i].path === filePath) { idx = i; break; }
     }
-    if (idx === -1) return true;
+    if (idx === -1) {
+      if (S.activeTabPath === filePath && !findWorkbenchTab(filePath)) {
+        deactivateWorkbenchTabs();
+        S.activeTabPath = null;
+        var fallback = S.tabs[S.tabs.length - 1];
+        if (fallback) activateTab(fallback.path);
+        else {
+          if (S.editor) S.editor.setModel(null);
+          updateTitlebar();
+          updateEmptyState();
+        }
+      }
+      updateTabbar();
+      return true;
+    }
 
     var tab = S.tabs[idx];
     if (tab.dirty && !options.force) {
@@ -1608,7 +1641,7 @@
 
   // ──── Tab Bar Incremental Operations ────
   // ──── Tab Drag-and-Drop ────
-  var TAB_DRAG_MIME = 'application/x-bobocloud-file-tab';
+  var TAB_DRAG_MIME = 'application/x-bobocloud-workbench-tab';
   var draggedTabPath = null;
 
   function clearTabDragState() {
@@ -1640,6 +1673,7 @@
     dragHandle.setAttribute('draggable', draggable ? 'true' : 'false');
 
     el.addEventListener('keydown', function(e) {
+      if (e.target !== el) return;
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         activateTab(el.getAttribute('data-tab-path'));
@@ -1655,15 +1689,13 @@
       activateTab(next.getAttribute('data-tab-path'));
     });
 
-    // Workbench-owned pages participate in keyboard tab navigation but do
-    // not alter the file-tab order. They have no Monaco model to reorder.
     if (!draggable) return;
 
     dragHandle.addEventListener('dragstart', function(e) {
       if (!e.dataTransfer) return;
       draggedTabPath = el.getAttribute('data-tab-path');
       e.dataTransfer.clearData();
-      e.dataTransfer.setData(TAB_DRAG_MIME, 'file-tab');
+      e.dataTransfer.setData(TAB_DRAG_MIME, 'workbench-tab');
       e.dataTransfer.effectAllowed = 'move';
       el.classList.add('dragging');
     });
@@ -1690,9 +1722,18 @@
       var sourcePath = draggedTabPath;
       var targetPath = el.getAttribute('data-tab-path');
       var position = dropPosition(el, e.clientX);
+      var orderedTabs = workbenchTabOrder.map(function(path) { return { path: path }; });
       var changed = BOBO.tabOrder && BOBO.tabOrder.reorder
-        ? BOBO.tabOrder.reorder(S.tabs, sourcePath, targetPath, position)
+        ? BOBO.tabOrder.reorder(orderedTabs, sourcePath, targetPath, position)
         : false;
+      if (changed) {
+        workbenchTabOrder = orderedTabs.map(function(tab) { return tab.path; });
+        var rank = new Map(workbenchTabOrder.map(function(path, index) { return [path, index]; }));
+        S.tabs.sort(function(left, right) {
+          return (rank.get(left.path) ?? Number.MAX_SAFE_INTEGER) -
+            (rank.get(right.path) ?? Number.MAX_SAFE_INTEGER);
+        });
+      }
       clearTabDragState();
       if (changed) updateTabbar();
     });
@@ -1712,9 +1753,17 @@
 
     var title = document.createElement('span');
     title.className = 'tab-title';
-    title.textContent = providerId ? tab.name : (tab.dirty ? tab.name + ' *' : tab.name);
+    title.textContent = tab.name;
     title.title = providerId ? tab.title : tab.name;
     barTab.appendChild(title);
+
+    if (!providerId && tab.dirty) {
+      barTab.setAttribute('aria-label', tab.name + ' (' + t('Unsaved changes') + ')');
+      var dirtyIndicator = document.createElement('span');
+      dirtyIndicator.className = 'tab-dirty-indicator';
+      dirtyIndicator.setAttribute('aria-hidden', 'true');
+      barTab.appendChild(dirtyIndicator);
+    }
 
     if (!providerId || tab.closeable !== false) {
       var close = document.createElement('button');
@@ -1740,12 +1789,13 @@
     }
 
     barTab.onclick = (function(tabKey) { return function() { activateTab(tabKey); }; })(key);
-    setupTabDrag(barTab, title, providerId ? tab.draggable === true : true);
+    setupTabDrag(barTab, title, providerId ? tab.draggable : true);
     return barTab;
   }
 
   function addTabToBar(tab, index) {
     updateTabbar();
+    revealActiveTab();
   }
 
   function removeTabFromBar(index) {
@@ -1777,6 +1827,14 @@
     }
   }
 
+  function revealActiveTab() {
+    var bar = document.getElementById('tabbar');
+    var activeTab = bar && bar.querySelector('.tab.active');
+    if (activeTab && activeTab.scrollIntoView) {
+      activeTab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  }
+
   function reindexTabBar() {
     var bar = document.getElementById('tabbar');
     var tabs = bar.querySelectorAll('.tab:not([data-tab-provider])');
@@ -1787,19 +1845,54 @@
   }
 
   function updateTabbar() {
-    // Full rebuild keeps file tabs and isolated workbench pages in one
-    // keyboard-accessible tab strip. Only file tabs are draggable.
+    // Reconcile live file and provider tabs against one order, then render the
+    // same interaction model regardless of which subsystem owns the content.
     var bar = document.getElementById('tabbar');
     if (!bar) return;
-    bar.innerHTML = '';
+    var descriptors = new Map();
     for (var i = 0; i < S.tabs.length; i++) {
-      var t = S.tabs[i];
-      trackTabSyncState(t);
-      bar.appendChild(createTabElement(t, i, null));
+      var fileTab = S.tabs[i];
+      trackTabSyncState(fileTab);
+      descriptors.set(fileTab.path, { tab: fileTab, index: i, providerId: null });
     }
     workbenchTabsFromProviders().forEach(function(tab) {
-      bar.appendChild(createTabElement(tab, -1, tab.providerId));
+      if (!descriptors.has(tab.key)) {
+        descriptors.set(tab.key, { tab: tab, index: -1, providerId: tab.providerId });
+      }
     });
+    var nextOrder = workbenchTabOrder.filter(function(key) { return descriptors.has(key); });
+    var retainedKeys = new Set(nextOrder);
+    descriptors.forEach(function(value, key) {
+      if (!retainedKeys.has(key)) nextOrder.push(key);
+    });
+    workbenchTabOrder = nextOrder;
+    var renderedTabs = new Map(Array.from(bar.querySelectorAll('.tab'), function(node) {
+      return [node.getAttribute('data-tab-path'), node];
+    }));
+    renderedTabs.forEach(function(node, key) {
+      if (!descriptors.has(key)) node.remove();
+    });
+    var cursor = bar.firstElementChild;
+    workbenchTabOrder.forEach(function(key) {
+      var descriptor = descriptors.get(key);
+      var tab = descriptor.tab;
+      var label = tab.dirty ? t('Unsaved changes') : '';
+      var signature = JSON.stringify([descriptor.providerId, tab.name, tab.title, tab.closeable, tab.draggable, label]);
+      var node = renderedTabs.get(key);
+      if (!node || node.tabSignature !== signature) {
+        var replacement = createTabElement(tab, descriptor.index, descriptor.providerId);
+        replacement.tabSignature = signature;
+        if (node) {
+          if (cursor === node) cursor = replacement;
+          node.replaceWith(replacement);
+        }
+        node = replacement;
+      }
+      if (!descriptor.providerId) node.setAttribute('data-tab-index', descriptor.index);
+      if (node !== cursor) bar.insertBefore(node, cursor || null);
+      cursor = node.nextElementSibling;
+    });
+    refreshTabBarActive();
   }
 
   function updateTitlebar() {
@@ -1807,6 +1900,7 @@
     var workbenchTab = findWorkbenchTab(S.activeTabPath);
     if (workbenchTab) {
       label.textContent = (workbenchTab.tab.category || t('Workbench')) + ' / ' + workbenchTab.tab.name;
+      label.setAttribute('data-dirty', 'false');
       label.title = workbenchTab.tab.title;
       return;
     }
@@ -1817,7 +1911,8 @@
     var relative = active && root && active.path.indexOf(root) === 0
       ? active.path.slice(root.length).replace(/^[/\\]+/, '')
       : (active ? active.path : '');
-    label.textContent = active ? base + ' / ' + relative + (active.dirty ? ' *' : '') : base;
+    label.textContent = active ? base + ' / ' + relative : base;
+    label.setAttribute('data-dirty', active && active.dirty ? 'true' : 'false');
     label.title = active ? active.path : root;
   }
 

@@ -62,24 +62,35 @@ html, body {
 #tabbar {
   grid-column: 3 / -1; background: var(--bg-surface);
   border-bottom: 1px solid var(--border-default);
-  display: flex; align-items: center; overflow: hidden;
+  display: flex; align-items: center; gap: 2px;
+  padding: 0 var(--space-1);
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
 }
 .tab {
-  display: flex; align-items: center; max-width: 200px;
-  padding: 5px 12px; gap: var(--space-2); cursor: default;
-  border-right: 1px solid var(--border-default);
+  display: flex; align-items: center; flex: 0 0 auto; min-width: 78px; max-width: min(220px, 100%);
+  height: calc(100% - 6px); position: relative; padding: 0 8px; gap: var(--space-2); cursor: default;
+  border-radius: var(--radius-md);
   color: var(--text-secondary); font-size: var(--text-sm);
   white-space: nowrap; text-overflow: ellipsis; overflow: hidden;
-  transition: background var(--transition), opacity var(--dur-fast), transform var(--dur-fast);
+  transition: background var(--transition), color var(--dur-fast), opacity var(--dur-fast), transform var(--dur-fast);
 }
-.tab.active { background: var(--bg-deep); color: var(--text-primary); }
-.tab:hover:not(.active) { background: var(--bg-hover); }
+.tab.active { background: var(--bg-elevated); color: var(--text-primary); }
+.tab:hover:not(.active) { background: var(--bg-hover); color: var(--text-primary); }
 .tab-title {
   flex: 1 1 auto; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; user-select: none;
 }
 .tab-title[draggable="true"] { cursor: grab; }
 .tab-title[draggable="true"]:active { cursor: grabbing; }
+.tab-dirty-indicator {
+  flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--brand); box-shadow: 0 0 0 2px var(--brand-muted);
+}
+.tab.active .tab-dirty-indicator { background: var(--text-primary); box-shadow: 0 0 0 2px var(--bg-hover); }
+#workspace-label[data-dirty="true"]::after {
+  content: ""; display: inline-block; width: 7px; height: 7px; margin: 0 0 1px 7px;
+  border-radius: 50%; background: var(--brand); box-shadow: 0 0 0 2px var(--brand-muted);
+}
 .tab.dragging { opacity: 0.45; transform: scale(0.98); }
 .tab.drop-before::before,
 .tab.drop-after::before {
@@ -90,8 +101,9 @@ html, body {
 }
 .tab.drop-before::before { left: 0; }
 .tab.drop-after::before { right: 0; }
-.tab .close { color: var(--text-secondary); cursor: pointer; }
-.tab .close:hover { color: var(--red); }
+.tab .close { flex: 0 0 18px; border-radius: var(--radius-sm); color: var(--text-secondary); cursor: pointer; opacity: 0.55; transition: opacity var(--dur-fast), background var(--dur-fast), color var(--dur-fast); }
+.tab .close:hover { background: var(--bg-hover); color: var(--text-primary); }
+.tab:hover .close, .tab.active .close, .tab:focus-within .close { opacity: 1; }
 
 /* ---- sidebar ---- */
 #sidebar {

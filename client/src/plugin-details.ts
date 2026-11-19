@@ -145,7 +145,7 @@ export function createPluginDetailsService(
   const state = dependencies.state;
   const host = dependencies.host;
   const disposables = new DisposableStore();
-  const refreshTokens = new Map<string, number>();
+  const refreshTokens = new Map<string, symbol>();
   let initialized = false;
   let disposed = false;
   let busy = false;
@@ -581,6 +581,7 @@ export function createPluginDetailsService(
   function closeByKey(key: string): boolean {
     const tab = findTabByKey(key);
     if (!tab) return false;
+    refreshTokens.delete(tab.id);
     const wasActive = state.activeTabPath === tab.key;
     const index = tabs().indexOf(tab);
     if (index >= 0) tabs().splice(index, 1);
@@ -611,7 +612,7 @@ export function createPluginDetailsService(
   ): Promise<boolean> {
     const validId = safeId(id);
     if (disposed || !validId || !host) return false;
-    const request = (refreshTokens.get(validId) || 0) + 1;
+    const request = Symbol();
     refreshTokens.set(validId, request);
     try {
       const result = await host.get(validId);
@@ -623,6 +624,7 @@ export function createPluginDetailsService(
       }
       let tab = findTabById(validId);
       if (!tab) {
+        if (!options.activate) return false;
         tab = {
           id: validId,
           key: tabKey(validId),
@@ -635,8 +637,18 @@ export function createPluginDetailsService(
       } else {
         tab.detail = detail;
       }
-      if (options.activate) activate(tab, { resetScroll: options.resetScroll === true });
-      else if (state.activeTabPath === tab.key) renderPage(tab);
+      if (options.activate) {
+        const workspace = dependencies.getWorkspace();
+        if (typeof workspace?.activateTab === 'function') {
+          workspace.activateTab(tab.key);
+          if (options.resetScroll) {
+            const root = view();
+            if (root) root.scrollTop = 0;
+          }
+        } else {
+          activate(tab, { resetScroll: options.resetScroll === true });
+        }
+      } else if (state.activeTabPath === tab.key) renderPage(tab);
       else dependencies.getWorkspace()?.updateTabbar();
       return true;
     } catch (_) {
@@ -644,6 +656,8 @@ export function createPluginDetailsService(
       const existing = findTabById(validId);
       if (existing) statusMessage(existing, genericError(), 'error');
       return false;
+    } finally {
+      if (refreshTokens.get(validId) === request) refreshTokens.delete(validId);
     }
   }
 
@@ -780,7 +794,7 @@ export function createPluginDetailsService(
       title: t('Plugin details') + ': ' + tab.detail.name,
       category: t('Extensions'),
       closeable: true,
-      draggable: false
+      draggable: true
     }));
   }
 

@@ -981,7 +981,7 @@ export function createAgentWorkbenchService(
       if (!record) return null;
       var session = record.state && record.state.activeSession;
       var name = session && session.title || record.descriptor.title;
-      return { key: tabKey(id), name: name, title: t('Agent') + ': ' + name, category: t('Agent'), closeable: true, draggable: false };
+      return { key: tabKey(id), name: name, title: t('Agent') + ': ' + name, category: t('Agent'), closeable: true, draggable: true };
     }).filter(Boolean);
   }
 

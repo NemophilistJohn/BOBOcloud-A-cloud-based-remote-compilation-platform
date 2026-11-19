@@ -425,12 +425,14 @@ test('file tabs reorder by drag position without changing active or dirty editor
       window.__tabOrderIdentity = new Map(window.BOBO.state.tabs.map(tab => [tab.path, tab]));
     }, { workspaceDir, files });
     await expect.poll(() => page.evaluate(() => window.BOBO.state.tabs.find(tab => tab.name === 'beta.js').dirty)).toBe(true);
-    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title')).toHaveText(['alpha.js', 'beta.js *', 'gamma.js']);
+    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title')).toHaveText(['alpha.js', 'beta.js', 'gamma.js']);
+    expect(errors).toEqual([]);
+    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-dirty-indicator')).toHaveCount(1);
     await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title').first()).toHaveAttribute('draggable', 'true');
     await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .close').first()).toHaveAttribute('draggable', 'false');
 
     await dragFileTab(page, 'alpha.js', 'gamma.js', 'after', uiEvidencePath('tab-drag-drop-indicator.png'));
-    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title')).toHaveText(['beta.js *', 'gamma.js', 'alpha.js']);
+    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title')).toHaveText(['beta.js', 'gamma.js', 'alpha.js']);
     const firstMove = await page.evaluate(() => ({
       stateOrder: window.BOBO.state.tabs.map(tab => tab.name),
       activeName: window.BOBO.state.tabs.find(tab => tab.path === window.BOBO.state.activeTabPath).name,
@@ -450,7 +452,7 @@ test('file tabs reorder by drag position without changing active or dirty editor
     await page.screenshot({ path: uiEvidencePath('tab-order-after.png'), fullPage: false });
 
     await dragFileTab(page, 'alpha.js', 'beta.js', 'before');
-    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title')).toHaveText(['alpha.js', 'beta.js *', 'gamma.js']);
+    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title')).toHaveText(['alpha.js', 'beta.js', 'gamma.js']);
 
     const orderBeforeCloseDrag = await page.evaluate(() => window.BOBO.state.tabs.map(tab => tab.name));
     const closeButton = page.locator('#tabbar .tab:not([data-tab-provider])', { hasText: 'beta.js' }).locator('.close');
@@ -465,7 +467,8 @@ test('file tabs reorder by drag position without changing active or dirty editor
     await expect(page.locator('#tabbar .tab:not([data-tab-provider])')).toHaveCount(3);
 
     await page.locator('#tabbar .tab:not([data-tab-provider])', { hasText: 'gamma.js' }).locator('.close').click();
-    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title')).toHaveText(['alpha.js', 'beta.js *']);
+    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title')).toHaveText(['alpha.js', 'beta.js']);
+    await expect(page.locator('#tabbar .tab:not([data-tab-provider]) .tab-dirty-indicator')).toHaveCount(1);
     expect(await page.evaluate(() => ({
       active: window.BOBO.state.tabs.find(tab => tab.path === window.BOBO.state.activeTabPath).name,
       dirty: window.BOBO.state.tabs.find(tab => tab.name === 'beta.js').dirty
