@@ -161,8 +161,8 @@ async function createHarness(t, fixture, options = {}) {
       const result = {
         id: expected.id,
         version: expected.version,
-        status: 'disabled',
-        enabled: false,
+        status: 'enabled',
+        enabled: true,
         grantedPermissions: []
       };
       records.set(result.id, result);
@@ -247,7 +247,7 @@ test('marketplace installs only the verified latest artifact and blocks online h
   const fixture = createFixture();
   const harness = await createHarness(t, fixture);
   const installed = await harness.controller.install(fixture.id);
-  assert.equal(installed.status, 'disabled');
+  assert.equal(installed.status, 'enabled');
   assert.deepEqual(installed.grantedPermissions, []);
   assert.equal(harness.installs.length, 1);
   assert.equal(harness.installs[0].expected.id, fixture.id);

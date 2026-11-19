@@ -64,7 +64,7 @@ export async function deactivate() {
 }
 ```
 
-Calculate the SHA-256 for `dist/extension.js`, replace the manifest value, create a `.boboplugin` archive, then open the **Extensions** activity-bar view and choose **Install .boboplugin package**. The normal user-facing picker accepts only that archive format and remembers a plugin-private import location, never the current workspace folder. The application installs a plugin in a disabled state with its declared permissions granted by default. Open its detail tab to inspect those grants and enable it.
+Calculate the SHA-256 for `dist/extension.js`, replace the manifest value, create a `.boboplugin` archive, then open the **Extensions** activity-bar view and choose **Install .boboplugin package**. The normal user-facing picker accepts only that archive format and remembers a plugin-private import location, never the current workspace folder. After package integrity and compatibility checks pass, the application enables the plugin and grants its declared permissions by default. Open its detail tab to inspect those grants or disable it.
 
 ## 2. Package Format
 

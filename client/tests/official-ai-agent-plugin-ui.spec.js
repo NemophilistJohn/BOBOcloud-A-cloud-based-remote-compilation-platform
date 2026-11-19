@@ -335,11 +335,10 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
 
     const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
     const installed = await installPackage(userData, workspace);
-    expect(installed).toMatchObject({ id: PLUGIN_ID, version: ARTIFACT_INFO.version, enabled: false });
+    expect(installed).toMatchObject({ id: PLUGIN_ID, version: ARTIFACT_INFO.version, enabled: true });
     expect([...installed.grantedPermissions].sort()).toEqual([...installed.requestedPermissions].sort());
     await page.evaluate(async (id) => {
       await window.api.plugins.refresh();
-      await window.api.plugins.enable(id);
     }, PLUGIN_ID);
 
     await page.waitForFunction(({ providerId }) => {

@@ -159,7 +159,7 @@ async function createHarness(t, options = {}) {
   return { root, workspaceRoot, workspaceState, controller, handlers, events, window };
 }
 
-test('plugin packages install atomically, remain disabled, and receive declared permissions by default', async (t) => {
+test('plugin packages install atomically, enable by default, and receive declared permissions', async (t) => {
   const harness = await createHarness(t);
   const source = path.join(harness.root, 'source');
   await writePackage(source);
@@ -167,15 +167,12 @@ test('plugin packages install atomically, remain disabled, and receive declared 
   const installed = await harness.controller.installFromPath(source);
   assert.equal(installed.id, 'acme.sample-plugin');
   assert.equal(Object.isFrozen(installed), true);
-  assert.equal(installed.status, 'disabled');
-  assert.equal(installed.enabled, false);
+  assert.equal(installed.status, 'enabled');
+  assert.equal(installed.enabled, true);
   assert.deepEqual(installed.grantedPermissions, ['commands.register', 'services.read']);
-  assert.deepEqual(harness.controller.runtimeDescriptors(), []);
-  await assert.rejects(() => harness.controller.loadEntry(installed.id), { code: 'plugins.entry.denied' });
-  await assert.rejects(
-    () => harness.controller.rpc(installed.id, 'commands.register', { id: 'acme.sample-plugin.hello' }),
-    { code: 'plugins.rpc.plugin' }
-  );
+  assert.equal(harness.controller.runtimeDescriptors().length, 1);
+  const installedEntry = await harness.controller.loadEntry(installed.id);
+  assert.match(installedEntry.source, /activate/);
 
   const enabled = await harness.controller.setEnabled(installed.id, true);
   assert.equal(enabled.status, 'enabled');
@@ -810,7 +807,7 @@ test('replacement and uninstall durably disable plugin runtime before moving pac
     if (replacing) await replacing.catch(() => {});
   }
   const installed = await replacing;
-  assert.equal(installed.status, 'disabled');
+  assert.equal(installed.status, 'enabled');
 
   await harness.controller.setEnabled('acme.sample-plugin', true);
   await assert.rejects(
@@ -987,7 +984,7 @@ test('schema-1 packages still reject extra executable view code', async (t) => {
   await assert.rejects(() => harness.controller.installFromPath(sourceRoot), { code: 'plugins.manifest.main' });
 });
 
-test('a replacement package is disabled and receives its declared permissions', async (t) => {
+test('a replacement package is enabled and receives its declared permissions', async (t) => {
   const harness = await createHarness(t);
   const first = path.join(harness.root, 'first');
   const second = path.join(harness.root, 'second');
@@ -998,9 +995,9 @@ test('a replacement package is disabled and receives its declared permissions', 
   await harness.controller.setEnabled('acme.sample-plugin', true);
   const replacement = await harness.controller.installFromPath(second);
   assert.equal(replacement.version, '1.1.0');
-  assert.equal(replacement.enabled, false);
+  assert.equal(replacement.enabled, true);
   assert.deepEqual(replacement.grantedPermissions, ['commands.register', 'services.read']);
-  assert.deepEqual(harness.controller.runtimeDescriptors(), []);
+  assert.equal(harness.controller.runtimeDescriptors().length, 1);
 });
 
 test('runtime revisions change when same-version package bytes are replaced', async (t) => {
@@ -1035,7 +1032,7 @@ test('plugin mutations serialize concurrent replacement requests', async (t) => 
   assert.equal(firstResult.version, '1.0.0');
   assert.equal(secondResult.version, '1.2.0');
   assert.equal(harness.controller.get('acme.sample-plugin').version, '1.2.0');
-  assert.equal(harness.controller.get('acme.sample-plugin').enabled, false);
+  assert.equal(harness.controller.get('acme.sample-plugin').enabled, true);
 });
 
 test('refresh detects post-install tampering and suppresses runtime descriptors', async (t) => {
@@ -1065,7 +1062,7 @@ test('ZIP packages install without exposing paths and traversal entries are reje
     { name: 'dist/extension.js', content: source }
   ]));
   const installed = await harness.controller.installFromPath(archive);
-  assert.equal(installed.status, 'disabled');
+  assert.equal(installed.status, 'enabled');
   assert.deepEqual(harness.controller.list().map((record) => record.id), ['acme.sample-plugin']);
 
   const malicious = makeZip([{ name: '../outside.js', content: 'bad' }]);
@@ -1192,7 +1189,7 @@ test('serialized marketplace installs cannot overwrite a newer concurrent local 
   await assert.rejects(staleMarketplaceInstall, { code: 'plugins.install.downgrade' });
   const retained = harness.controller.get('acme.sample-plugin');
   assert.equal(retained.version, '2.0.0');
-  assert.equal(retained.status, 'disabled');
+  assert.equal(retained.status, 'enabled');
   assert.deepEqual(retained.grantedPermissions, ['commands.register', 'services.read']);
 });
 

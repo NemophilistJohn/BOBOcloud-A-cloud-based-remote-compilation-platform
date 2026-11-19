@@ -42,7 +42,7 @@ async function installMarketplaceMock(app) {
           categories: ['scm', 'official'],
           latest: '1.0.0',
           installedVersion: installed ? '1.0.0' : '',
-          installedStatus: installed ? 'disabled' : '',
+          installedStatus: installed ? 'enabled' : '',
           updateAvailable: false,
           versions: [{
             version: '1.0.0',
@@ -92,7 +92,7 @@ async function installMarketplaceMock(app) {
         throw error;
       }
       installed = true;
-      return { id: request.id, version: '1.0.0', status: 'disabled' };
+      return { id: request.id, version: '1.0.0', status: 'enabled' };
     });
   });
 }

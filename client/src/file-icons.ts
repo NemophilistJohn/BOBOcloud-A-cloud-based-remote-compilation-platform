@@ -20,6 +20,12 @@ const DEFAULT_EXTENSION_MAP = Object.freeze({
   '.vue': 'vue', '.xml': 'xml', '.svg': 'xml',
   '.json': 'json', '.yaml': 'yaml', '.yml': 'yaml',
   '.sql': 'sql', '.md': 'markdown', '.mdx': 'markdown',
+  '.txt': 'text',
+  '.ipynb': 'jupyter', '.docx': 'word', '.pdf': 'pdf',
+  '.jpg': 'image', '.jpeg': 'image', '.png': 'image', '.gif': 'image',
+  '.webp': 'image', '.bmp': 'image', '.tif': 'image', '.tiff': 'image',
+  '.avif': 'image', '.ico': 'image',
+  '.db': 'database', '.sqlite': 'database', '.sqlite3': 'database', '.mdb': 'database',
   '.angular': 'angular'
 }) satisfies Readonly<FileIconNameMap>;
 

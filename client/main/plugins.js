@@ -1208,7 +1208,7 @@ function createPluginController(options) {
       }
       try {
         await fsp.rename(stage, destination);
-        registry.plugins[id] = { enabled: false, installedAt: new Date().toISOString(), version: checked.manifest.version };
+        registry.plugins[id] = { enabled: true, installedAt: new Date().toISOString(), version: checked.manifest.version };
         permissions.grants[id] = [...checked.manifest.permissions].sort();
         permissions.initialized[id] = true;
         await persistPermissions();

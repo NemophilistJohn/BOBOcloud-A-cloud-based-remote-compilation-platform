@@ -2321,6 +2321,15 @@ test('file icon service is an injected ESM service with legacy-compatible maps',
   assert.equal(icons.getFileIcon('main.ts'), 'assets/icons/file_type_typescript.svg');
   assert.equal(icons.getFileIcon('project.bobo'), 'assets/icons/file_type_bobocloud.svg');
   assert.equal(icons.getFileIcon('docker-compose.yml'), 'assets/icons/file_type_docker.svg');
+  assert.equal(icons.getFileIcon('notes.txt'), 'assets/icons/file_type_text.svg');
+  assert.equal(icons.getFileIcon('notes.md'), 'assets/icons/file_type_markdown.svg');
+  assert.equal(icons.getFileIcon('analysis.ipynb'), 'assets/icons/file_type_jupyter.svg');
+  assert.equal(icons.getFileIcon('report.docx'), 'assets/icons/file_type_word.svg');
+  assert.equal(icons.getFileIcon('report.pdf'), 'assets/icons/file_type_pdf.svg');
+  assert.equal(icons.getFileIcon('photo.jpeg'), 'assets/icons/file_type_image.svg');
+  assert.equal(icons.getFileIcon('photo.webp'), 'assets/icons/file_type_image.svg');
+  assert.equal(icons.getFileIcon('cache.sqlite3'), 'assets/icons/file_type_database.svg');
+  assert.equal(icons.getFileIcon('main.rs'), 'assets/icons/file_type_rust.svg');
   assert.equal(icons.getFileIcon('.gitignore'), 'assets/icons/file_type_git.svg');
   assert.equal(icons.getFolderIcon('.git'), 'assets/icons/file_type_git.svg');
   assert.equal(icons.getFileIcon('unknown.file'), null);
