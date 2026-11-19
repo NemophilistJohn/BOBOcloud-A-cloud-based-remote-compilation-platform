@@ -91,3 +91,28 @@ func TestNotebookKernelTimeoutStopsInterpreter(t *testing.T) {
 		t.Fatal("timed out interpreter was not stopped")
 	}
 }
+
+func TestNotebookKernelFigureIDDoesNotChangeExecutionCount(t *testing.T) {
+	python := notebookPython(t)
+	process, err := startNotebookProcess(context.Background(), python, "-u", "-c", notebookKernelPython)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer process.close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if ready, err := process.receive(ctx); err != nil || !ready.Ready {
+		t.Fatalf("kernel readiness = %#v, %v", ready, err)
+	}
+	result, err := process.execute(ctx, `import sys
+from types import SimpleNamespace
+sys.modules["matplotlib.pyplot"] = SimpleNamespace(
+    get_fignums=lambda: [7],
+    figure=lambda number: SimpleNamespace(savefig=lambda target, **kwargs: target.write(b"plot")),
+    close=lambda number: None,
+)`)
+	if err != nil || !result.OK || result.Count != 1 || len(result.Outputs) != 1 ||
+		!strings.Contains(string(result.Outputs[0]), `"image/png"`) {
+		t.Fatalf("figure result = %#v, %v", result, err)
+	}
+}

@@ -184,7 +184,10 @@ func (h *WSHandler) HandleNotebookWebSocket(w http.ResponseWriter, r *http.Reque
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		return conn.WriteJSON(value)
 	}
-	fail := func(code string) { _ = write(map[string]any{"type": "notebook.error", "code": code}) }
+	fail := func(code string) {
+		slog.Debug("Notebook request failed", "code", code)
+		_ = write(map[string]any{"type": "notebook.error", "code": code})
+	}
 	if h.Config == nil || h.DockerPool == nil || !h.Config.DockerHardening {
 		fail("disabled")
 		return

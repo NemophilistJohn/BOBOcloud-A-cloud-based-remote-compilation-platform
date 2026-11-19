@@ -25,6 +25,7 @@ import (
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/personalcache"
 	"bobocloud-server/internal/resourcecontrol"
+	"bobocloud-server/internal/runner"
 	"bobocloud-server/internal/safefile"
 
 	"github.com/gorilla/websocket"
@@ -626,13 +627,9 @@ func copyTerminalWorkspaceWithReset(ctx context.Context, source, containerID str
 		os.RemoveAll(tempDir)
 		return "", err
 	}
-	// Preserve the service UID/GID from the temporary snapshot. Without
-	// archive mode Docker creates the copied files as root inside a hardened
-	// non-root terminal container.
-	copyCommand := exec.CommandContext(copyCtx, "docker", "cp", "-a", filepath.Clean(tempDir)+string(filepath.Separator)+".", containerID+":"+terminalWorkspaceDir)
-	if output, err := copyCommand.CombinedOutput(); err != nil {
+	if err := runner.CopyWorkspaceToContainer(copyCtx, containerID, tempDir, terminalWorkspaceDir); err != nil {
 		os.RemoveAll(tempDir)
-		return "", fmt.Errorf("copy workspace into terminal: %s", strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("copy workspace into container: %w", err)
 	}
 	return tempDir, nil
 }

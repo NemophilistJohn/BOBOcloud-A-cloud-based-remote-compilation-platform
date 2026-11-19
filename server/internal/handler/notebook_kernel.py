@@ -87,17 +87,17 @@ def run(code, number):
     if error is None:
         pyplot = sys.modules.get("matplotlib.pyplot")
         if pyplot is not None:
-            for number in list(pyplot.get_fignums())[:4]:
+            for figure_number in list(pyplot.get_fignums())[:4]:
                 image = BoundedBytesIO()
                 try:
-                    pyplot.figure(number).savefig(image, format="png", dpi=100)
+                    pyplot.figure(figure_number).savefig(image, format="png", dpi=100)
                     outputs.append({"output_type": "display_data",
                                     "data": {"image/png": base64.b64encode(image.getvalue()).decode("ascii")},
                                     "metadata": {}})
                 except BaseException:
                     pass
                 finally:
-                    pyplot.close(number)
+                    pyplot.close(figure_number)
     return {"executionCount": number, "outputs": outputs, "ok": error is None}
 
 

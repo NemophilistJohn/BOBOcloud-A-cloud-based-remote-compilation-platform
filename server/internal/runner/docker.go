@@ -51,6 +51,11 @@ type containerWorkspaceCopier interface {
 type dockerCLIWorkspaceCopier struct{}
 
 func (dockerCLIWorkspaceCopier) CopyTo(ctx context.Context, containerID, hostDir, containerDir string) error {
+	return CopyWorkspaceToContainer(ctx, containerID, hostDir, containerDir)
+}
+
+// CopyWorkspaceToContainer extracts a prepared host snapshot into a live container.
+func CopyWorkspaceToContainer(ctx context.Context, containerID, hostDir, containerDir string) error {
 	// The daemon's archive endpoint does not see the running container's tmpfs
 	// workspace. Extract in its mount namespace as the configured workload UID;
 	// neither root ownership nor a successful copy into the hidden image layer
