@@ -112,6 +112,22 @@ test('team sidebar orders roles, bounds expanded projects, and confirms project 
     await expect(page.locator('#editor > #collab-team-page')).toBeVisible();
     await expect(page.locator('[data-sidebar-view="team"] #collab-team-detail')).toHaveCount(0);
     await expect(page.locator('#collab-team-settings')).toBeVisible();
+    const headerStyle = await page.evaluate(() => {
+      const title = document.querySelector('#collab-team-name').getBoundingClientRect();
+      const role = document.querySelector('#collab-admin-badge').getBoundingClientRect();
+      const page = document.querySelector('#collab-team-page');
+      const avatar = document.querySelector('.team-member-avatar');
+      const chart = document.querySelector('.team-activity-chart');
+      return {
+        titleRoleRowDelta: Math.abs(title.top - role.top),
+        pageColor: getComputedStyle(page).backgroundColor,
+        avatarColor: getComputedStyle(avatar).backgroundColor,
+        chartColor: getComputedStyle(chart).backgroundColor
+      };
+    });
+    expect(headerStyle.titleRoleRowDelta).toBeLessThan(8);
+    expect(headerStyle.avatarColor).not.toBe(headerStyle.pageColor);
+    expect(headerStyle.chartColor).not.toBe(headerStyle.pageColor);
     const memberCards = page.locator('#collab-member-list .team-member-card:not(.team-add-member-card)');
     await expect(memberCards).toHaveCount(2);
     await expect(memberCards.first()).toContainText('fixture-1');

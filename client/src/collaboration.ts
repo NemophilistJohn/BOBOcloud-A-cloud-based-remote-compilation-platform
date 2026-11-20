@@ -906,7 +906,7 @@ export function createCollaborationService(
     target.innerHTML = '<div class="team-cache-overview">' + summary + '<div class="team-cache-bar-wrap">' + bar + '</div></div>';
   }
   function teamSeriesColor(index) {
-    var palette = ['#4cae91', '#e2a653', '#6d9fe0', '#d27668', '#88a84f', '#b079c7', '#42a9b8', '#cf8d52'];
+    var palette = ['#65c8e8', '#78b8ed', '#8bc4f3', '#59b5d7', '#a2d0f4', '#6bc7d5', '#72a6dc', '#91c9e3'];
     return palette[index] || 'hsl(' + (index * 137.508 % 360).toFixed(2) + ' 64% ' + (index % 2 ? 66 : 48) + '%)';
   }
   function renderMemberActivity(activity) {
@@ -977,11 +977,11 @@ export function createCollaborationService(
       if (!day) cells.push('<span class="team-heatmap-cell" title="' + label + ' · ' + esc(t('No commits')) + '" data-date="' + label + '"></span>');
       else {
         var mix = 24 + Math.ceil(day.total / max * 4) * 16;
-        cells.push('<span class="team-heatmap-cell" title="' + esc(label + ' · ' + t('{count} commits', { count: day.total }) + ' · ' + day.project.name + ' (' + day.count + ')') + '" data-date="' + label + '" style="background:color-mix(in srgb,' + day.color + ' ' + mix + '%,var(--bg-tertiary))"></span>');
+        cells.push('<span class="team-heatmap-cell" title="' + esc(label + ' · ' + t('{count} commits', { count: day.total }) + ' · ' + day.project.name + ' (' + day.count + ')') + '" data-date="' + label + '" style="background:color-mix(in srgb,' + day.color + ' ' + mix + '%,var(--team-heatmap-empty))"></span>');
       }
     });
     var months = monthLabels.join('');
-    target.innerHTML = '<div class="team-heatmap-scroll"><div class="team-heatmap-months">' + months + '</div><div class="team-heatmap" role="grid" aria-label="' + esc(t('Team project commit activity')) + '">' + cells.join('') + '</div><div class="team-heatmap-caption"><span data-i18n="Each square is one day; color shows the project with most commits.">' + esc(t('Each square is one day; color shows the project with most commits.')) + '</span><span class="team-heatmap-legend"><span data-i18n="Less">' + esc(t('Less')) + '</span><i></i><i style="background:color-mix(in srgb,var(--text-secondary) 35%,var(--bg-tertiary))"></i><i style="background:color-mix(in srgb,var(--text-secondary) 70%,var(--bg-tertiary))"></i><i style="background:var(--text-secondary)"></i><span data-i18n="More">' + esc(t('More')) + '</span></span></div></div>';
+    target.innerHTML = '<div class="team-heatmap-scroll"><div class="team-heatmap-months">' + months + '</div><div class="team-heatmap" role="grid" aria-label="' + esc(t('Team project commit activity')) + '">' + cells.join('') + '</div><div class="team-heatmap-caption"><span data-i18n="Each square is one day; color shows the project with most commits.">' + esc(t('Each square is one day; color shows the project with most commits.')) + '</span><span class="team-heatmap-legend"><span data-i18n="Less">' + esc(t('Less')) + '</span><i></i><i style="background:color-mix(in srgb,var(--text-secondary) 35%,var(--team-heatmap-empty))"></i><i style="background:color-mix(in srgb,var(--text-secondary) 70%,var(--team-heatmap-empty))"></i><i style="background:color-mix(in srgb,var(--text-secondary) 88%,var(--team-heatmap-empty))"></i><span data-i18n="More">' + esc(t('More')) + '</span></span></div></div>';
   }
 
   function newTeam() {
