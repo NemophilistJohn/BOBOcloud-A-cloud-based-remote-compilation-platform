@@ -60,6 +60,7 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
   let archive = false;
   let busy = false;
   let confirming = false;
+  let menuPinned = false;
   let returnFocus: HTMLElement | null = null;
   let closeTimer: number | undefined;
   let refreshTimer: number | undefined;
@@ -115,11 +116,13 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
     if (confirming) return;
     clearTimeout(closeTimer);
     menu.hidden = true;
+    menuPinned = false;
     friend = undefined;
     submenu = '';
   }
   function scheduleClose(): void {
     clearTimeout(closeTimer);
+    if (menuPinned || confirming || busy) return;
     closeTimer = events.setTimeout(closeMenu, 400);
   }
   function cancelClose(): void { clearTimeout(closeTimer); }
@@ -133,6 +136,7 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
   function openMenu(button: HTMLElement, p: Person): void {
     cancelClose();
     if (confirming || busy) return;
+    menuPinned = false;
     if (friend?.uid === p.uid && !menu.hidden) return;
     friend = p;
     submenu = '';
@@ -172,6 +176,7 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
     const title = button.dataset.title || '';
     const key = button.dataset.offer;
     confirming = true;
+    menuPinned = true;
     button.setAttribute('disabled', '');
     cancelClose();
     let sent = false;
@@ -189,7 +194,7 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
       sent = true;
       if (valid(r)) { button.textContent = t('Sent'); button.setAttribute('disabled', ''); }
     } catch (error) { if (valid(r)) { button.removeAttribute('disabled'); notice(error, menu.querySelector<HTMLElement>('.social-submenu')); } }
-    finally { busy = false; confirming = false; if (!sent) button.removeAttribute('disabled'); }
+    finally { cancelClose(); busy = false; confirming = false; if (!sent) button.removeAttribute('disabled'); }
   }
   async function sendNote(): Promise<void> {
     const input = menu.querySelector<HTMLTextAreaElement>('textarea');
@@ -306,7 +311,7 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
   on(host, 'pointerout', (ev) => {
     if ((ev.target as Element).closest('[data-friend]')) scheduleClose();
   });
-  on(menu, 'pointerenter', cancelClose);
+  on(menu, 'pointerenter', () => { menuPinned = false; cancelClose(); });
   on(menu, 'pointerleave', scheduleClose);
   on(menu, 'pointerover', (ev) => {
     const el = (ev.target as Element).closest<HTMLElement>('[data-sub]');

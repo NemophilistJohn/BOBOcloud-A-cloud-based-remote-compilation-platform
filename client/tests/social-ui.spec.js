@@ -69,10 +69,16 @@ test('friends menus preserve cancelled confirmations and inbox handles notes and
     await expect(page.locator('[data-offer="p1"]')).toBeVisible();
     expect(await page.evaluate(() => window.__socialCalls.filter(c => c.action === 'sendInbox').length)).toBe(0);
     await expect(page.locator('[data-offer="p1"]')).toBeEnabled();
+    // A dialog temporarily moves the pointer outside both menu levels. Its
+    // dismissal must not leave an old hover-close deadline armed.
+    await page.waitForTimeout(650);
+    await expect(page.locator('[data-offer="p1"]')).toBeVisible();
     await page.locator('[data-offer="p1"]').click();
     await page.locator('#confirm-dialog .confirm-btn:not(.confirm-btn-ghost)').click();
     await expect(page.locator('[data-offer="p1"]')).toBeDisabled();
     await expect(page.locator('[data-offer="p1"]')).toHaveText('Sent');
+    await page.waitForTimeout(650);
+    await expect(page.locator('.social-menu')).toBeVisible();
     await page.locator('[data-sub="invite"]').hover();
     await expect(page.locator('[data-offer="admin-team"]')).toBeVisible();
     await expect(page.locator('[data-offer="member-team"]')).toHaveCount(0);
