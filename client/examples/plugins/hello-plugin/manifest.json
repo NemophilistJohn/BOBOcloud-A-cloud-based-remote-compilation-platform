@@ -6,7 +6,7 @@
   "version": "1.0.0",
   "engines": {
     "bobocloud": ">=2.6.0",
-    "pluginApi": "^1.2.0"
+    "pluginApi": ">=1.2.0"
   },
   "main": "dist/extension.js",
   "activationEvents": [

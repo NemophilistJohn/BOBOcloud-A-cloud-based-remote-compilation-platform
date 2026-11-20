@@ -180,7 +180,7 @@ Use typed DTO modules and incrementally migrated TypeScript renderer sources as 
 
 ## Delivery and registration
 
-The official plugin is developed and released from [BOBOCloud-AI-Agent-plugin-offical](https://github.com/NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical). The host repository ignores its local nested checkout so the package retains an independent history and release cadence.
+The official plugin is developed and released from [BOBOCloud-AI-Agent-plugin-offical](https://github.com/NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical), locally grouped at `../plugins/official/BOBOCloud-AI-Agent-plugin-offical`. It keeps an independent Git history and release cadence from the host.
 
 Each release must:
 

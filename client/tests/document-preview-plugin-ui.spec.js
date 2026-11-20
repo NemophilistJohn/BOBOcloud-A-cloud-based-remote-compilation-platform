@@ -9,7 +9,7 @@ const { resolvePluginArtifact, shouldSkipMissingArtifact } = require('./support/
 const PLUGIN_ID = 'bobocloud.document-preview';
 const PLUGIN_REPOSITORY = process.env.BOBO_DOCUMENT_PREVIEW_PLUGIN_DIR
   ? path.resolve(process.env.BOBO_DOCUMENT_PREVIEW_PLUGIN_DIR)
-  : path.resolve(__dirname, '..', '..', '..', 'bobocloud-document-preview');
+  : path.resolve(__dirname, '..', '..', '..', 'plugins', 'official', 'bobocloud-document-preview');
 const ARTIFACT_INFO = resolvePluginArtifact({
   artifactEnv: 'BOBO_DOCUMENT_PREVIEW_PLUGIN_ARTIFACT',
   pluginId: PLUGIN_ID,
@@ -78,7 +78,7 @@ async function activeDocumentFrame(page) {
 }
 
 test('official document preview renders four formats while retaining an opaque isolated boundary', async () => {
-  test.skip(shouldSkipMissingArtifact(ARTIFACT_INFO, 'Document preview plugin artifact'), 'Document preview artifact is not present beside the app repository.');
+  test.skip(shouldSkipMissingArtifact(ARTIFACT_INFO, 'Document preview plugin artifact'), 'Document preview artifact is not present in the plugin workspace.');
   test.setTimeout(120000);
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-document-preview-ui-'));
   const workspace = path.join(sandbox, 'workspace');

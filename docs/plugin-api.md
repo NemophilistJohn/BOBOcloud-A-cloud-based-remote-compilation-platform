@@ -1,12 +1,12 @@
 # BOBOCloud Plugin API 1.10.0
 
-Status: public package and isolated extension-host contract. BOBOCloud desktop `2.8.1` implements API 1.6 while remaining compatible with packages that target an earlier API 1.x range. API 1.6 adds truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism.
+Status: public package and isolated extension-host contract. BOBOCloud desktop `2.8.1` implements Plugin API `1.10.0`. API `1.6.0` introduced truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism; later API 1.x releases extend that contract.
 
 The reference guide, package checklist, and complete example are in [Plugin Development Guide](./plugin-development.md).
 
 ## Compatibility
 
-`engines.pluginApi` is a semver range over this API version. API major versions are compatibility boundaries. BOBOCloud may add fields and capability consumers in a minor version, but it does not remove or alter this contract without a new major API version.
+`engines.pluginApi` is a semver range over this API version. Declare the oldest API version that provides every capability the plugin uses. Use a lower-bound-only range by default; add an upper bound only for a demonstrated incompatibility. Apply changed ranges in a new plugin release and keep published tags, artifacts, and Registry version descriptors immutable.
 
 `engines.bobocloud` is separately checked against the installed application version. Both ranges must match before installation succeeds.
 
@@ -17,8 +17,8 @@ The reference guide, package checklist, and complete example are in [Plugin Deve
   "displayName": "Acme Project Tools",
   "version": "1.0.0",
   "engines": {
-    "bobocloud": ">=2.8.0 <3.0.0",
-    "pluginApi": "^1.6.0"
+    "bobocloud": ">=2.8.1",
+    "pluginApi": ">=1.6.0"
   },
   "main": "dist/extension.js",
   "activationEvents": ["onStartupFinished"],
@@ -562,7 +562,7 @@ Stable local-SCM error codes are:
 
 ### Implemented vs Reserved
 
-API v1 implements package installation and validation, permission storage, isolated activation, lifecycle cleanup, the command registry, the `workbench.projectTasks` read-only snapshot, local SCM broker mediation, the host-rendered source-control sidebar, static SCM file-tree decorations, schema-2 document views, and the API 1.6 Agent platform described above. The generic `ai.tools` and `skills.providers` declarations remain reserved; they do not invoke models or load Skills. Agent plugins use the dedicated `context.models`, `context.tools`, `context.skills`, and `context.agents` APIs instead. Other declarative points are stored and disposed correctly but still do not add a visible menu, create a settings UI, run a cloud task, register a Monaco provider, or start MCP.
+Plugin API 1.10 implements package installation and validation, permission storage, isolated activation, lifecycle cleanup, the command registry, the `workbench.projectTasks` read-only snapshot, local SCM broker mediation, the host-rendered source-control sidebar, static SCM file-tree decorations, schema-2 document views, and the Agent platform. The generic `ai.tools` and `skills.providers` declarations remain reserved; they do not invoke models or load Skills. Agent plugins use the dedicated `context.models`, `context.tools`, `context.skills`, and `context.agents` APIs instead. Other declarative points are stored and disposed correctly but still do not add a visible menu, create a settings UI, run a cloud task, register a Monaco provider, or start MCP.
 
 ## Services
 

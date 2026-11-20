@@ -9,7 +9,7 @@ const { resolvePluginArtifact, shouldSkipMissingArtifact } = require('./support/
 const PLUGIN_ID = 'bobocloud.local-scm';
 const PLUGIN_ROOT = process.env.BOBO_LOCAL_SCM_PLUGIN_DIR
   ? path.resolve(process.env.BOBO_LOCAL_SCM_PLUGIN_DIR)
-  : path.resolve(__dirname, '..', '..', '..', 'official-local-scm-plugin');
+  : path.resolve(__dirname, '..', '..', '..', 'plugins', 'official', 'official-local-scm-plugin');
 const ARTIFACT_INFO = resolvePluginArtifact({
   artifactEnv: 'BOBO_LOCAL_SCM_PLUGIN_ARTIFACT',
   pluginId: PLUGIN_ID,

@@ -1,6 +1,8 @@
 # BOBOCloud Plugin Development Guide
 
-This guide covers BOBOCloud Plugin API through `1.9.0`. BOBOCloud `2.8.1` originally shipped with API `1.6.0`; check `context.apiVersion` for features added in later builds.
+This guide covers BOBOCloud Plugin API `1.10.0`. BOBOCloud desktop `2.8.1` implements API `1.10.0`; check `context.apiVersion` when a plugin uses a capability introduced after its declared minimum.
+
+Unless a tested incompatibility requires a cap, declare only the oldest supported host and Plugin API versions. Published plugin tags, artifacts, and Registry descriptors are immutable, so apply a changed compatibility range in the next plugin version rather than rewriting an existing release.
 
 Plugins are installed locally. They run in an isolated sandbox and communicate with the workbench through a narrow, permission-gated API. A plugin is never given Node.js, Electron IPC, `window.api`, account credentials, the workspace path, or arbitrary DOM access.
 
@@ -29,8 +31,8 @@ hello-plugin/
   "description": "Adds a safe example command.",
   "version": "1.0.0",
   "engines": {
-    "bobocloud": ">=2.8.1 <3.0.0",
-    "pluginApi": "^1.6.0"
+    "bobocloud": ">=2.8.1",
+    "pluginApi": ">=1.6.0"
   },
   "main": "dist/extension.js",
   "activationEvents": ["onStartupFinished"],
@@ -102,8 +104,8 @@ These checks are deliberately strict. They prevent path traversal, archive bombs
 | `displayName` | No | Human-readable name, up to 120 characters. Defaults to `id`. |
 | `description` | No | Human-readable summary, up to 500 characters. |
 | `version` | Yes | Strict semantic version, for example `1.2.3`. |
-| `engines.bobocloud` | Yes | Semver range supported by the BOBOCloud application, for example `>=2.8.1 <3.0.0` for API 1.6 Agent packages. |
-| `engines.pluginApi` | Yes | Semver range supported by the plugin API, for example `^1.6.0` for Agent capabilities. |
+| `engines.bobocloud` | Yes | Semver range supported by the BOBOCloud application; declare the minimum version that provides every capability used, for example `>=2.8.1`. |
+| `engines.pluginApi` | Yes | Semver range supported by the plugin API; declare the minimum API version used, for example `>=1.6.0` for the Agent APIs. Add an upper bound only for a demonstrated incompatibility. |
 | `main` | Yes | One bundled `.js` or `.mjs` entry relative to the package root. |
 | `activationEvents` | Yes | Array of up to 64 bounded activation labels. Use `onStartupFinished` for the current eager post-workbench activation path. |
 | `permissions` | Yes | Unique capability ids. API 1.6.0 accepts the permissions listed in the API reference. Declared permissions are the package's hard capability ceiling and are enabled automatically after a verified install. |
@@ -194,7 +196,7 @@ Do not start background work during activation. API v1 requires activation event
 
 ## 6. Runtime API
 
-The activation sandbox receives a frozen `context` object. All methods are asynchronous except adding a subscription. Arguments and results cross a JSON-like data boundary: plain objects, arrays, strings, booleans, finite numbers, and `null`. Functions, DOM nodes, class instances, accessors, circular data, and oversized payloads are rejected. TypeScript projects can reference [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts) for the exact API `1.6.0` declarations.
+The activation sandbox receives a frozen `context` object. All methods are asynchronous except adding a subscription. Arguments and results cross a JSON-like data boundary: plain objects, arrays, strings, booleans, finite numbers, and `null`. Functions, DOM nodes, class instances, accessors, circular data, and oversized payloads are rejected. TypeScript projects can reference [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts) for the current API `1.10.0` declarations.
 
 ```ts
 interface Disposable { dispose(): void }
@@ -327,7 +329,7 @@ An Agent package commonly requests:
 
 ```json
 {
-  "engines": { "bobocloud": ">=2.8.1 <3.0.0", "pluginApi": "^1.6.0" },
+  "engines": { "bobocloud": ">=2.8.1", "pluginApi": ">=1.6.0" },
   "activationEvents": ["onStartupFinished"],
   "permissions": [
     "commands.register",
@@ -449,8 +451,8 @@ Before publishing a package:
 
 ## 11. Compatibility and Publishing
 
-- Treat `engines.pluginApi` major versions as hard compatibility boundaries.
-- Prefer a conservative range such as `^1.6.0` when requiring stream events or incremental state; use feature detection and an older range only when every fallback is tested.
+- Declare only the oldest `engines.bobocloud` and `engines.pluginApi` versions required unless a tested incompatibility justifies an upper bound.
+- Do not rewrite compatibility metadata on an already tagged release; publish a new plugin version when the declared range changes.
 - Additive behavior may arrive in a plugin API minor version. Removed or changed behavior requires a new major API version.
 - Keep command ids, setting ids, contribution ids, and persisted data names stable after release.
 - The `.boboplugin` extension only identifies an installable package. It is not a signature or a trust endorsement.
