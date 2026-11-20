@@ -600,6 +600,18 @@ export interface CollaborationWorkspaceLeaveOptionsDto {
 }
 
 export interface CollaborationWorkspacePort {
+  registerWorkbenchTabProvider?(id: string, provider: {
+    getTabs(): readonly { key: string; name: string; title: string; category: string; closeable: true; draggable: boolean }[];
+    activate(key: string): boolean;
+    close(key: string): boolean;
+    deactivate(): void;
+    afterFileActivation(tab: CollaborationTabDto): void;
+  }): { dispose(): void };
+  getWorkbenchTab?(key: string): unknown;
+  activateTab?(key: string): unknown;
+  updateTabbar?(): void;
+  updateTitlebar?(): void;
+  updateEmptyState?(): void;
   canLeaveWorkspace?(options?: CollaborationWorkspaceLeaveOptionsDto): Promise<boolean>;
   closeWorkspace?(options?: CollaborationWorkspaceLeaveOptionsDto): Promise<boolean>;
   abortWorkspaceLeave?(leaveToken?: string): boolean;
@@ -659,6 +671,7 @@ export interface CollaborationRunnerPort {
 
 export interface CollaborationWorkbenchPort {
   refreshContext?(): unknown;
+  setPrimaryView?(view: 'team' | 'explorer'): unknown;
 }
 
 export interface CollaborationEnvironmentActivityPort {
@@ -705,6 +718,8 @@ export interface CollaborationDependencies {
   readonly getAuth: () => CollaborationAuthPort | null | undefined;
   readonly getAccountProfile: () => CollaborationAccountProfilePort | null | undefined;
   readonly getWorkspace: () => CollaborationWorkspacePort | null | undefined;
+  readonly getDocumentViews?: () => { hideAll(options: { restoreEditor: false }): void } | null | undefined;
+  readonly getViews?: () => { openSplit?(): void; openDiff?(original?: string, modified?: string): void } | null | undefined;
   readonly getRclone: () => CollaborationRclonePort | null | undefined;
   readonly getRunner: () => CollaborationRunnerPort | null | undefined;
   readonly getWorkbench: () => CollaborationWorkbenchPort | null | undefined;

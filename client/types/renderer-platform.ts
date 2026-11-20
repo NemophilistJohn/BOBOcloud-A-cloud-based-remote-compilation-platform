@@ -108,6 +108,9 @@ export interface RendererServiceMap {
   readonly 'host.aiChatPanel': Readonly<AiChatPanelHostPort>;
   readonly 'host.agentWorkbench': Readonly<AgentWorkbenchHostPort>;
   readonly 'host.collaboration': Readonly<CollaborationHostPort>;
+  readonly 'host.social': Readonly<{
+    download(messageId: string, name: string): Promise<Readonly<{ archived: boolean }> | null>;
+  }>;
   readonly 'workbench.confirm': ConfirmService;
   readonly 'workbench.diagnosticsSettings': DiagnosticsSettingsService;
   readonly 'workbench.documentViews': DocumentViewService;

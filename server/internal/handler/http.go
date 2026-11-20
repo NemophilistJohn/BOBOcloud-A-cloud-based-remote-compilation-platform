@@ -31,6 +31,8 @@ import (
 	"bobocloud-server/internal/resourcecontrol"
 	"bobocloud-server/internal/safefile"
 	"bobocloud-server/internal/session"
+	"bobocloud-server/internal/snapshot"
+	"bobocloud-server/internal/social"
 	"bobocloud-server/internal/storage"
 )
 
@@ -102,9 +104,11 @@ type HTTPHandler struct {
 	Audit               storage.AuditStore      // 审计日志（可为 nil）
 	Version             string                  // 服务端版本号（serverInfo 返回）
 	Collaboration       *collab.Manager         // 团队、Git 工作树与邀请
-	BuildCache          *buildcache.Manager     // 团队编译缓存
-	LSP                 *lsp.Manager            // 远程语言服务器与独立分析缓存
-	DAP                 *dap.Manager            // 独立远程调试适配器会话
+	Social              *social.Store
+	ProjectSnapshots    *snapshot.Store
+	BuildCache          *buildcache.Manager // 团队编译缓存
+	LSP                 *lsp.Manager        // 远程语言服务器与独立分析缓存
+	DAP                 *dap.Manager        // 独立远程调试适配器会话
 	DependencyViews     *lsp.DependencyRegistry
 	Lifecycle           *lifecycle.Manager // 运行/终端与破坏性存储操作的用户级互斥
 	PersonalCache       *personalcache.Manager
@@ -192,54 +196,68 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer releaseWork()
-	if r.Method != http.MethodPost {
+	download := r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, inboxProjectPath)
+	if r.Method != http.MethodPost && !download {
 		writeJSON(w, http.StatusMethodNotAllowed, model.Response{Success: false, Error: "Method not allowed"})
 		return
 	}
 
+	var req model.Request
+	if download {
+		req.Action = "downloadInboxProject"
+		req.MessageID = strings.TrimPrefix(r.URL.Path, inboxProjectPath)
+	} else if !h.decodeRequest(w, r, &req) {
+		return
+	}
+
+	h.handleAuthenticatedRequest(w, r, &req)
+}
+
+func (h *HTTPHandler) decodeRequest(w http.ResponseWriter, r *http.Request, req *model.Request) bool {
 	clearBodyDeadline := limitRequestBodyRead(w, h.Config.HTTPRequestBodyTimeout())
 	defer clearBodyDeadline()
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	decoder := json.NewDecoder(r.Body)
-	var req model.Request
-	if err := decoder.Decode(&req); err != nil {
+	if err := decoder.Decode(req); err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
 			writeJSON(w, http.StatusRequestEntityTooLarge, model.Response{Success: false, Error: "Request body exceeds 1 MiB"})
-			return
+			return false
 		}
 		if requestBodyReadTimedOut(err) {
 			writeJSON(w, http.StatusRequestTimeout, model.Response{Success: false, Error: "Request body read timed out"})
-			return
+			return false
 		}
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: fmt.Sprintf("Invalid JSON: %v", err)})
-		return
+		return false
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
 			writeJSON(w, http.StatusRequestEntityTooLarge, model.Response{Success: false, Error: "Request body exceeds 1 MiB"})
-			return
+			return false
 		}
 		if requestBodyReadTimedOut(err) {
 			writeJSON(w, http.StatusRequestTimeout, model.Response{Success: false, Error: "Request body read timed out"})
-			return
+			return false
 		}
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Request body must contain exactly one JSON object"})
-		return
+		return false
 	}
-	clearBodyDeadline()
+	return true
+}
 
+func (h *HTTPHandler) handleAuthenticatedRequest(w http.ResponseWriter, r *http.Request, req *model.Request) {
 	// ---- 预认证动作（无需登录即可调用）----
 	switch req.Action {
 	case "serverInfo":
 		h.handleServerInfo(w, r)
 		return
 	case "login":
-		h.handleLogin(w, r, &req)
+		h.handleLogin(w, r, req)
 		return
 	case "register":
-		h.handleRegister(w, r, &req)
+		h.handleRegister(w, r, req)
 		return
 	}
 
@@ -321,7 +339,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ---- 路由 ----
-	h.routeRequest(w, r, &req)
+	h.routeRequest(w, r, req)
 }
 
 // authenticate 校验请求凭证：先按登录会话 token，再按 API Key。
@@ -421,6 +439,8 @@ func (h *HTTPHandler) routeRequest(w http.ResponseWriter, r *http.Request, req *
 		h.handleUpdateProfile(w, r, req)
 	case "getCompileActivity":
 		h.handleGetCompileActivity(w, r)
+	case "listFriends", "listInbox", "sendInbox", "respondInbox", "recordWorkspaceSync", "downloadInboxProject":
+		h.handleSocial(w, r, req)
 	case "findUser":
 		h.handleFindUser(w, r, req)
 	case "logout":

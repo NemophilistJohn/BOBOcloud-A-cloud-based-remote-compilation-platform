@@ -153,6 +153,9 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
   let connectionLoadVersion = 0;
   let localProjectNames: ProjectsProjectNamesDto = Object.freeze(Object.create(null));
   let projectSort: ProjectSort = 'size';
+  let suppressDownloadOpenPrompt = false;
+  let activeProjectMenu: string | null = null;
+  let projectMenuCloseTimer: number | null = null;
   let lastProjects: readonly ProjectView[] = Object.freeze([]);
   let lastStorageInfo: ProjectsStorageInfoDto | null = null;
 
@@ -354,21 +357,131 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
       const modTime = project.modTime
         ? new Date(project.modTime * 1000).toLocaleDateString(documentRef.documentElement.lang || undefined)
         : '—';
+      const workspaceRoot = stringValue(state.workspaceRoot);
+      const isCurrentProject = Boolean(workspaceRoot && dependencies.projectKey(workspaceRoot) === project.key);
+      const actions = '<div class="cloud-project-actions">' +
+        '<button type="button" class="cloud-project-menu-toggle" data-key="' + escapeHtml(project.key) +
+          '" aria-label="' + escapeHtml(t('Project actions')) + '" title="' + escapeHtml(t('Project actions')) +
+          '" aria-haspopup="menu" aria-expanded="' + (activeProjectMenu === project.key ? 'true' : 'false') + '">' +
+          '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button>' +
+        '<div class="cloud-project-menu" role="menu"' + (activeProjectMenu === project.key ? '' : ' hidden') + '>' +
+          '<button type="button" role="menuitem" data-project-action="download" data-key="' + escapeHtml(project.key) +
+            '" data-name="' + escapeHtml(displayName) + '"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v3h14v-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>' + escapeHtml(t('Download')) + '</span></button>' +
+          (isCurrentProject ? '<button type="button" role="menuitem" data-project-action="sync" data-key="' + escapeHtml(project.key) +
+            '"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5m10.2-2A7 7 0 0 0 6.4 7L4 9m16 6-2.4 2A7 7 0 0 1 4.8 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>' + escapeHtml(t('Sync')) + '</span></button>' : '') +
+          '<button type="button" role="menuitem" class="is-danger" data-project-action="delete" data-key="' + escapeHtml(project.key) +
+            '" data-name="' + escapeHtml(displayName) + '"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>' + escapeHtml(t('Delete project')) + '</span></button>' +
+        '</div></div>';
       return '<article class="cloud-project-row" title="' + escapeHtml(displayName) + '">' +
         '<span class="proj-dot" style="background:' + project.color + '"></span>' +
         '<span class="cloud-project-copy"><strong>' + escapeHtml(displayName) + '</strong>' +
           '<small><span>' + escapeHtml(formatBytes(project.sizeBytes)) + '</span><span>' +
           escapeHtml(t('{count} files', { count: project.files })) + '</span><span>' +
           escapeHtml(t('Modified {date}', { date: modTime })) + '</span></small></span>' +
-        '<button type="button" class="cloud-project-delete proj-del" data-key="' + escapeHtml(project.key) +
-          '" data-name="' + escapeHtml(displayName) + '" aria-label="' + escapeHtml(t('Delete project')) +
-          '" title="' + escapeHtml(t('Delete project')) + '"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
-          '<path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>' +
+        actions +
         '</article>';
     }).join('');
   }
 
+  function closeProjectMenu(): void {
+    if (projectMenuCloseTimer !== null) {
+      clearTimeout(projectMenuCloseTimer);
+      projectMenuCloseTimer = null;
+    }
+    if (!activeProjectMenu) return;
+    activeProjectMenu = null;
+    documentRef.querySelectorAll<HTMLElement>('.cloud-project-menu').forEach((menu) => { menu.hidden = true; });
+    documentRef.querySelectorAll<HTMLButtonElement>('.cloud-project-menu-toggle').forEach((button) => {
+      button.setAttribute('aria-expanded', 'false');
+    });
+  }
+
+  function openProjectMenu(button: HTMLButtonElement): void {
+    const key = button.dataset.key || '';
+    if (!key) return;
+    if (activeProjectMenu === key) return;
+    closeProjectMenu();
+    activeProjectMenu = key;
+    button.setAttribute('aria-expanded', 'true');
+    button.parentElement?.querySelector<HTMLElement>('.cloud-project-menu')?.removeAttribute('hidden');
+  }
+
+  function deferProjectMenuClose(): void {
+    if (projectMenuCloseTimer !== null) clearTimeout(projectMenuCloseTimer);
+    projectMenuCloseTimer = window.setTimeout(() => {
+      projectMenuCloseTimer = null;
+      closeProjectMenu();
+    }, 260);
+  }
+
+  async function downloadProject(button: HTMLButtonElement): Promise<void> {
+    const key = button.dataset.key || '';
+    const name = button.dataset.name || key;
+    const rclone = dependencies.getRclone();
+    if (!key || !rclone) return;
+    closeProjectMenu();
+    button.disabled = true;
+    try {
+      const destination = await rclone.pickProjectDownload(name);
+      if (!destination) return;
+      const prepared = await rclone.prepareProjectDownload(
+        { folderName: name, folderKey: key },
+        { dest: destination.path, localGrant: destination.grantId }
+      ) as { success?: unknown; remoteGrantId?: unknown; error?: unknown } | null;
+      if (!prepared || prepared.success !== true || typeof prepared.remoteGrantId !== 'string') {
+        throw new Error(errorMessage(prepared?.error, 'Project download failed'));
+      }
+      const result = await rclone.pull({
+        dest: destination.path,
+        localGrant: destination.grantId,
+        remoteGrantId: prepared.remoteGrantId
+      }) as { success?: unknown; error?: { message?: unknown } } | null;
+      if (!result || result.success !== true) {
+        throw new Error(errorMessage(result?.error, 'Project download failed'));
+      }
+      if (suppressDownloadOpenPrompt) return;
+      const confirm = dependencies.getConfirm();
+      if (!confirm) return;
+      const decision = await confirm({
+        title: t('Open downloaded project'),
+        message: t("Do you want to open project '{name}'?", { name }),
+        confirmLabel: t('Yes'),
+        cancelLabel: t('No'),
+        checkboxLabel: t("Don't ask again this session"),
+        returnDetails: true
+      });
+      if (decision.checkboxChecked) {
+        suppressDownloadOpenPrompt = true;
+        return;
+      }
+      if (!decision.confirmed) return;
+      const opened = await dependencies.getWorkspaceLaunch()?.requestOpen({
+        path: destination.path,
+        localGrant: destination.grantId
+      });
+      if (opened) dependencies.getWorkbench()?.setPrimaryView?.('explorer');
+    } catch (error) {
+      dependencies.alert?.(errorMessage(error, 'Project download failed'));
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function syncProject(button: HTMLButtonElement): Promise<void> {
+    closeProjectMenu();
+    button.disabled = true;
+    try {
+      const result = await dependencies.syncCurrentProject();
+      if (result === false) dependencies.alert?.(t('Project sync failed'));
+    } catch (error) {
+      dependencies.alert?.(errorMessage(error, 'Project sync failed'));
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   async function deleteProject(button: HTMLButtonElement): Promise<void> {
+    closeProjectMenu();
     const key = button.dataset.key || '';
     const displayName = button.dataset.name || key;
     const confirm = dependencies.getConfirm();
@@ -537,18 +650,45 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
     listen(documentRef, 'click', (event) => {
       const target = (event as MouseEvent).target as Element | null;
       if (target?.closest('.cloud-project-sort')) return;
+      if (target?.closest('.cloud-project-actions')) return;
+      closeProjectMenu();
       closeSortMenu();
     });
     listen(documentRef, 'keydown', (event) => {
-      if ((event as KeyboardEvent).key === 'Escape') closeSortMenu();
+      if ((event as KeyboardEvent).key === 'Escape') { closeSortMenu(); closeProjectMenu(); }
+    });
+    listen(list, 'pointerover', (event) => {
+      const target = (event as PointerEvent).target as Element | null;
+      if (target?.closest('.cloud-project-actions')) {
+        if (projectMenuCloseTimer !== null) {
+          clearTimeout(projectMenuCloseTimer);
+          projectMenuCloseTimer = null;
+        }
+      }
+      const button = target?.closest<HTMLButtonElement>('.cloud-project-menu-toggle');
+      if (button && list.contains(button)) openProjectMenu(button);
+    });
+    listen(list, 'pointerout', (event) => {
+      const target = (event as PointerEvent).target as Element | null;
+      const actions = target?.closest<HTMLElement>('.cloud-project-actions');
+      const next = (event as PointerEvent).relatedTarget as Element | null;
+      if (actions && !actions.contains(next)) deferProjectMenuClose();
     });
     // A single delegated listener replaces one closure per project row while
     // retaining the exact button data attributes and click semantics.
     listen(list, 'click', (event) => {
       const target = (event as MouseEvent).target as Element | null;
-      const button = target?.closest<HTMLButtonElement>('.proj-del');
+      const button = target?.closest<HTMLButtonElement>('.cloud-project-menu-toggle, [data-project-action]');
       if (!button || !list.contains(button)) return;
-      void deleteProject(button);
+      if (button.classList.contains('cloud-project-menu-toggle')) {
+        event.stopPropagation();
+        openProjectMenu(button);
+        return;
+      }
+      const action = button.dataset.projectAction;
+      if (action === 'delete') void deleteProject(button);
+      else if (action === 'download') void downloadProject(button);
+      else if (action === 'sync') void syncProject(button);
     });
     documentRef.querySelectorAll<HTMLElement>('#cloud-sidebar-view .projects-tab').forEach((tab) => {
       listen(tab, 'click', () => switchTab(tab.dataset.ptab || 'projects'));
@@ -567,6 +707,9 @@ export function createProjectsService(dependencies: ProjectsDependencies): Proje
       else renderProjectList();
       renderQuota(lastStorageInfo);
       void refreshConnectionLatency();
+    });
+    listen(dependencies.events, 'bobo:cloud-storage-changed', () => {
+      if (cloudViewOpen()) void loadAll();
     });
     listeners.add(dependencies.host.onOpenServerProjects(() => open()));
   }

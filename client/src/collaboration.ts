@@ -109,10 +109,20 @@ export function createCollaborationService(
   });
   var selectedTeamId = '';
   var selectedDetail = null;
+  var teamTabs = new Map();
+  var currentTeamRequest = null;
+  var pendingTeamViewRestore = null;
+  var TEAM_TAB_PREFIX = 'team-page:';
+  var sidebarMode = 'friends';
+  var friendsVisible = false;
+  var sidebarIdentity = '';
+  var teamListRequest = 0;
+  var detailRequest = 0;
+  var expandedProjects = new Map();
   var actionConfirm = null;
+  var actionRevision = 0;
   var chosenAvatar = 'ocean';
   var lockRefreshTimer = null;
-  var hubReturnFocus = null;
   var selectedInvites = null;
   var selectedCacheInfo = null;
   var workbenchCacheInfo = null;
@@ -403,6 +413,7 @@ export function createCollaborationService(
   // ─── Reusable action dialog ────────────────────────────────
   function closeAction() {
     if (disposed) return;
+    actionRevision++;
     $('collab-action-modal').classList.remove('open');
     actionConfirm = null;
   }
@@ -420,10 +431,14 @@ export function createCollaborationService(
   }
   function openAction(title, bodyHTML, confirmText, onConfirm, titleParams) {
     if (disposed) return;
+    actionRevision++;
     bindText($('collab-action-title'), title, titleParams);
     $('collab-action-body').innerHTML = bodyHTML + '<div id="collab-action-status" class="collab-action-status"></div>';
     bindText($('collab-action-confirm'), confirmText || 'Continue');
+    bindText($('collab-action-cancel'), 'Cancel');
     $('collab-action-confirm').disabled = false;
+    $('collab-action-cancel').disabled = false;
+    $('collab-action-close').disabled = false;
     actionConfirm = onConfirm;
     $('collab-action-modal').classList.add('open');
     var first = $('collab-action-body').querySelector('input,select,textarea');
@@ -432,17 +447,24 @@ export function createCollaborationService(
   async function runActionConfirm() {
     if (disposed || !actionConfirm) return;
     var epoch = lifecycleEpoch;
+    var revision = actionRevision;
     var btn = $('collab-action-confirm');
     btn.disabled = true;
+    $('collab-action-cancel').disabled = true;
+    $('collab-action-close').disabled = true;
     setActionStatusKey('Working...', null, false);
     try {
       var shouldClose = await actionConfirm();
-      if (!isCurrent(epoch)) return;
+      if (!isCurrent(epoch) || revision !== actionRevision) return;
       if (shouldClose !== false) closeAction();
     } catch (err) {
-      if (isCurrent(epoch)) setActionStatus(collaborationErrorMessage(err), true);
+      if (isCurrent(epoch) && revision === actionRevision) setActionStatus(collaborationErrorMessage(err), true);
     } finally {
-      if (isCurrent(epoch)) btn.disabled = false;
+      if (isCurrent(epoch) && revision === actionRevision) {
+        btn.disabled = false;
+        $('collab-action-cancel').disabled = false;
+        $('collab-action-close').disabled = false;
+      }
     }
   }
   function inputField(id, label, value, type) {
@@ -461,77 +483,279 @@ export function createCollaborationService(
   }
 
   // ─── Team center ───────────────────────────────────────────
-  async function openHub() {
-    if (disposed || !requireLogin()) return;
-    var epoch = lifecycleEpoch;
-    hubReturnFocus = document.activeElement;
-    var modal = $('collab-modal');
-    modal.classList.add('open');
-    S.collaboration.modalOpen = true;
-    $('collab-account-id').textContent = (currentUser().name || currentUser().username) + ' · ' + (currentUser().uid || '');
-    setTimeout(function() { modal.focus(); }, 0);
-    await loadTeams(undefined, epoch);
+  function getSidebarIdentity() {
+    return currentUser() && S.auth.token ? JSON.stringify([S.serverSettings?.ip, S.serverSettings?.port, currentUser().id, S.auth.token]) : '';
   }
-  function closeHub() {
+  function resetSidebar(identity) {
+    sidebarIdentity = identity;
+    teamListRequest++;
+    detailRequest++;
+    expandedProjects.clear();
+    resetTeamPages();
+    S.collaboration.teams = [];
+    if ($('collab-team-list')) $('collab-team-list').innerHTML = '';
+    if ($('collab-team-detail')) renderNoTeam();
+  }
+  function setFriendsVisible(visible) {
+    if (friendsVisible === visible) return;
+    friendsVisible = visible;
+    if (typeof global.Event === 'function') global.dispatchEvent(new global.Event(visible ? 'bobo:social-friends-visible' : 'bobo:social-friends-hidden'));
+  }
+  async function openHub(mode) {
     if (disposed) return;
-    $('collab-modal').classList.remove('open');
-    S.collaboration.modalOpen = false;
-    var fallback = $('team-hub-btn');
-    if (!fallback || !fallback.getClientRects().length) fallback = $('activity-team');
-    var target = hubReturnFocus && hubReturnFocus.isConnected && hubReturnFocus.getClientRects().length ? hubReturnFocus : fallback;
-    hubReturnFocus = null;
-    if (target && typeof target.focus === 'function') target.focus();
+    if (mode === 'teams' || mode === 'friends') sidebarMode = mode;
+    BOBO.workbench?.setPrimaryView?.('team');
+    await showSidebarMode(sidebarMode);
+  }
+  async function showSidebarMode(mode) {
+    if (disposed || !$('collab-teams')) return;
+    var identity = getSidebarIdentity();
+    if (sidebarIdentity !== identity) resetSidebar(identity);
+    sidebarMode = mode;
+    var friends = mode === 'friends';
+    $('collab-mode-friends').setAttribute('aria-pressed', String(friends));
+    $('collab-mode-teams').setAttribute('aria-pressed', String(!friends));
+    $('collab-friends').hidden = !friends;
+    $('collab-teams').hidden = friends;
+    $('collab-teams-login').hidden = Boolean(identity);
+    $('collab-teams-content').hidden = !identity;
+    setFriendsVisible(friends);
+    if (!friends && identity) await loadTeams();
   }
 
   async function loadTeams(preferTeamId, expectedEpoch) {
     var epoch = expectedEpoch === undefined ? lifecycleEpoch : expectedEpoch;
-    if (!isCurrent(epoch)) return;
-    $('collab-team-list').innerHTML = '<div class="collab-empty" data-i18n="Loading...">' + esc(t('Loading...')) + '</div>';
+    var identity = getSidebarIdentity();
+    if (!isCurrent(epoch) || !identity) return;
+    var request = ++teamListRequest;
+    if (!S.collaboration.teams?.length) $('collab-team-list').innerHTML = '<div class="collab-empty" data-i18n="Loading...">' + esc(t('Loading...')) + '</div>';
     try {
-      S.collaboration.teams = await api('listTeams');
-      if (!isCurrent(epoch)) return;
+      var teams = asArray(await api('listTeams'));
+      if (!isCurrent(epoch) || request !== teamListRequest || identity !== getSidebarIdentity()) return;
+      S.collaboration.teams = teams.sort(function(a, b) { return Number(Boolean(b.is_admin)) - Number(Boolean(a.is_admin)) || String(a.name).localeCompare(String(b.name)); });
+      for (var id of expandedProjects.keys()) if (!teams.some(function(team) { return team.id === id; })) expandedProjects.delete(id);
+      for (var tab of Array.from(teamTabs.values())) {
+        var team = teams.find(function(item) { return item.id === tab.id; });
+        if (!team) closeTeamPage(tab.key);
+        else tab.name = team.name;
+      }
       renderTeamList();
-      var next = preferTeamId || selectedTeamId || (S.collaboration.teams[0] && S.collaboration.teams[0].id);
+      var next = preferTeamId;
+      if (!teams.some(function(team) { return team.id === next; })) next = '';
       if (next) await selectTeam(next, epoch);
-      else renderNoTeam();
+      BOBO.workspace?.updateTabbar?.();
+      BOBO.workspace?.updateTitlebar?.();
     } catch (err) {
-      if (isCurrent(epoch)) $('collab-team-list').innerHTML = '<div class="collab-empty">' + esc(err.message) + '</div>';
+      if (isCurrent(epoch) && request === teamListRequest && identity === getSidebarIdentity()) {
+        $('collab-team-list').innerHTML = '<div class="collab-empty">' + esc(err.message) + '</div>';
+      }
     }
+  }
+  function expandedMarkup(expansion) {
+    if (expansion.error) return '<div class="collab-empty">' + esc(expansion.error) + '</div>';
+    if (!expansion.projects) return '<div class="collab-empty" data-i18n="Loading...">' + esc(t('Loading...')) + '</div>';
+    if (!expansion.projects.length) return '<div class="collab-empty" data-i18n="No team projects">' + esc(t('No team projects')) + '</div>';
+    return expansion.projects.map(function(project) {
+      return '<button type="button" class="collab-expanded-project" data-expanded-project="' + esc(project.id) + '" title="' + esc(project.name) + '"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><path d="M1.8 4.5h5l1.2 1.3h6.2v6.4H1.8z" stroke-linejoin="round"/></svg><span dir="auto">' + esc(project.name) + '</span></button>';
+    }).join('');
+  }
+  function teamRow(teamId) {
+    return Array.from($('collab-team-list').querySelectorAll('[data-team-row]')).find(function(row) { return row.dataset.teamRow === teamId; });
+  }
+  async function toggleTeamProjects(teamId) {
+    var expansion = expandedProjects.get(teamId);
+    var row = teamRow(teamId);
+    if (!row) return;
+    if (expansion) expandedProjects.delete(teamId);
+    else expandedProjects.set(teamId, expansion = {});
+    updateExpandedRow(row, expandedProjects.get(teamId));
+    if (!expandedProjects.has(teamId)) return;
+    var epoch = lifecycleEpoch;
+    var identity = getSidebarIdentity();
+    try {
+      expansion.projects = asArray(await api('listTeamProjects', { teamId: teamId }));
+    } catch (err) { expansion.error = err.message; }
+    if (isCurrent(epoch) && identity === getSidebarIdentity() && expandedProjects.get(teamId) === expansion) {
+      var currentRow = teamRow(teamId);
+      if (currentRow) updateExpandedRow(currentRow, expansion);
+    }
+  }
+  function updateExpandedRow(row, expansion) {
+    row.querySelector('[data-team-expand]').setAttribute('aria-expanded', String(Boolean(expansion)));
+    var projects = row.querySelector('.collab-expanded-projects');
+    projects.hidden = !expansion;
+    projects.innerHTML = expansion ? expandedMarkup(expansion) : '';
   }
   function renderTeamList() {
     var teams = S.collaboration.teams || [];
-    if (!teams.length) { $('collab-team-list').innerHTML = '<div class="collab-empty" data-i18n="No teams yet">' + esc(t('No teams yet')) + '</div>'; return; }
-    $('collab-team-list').innerHTML = teams.map(function(team, index) {
-      return '<button class="collab-team-item' + (team.id === selectedTeamId ? ' active' : '') + '" data-team-id="' + esc(team.id) + '" data-team-index="' + index + '">' +
-        '<span class="team-list-avatar">' + esc(initials(team.name)) + '</span><span><strong>' + esc(team.name) + '</strong><small></small></span></button>';
+    var list = $('collab-team-list');
+    if (!teams.length) { list.innerHTML = '<div class="collab-empty" data-i18n="No teams yet">' + esc(t('No teams yet')) + '</div>'; return; }
+    list.innerHTML = teams.map(function(team, index) {
+      return '<div class="collab-team-row" data-team-row="' + esc(team.id) + '" data-team-index="' + index + '"><div class="collab-team-row-head">' +
+        '<button type="button" class="icon-command collab-team-expand" data-team-expand aria-controls="collab-expanded-' + index + '"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 4 4 4-4 4"/></svg></button>' +
+        '<button type="button" class="collab-team-item" data-team-id="' + esc(team.id) + '" title="' + esc(team.name) + '" aria-pressed="' + String(team.id === selectedTeamId) + '">' +
+        '<span class="team-list-avatar">' + esc(initials(team.name)) + '</span><span><strong dir="auto">' + esc(team.name) + '</strong><small></small></span></button></div><div id="collab-expanded-' + index + '" class="collab-expanded-projects"></div></div>';
     }).join('');
-    Array.prototype.forEach.call($('collab-team-list').querySelectorAll('[data-team-index]'), function(row) {
+    list.querySelectorAll('[data-team-index]').forEach(function(row) {
       var team = teams[Number(row.getAttribute('data-team-index'))];
       bindText(row.querySelector('small'), '{members} members · {projects} projects', { members: team.member_count, projects: team.project_count });
+      var expand = row.querySelector('[data-team-expand]');
+      bindAttribute(expand, 'aria-label', 'Projects in {team}', { team: team.name });
+      bindAttribute(expand, 'title', 'Projects in {team}', { team: team.name });
+      updateExpandedRow(row, expandedProjects.get(team.id));
     });
   }
   function renderNoTeam() {
     selectedTeamId = '';
-    selectedDetail = null;
-    bindText($('collab-team-name'), 'Create or join a team');
-    setRawText($('collab-team-description'), '');
-    setRawText($('collab-admin-badge'), '');
-    $('collab-project-list').innerHTML = '<div class="collab-empty"></div>';
-    bindText($('collab-project-list').querySelector('.collab-empty'), 'No team selected');
+    selectedDetail = selectedInvites = selectedCacheInfo = null;
+    $('collab-team-detail').hidden = true;
+    $('collab-project-list').innerHTML = '';
     $('collab-member-list').innerHTML = '';
     $('collab-invite-list').innerHTML = '';
     $('collab-cache-view').innerHTML = '';
+    $('collab-team-list').querySelectorAll('[data-team-id]').forEach(function(row) { row.setAttribute('aria-pressed', 'false'); });
+  }
+
+  function teamKey(teamId) { return TEAM_TAB_PREFIX + encodeURIComponent(teamId); }
+  function teamPageChrome() {
+    BOBO.workspace?.updateTabbar?.();
+    BOBO.workspace?.updateTitlebar?.();
+    BOBO.workspace?.updateEmptyState?.();
+  }
+  function teamProviderTabs() {
+    return Array.from(teamTabs.values()).map(function(tab) {
+      return { key: tab.key, name: tab.name, title: t('Team workspace') + ': ' + tab.name, category: t('Teams'), closeable: true, draggable: true };
+    });
+  }
+  function deactivateTeamPage() {
+    if (S.currentViewMode !== 'team-page') return;
+    var tab = teamTabs.get(S.activeTabPath);
+    if (tab?.previousView) pendingTeamViewRestore = tab.previousView;
+    $('collab-team-page').hidden = true;
+    var container = $('container');
+    if (container) container.style.display = '';
+    S.currentViewMode = 'single';
+  }
+  function closeTeamPage(key) {
+    var tab = teamTabs.get(key);
+    if (!tab) return false;
+    var active = S.activeTabPath === key;
+    if (active) deactivateTeamPage();
+    teamTabs.delete(key);
+    if (active) {
+      detailRequest++;
+      renderNoTeam();
+      var previous = tab.previousKey;
+      if (!(S.tabs.some(function(file) { return file.path === previous; }) || teamTabs.has(previous) || BOBO.workspace?.getWorkbenchTab?.(previous))) {
+        previous = Array.from(teamTabs.keys()).pop() || S.tabs[S.tabs.length - 1]?.path;
+      }
+      S.activeTabPath = null;
+      if (previous) BOBO.workspace?.activateTab?.(previous);
+    }
+    teamPageChrome();
+    return true;
+  }
+  function resetTeamPages() {
+    var active = teamTabs.get(S.activeTabPath);
+    if (active) {
+      deactivateTeamPage();
+      S.activeTabPath = null;
+    }
+    teamTabs.clear();
+    if (active) {
+      var previous = active.previousKey;
+      if (!(S.tabs.some(function(file) { return file.path === previous; }) || BOBO.workspace?.getWorkbenchTab?.(previous))) previous = S.tabs[S.tabs.length - 1]?.path;
+      if (previous) BOBO.workspace?.activateTab?.(previous);
+    }
+    teamPageChrome();
+  }
+  function activateTeamPage(key) {
+    var tab = teamTabs.get(key);
+    if (disposed || !tab || !getSidebarIdentity()) return false;
+    if (S.activeTabPath && S.activeTabPath !== key) tab.previousKey = S.activeTabPath;
+    var fileTab = S.tabs.find(function(file) { return file.path === S.activeTabPath; });
+    if (fileTab) tab.previousView = {
+      path: fileTab.path, mode: S.currentViewMode,
+      diffOriginalPath: S.diffOriginalPath, diffModifiedPath: S.diffModifiedPath
+    };
+    $('split-container')?.classList.remove('active');
+    $('diff-container')?.classList.remove('active');
+    $('image-preview')?.classList.add('hidden');
+    dependencies.getDocumentViews?.()?.hideAll({ restoreEditor: false });
+    var container = $('container');
+    if (container) container.style.display = 'none';
+    S.activeTabPath = key;
+    S.currentViewMode = 'team-page';
+    $('collab-team-page').hidden = false;
+    selectTeamPane(tab.pane || 'members');
+    currentTeamRequest = loadTeamDetail(tab.id);
+    teamPageChrome();
+    return true;
+  }
+  function restoreTeamUnderlyingView(fileTab) {
+    var snapshot = pendingTeamViewRestore;
+    pendingTeamViewRestore = null;
+    if (!snapshot || snapshot.path !== fileTab.path) return;
+    if (snapshot.mode === 'split') dependencies.getViews?.()?.openSplit?.();
+    else if (snapshot.mode === 'diff') dependencies.getViews?.()?.openDiff?.(snapshot.diffOriginalPath, snapshot.diffModifiedPath);
+  }
+  function selectTeamPane(name) {
+    document.querySelectorAll('#collab-team-detail [data-collab-tab]').forEach(function(tab) {
+      var active = tab.getAttribute('data-collab-tab') === name;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-pressed', String(active));
+      $(tab.getAttribute('aria-controls')).hidden = !active;
+    });
+    var page = teamTabs.get(S.activeTabPath);
+    if (page) page.pane = name;
   }
   async function selectTeam(teamId, expectedEpoch) {
     var epoch = expectedEpoch === undefined ? lifecycleEpoch : expectedEpoch;
     if (!isCurrent(epoch)) return;
+    var team = (S.collaboration.teams || []).find(function(item) { return item.id === teamId; });
+    if (!team) return;
+    var key = teamKey(teamId);
+    if (!teamTabs.has(key)) teamTabs.set(key, { id: teamId, key: key, name: team.name, pane: 'members' });
+    if (BOBO.workspace?.activateTab) BOBO.workspace.activateTab(key);
+    else activateTeamPage(key);
+    await currentTeamRequest;
+  }
+  async function loadTeamDetail(teamId, expectedEpoch) {
+    var epoch = expectedEpoch === undefined ? lifecycleEpoch : expectedEpoch;
+    if (!isCurrent(epoch)) return;
+    var identity = getSidebarIdentity();
+    var request = ++detailRequest;
+    var changed = selectedTeamId !== teamId || !selectedDetail;
     selectedTeamId = teamId;
-    renderTeamList();
+    $('collab-team-page-status').hidden = false;
+    bindText($('collab-team-page-status'), 'Loading...');
+    if (changed) {
+      selectedDetail = selectedInvites = selectedCacheInfo = null;
+      $('collab-team-detail').hidden = true;
+      $('collab-invite-details').open = $('collab-cache-details').open = false;
+    }
+    $('collab-team-list').querySelectorAll('[data-team-id]').forEach(function(row) { row.setAttribute('aria-pressed', String(row.dataset.teamId === teamId)); });
     try {
-      selectedDetail = await api('getTeam', { teamId: teamId });
-      if (!isCurrent(epoch) || selectedTeamId !== teamId) return;
+      var detail = await api('getTeam', { teamId: teamId });
+      if (!isCurrent(epoch) || request !== detailRequest || selectedTeamId !== teamId || identity !== getSidebarIdentity()) return;
+      selectedDetail = detail;
+      $('collab-team-page-status').hidden = true;
+      $('collab-invite-list').innerHTML = '';
+      $('collab-cache-view').innerHTML = '';
       renderSelectedTeam();
-    } catch (err) { if (isCurrent(epoch) && selectedTeamId === teamId) notify(err.message, 'error'); }
+      if (expandedProjects.has(teamId)) {
+        var expansion = { projects: asArray(detail.projects) };
+        expandedProjects.set(teamId, expansion);
+        var row = teamRow(teamId);
+        if (row) updateExpandedRow(row, expansion);
+      }
+    } catch (err) {
+      if (isCurrent(epoch) && request === detailRequest && identity === getSidebarIdentity()) {
+        setRawText($('collab-team-page-status'), err.message);
+        $('collab-team-page-status').hidden = false;
+        notify(err.message, 'error');
+      }
+    }
   }
   function renderSelectedTeam() {
     var detail = selectedDetail;
@@ -545,12 +769,15 @@ export function createCollaborationService(
     detail.projects = asArray(detail.projects);
     detail.members = asArray(detail.members);
     bindText($('collab-project-count'), '{count} cloud projects', { count: detail.projects.length });
-    $('collab-new-invite').style.display = isAdmin ? '' : 'none';
+    $('collab-team-settings').hidden = !isAdmin;
+    $('collab-leave-team').hidden = isAdmin;
+    $('collab-new-project').hidden = !isAdmin;
+    $('collab-invite-details').hidden = !isAdmin;
     renderProjects(detail.projects, isAdmin);
     renderMembers(detail.members, isAdmin);
-    if (isAdmin) loadInvites();
-    else $('collab-invite-list').innerHTML = '<div class="collab-empty" data-i18n="Only the team administrator manages invitations">' + esc(t('Only the team administrator manages invitations')) + '</div>';
-    loadTeamCache();
+    $('collab-team-detail').hidden = false;
+    if (isAdmin && $('collab-invite-details').open) loadInvites();
+    if ($('collab-cache-details').open) loadTeamCache();
   }
   function renderProjects(projects, isAdmin) {
     if (!projects.length) { $('collab-project-list').innerHTML = '<div class="collab-empty" data-i18n="No team projects">' + esc(t('No team projects')) + '</div>'; return; }
@@ -568,13 +795,15 @@ export function createCollaborationService(
   async function loadInvites() {
     var epoch = lifecycleEpoch;
     var teamId = selectedTeamId;
+    var identity = getSidebarIdentity();
+    var request = detailRequest;
     if (!isCurrent(epoch) || !teamId) return;
     try {
       var invites = asArray(await api('listTeamInvites', { teamId: teamId }));
-      if (!isCurrent(epoch) || selectedTeamId !== teamId) return;
+      if (!isCurrent(epoch) || request !== detailRequest || identity !== getSidebarIdentity()) return;
       selectedInvites = invites;
       renderInvites(invites);
-    } catch (err) { if (isCurrent(epoch) && selectedTeamId === teamId) $('collab-invite-list').innerHTML = '<div class="collab-empty">' + esc(err.message) + '</div>'; }
+    } catch (err) { if (isCurrent(epoch) && request === detailRequest && identity === getSidebarIdentity()) $('collab-invite-list').innerHTML = '<div class="collab-empty">' + esc(err.message) + '</div>'; }
   }
   function renderInvites(invites) {
       if (!invites.length) { $('collab-invite-list').innerHTML = '<div class="collab-empty" data-i18n="No active invitations">' + esc(t('No active invitations')) + '</div>'; return; }
@@ -595,13 +824,16 @@ export function createCollaborationService(
   async function loadTeamCache() {
     var epoch = lifecycleEpoch;
     var teamId = selectedTeamId;
+    var identity = getSidebarIdentity();
+    var request = detailRequest;
     if (!isCurrent(epoch) || !teamId) return;
     try {
-      selectedCacheInfo = await api('getTeamCacheInfo', { teamId: teamId });
-      if (!isCurrent(epoch) || selectedTeamId !== teamId) return;
+      var info = await api('getTeamCacheInfo', { teamId: teamId });
+      if (!isCurrent(epoch) || request !== detailRequest || identity !== getSidebarIdentity()) return;
+      selectedCacheInfo = info;
       renderCache(selectedCacheInfo, $('collab-cache-view'), true);
     } catch (err) {
-      if (isCurrent(epoch) && selectedTeamId === teamId) $('collab-cache-view').innerHTML = '<div class="collab-empty">' + esc(err.message) + '</div>';
+      if (isCurrent(epoch) && request === detailRequest && identity === getSidebarIdentity()) $('collab-cache-view').innerHTML = '<div class="collab-empty">' + esc(err.message) + '</div>';
     }
   }
   function renderCache(info, target, detailed) {
@@ -634,9 +866,10 @@ export function createCollaborationService(
   }
   function newProject() {
     if (!selectedTeamId) return;
+    var teamId = selectedTeamId;
     openAction('Create cloud project', inputField('action-project-name', 'Project name') + textareaField('action-project-description', 'Description'), 'Create', async function() {
-      await api('createTeamProject', { teamId: selectedTeamId, name: $('action-project-name').value, description: $('action-project-description').value });
-      await selectTeam(selectedTeamId); notify('Cloud project created', 'success'); return true;
+      await api('createTeamProject', { teamId: teamId, name: $('action-project-name').value, description: $('action-project-description').value });
+      await refreshTeamDetail(teamId); notify('Cloud project created', 'success'); return true;
     });
   }
   function deleteProject(project) {
@@ -664,10 +897,25 @@ export function createCollaborationService(
         }
         throw error;
       }
-      await selectTeam(project.team_id);
+      await refreshTeamDetail(project.team_id);
       notify('Team project deleted', 'success');
       return true;
     }, { name: project.name });
+  }
+  async function refreshTeamDetail(teamId) {
+    if (disposed) return;
+    if (!selectedTeamId || selectedTeamId === teamId) {
+      await loadTeamDetail(teamId);
+      return;
+    }
+    var expansion = expandedProjects.get(teamId);
+    if (!expansion) return;
+    var identity = getSidebarIdentity();
+    var projects = asArray(await api('listTeamProjects', { teamId: teamId }));
+    if (disposed || identity !== getSidebarIdentity() || expandedProjects.get(teamId) !== expansion) return;
+    expansion.projects = projects;
+    var row = teamRow(teamId);
+    if (row) updateExpandedRow(row, expansion);
   }
   function newInvite() {
     openAction('Generate invitation', inputField('action-invite-uses', 'Maximum uses', '1', 'number') + inputField('action-invite-hours', 'Valid for hours', '168', 'number'), 'Generate', async function() {
@@ -714,29 +962,42 @@ export function createCollaborationService(
     return true;
   }
 
+  function confirmOpenProject(project, team) {
+    var params = { project: project.name, team: team.name };
+    openAction('Open {project} from {team} in the workspace?', '', 'Yes', function() {
+      return openProject(Object.assign({}, project, { team_id: team.id, team_name: team.name })).then(function() { return false; });
+    }, params);
+    bindText($('collab-action-cancel'), 'No');
+    $('collab-action-cancel').focus();
+  }
+
   async function openProject(project, preferredBranch) {
     if (disposed) return false;
     var epoch = lifecycleEpoch;
+    var identity = getSidebarIdentity();
     openAction('Open {name}', '<div class="collab-open-loading" data-i18n="Loading cloud branches...">' + esc(t('Loading cloud branches...')) + '</div>', 'Open project', null, { name: project.name });
+    var revision = actionRevision;
     $('collab-action-confirm').disabled = true;
     var branches;
     try {
       branches = await api('listTeamBranches', { teamId: project.team_id, projectId: project.id });
     } catch (err) {
-      if (!isCurrent(epoch)) return false;
+      if (!isCurrent(epoch) || revision !== actionRevision || identity !== getSidebarIdentity()) return false;
       $('collab-action-body').innerHTML = '<div class="collab-open-error"><strong data-i18n="Could not load this project">' + esc(t('Could not load this project')) + '</strong><span>' + esc(err.message) + '</span></div><div id="collab-action-status" class="collab-action-status"></div>';
       bindText($('collab-action-confirm'), 'Retry');
       $('collab-action-confirm').disabled = false;
       actionConfirm = async function() { await openProject(project, preferredBranch); return false; };
       return;
     }
-    if (!isCurrent(epoch)) return false;
+    if (!isCurrent(epoch) || revision !== actionRevision || identity !== getSidebarIdentity()) return false;
     if (!Array.isArray(branches)) {
-      throw new Error(t('The server returned an invalid branch list'));
+      setActionStatusKey('The server returned an invalid branch list', null, true);
+      return false;
     }
     var names = branches.map(function(b) { return b && b.name; }).filter(Boolean);
     if (!names.length) {
-      throw new Error(t('This project has no cloud branches'));
+      setActionStatusKey('This project has no cloud branches', null, true);
+      return false;
     }
     var branch = preferredBranch || project.default_branch || names[0];
     if (names.indexOf(branch) < 0) branch = names[0];
@@ -745,7 +1006,7 @@ export function createCollaborationService(
       '<div class="collab-action-field"><label data-i18n="Local mapping">' + esc(t('Local mapping')) + '</label><div id="action-mapping-path" class="mapping-path">' + esc(existing || t('Not selected')) + '</div><button id="action-choose-mapping" class="ss-btn ss-btn-ghost" type="button" data-i18n="Choose directory">' + esc(t('Choose directory')) + '</button></div>' +
       selectField('action-open-mode', 'Open mode', existing ? [{value:'local',label:'Open local changes'}, {value:'pull',label:'Reset from cloud (discard local changes)'}] : [{value:'pull',label:'Initial pull from cloud'}], existing ? 'local' : 'pull');
     openAction('Open {name}', body, 'Open project', async function() {
-      if (!isCurrent(epoch)) return false;
+      if (!isCurrent(epoch) || identity !== getSidebarIdentity()) return false;
       var selectedBranch = $('action-open-branch').value;
 	  var storedPath = readMapping(project.team_id, project.id, selectedBranch);
 	  var mappingElement = $('action-mapping-path');
@@ -799,7 +1060,8 @@ export function createCollaborationService(
 	    writeMapping(project.team_id, project.id, selectedBranch, localPath);
         S.collaboration.current = nextCurrent;
         updateTeamChrome();
-        closeHub();
+        BOBO.switchToPanel?.('team');
+        BOBO.workbench?.setPrimaryView?.('explorer');
         notify(t('Team project opened on {branch}', { branch: selectedBranch }), 'success');
         return true;
       } catch (error) {
@@ -1248,33 +1510,44 @@ export function createCollaborationService(
 
   function handleLanguageChanged() {
     if (disposed) return;
-    if (S.collaboration && S.collaboration.modalOpen) {
-      renderTeamList();
-      if (selectedDetail) {
-        var team = selectedDetail.team;
-        var isAdmin = team.admin_user_id === currentUser().id;
-        renderProjects(asArray(selectedDetail.projects), isAdmin);
-        renderMembers(asArray(selectedDetail.members), isAdmin);
-        if (isAdmin && selectedInvites) renderInvites(selectedInvites);
-        if (selectedCacheInfo) renderCache(selectedCacheInfo, $('collab-cache-view'), true);
-      }
-      else renderNoTeam();
+    if (sidebarIdentity !== getSidebarIdentity()) resetSidebar(getSidebarIdentity());
+    renderTeamList();
+    if (selectedDetail) {
+      var team = selectedDetail.team;
+      var isAdmin = team.admin_user_id === currentUser().id;
+      renderProjects(asArray(selectedDetail.projects), isAdmin);
+      renderMembers(asArray(selectedDetail.members), isAdmin);
+      if (isAdmin && selectedInvites) renderInvites(selectedInvites);
+      if (selectedCacheInfo) renderCache(selectedCacheInfo, $('collab-cache-view'), true);
     }
     var compactCache = $('team-cache-compact');
     if (compactCache && workbenchCacheInfo) renderCache(workbenchCacheInfo, compactCache, false);
+    teamPageChrome();
     renderActiveLockStatus();
   }
 
 	function teamSettings() {
 	  if (disposed) return;
 	  if (!selectedDetail) return;
-	  var team=selectedDetail.team;var isAdmin=team.admin_user_id===currentUser().id;
-	  if(!isAdmin){
-		openAction('Leave team','<div class="collab-action-status" data-i18n="Your team worktrees and active file locks will be removed from the server.">' + esc(t('Your team worktrees and active file locks will be removed from the server.')) + '</div>','Leave',async function(){await api('leaveTeam',{teamId:team.id});await loadTeams();notify('Left team','success');return true;});return;
-	  }
-	  openAction('Team settings',inputField('action-team-settings-name','Team name',team.name)+textareaField('action-team-settings-description','Description',team.description||'')+inputField('action-team-settings-quota','Build cache quota (MB)',String(team.cache_quota_mb),'number')+inputField('action-team-settings-retention','Retention days',String(team.cache_retention_days||30),'number')+'<button id="action-delete-team" class="ss-btn ss-btn-ghost" type="button" data-i18n="Delete team">' + esc(t('Delete team')) + '</button>','Save',async function(){await api('updateTeam',{teamId:team.id,name:$('action-team-settings-name').value,description:$('action-team-settings-description').value,cacheQuotaMB:Number($('action-team-settings-quota').value),cacheRetentionDays:Number($('action-team-settings-retention').value)});await loadTeams(team.id);notify('Team settings saved','success');return true;});
+	  var team=selectedDetail.team;
+	  if (team.admin_user_id !== currentUser().id) return;
+	  openAction('Team settings',inputField('action-team-settings-name','Team name',team.name)+textareaField('action-team-settings-description','Description',team.description||'')+inputField('action-team-settings-quota','Build cache quota (MB)',String(team.cache_quota_mb),'number')+inputField('action-team-settings-retention','Retention days',String(team.cache_retention_days||30),'number')+'<button id="action-delete-team" class="ss-btn ss-btn-ghost" type="button" data-i18n="Delete team">' + esc(t('Delete team')) + '</button>','Save',async function(){await api('updateTeam',{teamId:team.id,name:$('action-team-settings-name').value,description:$('action-team-settings-description').value,cacheQuotaMB:Number($('action-team-settings-quota').value),cacheRetentionDays:Number($('action-team-settings-retention').value)});await loadTeams();if (S.activeTabPath===teamKey(team.id)) await refreshTeamDetail(team.id);notify('Team settings saved','success');return true;});
 	  assignHandler($('action-delete-team'), 'onclick', function(){if(disposed)return;openAction('Delete team',inputField('action-delete-team-name','Type team name to confirm'),'Delete permanently',async function(){if(disposed)return false;if($('action-delete-team-name').value!==team.name)throw new Error(t('Team name does not match'));await api('deleteTeam',{teamId:team.id});if(disposed)return false;await loadTeams();notify('Team deleted','success');return true;});}, false);
 	}
+
+  function leaveTeam() {
+    if (disposed || !selectedTeamId) return;
+    var team = selectedDetail && selectedDetail.team;
+    if (!team) return;
+    openAction('Leave team', '<div class="collab-action-status" data-i18n="Your team worktrees and active file locks will be removed from the server.">' + esc(t('Your team worktrees and active file locks will be removed from the server.')) + '</div>', 'Leave team', async function() {
+      await api('leaveTeam', { teamId: team.id });
+      if (disposed) return false;
+      expandedProjects.delete(team.id);
+      await loadTeams();
+      notify('Left team', 'success');
+      return true;
+    });
+  }
 
   function init() {
     if (initialized) return;
@@ -1287,17 +1560,35 @@ export function createCollaborationService(
     }
     lifecycleEpoch++;
     initialized = true;
+    if (BOBO.workspace?.registerWorkbenchTabProvider) lifecycle.add(BOBO.workspace.registerWorkbenchTabProvider('team-pages', {
+      getTabs: teamProviderTabs,
+      activate: activateTeamPage,
+      close: closeTeamPage,
+      deactivate: deactivateTeamPage,
+      afterFileActivation: restoreTeamUnderlyingView
+    }));
     listen(global, 'bobo:language-changed', handleLanguageChanged);
-    assignHandler($('team-hub-btn'), 'onclick', openHub);
-    assignHandler($('collab-close'), 'onclick', closeHub);
-    assignHandler($('collab-modal'), 'onclick', function(event) { if (event.target === $('collab-modal')) closeHub(); });
-    assignHandler($('collab-modal'), 'onkeydown', function(event) { if (event.key === 'Escape') { event.preventDefault(); closeHub(); } });
+    listen(global, 'bobo:workbench-changed', function(event) {
+      if (event.detail) setFriendsVisible(sidebarMode === 'friends' && event.detail.activity === 'team' && event.detail.primaryVisible && !event.detail.focusMode);
+    });
+    listen(global, 'bobo:auth-changed', function() {
+      var identity = getSidebarIdentity();
+      if (identity === sidebarIdentity) return;
+      if (sidebarIdentity && $('collab-action-modal')) closeAction();
+      resetSidebar(identity);
+      if (document.querySelector?.('[data-sidebar-view="team"].active')) void showSidebarMode(sidebarMode);
+    });
+    assignHandler($('collab-mode-friends'), 'onclick', function() { void showSidebarMode('friends'); });
+    assignHandler($('collab-mode-teams'), 'onclick', function() { void showSidebarMode('teams'); });
+    assignHandler($('collab-teams-sign-in'), 'onclick', function() {
+      if (BOBO.auth) BOBO.auth.openAuthModal(t('Sign in to use team workspaces'));
+    });
     assignHandler($('collab-new-team'), 'onclick', newTeam);
     assignHandler($('collab-join'), 'onclick', joinTeam);
     assignHandler($('collab-new-project'), 'onclick', newProject);
     assignHandler($('collab-new-invite'), 'onclick', newInvite);
 	assignHandler($('collab-team-settings'), 'onclick', teamSettings);
-	assignHandler($('auth-menu-teams'), 'onclick', function(){ $('auth-menu').style.display='none'; openHub(); });
+	assignHandler($('auth-menu-teams'), 'onclick', function(){ $('auth-menu').style.display='none'; void openHub('teams'); });
     if (!BOBO.accountProfile) {
       assignHandler($('auth-menu-profile'), 'onclick', function(){ $('auth-menu').style.display='none'; openProfile(); });
       assignHandler($('profile-close-x'), 'onclick', closeProfile);
@@ -1310,7 +1601,29 @@ export function createCollaborationService(
 	      assignHandler($('profile-copy-uid'), 'onclick', async function(){try{if (!clipboard) throw new Error('Clipboard unavailable');await clipboard.writeText($('profile-uid').textContent);notify('User ID copied','success');}catch(e){notify('Copy failed','error');}});
     }
     assignHandler($('collab-action-close'), 'onclick', closeAction); assignHandler($('collab-action-cancel'), 'onclick', closeAction); assignHandler($('collab-action-confirm'), 'onclick', runActionConfirm);
-    assignHandler($('collab-team-list'), 'onclick', function(e){var item=e.target.closest('[data-team-id]');if(item)selectTeam(item.getAttribute('data-team-id'));});
+    listen($('collab-action-modal'), 'keydown', function(event) {
+      if (event.key === 'Escape' && !($('collab-action-confirm').disabled && actionConfirm)) {
+        event.preventDefault();
+        closeAction();
+      }
+    });
+    assignHandler($('collab-team-list'), 'onclick', function(e){
+      var row = e.target.closest('[data-team-row]');
+      if (!row) return;
+      var team = (S.collaboration.teams || [])[Number(row.getAttribute('data-team-index'))];
+      if (!team) return;
+      var expand = e.target.closest('[data-team-expand]');
+      var item = e.target.closest('[data-team-id]');
+      var project = e.target.closest('[data-expanded-project]');
+      if (expand) { e.preventDefault(); void toggleTeamProjects(team.id); return; }
+      if (project) {
+        var expansion = expandedProjects.get(team.id);
+        var selected = expansion && asArray(expansion.projects).find(function(p) { return p.id === project.getAttribute('data-expanded-project'); });
+        if (selected) confirmOpenProject(selected, team);
+        return;
+      }
+      if (item) void selectTeam(team.id);
+    });
     assignHandler($('collab-project-list'), 'onclick', function(e){
       if (disposed) return;
       if(!selectedDetail)return;
@@ -1322,7 +1635,6 @@ export function createCollaborationService(
       if(!project)return;
       if(remove){deleteProject(project);return;}
       button.disabled=true;
-      var label=button.textContent;
       bindText(button, 'Loading...');
       openProject(project).catch(function(err){
         if (disposed) return;
@@ -1331,14 +1643,24 @@ export function createCollaborationService(
         notify(err.message,'error');
       }).finally(function(){if(!disposed && button.isConnected){button.disabled=false;bindText(button,'Open');}});
     });
-    assignHandler($('collab-member-list'), 'onclick', async function(e){if(disposed)return;var btn=e.target.closest('.collab-remove-member');if(!btn)return;try{await api('removeTeamMember',{teamId:selectedTeamId,userId:btn.getAttribute('data-user-id')});if(disposed)return;await selectTeam(selectedTeamId);notify('Member removed','success');}catch(err){if(!disposed)notify(err.message,'error');}});
+    assignHandler($('collab-member-list'), 'onclick', async function(e){if(disposed)return;var btn=e.target.closest('.collab-remove-member');if(!btn)return;var teamId=selectedTeamId;try{await api('removeTeamMember',{teamId:teamId,userId:btn.getAttribute('data-user-id')});if(disposed)return;if(selectedTeamId===teamId)await loadTeamDetail(teamId);notify('Member removed','success');}catch(err){if(!disposed)notify(err.message,'error');}});
     assignHandler($('collab-invite-list'), 'onclick', async function(e){if(disposed)return;var remove=e.target.closest('.collab-delete-invite');var revoke=e.target.closest('.collab-revoke-invite');var btn=remove||revoke;if(!btn)return;try{await api(remove?'deleteTeamInvite':'revokeTeamInvite',{teamId:selectedTeamId,inviteCode:btn.getAttribute('data-code')});if(disposed)return;await loadInvites();}catch(err){if(!disposed)notify(err.message,'error');}});
-    document.querySelectorAll('.collab-tabs button').forEach(function(tab){assignHandler(tab, 'onclick', function(){if(disposed)return;document.querySelectorAll('.collab-tabs button').forEach(function(x){x.classList.remove('active');});document.querySelectorAll('.collab-pane').forEach(function(x){x.classList.remove('active');});tab.classList.add('active');$('collab-pane-'+tab.getAttribute('data-collab-tab')).classList.add('active');});});
+    var detailTabs = document.querySelectorAll('#collab-team-detail [data-collab-tab]');
+    detailTabs.forEach(function(tab) {
+      assignHandler(tab, 'onclick', function() {
+        if (disposed) return;
+        selectTeamPane(tab.getAttribute('data-collab-tab'));
+      });
+    });
+    listen($('collab-invite-details'), 'toggle', function(event) { if (event.target.open && !selectedInvites) void loadInvites(); });
+    listen($('collab-cache-details'), 'toggle', function(event) { if (event.target.open && !selectedCacheInfo) void loadTeamCache(); });
+    assignHandler($('collab-leave-team'), 'onclick', leaveTeam);
 	assignHandler($('collab-cache-view'), 'onclick', function(e){if(disposed)return;var ns=e.target.closest('.cache-clear-namespace');if(ns)clearCache('namespace',ns.getAttribute('data-namespace'));if(e.target.closest('.cache-clear-shared'))clearCache('shared');if(e.target.closest('.cache-clear-all'))clearCache('all');});
     listen(global, 'focus', function() { renewOpenFileLocks(); renderActiveLockStatus(); });
     listen(document, 'visibilitychange', function() {
       if (!document.hidden) { renewOpenFileLocks(); renderActiveLockStatus(); }
     });
+    if (document.querySelector?.('[data-sidebar-view="team"].active')) void showSidebarMode(sidebarMode);
   }
 
   var facade: CollaborationFacade = {
@@ -1363,10 +1685,9 @@ export function createCollaborationService(
     initialized = false;
     lifecycleEpoch++;
     actionConfirm = null;
+    resetTeamPages();
     try {
-      var modal = $('collab-modal');
       var actionModal = $('collab-action-modal');
-      if (modal) modal.classList.remove('open');
       if (actionModal) actionModal.classList.remove('open');
       setCollaborationReadOnly(false);
     } catch (_) {}
@@ -1429,8 +1750,9 @@ export function createCollaborationService(
     selectedInvites = null;
     selectedCacheInfo = null;
     workbenchCacheInfo = null;
-    hubReturnFocus = null;
-    if (S.collaboration) S.collaboration.modalOpen = false;
+    expandedProjects.clear();
+    sidebarIdentity = '';
+    setFriendsVisible(false);
   }
 
   var service = Object.assign({}, facade);

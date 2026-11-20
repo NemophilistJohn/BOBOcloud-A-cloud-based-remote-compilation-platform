@@ -141,6 +141,8 @@ contextBridge.exposeInMainWorld('api', {
 
   // Rclone operations (Layer 3 → Layer 2 IPC bridge)
   rclonePrepareRemote: (payload) => ipcRenderer.invoke('rclone:prepare-remote', payload),
+  rclonePickProjectDownload: (payload) => ipcRenderer.invoke('rclone:pick-project-download', payload),
+  inboxDownloadProject: (payload) => ipcRenderer.invoke('inbox:download-project', payload),
   rcloneSync: (payload) => ipcRenderer.invoke('rclone:sync', payload),
   rclonePull: (payload) => ipcRenderer.invoke('rclone:pull', payload),
   rcloneCancel: (operationId) => ipcRenderer.invoke('rclone:cancel', { operationId }),

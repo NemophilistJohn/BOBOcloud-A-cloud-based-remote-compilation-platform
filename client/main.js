@@ -11,6 +11,7 @@ const { createLspController } = require('./main/lsp');
 const { createAuthController } = require('./main/auth');
 const { registerDiagnosticsIpc } = require('./main/diagnostics');
 const { registerRcloneIpc } = require('./main/rclone-ipc');
+const { registerInboxDownload } = require('./main/inbox-download');
 const { createRcloneBinaryManager } = require('./main/rclone-binary-manager'), { createRcloneService } = require('./main/rclone-service'), { createLocalDirectoryAuthority } = require('./main/local-directory-authority');
 const { createLanguagePackController } = require('./main/language-packs');
 const { createMenuController } = require('./main/menu');
@@ -35,6 +36,7 @@ if (!hasSingleInstanceLock) app.quit();
 const settings = createSettingsStore({ app, safeStorage }), rcloneBinaries = createRcloneBinaryManager({ app, rclone }), localDirectories = createLocalDirectoryAuthority({ assertSafeLocalRoot: rcloneBinaries.assertSafeLocalRoot });
 const rcloneService = createRcloneService({ rclone, binaryManager: rcloneBinaries, settings,
   fetch: (...args) => electronSession.defaultSession.fetch(...args) });
+let inboxDownload;
 const secureTransport = createSecureTransportGuard();
 const lifecycle = createLifecycleCoordinator({
   onError: (name, error) => console.error(`[lifecycle] ${name} cleanup failed:`, error && error.message ? error.message : error)
@@ -104,10 +106,11 @@ packageCenter = createPackageCenterController({ ipcMain, getWindow, sendToRender
 const auth = createAuthController({ ipcMain, settings, disposeLsp: disposeRemoteEditorServices,
   onStateChanged: () => { if (menu) menu.rebuild(); },
   onServerSettingsWritten: async (value) => {
+    inboxDownload?.cancel();
     secureTransport.update(value);
     await rcloneService.reconfigure(value, 'server-settings-changed');
   },
-  onCredentialChanged: () => { notebookKernels.closeAll(); return rcloneService.cancelAll('credential-changed'); }
+  onCredentialChanged: () => { inboxDownload?.cancel(); notebookKernels.closeAll(); return rcloneService.cancelAll('credential-changed'); }
 });
 menu = createMenuController({ Menu, dialog, getWindow, sendToRenderer: rendererEvents.send, languagePacks, getAuthState: auth.getState,
   pickAndOpenWorkspace: workspace.pickAndOpenWorkspace });
@@ -119,11 +122,15 @@ lifecycle.register('remote-editor-services', disposeRemoteEditorServices);
 lifecycle.register('ai', async () => { ai.dispose(); });
 lifecycle.register('agent-platform', async () => { agentBroker.dispose(); });
 lifecycle.register('rclone', (reason) => rcloneService.cancelAll(reason));
+lifecycle.register('inbox-download', () => inboxDownload?.cancel());
 lifecycle.register('server-settings-transaction', async () => { auth.discardServerSettingsRollback(); });
 const windowState = createWindowState({ screen, filePath: settings.paths.windowState, getWindow });
 for (const controller of [workspace, workspaceSettings, lsp, auth, ai, tasks, dap, terminal,
   languagePacks, plugins, marketplace, packageCenter]) controller.registerIpc();
 registerDiagnosticsIpc({ ipcMain, settings });
+inboxDownload = registerInboxDownload({ ipcMain, dialog, getWindow, settings,
+  fetch: (...args) => electronSession.defaultSession.fetch(...args), t: languagePacks.t,
+  assertSafeLocalRoot: rcloneBinaries.assertSafeLocalRoot });
 registerRcloneIpc({ ipcMain, BrowserWindow, dialog, getWindow, sendToRenderer: rendererEvents.send, sendToRendererWindow: rendererEvents.sendToWindow, service: rcloneService, t: languagePacks.t,
   getWorkspaceIdentity: workspace.getIdentity, localDirectoryAuthority: localDirectories,
   measureDirectory: workspace.calculateDirectorySize });

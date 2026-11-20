@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="./styles/auth.css">
   <link rel="stylesheet" href="./styles/cache-center.css">
   <link rel="stylesheet" href="./styles/collaboration.css">
+  <link rel="stylesheet" href="./styles/social.css">
   <link rel="stylesheet" href="./styles/workbench.css">
   <link rel="stylesheet" href="./styles/environment-center.css">
   <link rel="stylesheet" href="./styles/language-packs.css">
@@ -149,9 +150,20 @@
           <div class="cache-tree" id="cache-tree"></div>
         </div>
       </section>
-      <section class="sidebar-view" data-sidebar-view="team" aria-label="Team workspace">
-        <div class="sidebar-header"><span>Team</span><button class="sidebar-hide" title="Hide primary sidebar" aria-label="Hide primary sidebar"><svg viewBox="0 0 16 16" fill="none"><path d="m10 3-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
-        <div class="sidebar-scroll sidebar-command-list"><div id="team-sidebar-context" class="sidebar-context-block"><span class="sidebar-context-kicker">Current workspace</span><strong id="team-sidebar-project">Personal project</strong><small id="team-sidebar-branch">No team mapping</small></div><button id="team-hub-btn" class="sidebar-command"><span>Team center</span><small>Projects, members and shared cache</small></button><button id="team-sidebar-panel" class="sidebar-command" disabled><span>Project workbench</span><small>Branches, commits and conflicts</small></button></div>
+      <section class="sidebar-view collab-sidebar" data-sidebar-view="team" aria-label="Team workspace">
+        <div class="sidebar-header"><span>Team workspace</span><button class="sidebar-hide" title="Hide primary sidebar" aria-label="Hide primary sidebar"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m10 3-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+        <div class="collab-mode-tabs" role="group" aria-label="Team workspace">
+          <button id="collab-mode-friends" type="button" aria-controls="collab-friends" aria-pressed="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2m2-15a3 3 0 0 1 0 6m1 3a4 4 0 0 1 3 4v2"/></svg><span data-i18n="Friends">Friends</span></button>
+          <button id="collab-mode-teams" type="button" aria-controls="collab-teams" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M12 7.5v4M5 15.5v-4h14v4"/></svg><span data-i18n="Teams">Teams</span></button>
+        </div>
+        <div class="sidebar-scroll" id="collab-friends"><div id="collab-sidebar-friends"></div></div>
+        <div class="sidebar-scroll collab-team-section" id="collab-teams" hidden>
+          <div id="collab-teams-login" class="collab-empty" hidden><button id="collab-teams-sign-in" type="button" class="ss-btn ss-btn-primary">Sign in</button></div>
+          <div id="collab-teams-content" hidden>
+            <div class="collab-directory-head"><strong>YOUR TEAMS</strong><div class="collab-header-actions"><button id="collab-join" class="ss-btn ss-btn-ghost">Join</button><button id="collab-new-team" class="ss-btn ss-btn-primary">New team</button></div></div>
+            <div id="collab-team-list" class="collab-team-list" aria-live="polite"></div>
+          </div>
+        </div>
       </section>
       <section id="environment-center" class="sidebar-view environment-center" data-sidebar-view="environment" aria-label="Environment Center" aria-busy="false">
         <div class="sidebar-header environment-center-header">
@@ -434,6 +446,23 @@
       </div>
 
       <div id="document-view-host" class="hidden" aria-live="polite"></div>
+      <section id="collab-team-page" class="collab-team-page" role="tabpanel" aria-label="Team workspace" hidden>
+        <div class="collab-team-page-inner">
+          <div id="collab-team-page-status" class="collab-empty" role="status"></div>
+          <div id="collab-team-detail" class="collab-main" hidden>
+            <header class="collab-team-head"><div><span class="collab-page-kicker">Team workspace</span><h2 id="collab-team-name" dir="auto"></h2><p id="collab-team-description" dir="auto"></p><span id="collab-admin-badge"></span></div><button id="collab-team-settings" class="ss-btn ss-btn-ghost" title="Team settings" aria-label="Team settings"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/><circle cx="12" cy="12" r="7"/></svg><span>Team settings</span></button><button id="collab-leave-team" class="ss-btn ss-btn-ghost" type="button" hidden>Leave team</button></header>
+            <div class="collab-tabs" role="group" aria-label="Team workspace"><button type="button" data-collab-tab="members" class="active" aria-pressed="true" aria-controls="collab-pane-members">Members</button><button type="button" data-collab-tab="projects" aria-pressed="false" aria-controls="collab-pane-projects">Projects</button></div>
+            <section id="collab-pane-members" class="collab-pane">
+              <div id="collab-member-list" class="collab-list"></div>
+              <details id="collab-invite-details" class="collab-detail-group" hidden><summary>Invites</summary><div class="collab-pane-toolbar"><button id="collab-new-invite" class="ss-btn ss-btn-primary">Generate invite</button></div><div id="collab-invite-list" class="collab-list"></div></details>
+            </section>
+            <section id="collab-pane-projects" class="collab-pane" hidden>
+              <div class="collab-pane-toolbar"><span id="collab-project-count"></span><button id="collab-new-project" class="ss-btn ss-btn-primary">New project</button></div><div id="collab-project-list" class="collab-project-grid"></div>
+              <details id="collab-cache-details" class="collab-detail-group"><summary>Build cache</summary><div id="collab-cache-view"></div></details>
+            </section>
+          </div>
+        </div>
+      </section>
     </div>
 
     <!-- Resizer between editor and bottom panel -->
@@ -1131,31 +1160,8 @@
     </div>
   </div>
 
-  <!-- Team center -->
-  <div id="collab-modal" class="collab-overlay" role="dialog" aria-modal="true" aria-labelledby="collab-title" tabindex="-1">
-    <div class="collab-shell">
-      <header class="collab-header">
-        <div><div class="collab-title" id="collab-title">Team workspace</div><div class="collab-subtitle" id="collab-account-id"></div></div>
-        <div class="collab-header-actions"><button id="collab-join" class="ss-btn ss-btn-ghost">Join</button><button id="collab-new-team" class="ss-btn ss-btn-primary">New team</button><button id="collab-close" class="close-btn" title="Close">&times;</button></div>
-      </header>
-      <div class="collab-layout">
-        <aside class="collab-sidebar"><div class="collab-sidebar-label">YOUR TEAMS</div><div id="collab-team-list" class="collab-team-list"></div></aside>
-        <main class="collab-main">
-		  <div class="collab-team-head"><div><h2 id="collab-team-name">Select a team</h2><p id="collab-team-description"></p></div><div><span id="collab-admin-badge"></span><button id="collab-team-settings" class="icon-command" title="Team settings">&#9881;</button></div></div>
-          <nav class="collab-tabs">
-            <button class="active" data-collab-tab="projects">Projects</button><button data-collab-tab="members">Members</button><button data-collab-tab="invites">Invites</button><button data-collab-tab="cache">Build cache</button>
-          </nav>
-          <section id="collab-pane-projects" class="collab-pane active"><div class="collab-pane-toolbar"><span id="collab-project-count"></span><button id="collab-new-project" class="ss-btn ss-btn-primary">New project</button></div><div id="collab-project-list" class="collab-project-grid"></div></section>
-          <section id="collab-pane-members" class="collab-pane"><div id="collab-member-list" class="collab-list"></div></section>
-          <section id="collab-pane-invites" class="collab-pane"><div class="collab-pane-toolbar"><span>Administrator-issued invitations</span><button id="collab-new-invite" class="ss-btn ss-btn-primary">Generate invite</button></div><div id="collab-invite-list" class="collab-list"></div></section>
-          <section id="collab-pane-cache" class="collab-pane"><div id="collab-cache-view"></div></section>
-        </main>
-      </div>
-    </div>
-  </div>
-
   <!-- Reusable form/dialog for team actions -->
-  <div id="collab-action-modal" class="collab-overlay collab-action-overlay">
+  <div id="collab-action-modal" class="collab-overlay collab-action-overlay" role="dialog" aria-modal="true" aria-labelledby="collab-action-title">
     <div class="collab-action-card">
       <div class="ss-head"><div class="ss-title" id="collab-action-title"></div><button id="collab-action-close" class="close-btn" title="Close">&times;</button></div>
       <div id="collab-action-body" class="collab-action-body"></div>

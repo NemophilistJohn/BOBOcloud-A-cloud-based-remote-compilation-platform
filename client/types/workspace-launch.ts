@@ -31,13 +31,20 @@ export interface WorkspaceLaunchOpenedWorkspaceDto {
   readonly teamMapping: WorkspaceLaunchTeamMappingDto | null;
 }
 
+export interface WorkspaceLaunchOpenRequestDto {
+  readonly path: string;
+  readonly localGrant: string;
+}
+
+export type WorkspaceLaunchRequest = string | WorkspaceLaunchOpenRequestDto;
+
 export type WorkspaceLaunchOpenedListener = (
   opened: WorkspaceLaunchOpenedWorkspaceDto
 ) => void;
 
 /** Narrow host capability used by the launch screen and its startup queue. */
 export interface WorkspaceLaunchHost {
-  pick(directoryPath?: string): Promise<WorkspaceLaunchOpenedWorkspaceDto | null>;
+  pick(directoryPath?: WorkspaceLaunchRequest): Promise<WorkspaceLaunchOpenedWorkspaceDto | null>;
   forgetRecent(directoryPath: string): Promise<boolean>;
   onDidOpen(listener: WorkspaceLaunchOpenedListener): Disposable;
 }
@@ -66,7 +73,7 @@ export interface WorkspaceLaunchDependencies {
 
 export interface WorkspaceLaunchFacade {
   init(): void;
-  requestOpen(directoryPath?: string): Promise<boolean>;
+  requestOpen(directoryPath?: WorkspaceLaunchRequest): Promise<boolean>;
   setConsumer(consumer: WorkspaceLaunchConsumer | null | undefined): Promise<void>;
   whenIdle(): Promise<void>;
 }

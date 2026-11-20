@@ -231,6 +231,7 @@
 
   function renderChip() {
     notifyAuthState();
+    if (typeof global.Event === 'function') global.dispatchEvent(new global.Event('bobo:auth-changed'));
     var chip = $('auth-chip');
     if (S.auth.mode !== 'multi') {
       chip.style.display = 'none';

@@ -62,6 +62,8 @@ const EXPECTED_IPC = new Map([
   ['rclone:sync', 'handle'],
   ['rclone:pull', 'handle'],
   ['rclone:prepare-remote', 'handle'],
+  ['rclone:pick-project-download', 'handle'],
+  ['inbox:download-project', 'handle'],
   ['rclone:cancel', 'handle'],
   ['rclone:cancel-all', 'handle'],
   ['pick-local-mapping', 'handle'],

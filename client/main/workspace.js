@@ -839,8 +839,17 @@ function createWorkspaceController(options) {
         return true;
       });
     });
-    ipcMain.handle('pick-workspace', async (_event, directoryPath) => {
+    ipcMain.handle('pick-workspace', async (event, directoryPath) => {
       let folder = directoryPath;
+      if (directoryPath && typeof directoryPath === 'object' && !Array.isArray(directoryPath)) {
+        if (!localDirectoryAuthority || typeof directoryPath.localGrant !== 'string' || typeof directoryPath.path !== 'string') {
+          throw new Error('A valid downloaded workspace grant is required');
+        }
+        folder = localDirectoryAuthority.resolve(event.sender.id, directoryPath.localGrant, directoryPath.path);
+        const opened = await transitionWorkspace(folder);
+        if (opened && settings && typeof settings.rememberRecentWorkspace === 'function') settings.rememberRecentWorkspace(folder);
+        return opened;
+      }
       if (folder === undefined) {
         const result = await dialog.showOpenDialog(getWindow(), { properties: ['openDirectory'] });
         if (result.canceled || !result.filePaths[0]) return null;

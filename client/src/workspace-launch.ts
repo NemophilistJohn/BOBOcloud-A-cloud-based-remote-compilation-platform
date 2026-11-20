@@ -6,6 +6,7 @@ import type {
   WorkspaceLaunchDependencies,
   WorkspaceLaunchFacade,
   WorkspaceLaunchOpenedWorkspaceDto,
+  WorkspaceLaunchRequest,
   WorkspaceLaunchService
 } from '../types/workspace-launch';
 
@@ -291,7 +292,7 @@ export function createWorkspaceLaunchService(
     return drain().then(() => true);
   }
 
-  function requestOpen(directoryPath?: string): Promise<boolean> {
+  function requestOpen(directoryPath?: WorkspaceLaunchRequest): Promise<boolean> {
     if (disposed) return Promise.resolve(false);
     if (requestPromise) return requestPromise;
     if (draining || pending.length) return drain().then(() => true);

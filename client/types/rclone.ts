@@ -122,6 +122,8 @@ export interface RcloneOperationOptions {
 export interface RcloneClient {
   prepareWorkspace(request?: unknown, options?: RcloneOperationOptions | null): Promise<unknown>;
   prepareTeamPull(request?: unknown, options?: RcloneOperationOptions | null): Promise<unknown>;
+  prepareProjectDownload(request?: unknown, options?: RcloneOperationOptions | null): Promise<unknown>;
+  pickProjectDownload(name: string): Promise<Readonly<{ path: string; grantId: string }> | null>;
   sync(options?: RcloneOperationOptions | null): Promise<unknown>;
   pull(options?: RcloneOperationOptions | null): Promise<unknown>;
   cancel(operationId: string): Promise<unknown>;

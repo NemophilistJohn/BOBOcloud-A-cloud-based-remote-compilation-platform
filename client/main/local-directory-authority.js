@@ -57,11 +57,12 @@ function createLocalDirectoryAuthority(options) {
     return { grantId: id, path: directory };
   }
 
-  function resolve(senderId, grantId, expectedPath) {
+  function resolve(senderId, grantId, expectedPath, expectedPurpose) {
     prune();
     if (typeof grantId !== 'string' || !grantId) throw new Error('A local directory grant is required');
     const value = grants.get(grantId);
     if (!value || value.senderId !== senderId) throw new Error('The local directory grant is missing or expired');
+    if (expectedPurpose && value.purpose !== expectedPurpose) throw new Error('The local directory grant has the wrong purpose');
     const directory = inspectDirectory(value.directory);
     if (expectedPath && path.resolve(expectedPath) !== path.resolve(directory)) {
       throw new Error('The local directory grant does not match this path');

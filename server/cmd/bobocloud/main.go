@@ -42,6 +42,8 @@ import (
 	"bobocloud-server/internal/security"
 	"bobocloud-server/internal/serverruntime"
 	"bobocloud-server/internal/session"
+	"bobocloud-server/internal/snapshot"
+	"bobocloud-server/internal/social"
 	"bobocloud-server/internal/storage"
 
 	bolt "go.etcd.io/bbolt"
@@ -739,6 +741,46 @@ func main() {
 	httpHandler.PersonalCache = personalCache
 	httpHandler.RuntimeMetadata = runtimeMetadata
 	httpHandler.Resources = resourceController
+	// Social metadata shares the existing durable database. In-memory server
+	// embedders still get persistent inboxes in a focused database.
+	socialDB := db
+	if socialDB == nil {
+		if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
+			shutdownStartupAndExit(err)
+			return
+		}
+		var err error
+		socialDB, err = bolt.Open(filepath.Join(cfg.DataDir, "social.db"), 0600, &bolt.Options{Timeout: time.Second})
+		if err != nil {
+			shutdownStartupAndExit(err)
+			return
+		}
+		if err := serverRuntime.RegisterStopHook(serverruntime.PhaseStorage, "social-database", func(context.Context) error {
+			return socialDB.Close()
+		}); err != nil {
+			_ = socialDB.Close()
+			shutdownStartupAndExit(err)
+			return
+		}
+	}
+	inbox, inboxErr := social.NewStore(socialDB)
+	if inboxErr != nil {
+		shutdownStartupAndExit(inboxErr)
+		return
+	}
+	projectSnapshots, snapshotErr := snapshot.New(filepath.Join(cfg.DataDir, "project-snapshots"), cfg.ProjectSnapshotCapacityBytes, cfg.ProjectSnapshotReserveBytes)
+	if snapshotErr != nil {
+		shutdownStartupAndExit(snapshotErr)
+		return
+	}
+	httpHandler.Social = inbox
+	httpHandler.ProjectSnapshots = projectSnapshots
+	// Startup has not accepted requests yet. Remove only private partial
+	// import directories; completed personal projects/receipts remain intact.
+	if err := httpHandler.RecoverSocialImports(serverRuntime.Context()); err != nil {
+		shutdownStartupAndExit(err)
+		return
+	}
 	packagePlans, planStoreErr := packageops.NewPersistentStoreWithLimits(
 		time.Duration(cfg.PackagePlanTTLSeconds)*time.Second,
 		time.Duration(cfg.PackagePlanCompletedTTLSeconds)*time.Second,
@@ -823,6 +865,9 @@ func main() {
 		if err := httpHandler.PackagePlans.DeleteUser(userID); err != nil {
 			return fmt.Errorf("delete package operation records: %w", err)
 		}
+		if err := inbox.RemoveRecipient(userID); err != nil {
+			return fmt.Errorf("delete inbox records: %w", err)
+		}
 		return nil
 	}
 	httpHandler.OnUserDeletedContext = cleanupDeletedUserResources
@@ -882,6 +927,17 @@ func main() {
 	})
 	startManaged("user-deletion-cleanup", func(ctx context.Context) {
 		httpHandler.RunPendingUserDeletionCleanup(ctx, cfg.UserDeletionCleanupRetryInterval())
+	})
+	startManaged("social-inbox-cleanup", func(ctx context.Context) {
+		cleanup := func() {
+			runMaintenance(resourceController, "social-inbox-cleanup", func() {
+				if err := httpHandler.CleanupSocial(ctx); err != nil {
+					slog.Warn("Inbox snapshot cleanup failed", "error", err)
+				}
+			})
+		}
+		cleanup()
+		periodicLoop(ctx, 10*time.Minute, cleanup)
 	})
 	// Activity is compacted independently of run history so inactive accounts
 	// cannot retain daily counters beyond the heatmap window indefinitely.

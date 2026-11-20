@@ -124,8 +124,8 @@ function createRcloneService(options) {
     return track(payload.senderId, payload.operationId, 'prepare', async (signal) => {
       const epoch = contextEpoch;
       let prepared;
+      let request = payload.request;
       try {
-        let request = payload.request;
         if (typeof payload.measure === 'function') {
           if (payload.isCurrent && !payload.isCurrent()) throw new Error('The workspace synchronization scope is stale');
           const measured = await payload.measure(signal);
@@ -149,6 +149,7 @@ function createRcloneService(options) {
         senderId: payload.senderId,
         direction: prepared.direction,
         remotePath: prepared.remotePath,
+        personalMirror: payload.personalMirror && Object.assign({}, payload.personalMirror, { totalSize: request?.totalSize }),
         bindingKey: payload.bindingKey,
         contextKey: context.key,
         epoch
@@ -192,11 +193,44 @@ function createRcloneService(options) {
         };
         if (kind === 'pull') corePayload.dest = payload.localPath;
         else corePayload.src = payload.localPath;
-        const result = kind === 'pull' ? await rclone.pull(corePayload) : await rclone.sync(corePayload);
-        if (grant.epoch !== contextEpoch || !(await contextIsCurrent(context)) ||
-            (payload.isCurrent && !payload.isCurrent())) {
+        let result = kind === 'pull' ? await rclone.pull(corePayload) : await rclone.sync(corePayload);
+        const isCurrent = async () => grant.epoch === contextEpoch &&
+          await contextIsCurrent(context) && grant.epoch === contextEpoch &&
+          (!payload.isCurrent || payload.isCurrent());
+        if (!(await isCurrent())) {
           return failure('STALE_CONTEXT', 'The synchronization context changed', now() - started);
         }
+        if (result.success && grant.personalMirror && !signal.aborted) {
+          let personalMirror;
+          try {
+            const target = await remoteAuthority.prepare('workspace', grant.personalMirror, context, signal);
+            if (!(await isCurrent())) {
+              return failure('STALE_CONTEXT', 'The synchronization context changed', now() - started);
+            }
+            if (signal.aborted) return failure('CANCELLED', 'The synchronization was cancelled', now() - started);
+            personalMirror = target.remotePath
+              ? await rclone.sync(Object.assign({}, corePayload, { remotePath: target.remotePath }))
+              : failure('MIRROR_PREPARATION_FAILED', target.result.error || 'Personal mirror preparation failed');
+          } catch (error) {
+            personalMirror = failure('MIRROR_SYNC_FAILED', error.message);
+          }
+          if (!(await isCurrent())) {
+            return failure('STALE_CONTEXT', 'The synchronization context changed', now() - started);
+          }
+          if (signal.aborted) return failure('CANCELLED', 'The synchronization was cancelled', now() - started);
+          result = Object.assign({}, result, { personalMirror });
+        }
+        if (kind === 'sync' && result.success && !signal.aborted && typeof remoteAuthority.recordWorkspaceSync === 'function') {
+          try {
+            await remoteAuthority.recordWorkspaceSync(context, signal);
+          } catch (_) {
+            // Older servers may not record activity; the transfer has already finished.
+          }
+          if (!(await isCurrent())) {
+            return failure('STALE_CONTEXT', 'The synchronization context changed', now() - started);
+          }
+        }
+        if (result.success && signal.aborted) return failure('CANCELLED', 'The synchronization was cancelled', now() - started);
         return result;
       } catch (error) {
         return failure(signal.aborted ? 'CANCELLED' : 'OPERATION_REJECTED', error.message, now() - started);

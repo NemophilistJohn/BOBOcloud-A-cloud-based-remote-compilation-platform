@@ -282,6 +282,45 @@ func (m *Manager) JoinTeam(userID, code string) (*Team, error) {
 	return team, nil
 }
 
+// JoinDirectedInvitation admits exactly the inbox recipient and rechecks the
+// inviter's current team authority. No reusable bearer invite code is created.
+func (m *Manager) JoinDirectedInvitation(inviterID, userID, teamID string) (*Team, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	team, err := m.requireAdmin(inviterID, teamID)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.memberAccessError(teamID, userID); err != nil {
+		return nil, err
+	}
+	m.resourceMu.Lock()
+	defer m.resourceMu.Unlock()
+	if m.teamDeleting[teamID] || m.memberRevoking[memberResourceKey(teamID, inviterID)] || m.memberRevoking[memberResourceKey(teamID, userID)] {
+		return nil, fmt.Errorf("team membership change is in progress")
+	}
+	latestTeam, err := m.store.GetTeam(teamID)
+	if err != nil || latestTeam.AdminUserID != inviterID {
+		return nil, fmt.Errorf("team invitation is no longer authorized")
+	}
+	if _, err := m.store.GetMember(teamID, inviterID); err != nil {
+		return nil, fmt.Errorf("team invitation is no longer authorized")
+	}
+	if _, err := m.store.GetMember(teamID, userID); err == nil {
+		return team, nil
+	}
+	if user, err := m.users.Get(userID); err != nil || user.Disabled {
+		return nil, fmt.Errorf("recipient no longer exists")
+	}
+	if inviter, err := m.users.Get(inviterID); err != nil || inviter.Disabled {
+		return nil, fmt.Errorf("inviter no longer exists")
+	}
+	if err := m.store.SaveMember(&Member{TeamID: teamID, UserID: userID, JoinedAt: time.Now().UTC()}); err != nil {
+		return nil, err
+	}
+	return team, nil
+}
+
 func (m *Manager) RemoveMember(adminID, teamID, targetUserID string) error {
 	targetUserID = strings.TrimSpace(targetUserID)
 	team, err := m.requireAdmin(adminID, teamID)

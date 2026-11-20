@@ -74,6 +74,7 @@ import './compat/views-adapter.ts';
 import '../src/auth.js';
 import './compat/projects-adapter.ts';
 import './compat/collaboration-adapter.ts';
+import './compat/social-adapter.ts';
 import './compat/account-profile-adapter.ts';
 
 // AI modules.

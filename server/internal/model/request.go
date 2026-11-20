@@ -79,6 +79,14 @@ type Request struct {
 	LockLeaseID        string `json:"lockLeaseId,omitempty"`
 	Pull               bool   `json:"pull,omitempty"`
 	Reset              bool   `json:"reset,omitempty"`
+
+	// Social inbox and private project snapshot operations.
+	RecipientID string `json:"recipientId,omitempty"`
+	Kind        string `json:"kind,omitempty"`
+	ProjectKey  string `json:"projectKey,omitempty"`
+	MessageID   string `json:"messageId,omitempty"`
+	Decision    string `json:"decision,omitempty"`
+	Note        string `json:"note,omitempty"`
 }
 
 // Response 是服务端返回的 HTTP JSON 响应体

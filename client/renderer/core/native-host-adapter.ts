@@ -35,7 +35,8 @@ import type {
 } from '../../types/workspace-settings';
 import type {
   WorkspaceLaunchHost,
-  WorkspaceLaunchOpenedListener
+  WorkspaceLaunchOpenedListener,
+  WorkspaceLaunchRequest
 } from '../../types/workspace-launch';
 import type {
   AiChatPayloadDto,
@@ -155,7 +156,7 @@ function createWorkspaceSettingsHost(host: NativeHost): Readonly<WorkspaceSettin
 
 function createWorkspaceLaunchHost(host: NativeHost): Readonly<WorkspaceLaunchHost> {
   return Object.freeze({
-    pick: (directoryPath?: string) => host.pickWorkspace(directoryPath),
+    pick: (directoryPath?: WorkspaceLaunchRequest) => host.pickWorkspace(directoryPath),
     forgetRecent: (directoryPath: string) => host.forgetRecentWorkspace(directoryPath),
     onDidOpen: (listener: WorkspaceLaunchOpenedListener) => toDisposable(
       host.onWorkspaceOpened((opened) => listener(opened))
@@ -273,6 +274,7 @@ function createPluginManagementHost(
 function createRcloneNativeHost(host: NativeHost): Readonly<RcloneNativeHost> {
   return Object.freeze({
     rclonePrepareRemote: (payload: unknown) => host.rclonePrepareRemote(payload),
+    rclonePickProjectDownload: (payload: Readonly<{ name: string }>) => host.rclonePickProjectDownload(payload),
     rcloneSync: (payload: unknown) => host.rcloneSync(payload),
     rclonePull: (payload: unknown) => host.rclonePull(payload),
     rcloneCancel: (operationId: string) => host.rcloneCancel(operationId),
@@ -584,3 +586,6 @@ const collaborationHostRegistration = rendererPlatform.services.registerPrivate(
   createCollaborationHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(collaborationHostRegistration);
+rendererPlatform.lifecycle.add(rendererPlatform.services.registerPrivate('host.social', Object.freeze({
+  download: (messageId: string, name: string) => nativeHost.inboxDownloadProject({ messageId, name })
+})));

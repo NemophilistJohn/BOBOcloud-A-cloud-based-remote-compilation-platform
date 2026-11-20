@@ -8,6 +8,8 @@ import type {
   RcloneRendererState
 } from '../../types/rclone';
 
+export const RCLONE_CLIENT_SERVICE_ID = 'workbench.rclone' as const;
+
 interface LegacyBobo {
   state?: RcloneRendererState;
   rclone?: RcloneClient;
@@ -21,7 +23,7 @@ const rcloneClient = createRcloneClient({
   state: BOBO.state || {}
 });
 
-const registration = rendererPlatform.services.register('workbench.rclone', rcloneClient, {
+const registration = rendererPlatform.services.register(RCLONE_CLIENT_SERVICE_ID, rcloneClient, {
   owner: 'core',
   exposeToPlugins: false
 });

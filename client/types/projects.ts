@@ -1,6 +1,8 @@
 import type { CacheProjectNamesDto } from './cache-model';
-import type { ConfirmOptions } from './confirm-dialog';
+import type { ConfirmDetailsOptions, ConfirmDetailsResultDto, ConfirmOptions } from './confirm-dialog';
 import type { Disposable, Dispose } from './lifecycle';
+import type { RcloneClient } from './rclone';
+import type { WorkspaceLaunchRequest } from './workspace-launch';
 
 /** Untrusted project fields as received from the server action. */
 export interface ProjectsProjectWireDto {
@@ -115,7 +117,10 @@ export interface ProjectsI18nPort {
   t(source: string, replacements?: Readonly<Record<string, unknown>>): string;
 }
 
-export type ProjectsConfirmPort = (options: ConfirmOptions) => Promise<boolean>;
+export interface ProjectsConfirmPort {
+  (options: ConfirmDetailsOptions): Promise<ConfirmDetailsResultDto>;
+  (options?: ConfirmOptions): Promise<boolean>;
+}
 
 export interface ProjectsCacheCenterPort {
   init(): void;
@@ -130,6 +135,13 @@ export interface ProjectsWorkbenchPort {
   setPrimaryVisible?(visible: boolean): unknown;
 }
 
+export interface ProjectsWorkspaceLaunchPort {
+  requestOpen(path: WorkspaceLaunchRequest): Promise<boolean>;
+}
+
+export type ProjectsRclonePort = Pick<RcloneClient,
+  'pickProjectDownload' | 'prepareProjectDownload' | 'pull'>;
+
 export interface ProjectsDependencies {
   readonly document: Document;
   readonly events: Pick<EventTarget, 'addEventListener' | 'removeEventListener'>;
@@ -140,6 +152,9 @@ export interface ProjectsDependencies {
   readonly getConfirm: () => ProjectsConfirmPort | null | undefined;
   readonly getCacheCenter: () => ProjectsCacheCenterPort | null | undefined;
   readonly getWorkbench: () => ProjectsWorkbenchPort | null | undefined;
+  readonly getWorkspaceLaunch: () => ProjectsWorkspaceLaunchPort | null | undefined;
+  readonly getRclone: () => ProjectsRclonePort | null | undefined;
+  readonly syncCurrentProject: () => Promise<unknown>;
   readonly projectKey: (workspaceRoot: string) => string;
   readonly alert?: (message: string) => unknown;
 }

@@ -88,6 +88,7 @@ export type RcloneProgressListener = (line: unknown, payload: RcloneProgressPayl
 
 export interface RcloneNativeHost {
   rclonePrepareRemote(payload: unknown): Promise<unknown>;
+  rclonePickProjectDownload(payload: Readonly<{ name: string }>): Promise<Readonly<{ path: string; grantId: string }> | null>;
   rcloneSync(payload: unknown): Promise<unknown>;
   rclonePull(payload: unknown): Promise<unknown>;
   rcloneCancel(operationId: string): Promise<unknown>;
@@ -203,6 +204,8 @@ export interface NativeHost {
   rollbackServerSettings(): Promise<unknown>;
 
   rclonePrepareRemote: Invoke<'rclone:prepare-remote'>;
+  rclonePickProjectDownload: Invoke<'rclone:pick-project-download'>;
+  inboxDownloadProject: Invoke<'inbox:download-project'>;
   rcloneSync: Invoke<'rclone:sync'>;
   rclonePull: Invoke<'rclone:pull'>;
   rcloneCancel(operationId: string): Promise<unknown>;

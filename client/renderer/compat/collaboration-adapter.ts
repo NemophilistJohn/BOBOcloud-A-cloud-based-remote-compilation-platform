@@ -41,6 +41,8 @@ interface LegacyCollaborationBobo {
   auth?: CollaborationAuthPort;
   accountProfile?: CollaborationAccountProfilePort;
   workspace?: CollaborationWorkspacePort;
+  documentViews?: { hideAll(options: { restoreEditor: false }): void };
+  views?: { openSplit?(): void; openDiff?(original?: string, modified?: string): void };
   rclone?: RcloneClient;
   runner?: CollaborationRunnerPort;
   workbench?: WorkbenchLayoutFacade;
@@ -90,6 +92,8 @@ const collaboration: CollaborationService = createCollaborationService({
   getAuth: () => BOBO.auth,
   getAccountProfile: () => BOBO.accountProfile,
   getWorkspace: () => BOBO.workspace,
+  getDocumentViews: () => BOBO.documentViews,
+  getViews: () => BOBO.views,
   getRclone: () => BOBO.rclone as unknown as CollaborationRclonePort | undefined,
   getRunner: () => BOBO.runner,
   getWorkbench: () => BOBO.workbench as unknown as CollaborationWorkbenchPort | undefined,

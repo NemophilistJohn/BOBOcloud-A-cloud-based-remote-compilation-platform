@@ -150,13 +150,14 @@ function registerRcloneIpc(options) {
     }
     if (kind === 'pull' && scope.type === 'mapping') {
       const grantId = String(scope.grantId || '');
-      const localPath = localDirectoryAuthority.resolve(event.sender.id, grantId);
+      const expectedPurpose = payload.kind === 'project-download' ? 'project-download' : undefined;
+      const localPath = localDirectoryAuthority.resolve(event.sender.id, grantId, undefined, expectedPurpose);
       return {
         localPath,
         bindingKey: JSON.stringify(['mapping', event.sender.id, grantId, localPath]),
         isCurrent() {
           try {
-            return localDirectoryAuthority.resolve(event.sender.id, grantId, localPath) === localPath;
+            return localDirectoryAuthority.resolve(event.sender.id, grantId, localPath, expectedPurpose) === localPath;
           } catch (_) {
             return false;
           }
@@ -169,22 +170,58 @@ function registerRcloneIpc(options) {
   ipcMain.handle('rclone:prepare-remote', async (event, rawPayload) => {
     trustedWindow(event);
     const payload = operationPayload(rawPayload);
-    const kind = payload.kind === 'workspace' ? 'workspace' : payload.kind === 'team-pull' ? 'team-pull' : '';
+    const kind = payload.kind === 'workspace' || payload.kind === 'team-pull' || payload.kind === 'project-download'
+      ? payload.kind
+      : '';
     if (!kind) throw new Error('Invalid remote preparation kind');
     const id = operationId(payload.operationId);
-    const local = localScope(event, payload, kind === 'team-pull' ? 'pull' : 'sync');
-    const request = mainOwnedPreparationRequest(kind, payload.request, local.localPath);
+    const local = localScope(event, payload, kind === 'workspace' ? 'sync' : 'pull');
+    const request = kind === 'project-download'
+      ? mainOwnedProjectDownloadRequest(payload.request)
+      : mainOwnedPreparationRequest(kind, payload.request, local.localPath);
+    const personalMirror = kind === 'workspace' && request.teamId
+      ? { folderName: request.folderName, folderKey: workspaceProjectKey(local.localPath) }
+      : undefined;
     return service.prepareRemote({
       senderId: event.sender.id,
       operationId: id,
       kind,
       request,
+      personalMirror,
       measure: kind === 'workspace'
         ? (signal) => measureDirectory(local.localPath, { signal })
         : null,
       bindingKey: local.bindingKey,
       isCurrent: local.isCurrent
     });
+  });
+
+  ipcMain.handle('rclone:pick-project-download', async (event, payload) => {
+    const owner = trustedWindow(event);
+    const name = payload && typeof payload.name === 'string' ? payload.name.trim().slice(0, 160) : '';
+    if (!name) throw new Error('A project name is required');
+    const result = await dialog.showOpenDialog(owner, {
+      title: t('Choose download location'),
+      buttonLabel: t('Download here'),
+      properties: ['openDirectory', 'createDirectory']
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const parent = translatedSafeDirectory(result.filePaths[0]);
+    const safeName = name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/g, '').trim() || 'Project';
+    let destination = path.join(parent, safeName);
+    for (let suffix = 2; fs.existsSync(destination); suffix += 1) {
+      if (suffix > 1000) throw new Error('Could not find an unused project download folder');
+      destination = path.join(parent, safeName + ' (' + suffix + ')');
+    }
+    await fs.promises.mkdir(destination, { recursive: false });
+    let granted;
+    try {
+      granted = localDirectoryAuthority.grant(event.sender.id, destination, 'project-download');
+    } catch (error) {
+      await fs.promises.rm(destination, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
+    return { path: granted.path, grantId: granted.grantId };
   });
 
   function operationHandler(kind) {
@@ -329,4 +366,16 @@ function registerRcloneIpc(options) {
   };
 }
 
-module.exports = { directoryIsEmptyExceptMarker, normalizeRemotePath, registerRcloneIpc, workspaceProjectKey };
+function mainOwnedProjectDownloadRequest(request) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    throw new Error('A project download identity is required');
+  }
+  const folderName = typeof request.folderName === 'string' ? request.folderName.trim().slice(0, 255) : '';
+  const folderKey = typeof request.folderKey === 'string' ? request.folderKey.trim() : '';
+  if (!folderName || !folderKey || folderKey.length > 255 || /[\0-\x1f/\\]/.test(folderKey) || folderKey === '.' || folderKey === '..') {
+    throw new Error('The project download identity is invalid');
+  }
+  return { folderName, folderKey };
+}
+
+module.exports = { directoryIsEmptyExceptMarker, mainOwnedProjectDownloadRequest, normalizeRemotePath, registerRcloneIpc, workspaceProjectKey };

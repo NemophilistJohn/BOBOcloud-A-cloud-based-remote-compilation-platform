@@ -77,7 +77,7 @@ export function createRcloneClient(options: RcloneClientOptions): RcloneClient {
   }
 
   async function prepareRemote(
-    kind: 'workspace' | 'team-pull',
+    kind: 'workspace' | 'team-pull' | 'project-download',
     request: unknown,
     operationOptions: RcloneOperationOptions | null = {}
   ): Promise<unknown> {
@@ -125,6 +125,8 @@ export function createRcloneClient(options: RcloneClientOptions): RcloneClient {
   return {
     prepareWorkspace: (request, operationOptions) => prepareRemote('workspace', request, operationOptions),
     prepareTeamPull: (request, operationOptions) => prepareRemote('team-pull', request, operationOptions),
+    prepareProjectDownload: (request, operationOptions) => prepareRemote('project-download', request, operationOptions),
+    pickProjectDownload: (name) => host.rclonePickProjectDownload({ name }),
     sync: (operationOptions) => runOperation('sync', operationOptions),
     pull: (operationOptions) => runOperation('pull', operationOptions),
     cancel: (operationId) => host.rcloneCancel(operationId),

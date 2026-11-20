@@ -81,6 +81,7 @@ const EXPECTED_MODULES = [
   '../src/auth.js',
   './compat/projects-adapter.ts',
   './compat/collaboration-adapter.ts',
+  './compat/social-adapter.ts',
   './compat/account-profile-adapter.ts',
   './compat/ai-settings-schema-adapter.ts',
   './compat/ai-prompts-adapter.ts',

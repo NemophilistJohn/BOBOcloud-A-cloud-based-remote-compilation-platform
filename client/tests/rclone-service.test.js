@@ -116,6 +116,9 @@ function createFixture(t, overrides = {}) {
     calls.fetch.push({ url, request, payload });
     if (overrides.fetch) return overrides.fetch(url, request, payload);
     if (payload.action === 'checkFolder') {
+      if (payload.teamId) {
+        return response({ success: true, folderPath: '/srv/teams/' + payload.teamId + '/projects/' + payload.projectId + '/worktrees/account-a/main' });
+      }
       return response({ success: true, folderPath: '/srv/accounts/account-a/workspaces/' + payload.folderKey });
     }
     if (payload.action === 'prepareTeamProject') {
@@ -188,6 +191,147 @@ test('main prepares an authenticated remote grant and keeps the remote path out 
   assert.equal(fs.existsSync(payload.configPath), false, 'operation-private config must be removed after exit');
   assert.match(configObservedDuringRun, /^compiler-a\.test:root:/);
   assert.equal(Object.hasOwn(payload, 'rclonePath'), false);
+});
+
+test('project download prepares the selected server key for one pull without exposing the remote path', async (t) => {
+  const fixture = createFixture(t);
+  const prepared = await fixture.service.prepareRemote({
+    senderId: 7,
+    operationId: 'prepare-download',
+    kind: 'project-download',
+    request: { folderName: 'Project', folderKey: 'project-key' },
+    bindingKey: 'download-binding',
+    isCurrent: () => true
+  });
+  assert.equal(prepared.success, true);
+  assert.ok(prepared.remoteGrantId);
+  assert.equal(Object.hasOwn(prepared, 'folderPath'), false);
+  assert.equal(fixture.calls.fetch.at(-1).payload.action, 'checkFolder');
+  assert.equal(fixture.calls.fetch.at(-1).payload.folderKey, 'project-key');
+
+  const result = await fixture.service.pull({
+    senderId: 7,
+    operationId: 'pull-download',
+    remoteGrantId: prepared.remoteGrantId,
+    localPath: 'C:\\downloads\\Project',
+    bindingKey: 'download-binding',
+    isCurrent: () => true
+  });
+  assert.equal(result.success, true);
+  assert.equal(fixture.calls.pull.at(-1).remotePath, '/srv/accounts/account-a/workspaces/project-key');
+});
+
+test('team workspace sync mirrors to personal storage without changing the team target', async (t) => {
+  const fixture = createFixture(t);
+  const prepared = await fixture.service.prepareRemote({
+    senderId: 7,
+    operationId: 'prepare-team-workspace',
+    kind: 'workspace',
+    request: {
+      folderName: '武老师-信科微分方程数值解1班',
+      folderKey: '',
+      teamId: 'team-test',
+      projectId: 'proj-class',
+      branch: 'class/main'
+    },
+    personalMirror: { folderName: '武老师-信科微分方程数值解1班', folderKey: 'personal-hash' },
+    measure: async () => ({ size: 12 }),
+    bindingKey: 'workspace-binding',
+    isCurrent: () => true
+  });
+  assert.equal(prepared.success, true);
+  assert.ok(prepared.remoteGrantId);
+  assert.deepEqual(fixture.calls.fetch[0].payload, {
+    action: 'checkFolder',
+    folderName: '武老师-信科微分方程数值解1班',
+    folderKey: '',
+    totalSize: 12,
+    teamId: 'team-test',
+    projectId: 'proj-class',
+    branch: 'class/main'
+  });
+
+  const result = await fixture.service.sync({
+    senderId: 7,
+    operationId: 'sync-team-workspace',
+    remoteGrantId: prepared.remoteGrantId,
+    localPath: 'C:\\team-workspace',
+    bindingKey: 'workspace-binding',
+    isCurrent: () => true
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.personalMirror.success, true);
+  assert.deepEqual(fixture.calls.fetch[1].payload, {
+    action: 'checkFolder',
+    folderName: '武老师-信科微分方程数值解1班',
+    folderKey: 'personal-hash',
+    totalSize: 12
+  });
+  assert.equal(fixture.calls.sync.length, 2);
+  assert.equal(fixture.calls.sync[0].remotePath, '/srv/teams/team-test/projects/proj-class/worktrees/account-a/main');
+  assert.equal(fixture.calls.sync[1].remotePath, '/srv/accounts/account-a/workspaces/personal-hash');
+  assert.equal(fixture.calls.sync[0].src, 'C:\\team-workspace');
+  assert.equal(fixture.calls.sync[1].src, 'C:\\team-workspace');
+  assert.deepEqual(fixture.calls.fetch[2].payload, { action: 'recordWorkspaceSync' });
+  assert.equal(fixture.calls.fetch[2].request.headers.Authorization, 'Bearer session-a');
+});
+
+test('team workspace preparation errors retain the service result envelope', async (t) => {
+  const fixture = createFixture(t);
+  const cases = [
+    ['workspace', { folderName: 'Team project', teamId: 'team-test' }, /teamId and projectId/],
+    ['workspace', { folderName: 'Personal project' }, /folderKey is required/],
+    ['project-download', { folderName: 'Personal project', teamId: 'team-test', projectId: 'proj-test' }, /folderKey is required/],
+    ['team-pull', { teamId: 'team-test', projectId: 'proj-test' }, /teamId, projectId and branch/]
+  ];
+  for (const [kind, request, message] of cases) {
+    const result = await fixture.service.prepareRemote({
+      senderId: 7, operationId: 'prepare-invalid-' + kind, kind, request, bindingKey: 'workspace-binding'
+    });
+    assert.equal(result.success, false);
+    assert.match(result.error, message);
+  }
+  assert.equal(fixture.calls.fetch.length, 0);
+});
+
+test('personal mirror quota failure leaves the team upload available', async (t) => {
+  const fixture = createFixture(t, {
+    fetch(_url, _request, payload) {
+      return payload.teamId
+        ? response({ success: true, folderPath: '/srv/teams/account-a/main' })
+        : response({ success: false, error: 'Disk quota exceeded' });
+    }
+  });
+  const prepared = await fixture.service.prepareRemote({
+    senderId: 7,
+    operationId: 'prepare-quota-mirror',
+    kind: 'workspace',
+    request: { folderName: 'Team project', teamId: 'test', projectId: 'project' },
+    personalMirror: { folderName: 'Team project', folderKey: 'personal-hash' },
+    measure: async () => ({ size: 12 }),
+    bindingKey: 'workspace-binding'
+  });
+  const result = await fixture.service.sync({
+    senderId: 7, operationId: 'sync-quota-mirror', remoteGrantId: prepared.remoteGrantId,
+    localPath: 'C:\\workspace', bindingKey: 'workspace-binding'
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.personalMirror.success, false);
+  assert.equal(result.personalMirror.error.message, 'Disk quota exceeded');
+  assert.deepEqual(fixture.calls.sync.map((entry) => entry.remotePath), ['/srv/teams/account-a/main']);
+});
+
+test('failed uploads do not report workspace sync activity', async (t) => {
+  const fixture = createFixture(t, {
+    sync() { return { success: false, error: { type: 'IO_ERROR', message: 'file transfer failed' } }; }
+  });
+  const prepared = await prepareWorkspace(fixture);
+  const result = await fixture.service.sync({
+    senderId: 7, operationId: 'sync-io-error', remoteGrantId: prepared.remoteGrantId,
+    localPath: 'C:\\workspace', bindingKey: 'workspace-binding'
+  });
+  assert.equal(result.success, false);
+  assert.deepEqual(fixture.calls.fetch.map((entry) => entry.payload.action), ['checkFolder']);
 });
 
 test('workspace measurement is tracked and cancelled with its rclone preparation operation', async (t) => {

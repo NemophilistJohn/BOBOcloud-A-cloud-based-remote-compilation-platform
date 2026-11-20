@@ -208,6 +208,9 @@ type Config struct {
 	// 团队增量编译缓存。配额按团队统计，后台只淘汰不活跃的 LRU 命名空间。
 	TeamCacheDefaultQuotaMB     int `json:"team_cache_default_quota_mb"`
 	TeamCacheCleanupIntervalMin int `json:"team_cache_cleanup_interval_minutes"`
+	// Shared immutable project-offer archives; independent from personal/team caches.
+	ProjectSnapshotCapacityBytes int64 `json:"project_snapshot_capacity_bytes"`
+	ProjectSnapshotReserveBytes  int64 `json:"project_snapshot_reserve_bytes"`
 
 	// Remote language servers and their independent analysis cache. LSP cache
 	// never shares a root with team incremental build/dependency caches.
@@ -349,6 +352,8 @@ func Default() *Config {
 		HistoryMaxPerUser:                   200,
 		TeamCacheDefaultQuotaMB:             4096,
 		TeamCacheCleanupIntervalMin:         10,
+		ProjectSnapshotCapacityBytes:        2 << 30,
+		ProjectSnapshotReserveBytes:         1 << 30,
 		LSPEnabled:                          true,
 		LSPManifestPath:                     "lsp_servers.json",
 		LSPMaxSessions:                      8,
@@ -442,6 +447,9 @@ func Load(path string) (*Config, error) {
 	}
 
 	if err := applyPersonalCacheV2EnvOverrides(cfg); err != nil {
+		return nil, err
+	}
+	if err := applyProjectSnapshotOverrides(cfg); err != nil {
 		return nil, err
 	}
 
@@ -874,6 +882,26 @@ func stripDocumentationFields(data json.RawMessage) (json.RawMessage, error) {
 	default:
 		return append(json.RawMessage(nil), trimmed...), nil
 	}
+}
+
+func applyProjectSnapshotOverrides(cfg *Config) error {
+	fields := map[string]*int64{
+		"BOBOCLOUD_PROJECT_SNAPSHOT_CAPACITY_BYTES": &cfg.ProjectSnapshotCapacityBytes,
+		"BOBOCLOUD_PROJECT_SNAPSHOT_RESERVE_BYTES":  &cfg.ProjectSnapshotReserveBytes,
+	}
+	for name, target := range fields {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || parsed <= 0 {
+				return fmt.Errorf("%s must be a positive byte count", name)
+			}
+			*target = parsed
+		}
+	}
+	if cfg.ProjectSnapshotCapacityBytes <= 0 || cfg.ProjectSnapshotReserveBytes <= 0 {
+		return fmt.Errorf("project snapshot capacity and reserve must be positive byte counts")
+	}
+	return nil
 }
 
 func applyPersonalCacheV2EnvOverrides(cfg *Config) error {

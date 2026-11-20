@@ -55,7 +55,7 @@ import type {
   ProjectsSaveProjectNameRequestDto
 } from './projects';
 import type { WorkspaceSettingsRequestDto } from './workspace-settings';
-import type { WorkspaceLaunchOpenedWorkspaceDto } from './workspace-launch';
+import type { WorkspaceLaunchOpenedWorkspaceDto, WorkspaceLaunchRequest } from './workspace-launch';
 import type {
   AiChatPayloadDto,
   AiInlineRequestDto,
@@ -89,7 +89,7 @@ export interface IpcEventContract<Args extends unknown[] = []> {
 
 export interface IpcInvokeContracts {
   'pick-workspace': IpcInvokeContract<
-    [dirPath?: string],
+    [dirPath?: WorkspaceLaunchRequest],
     WorkspaceLaunchOpenedWorkspaceDto | null
   >;
   'forget-recent-workspace': IpcInvokeContract<[dirPath: string], boolean>;
@@ -152,6 +152,8 @@ export interface IpcInvokeContracts {
   'read-server-settings': IpcInvokeContract;
   'write-server-settings': IpcInvokeContract<[settings: unknown]>;
   'rclone:prepare-remote': IpcInvokeContract<[payload: unknown]>;
+  'rclone:pick-project-download': IpcInvokeContract<[payload: Readonly<{ name: string }>], Readonly<{ path: string; grantId: string }> | null>;
+  'inbox:download-project': IpcInvokeContract<[payload: Readonly<{ messageId: string; name: string }>], Readonly<{ archived: boolean }> | null>;
   'rclone:sync': IpcInvokeContract<[payload: unknown]>;
   'rclone:pull': IpcInvokeContract<[payload: unknown]>;
   'rclone:cancel': IpcInvokeContract<[request: unknown]>;

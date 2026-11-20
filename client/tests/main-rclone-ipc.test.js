@@ -165,6 +165,66 @@ test('team pulls require an opaque grant created by the native directory picker'
   }), /missing or expired/);
 });
 
+test('mapped workspace uses its team marker and an independent personal mirror key', async (t) => {
+  const value = fixture(t);
+  const root = fs.realpathSync(value.workspaceIdentity.rootPath);
+  const name = '武老师-信科微分方程数值解1班';
+  fs.writeFileSync(path.join(root, '.bobocloud-team.json'), JSON.stringify({
+    teamId: 'team-test', projectId: 'proj-class', branch: 'class/main', projectName: name, localPath: root
+  }));
+  await value.handlers.get('rclone:prepare-remote')(value.event, {
+    operationId: 'prepare-mapped-workspace',
+    kind: 'workspace',
+    localScope: workspaceScope(value),
+    request: { teamId: 'untrusted', folderKey: 'untrusted' },
+    personalMirror: { folderKey: 'untrusted' }
+  });
+  const prepared = value.calls.prepare[0];
+  assert.deepEqual(prepared.request, {
+    folderName: name, folderKey: '', teamId: 'team-test', projectId: 'proj-class', branch: 'class/main'
+  });
+  assert.deepEqual(prepared.personalMirror, { folderName: name, folderKey: workspaceProjectKey(root) });
+});
+
+test('project downloads use a native destination picker and one sender-bound pull grant', async (t) => {
+  const value = fixture(t);
+  const parent = path.join(path.dirname(value.workspaceIdentity.rootPath), 'downloads');
+  fs.mkdirSync(parent);
+  value.setOpenDialogResult({ canceled: false, filePaths: [parent] });
+  const picked = await value.handlers.get('rclone:pick-project-download')(value.event, { name: 'My Project' });
+  assert.equal(picked.path, path.join(fs.realpathSync(parent), 'My Project'));
+  assert.equal(fs.statSync(picked.path).isDirectory(), true);
+  assert.ok(picked.grantId);
+  const unrelated = value.authority.grant(value.event.sender.id, parent, 'native-picker');
+  await assert.rejects(value.handlers.get('rclone:prepare-remote')(value.event, {
+    operationId: 'prepare-project-download-unrelated-grant',
+    kind: 'project-download',
+    localScope: { type: 'mapping', grantId: unrelated.grantId },
+    request: { folderName: 'My Project', folderKey: 'p123' }
+  }), /wrong purpose/);
+
+  const prepared = await value.handlers.get('rclone:prepare-remote')(value.event, {
+    operationId: 'prepare-project-download',
+    kind: 'project-download',
+    localScope: { type: 'mapping', grantId: picked.grantId },
+    request: { folderName: 'My Project', folderKey: 'p123' }
+  });
+  assert.equal(value.calls.prepare[0].kind, 'project-download');
+  assert.deepEqual(value.calls.prepare[0].request, { folderName: 'My Project', folderKey: 'p123' });
+  await value.handlers.get('rclone:pull')(value.event, {
+    operationId: 'pull-project-download',
+    localScope: { type: 'mapping', grantId: picked.grantId },
+    remoteGrantId: prepared.remoteGrantId
+  });
+  assert.equal(value.calls.pull[0].localPath, picked.path);
+  await assert.rejects(value.handlers.get('rclone:prepare-remote')(value.event, {
+    operationId: 'prepare-project-download-invented',
+    kind: 'project-download',
+    localScope: { type: 'mapping', grantId: 'invented' },
+    request: { folderName: 'My Project', folderKey: 'p123' }
+  }), /missing or expired/);
+});
+
 test('renderer cancellation is sender-scoped and awaited through IPC', async (t) => {
   const value = fixture(t);
   await value.handlers.get('rclone:cancel')(value.event, { operationId: 'sync-1' });

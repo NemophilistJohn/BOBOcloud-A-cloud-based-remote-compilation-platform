@@ -46,10 +46,14 @@ test('cache inventory v2 is project-first, type-first and lifecycle-safe', async
       S.selectedRuntime = 'python:3.10';
       S.serverSettings = { ip: '198.51.100.25' };
       const folderKey = window.BOBO.projectKey(S.workspaceRoot);
+      const activeProjectKey = window.BOBO.projectKey(S.workspaceRoot);
       const currentWorkspaceId = 'root\u0000' + folderKey;
       window.__cacheRevision = 'revision-1';
       window.__cacheActions = [];
       window.__cacheConfirms = [];
+      window.__projectDownloadActions = [];
+      window.__projectOpenDecision = { confirmed: false, checkboxChecked: false };
+      window.__projectOpened = null;
       window.__packageCenterOpen = null;
       window.__primaryView = '';
       const setPrimaryView = window.BOBO.workbench.setPrimaryView.bind(window.BOBO.workbench);
@@ -87,7 +91,33 @@ test('cache inventory v2 is project-first, type-first and lifecycle-safe', async
 
       window.BOBO.confirm = async (options) => {
         window.__cacheConfirms.push(options);
+        if (options.returnDetails) return window.__projectOpenDecision;
         return true;
+      };
+      window.BOBO.rclone = {
+        pickProjectDownload: async (name) => {
+          window.__projectDownloadActions.push({ action: 'pick', name });
+          return { path: 'C:\\Downloads\\' + name, grantId: 'download-grant' };
+        },
+        prepareProjectDownload: async (request, operation) => {
+          window.__projectDownloadActions.push({ action: 'prepare', request, operation });
+          return { success: true, remoteGrantId: 'download-remote-grant' };
+        },
+        pull: async (operation) => {
+          window.__projectDownloadActions.push({ action: 'pull', operation });
+          return { success: true };
+        }
+      };
+      window.BOBO.runner = window.BOBO.runner || {};
+      window.BOBO.runner.manualSyncWithServer = async () => {
+        window.__projectDownloadActions.push({ action: 'sync' });
+        return true;
+      };
+      window.BOBO.workspaceLaunch = {
+        requestOpen: async (request) => {
+          window.__projectOpened = request;
+          return true;
+        }
       };
       window.BOBO.packageCenter.open = (options) => { window.__packageCenterOpen = options; };
       window.BOBO.workbench.setPrimaryView = (view) => { window.__primaryView = view; setPrimaryView(view); };
@@ -98,7 +128,8 @@ test('cache inventory v2 is project-first, type-first and lifecycle-safe', async
             total_used_bytes: 16384, quota_bytes: 1048576, persist_bytes: 16384, projects_total_bytes: 12288,
             projects: [
               { key: 'recent-project', name: 'Recent project', size_bytes: 4096, files: 5, mod_time: 1790000000 },
-              { key: 'large-project', name: 'Large project', size_bytes: 8192, files: 18, mod_time: 1780000000 }
+              { key: 'large-project', name: 'Large project', size_bytes: 8192, files: 18, mod_time: 1780000000 },
+              { key: activeProjectKey, name: 'Active project', size_bytes: 1024, files: 3, mod_time: 1770000000 }
             ]
           } };
         }
@@ -177,6 +208,55 @@ test('cache inventory v2 is project-first, type-first and lifecycle-safe', async
     await page.locator('[data-project-sort="modified"]').click();
     await expect(page.locator('#projects-list .cloud-project-row').first()).toContainText('Recent project');
     await expect(page.locator('[data-project-sort="modified"]')).toHaveAttribute('aria-checked', 'true');
+    const activeProject = page.locator('#projects-list .cloud-project-row').filter({ hasText: 'Active project' });
+    const activeMenuToggle = activeProject.locator('.cloud-project-menu-toggle');
+    await activeMenuToggle.hover();
+    const syncAction = activeProject.locator('.cloud-project-menu [data-project-action="sync"]');
+    await expect(syncAction).toBeVisible();
+    await expect(activeProject.locator('.cloud-project-menu [data-project-action="download"]')).toBeVisible();
+    const toggleBounds = await activeMenuToggle.boundingBox();
+    const actionBounds = await syncAction.boundingBox();
+    await page.mouse.move(toggleBounds.x + toggleBounds.width / 2, toggleBounds.y + toggleBounds.height / 2);
+    await page.mouse.move(actionBounds.x + actionBounds.width / 2, actionBounds.y + 2, { steps: 8 });
+    await page.waitForTimeout(350);
+    await expect(syncAction).toBeVisible();
+    await syncAction.click();
+    await expect.poll(() => page.evaluate(() => window.__projectDownloadActions.some((entry) => entry.action === 'sync'))).toBe(true);
+
+    const largeProject = page.locator('#projects-list .cloud-project-row').filter({ hasText: 'Large project' });
+    await largeProject.locator('.cloud-project-menu-toggle').hover();
+    await expect(largeProject.locator('.cloud-project-menu [data-project-action="sync"]')).toHaveCount(0);
+    await largeProject.locator('.cloud-project-menu [data-project-action="download"]').click();
+    await expect.poll(() => page.evaluate(() => window.__projectDownloadActions.filter((entry) => entry.action === 'pull').length)).toBe(1);
+    await expect.poll(() => page.evaluate(() => window.__cacheConfirms.filter((options) => options.returnDetails).length)).toBe(1);
+    const firstPrompt = await page.evaluate(() => window.__cacheConfirms.find((options) => options.returnDetails));
+    expect(firstPrompt.message).toBe("Do you want to open project 'Large project'?");
+    expect(firstPrompt.cancelLabel).toBe('No');
+    expect(firstPrompt.confirmLabel).toBe('Yes');
+
+    await page.evaluate(() => { window.__projectOpenDecision = { confirmed: true, checkboxChecked: false }; });
+    await largeProject.locator('.cloud-project-menu-toggle').hover();
+    await largeProject.locator('.cloud-project-menu [data-project-action="download"]').click();
+    await expect.poll(() => page.evaluate(() => window.__cacheConfirms.filter((options) => options.returnDetails).length)).toBe(2);
+    await expect.poll(() => page.evaluate(() => window.__projectOpened && window.__projectOpened.localGrant)).toBe('download-grant');
+    await expect.poll(() => page.evaluate(() => window.__primaryView)).toBe('explorer');
+
+    await page.evaluate(() => {
+      window.__projectOpened = null;
+      window.__projectOpenDecision = { confirmed: false, checkboxChecked: true };
+      window.BOBO.projects.open({ tab: 'projects' });
+    });
+    await expect(page.locator('#cloud-sidebar-view')).toHaveClass(/active/);
+    await expect(page.locator('#projects-list .cloud-project-row').filter({ hasText: 'Large project' })).toBeVisible();
+    await largeProject.locator('.cloud-project-menu-toggle').hover();
+    await largeProject.locator('.cloud-project-menu [data-project-action="download"]').click();
+    await expect.poll(() => page.evaluate(() => window.__cacheConfirms.filter((options) => options.returnDetails).length)).toBe(3);
+    const promptsAfterOptOut = await page.evaluate(() => window.__cacheConfirms.filter((options) => options.returnDetails).length);
+    await largeProject.locator('.cloud-project-menu-toggle').hover();
+    await largeProject.locator('.cloud-project-menu [data-project-action="download"]').click();
+    await expect.poll(() => page.evaluate(() => window.__projectDownloadActions.filter((entry) => entry.action === 'pull').length)).toBe(4);
+    await expect.poll(() => page.evaluate(() => window.__cacheConfirms.filter((options) => options.returnDetails).length)).toBe(promptsAfterOptOut);
+
     const sidebarResizer = page.locator('#sidebar-resizer');
     await sidebarResizer.focus();
     await sidebarResizer.press('Home');

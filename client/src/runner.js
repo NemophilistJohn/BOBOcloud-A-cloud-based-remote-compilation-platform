@@ -544,7 +544,7 @@
     var operationPromise = doSyncWithServerInternal(verbose, operation, runContext).then(function(result) {
       if (BOBO.workspaceSyncStatus && syncStatusContext) {
         BOBO.workspaceSyncStatus.finishSync(syncStatusContext, {
-          success: result === true,
+          success: result === true && !operation.error,
           error: operation.error || null
         });
       }
@@ -636,7 +636,14 @@
         return false;
       }
 
-      if (verbose) runOutputDetail('Sync completed - all files synced', { stage: 'sync' }, runContext);
+      if (result.personalMirror && !result.personalMirror.success) {
+        operation.error = tr('Team files synced, but the personal cloud copy failed: {reason}', {
+          reason: result.personalMirror.error.message
+        });
+        if (verbose) BOBO.updateRunOutput(operation.error);
+      } else if (verbose) {
+        runOutputDetail('Sync completed - all files synced', { stage: 'sync' }, runContext);
+      }
       // Preserve changes that happened while rclone was running: only the
       // version captured at start is considered synchronized.
       S.lastSyncedVersion = syncVersion;

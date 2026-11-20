@@ -12,7 +12,7 @@ const PLUGIN_ID = 'bobocloud.ai-agent';
 const PROVIDER_ID = 'bobocloud.ai-agent.workbench';
 const PLUGIN_ROOT = process.env.BOBO_AI_AGENT_PLUGIN_DIR
   ? path.resolve(process.env.BOBO_AI_AGENT_PLUGIN_DIR)
-  : path.resolve(__dirname, '..', '..', '..', 'BOBOCloud-AI-Agent-plugin-offical');
+  : path.resolve(__dirname, '..', '..', '..', 'plugins', 'official', 'BOBOCloud-AI-Agent-plugin-offical');
 const ARTIFACT_INFO = resolvePluginArtifact({
   artifactEnv: 'BOBO_AI_AGENT_PLUGIN_ARTIFACT',
   pluginId: PLUGIN_ID,
@@ -418,12 +418,16 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
       await expect(controls).toBeVisible();
     };
     const clickControlValue = async (value) => {
-      await workbench.evaluate((root, selectedValue) => {
-        const menu = root.querySelector('.agent-composer-control-menu:not([hidden])');
-        const button = menu && menu.querySelector('[data-value="' + selectedValue + '"]');
-        if (!button) throw new Error('Agent control option is unavailable: ' + selectedValue);
-        button.click();
-      }, value);
+      const option = controls.locator('button[data-value="' + value + '"]');
+      // Cancelling the access confirmation can finish by replacing the
+      // composer. Reopen only the menu while that update settles; the actual
+      // state-changing choice is clicked once through Playwright's locator.
+      await expect(async () => {
+        await openControls();
+        await expect(option).toBeVisible({ timeout: 750 });
+        await expect(option).toBeEnabled({ timeout: 750 });
+      }).toPass({ timeout: 5000, intervals: [100, 250] });
+      await option.click();
     };
     const dispatchComposerKeys = async (value, keys) => {
       return workbench.evaluate((root, payload) => {

@@ -13,7 +13,6 @@ import type {
   WorkbenchAiChatPanelPort,
   WorkbenchApplyOptionsDto,
   WorkbenchAuxiliaryOptionsDto,
-  WorkbenchCollaborationCurrentDto,
   WorkbenchCollaborationPort,
   WorkbenchCommandsPort,
   WorkbenchFileSearchPort,
@@ -138,7 +137,6 @@ export function createWorkbenchLayoutService(
   let editorLayoutTimer: number | null = null;
   let editorFrameOne: number | null = null;
   let editorFrameTwo: number | null = null;
-  let teamRevealFrame: number | null = null;
   let contextObserver: MutationObserver | null = null;
 
   function report(error: unknown): void {
@@ -257,10 +255,6 @@ export function createWorkbenchLayoutService(
     }
     editorFrameOne = null;
     editorFrameTwo = null;
-    if (teamRevealFrame !== null && dependencies.cancelAnimationFrame) {
-      dependencies.cancelAnimationFrame(teamRevealFrame);
-    }
-    teamRevealFrame = null;
     if (editorLayoutTimer !== null) {
       dependencies.clearTimer(editorLayoutTimer);
       editorLayoutTimer = null;
@@ -401,17 +395,6 @@ export function createWorkbenchLayoutService(
       workspaceName.textContent = pathName(state.workspaceRoot);
       workspaceName.title = state.workspaceRoot || '';
     }
-    const current = state.collaboration?.current as WorkbenchCollaborationCurrentDto | null | undefined;
-    const project = document.getElementById('team-sidebar-project');
-    const branch = document.getElementById('team-sidebar-branch');
-    const panel = document.getElementById('team-sidebar-panel') as HTMLButtonElement | null;
-    if (project) {
-      project.textContent = current
-        ? String(current.teamName) + ' / ' + String(current.projectName)
-        : 'Personal project';
-    }
-    if (branch) branch.textContent = current ? String(current.branch) : 'No team mapping';
-    if (panel) panel.disabled = !current;
   }
 
   function updateSeparatorAria(): void {
@@ -763,23 +746,10 @@ export function createWorkbenchLayoutService(
     document.querySelectorAll('[data-workbench-view]').forEach((button) => {
       listen(button, 'click', () => {
         const view = button.getAttribute('data-workbench-view');
-        if (view) setPrimaryView(view);
+        if (view === 'team') void dependencies.getCollaboration()?.openHub?.();
+        else if (view) setPrimaryView(view);
         if (view === 'cloud') dependencies.getProjects()?.open?.();
         else dependencies.getProjects()?.close?.();
-        if (view === 'team') {
-          if (teamRevealFrame !== null && dependencies.cancelAnimationFrame) {
-            dependencies.cancelAnimationFrame(teamRevealFrame);
-          }
-          teamRevealFrame = dependencies.requestAnimationFrame(() => {
-            teamRevealFrame = null;
-            if (disposed) return;
-            const sidebar = document.getElementById('sidebar');
-            const collaboration = dependencies.getCollaboration();
-            if (sidebar && dependencies.getComputedStyle(sidebar).display === 'none') {
-              collaboration?.openHub?.();
-            }
-          });
-        }
       });
     });
     document.querySelectorAll('.sidebar-hide').forEach((button) => {
@@ -794,8 +764,6 @@ export function createWorkbenchLayoutService(
     if (settings) listen(settings, 'click', () => dependencies.getSettings()?.open?.('workbench'));
     const cloudConnection = document.getElementById('cloud-connection-settings');
     if (cloudConnection) listen(cloudConnection, 'click', () => dependencies.getSettings()?.open?.('server'));
-    const teamPanel = document.getElementById('team-sidebar-panel');
-    if (teamPanel) listen(teamPanel, 'click', () => dependencies.getSwitchToPanel()?.('team'));
 
     const menuButton = document.getElementById('layout-menu-button');
     menu = document.getElementById('layout-menu');

@@ -203,6 +203,28 @@ test('a sync from the previous workspace cannot swallow the new workspace sync',
   assert.equal(statusEvents[3].result.success, true);
 });
 
+test('a personal mirror failure is visible without invalidating the team sync version', async () => {
+  const status = [];
+  const fixture = loadRunner({
+    state: { workspaceChangeVersion: 2, lastSyncedVersion: 1 },
+    BOBO: {
+      rclone: {
+        async sync() {
+          return { success: true, personalMirror: { success: false, error: { message: 'Disk quota exceeded' } } };
+        }
+      },
+      workspaceSyncStatus: {
+        beginSync() { return { id: 1 }; },
+        finishSync(_context, result) { status.push(result); }
+      }
+    }
+  });
+  assert.equal(await fixture.BOBO.runner.manualSyncWithServer(), true);
+  assert.equal(fixture.state.lastSyncedVersion, 2);
+  assert.match(fixture.outputs.join('\n'), /Team files synced, but the personal cloud copy failed: Disk quota exceeded/);
+  assert.equal(status[0].success, false);
+});
+
 test('Run on an unsupported file leaves the existing active run untouched', async () => {
   let closeCount = 0;
   const existingSocket = {
