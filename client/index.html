@@ -160,7 +160,7 @@
         <div class="sidebar-scroll collab-team-section" id="collab-teams" hidden>
           <div id="collab-teams-login" class="collab-empty" hidden><button id="collab-teams-sign-in" type="button" class="ss-btn ss-btn-primary">Sign in</button></div>
           <div id="collab-teams-content" hidden>
-            <div class="collab-directory-head"><strong>YOUR TEAMS</strong><div class="collab-header-actions"><button id="collab-join" class="ss-btn ss-btn-ghost">Join</button><button id="collab-new-team" class="ss-btn ss-btn-primary">New team</button></div></div>
+            <div class="collab-directory-head"><strong>YOUR TEAMS</strong><div class="collab-header-actions"><button id="collab-new-team" class="ss-btn ss-btn-primary">New team</button></div></div>
             <div id="collab-team-list" class="collab-team-list" aria-live="polite"></div>
           </div>
         </div>
@@ -446,6 +446,9 @@
       </div>
 
       <div id="document-view-host" class="hidden" aria-live="polite"></div>
+      <section id="collab-conflict-page" class="collab-conflict-page" role="region" aria-label="Conflict resolution" hidden>
+        <div id="collab-conflict-session"></div>
+      </section>
       <section id="collab-team-page" class="collab-team-page" role="tabpanel" aria-label="Team workspace" hidden>
         <div class="collab-team-page-inner">
           <div id="collab-team-page-status" class="collab-empty" role="status"></div>
@@ -453,12 +456,13 @@
             <header class="collab-team-head"><div><span class="collab-page-kicker">Team workspace</span><h2 id="collab-team-name" dir="auto"></h2><p id="collab-team-description" dir="auto"></p><span id="collab-admin-badge"></span></div><button id="collab-team-settings" class="ss-btn ss-btn-ghost" title="Team settings" aria-label="Team settings"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/><circle cx="12" cy="12" r="7"/></svg><span>Team settings</span></button><button id="collab-leave-team" class="ss-btn ss-btn-ghost" type="button" hidden>Leave team</button></header>
             <div class="collab-tabs" role="group" aria-label="Team workspace"><button type="button" data-collab-tab="members" class="active" aria-pressed="true" aria-controls="collab-pane-members">Members</button><button type="button" data-collab-tab="projects" aria-pressed="false" aria-controls="collab-pane-projects">Projects</button></div>
             <section id="collab-pane-members" class="collab-pane">
-              <div id="collab-member-list" class="collab-list"></div>
-              <details id="collab-invite-details" class="collab-detail-group" hidden><summary>Invites</summary><div class="collab-pane-toolbar"><button id="collab-new-invite" class="ss-btn ss-btn-primary">Generate invite</button></div><div id="collab-invite-list" class="collab-list"></div></details>
+              <section class="team-detail-section team-members-section"><header class="team-detail-section-head"><h3 data-i18n="Team members">Team members</h3><span id="team-member-count"></span></header><div id="collab-member-list" class="team-member-grid"></div></section>
+              <section class="team-detail-section team-member-activity-section"><header class="team-detail-section-head"><h3 data-i18n="Member commit activity">Member commit activity</h3><span data-i18n="Last 200 days">Last 200 days</span></header><div id="team-member-activity"></div></section>
             </section>
             <section id="collab-pane-projects" class="collab-pane" hidden>
-              <div class="collab-pane-toolbar"><span id="collab-project-count"></span><button id="collab-new-project" class="ss-btn ss-btn-primary">New project</button></div><div id="collab-project-list" class="collab-project-grid"></div>
-              <details id="collab-cache-details" class="collab-detail-group"><summary>Build cache</summary><div id="collab-cache-view"></div></details>
+              <section class="team-detail-section team-cache-section"><header class="team-detail-section-head"><h3 data-i18n="Build cache">Build cache</h3><span data-i18n="Project allocation">Project allocation</span></header><div id="collab-cache-view"></div></section>
+              <section class="team-detail-section team-projects-section"><header class="team-detail-section-head"><h3 data-i18n="Team projects">Team projects</h3><span id="collab-project-count"></span></header><div id="collab-project-list" class="team-project-grid"></div></section>
+              <section class="team-detail-section team-project-activity-section"><header class="team-detail-section-head"><h3 data-i18n="Project activity">Project activity</h3><span data-i18n="Last 200 days">Last 200 days</span></header><div id="team-project-activity"></div></section>
             </section>
           </div>
         </div>

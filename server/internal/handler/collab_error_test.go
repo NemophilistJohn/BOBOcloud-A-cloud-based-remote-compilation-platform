@@ -83,30 +83,3 @@ func TestCollabErrorMapsLockStaleDetails(t *testing.T) {
 		t.Fatalf("wire response = %#v", wire)
 	}
 }
-
-func TestDeleteTeamInviteRoutesThroughServeHTTP(t *testing.T) {
-	store := collab.NewMemoryStore()
-	manager := collab.NewManager(store, nil, t.TempDir())
-	team, err := manager.CreateTeam("default", "Route test", "", 1024)
-	if err != nil {
-		t.Fatal(err)
-	}
-	invite, err := manager.CreateInvite("default", team.ID, 1, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	body, err := json.Marshal(model.Request{Action: "deleteTeamInvite", TeamID: team.ID, InviteCode: invite.Code})
-	if err != nil {
-		t.Fatal(err)
-	}
-	handler := &HTTPHandler{Collaboration: manager}
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api", strings.NewReader(string(body))))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-	if _, err := store.GetInvite(invite.Code); err == nil {
-		t.Fatal("invite still exists after routed deleteTeamInvite request")
-	}
-}

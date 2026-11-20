@@ -182,6 +182,12 @@ type Info struct {
 	ScratchBytes    int64           `json:"scratch_bytes"`
 	Namespaces      []NamespaceInfo `json:"namespaces"`
 	Dependencies    []NamespaceInfo `json:"dependencies"`
+	ProjectUsage    []ProjectUsage  `json:"project_usage"`
+}
+
+type ProjectUsage struct {
+	ProjectID string `json:"project_id"`
+	SizeBytes int64  `json:"size_bytes"`
 }
 
 type cacheLock struct {
@@ -945,10 +951,46 @@ func (m *Manager) Inspect(teamID string, quotaMB int) Info {
 	info.Namespaces, info.TargetBytes = inspectProjectNamespaces(projectsRoot, "targets", active, nil)
 	info.Dependencies, info.DependencyBytes = inspectProjectNamespaces(projectsRoot, "dependencies", active, dependencyActive)
 	info.ScratchBytes = scratchSize(projectsRoot)
+	projectUsage := make(map[string]int64)
+	projectIDsByPath := make(map[string]string)
+	for _, namespace := range info.Namespaces {
+		projectUsage[namespace.ProjectID] = addUsage(projectUsage[namespace.ProjectID], namespace.SizeBytes)
+		projectIDsByPath[safePart(namespace.ProjectID)] = namespace.ProjectID
+	}
+	for _, namespace := range info.Dependencies {
+		projectUsage[namespace.ProjectID] = addUsage(projectUsage[namespace.ProjectID], namespace.SizeBytes)
+		projectIDsByPath[safePart(namespace.ProjectID)] = namespace.ProjectID
+	}
+	projectEntries, _ := os.ReadDir(projectsRoot)
+	for _, entry := range projectEntries {
+		if !entry.IsDir() {
+			continue
+		}
+		usage := dirSize(filepath.Join(projectsRoot, entry.Name(), "buildspaces"))
+		if usage > 0 {
+			projectID := projectIDsByPath[entry.Name()]
+			if projectID == "" {
+				projectID = entry.Name()
+			}
+			projectUsage[projectID] = addUsage(projectUsage[projectID], usage)
+		}
+	}
+	info.ProjectUsage = make([]ProjectUsage, 0, len(projectUsage))
+	for projectID, size := range projectUsage {
+		info.ProjectUsage = append(info.ProjectUsage, ProjectUsage{ProjectID: projectID, SizeBytes: size})
+	}
+	sort.Slice(info.ProjectUsage, func(i, j int) bool { return info.ProjectUsage[i].ProjectID < info.ProjectUsage[j].ProjectID })
 	info.TotalBytes = info.SharedBytes + info.TargetBytes + info.DependencyBytes + info.ScratchBytes
 	sort.Slice(info.Namespaces, func(i, j int) bool { return info.Namespaces[i].LastUsed.After(info.Namespaces[j].LastUsed) })
 	sort.Slice(info.Dependencies, func(i, j int) bool { return info.Dependencies[i].LastUsed.After(info.Dependencies[j].LastUsed) })
 	return info
+}
+
+func addUsage(current, next int64) int64 {
+	if current >= unknownCacheUsage || next >= unknownCacheUsage || next < 0 || current > unknownCacheUsage-next {
+		return unknownCacheUsage
+	}
+	return current + next
 }
 
 func scratchSize(projectsRoot string) int64 {

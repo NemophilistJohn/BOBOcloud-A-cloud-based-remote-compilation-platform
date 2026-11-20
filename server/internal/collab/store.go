@@ -19,10 +19,6 @@ type Store interface {
 	GetMember(teamID, userID string) (*Member, error)
 	ListMembers(teamID string) ([]*Member, error)
 	DeleteMember(teamID, userID string) error
-	SaveInvite(*Invite) error
-	GetInvite(code string) (*Invite, error)
-	ListInvites(teamID string) ([]*Invite, error)
-	DeleteInvite(code string) error
 	SaveProject(*Project) error
 	GetProject(projectID string) (*Project, error)
 	ListProjects(teamID string) ([]*Project, error)
@@ -51,13 +47,12 @@ type MemoryStore struct {
 	mu       sync.Mutex
 	teams    map[string]*Team
 	members  map[string]*Member
-	invites  map[string]*Invite
 	projects map[string]*Project
 	locks    map[string]*FileLock
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{teams: map[string]*Team{}, members: map[string]*Member{}, invites: map[string]*Invite{}, projects: map[string]*Project{}, locks: map[string]*FileLock{}}
+	return &MemoryStore{teams: map[string]*Team{}, members: map[string]*Member{}, projects: map[string]*Project{}, locks: map[string]*FileLock{}}
 }
 
 func (s *MemoryStore) SaveTeam(v *Team) error {
@@ -92,11 +87,6 @@ func (s *MemoryStore) DeleteTeam(id string) error {
 	for k, v := range s.members {
 		if v.TeamID == id {
 			delete(s.members, k)
-		}
-	}
-	for k, v := range s.invites {
-		if v.TeamID == id {
-			delete(s.invites, k)
 		}
 	}
 	for k, v := range s.projects {
@@ -142,39 +132,6 @@ func (s *MemoryStore) DeleteMember(t, u string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.members, memberKey(t, u))
-	return nil
-}
-func (s *MemoryStore) SaveInvite(v *Invite) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.invites[strings.ToUpper(v.Code)] = clone(v)
-	return nil
-}
-func (s *MemoryStore) GetInvite(c string) (*Invite, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	v := s.invites[strings.ToUpper(c)]
-	if v == nil {
-		return nil, fmt.Errorf("invite not found")
-	}
-	return clone(v), nil
-}
-func (s *MemoryStore) ListInvites(t string) ([]*Invite, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]*Invite, 0)
-	for _, v := range s.invites {
-		if v.TeamID == t {
-			out = append(out, clone(v))
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
-	return out, nil
-}
-func (s *MemoryStore) DeleteInvite(c string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.invites, strings.ToUpper(strings.TrimSpace(c)))
 	return nil
 }
 func (s *MemoryStore) SaveProject(v *Project) error {
@@ -237,7 +194,6 @@ func (s *MemoryStore) DeleteLock(t, p, b, path string) error {
 var (
 	teamsBucket    = []byte("collab_teams")
 	membersBucket  = []byte("collab_members")
-	invitesBucket  = []byte("collab_invites")
 	projectsBucket = []byte("collab_projects")
 	locksBucket    = []byte("collab_locks")
 )
@@ -246,8 +202,13 @@ type BoltStore struct{ db *bolt.DB }
 
 func NewBoltStore(db *bolt.DB) *BoltStore {
 	_ = db.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{teamsBucket, membersBucket, invitesBucket, projectsBucket, locksBucket} {
+		for _, name := range [][]byte{teamsBucket, membersBucket, projectsBucket, locksBucket} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
+				return err
+			}
+		}
+		if tx.Bucket([]byte("collab_invites")) != nil {
+			if err := tx.DeleteBucket([]byte("collab_invites")); err != nil {
 				return err
 			}
 		}
@@ -312,7 +273,7 @@ func (s *BoltStore) DeleteTeam(id string) error {
 		if err := tx.Bucket(teamsBucket).Delete([]byte(id)); err != nil {
 			return err
 		}
-		for _, bname := range [][]byte{membersBucket, invitesBucket, projectsBucket, locksBucket} {
+		for _, bname := range [][]byte{membersBucket, projectsBucket, locksBucket} {
 			b := tx.Bucket(bname)
 			var keys [][]byte
 			_ = b.ForEach(func(k, v []byte) error {
@@ -338,19 +299,7 @@ func (s *BoltStore) ListMembers(t string) ([]*Member, error) {
 	return listJSON[Member](s.db, membersBucket, func(v *Member) bool { return v.TeamID == t })
 }
 func (s *BoltStore) DeleteMember(t, u string) error { return del(s.db, membersBucket, memberKey(t, u)) }
-func (s *BoltStore) SaveInvite(v *Invite) error {
-	return putJSON(s.db, invitesBucket, strings.ToUpper(v.Code), v)
-}
-func (s *BoltStore) GetInvite(c string) (*Invite, error) {
-	return getJSON[Invite](s.db, invitesBucket, strings.ToUpper(c))
-}
-func (s *BoltStore) ListInvites(t string) ([]*Invite, error) {
-	return listJSON[Invite](s.db, invitesBucket, func(v *Invite) bool { return v.TeamID == t })
-}
-func (s *BoltStore) DeleteInvite(c string) error {
-	return del(s.db, invitesBucket, strings.ToUpper(strings.TrimSpace(c)))
-}
-func (s *BoltStore) SaveProject(v *Project) error { return putJSON(s.db, projectsBucket, v.ID, v) }
+func (s *BoltStore) SaveProject(v *Project) error   { return putJSON(s.db, projectsBucket, v.ID, v) }
 func (s *BoltStore) GetProject(id string) (*Project, error) {
 	return getJSON[Project](s.db, projectsBucket, id)
 }

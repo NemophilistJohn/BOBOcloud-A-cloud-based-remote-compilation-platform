@@ -19,6 +19,13 @@ func testUser(id, uid, name string) *auth.User {
 	return &auth.User{ID: id, UID: uid, Username: name, Name: name, Avatar: "ocean", APIKey: "key-" + id, Role: auth.RoleMember, CreatedAt: time.Now()}
 }
 
+func addTeamMember(t *testing.T, store Store, teamID, userID string) {
+	t.Helper()
+	if err := store.SaveMember(&Member{TeamID: teamID, UserID: userID, JoinedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type deleteMemberFailStore struct {
 	Store
 	mu      sync.Mutex
@@ -48,7 +55,6 @@ func TestEmptyStoreCollectionsAreNonNil(t *testing.T) {
 		run  func() (int, bool)
 	}{
 		{"members", func() (int, bool) { values, _ := store.ListMembers("missing"); return len(values), values != nil }},
-		{"invites", func() (int, bool) { values, _ := store.ListInvites("missing"); return len(values), values != nil }},
 		{"projects", func() (int, bool) { values, _ := store.ListProjects("missing"); return len(values), values != nil }},
 		{"locks", func() (int, bool) {
 			values, _ := store.ListLocks("missing", "missing")
@@ -62,7 +68,7 @@ func TestEmptyStoreCollectionsAreNonNil(t *testing.T) {
 	}
 }
 
-func TestTeamInvitationAdminAndGitWorkflow(t *testing.T) {
+func TestTeamMembershipAndGitWorkflow(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
@@ -82,16 +88,7 @@ func TestTeamInvitationAdminAndGitWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.CreateInvite(member.ID, team.ID, 1, 1); err == nil {
-		t.Fatal("non-admin created an invitation")
-	}
-	invite, err := m.CreateInvite(admin.ID, team.ID, 1, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.JoinTeam(member.ID, invite.Code); err != nil {
-		t.Fatal(err)
-	}
+	addTeamMember(t, m.Store(), team.ID, member.ID)
 
 	project, err := m.CreateProject(ctx, admin.ID, team.ID, "rust-service", "test project")
 	if err != nil {
@@ -155,73 +152,6 @@ func TestTeamInvitationAdminAndGitWorkflow(t *testing.T) {
 	}
 }
 
-func TestTeamAdministratorCanDeleteExpiredInvite(t *testing.T) {
-	users := auth.NewMemoryUserStore()
-	admin := testUser("invite-admin", "u_invite_admin", "alice")
-	member := testUser("invite-member", "u_invite_member", "bob")
-	_ = users.Create(admin)
-	_ = users.Create(member)
-	manager := NewManager(NewMemoryStore(), users, t.TempDir())
-	team, err := manager.CreateTeam(admin.ID, "team", "", 1024)
-	if err != nil {
-		t.Fatal(err)
-	}
-	invite, err := manager.CreateInvite(admin.ID, team.ID, 1, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	invite.ExpiresAt = time.Now().Add(-time.Minute)
-	if err := manager.Store().SaveInvite(invite); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.DeleteInvite(member.ID, team.ID, invite.Code); err == nil {
-		t.Fatal("non-administrator deleted an invitation")
-	}
-	if err := manager.DeleteInvite(admin.ID, team.ID, invite.Code); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.Store().GetInvite(invite.Code); err == nil {
-		t.Fatal("expired invitation remains after deletion")
-	}
-}
-
-func TestInvitationUseLimitIsAtomic(t *testing.T) {
-	users := auth.NewMemoryUserStore()
-	admin := testUser("admin", "u_admin", "alice")
-	first := testUser("first", "u_first", "bob")
-	second := testUser("second", "u_second", "chen")
-	for _, user := range []*auth.User{admin, first, second} {
-		if err := users.Create(user); err != nil {
-			t.Fatal(err)
-		}
-	}
-	m := NewManager(NewMemoryStore(), users, t.TempDir())
-	team, _ := m.CreateTeam(admin.ID, "team", "", 1024)
-	invite, _ := m.CreateInvite(admin.ID, team.ID, 1, 1)
-
-	var wg sync.WaitGroup
-	results := make(chan error, 2)
-	for _, user := range []*auth.User{first, second} {
-		wg.Add(1)
-		go func(user *auth.User) {
-			defer wg.Done()
-			_, err := m.JoinTeam(user.ID, invite.Code)
-			results <- err
-		}(user)
-	}
-	wg.Wait()
-	close(results)
-	succeeded := 0
-	for err := range results {
-		if err == nil {
-			succeeded++
-		}
-	}
-	if succeeded != 1 {
-		t.Fatalf("one-use invite admitted %d users", succeeded)
-	}
-}
-
 func TestOnlyAdministratorCanDeleteProject(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
@@ -233,8 +163,7 @@ func TestOnlyAdministratorCanDeleteProject(t *testing.T) {
 	_ = users.Create(member)
 	m := NewManager(NewMemoryStore(), users, t.TempDir())
 	team, _ := m.CreateTeam(admin.ID, "team", "", 1024)
-	invite, _ := m.CreateInvite(admin.ID, team.ID, 1, 1)
-	_, _ = m.JoinTeam(member.ID, invite.Code)
+	addTeamMember(t, m.Store(), team.ID, member.ID)
 	project, err := m.CreateProject(context.Background(), admin.ID, team.ID, "project", "")
 	if err != nil {
 		t.Fatal(err)
@@ -261,8 +190,7 @@ func TestUserDeletionCannotOrphanTeam(t *testing.T) {
 	_ = users.Create(member)
 	m := NewManager(NewMemoryStore(), users, t.TempDir())
 	team, _ := m.CreateTeam(admin.ID, "Compiler team", "", 1024)
-	invite, _ := m.CreateInvite(admin.ID, team.ID, 1, 1)
-	_, _ = m.JoinTeam(member.ID, invite.Code)
+	addTeamMember(t, m.Store(), team.ID, member.ID)
 
 	if err := m.PrepareUserDeletion(admin.ID); err == nil {
 		t.Fatal("team administrator account deletion was allowed")
@@ -286,8 +214,7 @@ func TestAdvisoryFileLockOwnershipAndExpiry(t *testing.T) {
 	_ = users.Create(member)
 	m := NewManager(NewMemoryStore(), users, t.TempDir())
 	team, _ := m.CreateTeam(admin.ID, "team", "", 1024)
-	invite, _ := m.CreateInvite(admin.ID, team.ID, 1, 1)
-	_, _ = m.JoinTeam(member.ID, invite.Code)
+	addTeamMember(t, m.Store(), team.ID, member.ID)
 	project, err := m.CreateProject(context.Background(), admin.ID, team.ID, "project", "")
 	if err != nil {
 		t.Fatal(err)
@@ -357,13 +284,7 @@ func testMemberRevocationManagerWithStore(t *testing.T, store Store) (*Manager, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	invite, err := manager.CreateInvite(admin.ID, team.ID, 1, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.JoinTeam(member.ID, invite.Code); err != nil {
-		t.Fatal(err)
-	}
+	addTeamMember(t, manager.Store(), team.ID, member.ID)
 	project := &Project{ID: "project-revocation", TeamID: team.ID, Name: "project", DefaultBranch: "main", CreatedBy: admin.ID, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if err := store.SaveProject(project); err != nil {
 		t.Fatal(err)
@@ -663,13 +584,7 @@ func TestPrepareUserDeletionRollbackRestoresEveryMembershipArtifact(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		invite, err := manager.CreateInvite(admin.ID, team.ID, 1, 1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := manager.JoinTeam(member.ID, invite.Code); err != nil {
-			t.Fatal(err)
-		}
+		addTeamMember(t, manager.Store(), team.ID, member.ID)
 		project := &Project{
 			ID: fmt.Sprintf("project-multi-revocation-%d", index), TeamID: team.ID, Name: fmt.Sprintf("project-%d", index),
 			DefaultBranch: "main", CreatedBy: admin.ID, CreatedAt: time.Now(), UpdatedAt: time.Now(),

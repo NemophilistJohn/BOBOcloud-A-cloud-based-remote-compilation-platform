@@ -24,17 +24,6 @@ type Member struct {
 	JoinedAt time.Time `json:"joined_at"`
 }
 
-type Invite struct {
-	Code      string    `json:"code"`
-	TeamID    string    `json:"team_id"`
-	CreatedBy string    `json:"created_by"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-	MaxUses   int       `json:"max_uses"`
-	UsedCount int       `json:"used_count"`
-	Revoked   bool      `json:"revoked"`
-}
-
 type Project struct {
 	ID            string    `json:"id"`
 	TeamID        string    `json:"team_id"`
@@ -111,6 +100,27 @@ type MemberView struct {
 	Avatar   string    `json:"avatar"`
 	IsAdmin  bool      `json:"is_admin"`
 	JoinedAt time.Time `json:"joined_at"`
+}
+
+type TeamActivity struct {
+	StartDate string                `json:"start_date"`
+	Days      int                   `json:"days"`
+	Members   []TeamMemberActivity  `json:"members"`
+	Projects  []TeamProjectActivity `json:"projects"`
+}
+
+type TeamMemberActivity struct {
+	UserID  string `json:"user_id"`
+	UID     string `json:"uid"`
+	IsAdmin bool   `json:"is_admin"`
+	Total   int    `json:"total"`
+	Daily   []int  `json:"daily"`
+}
+
+type TeamProjectActivity struct {
+	ProjectID string `json:"project_id"`
+	Total     int    `json:"total"`
+	Daily     []int  `json:"daily"`
 }
 
 type TeamView struct {

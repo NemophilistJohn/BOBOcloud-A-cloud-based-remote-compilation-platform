@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"bobocloud-server/internal/auth"
 )
@@ -36,11 +37,7 @@ func testGitCollaboration(t *testing.T) (*Manager, *authFixture) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	invite, err := manager.CreateInvite(admin.ID, team.ID, 1, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.JoinTeam(member.ID, invite.Code); err != nil {
+	if err := manager.Store().SaveMember(&Member{TeamID: team.ID, UserID: member.ID, JoinedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	project, err := manager.CreateProject(context.Background(), admin.ID, team.ID, "project", "")
@@ -73,6 +70,17 @@ func writeWorktreeFile(t *testing.T, worktree, name, content string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeWorktreeBytes(t *testing.T, worktree, name string, content []byte) {
+	t.Helper()
+	target := filepath.Join(worktree, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, content, 0644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -201,6 +209,10 @@ func TestCommitReturnsStableNoChangesAndMergeConflictErrors(t *testing.T) {
 	ctx := context.Background()
 	adminTree := worktreeFor(t, manager, fixture.admin.ID, fixture)
 	memberTree := worktreeFor(t, manager, fixture.member.ID, fixture)
+	writeWorktreeBytes(t, adminTree, "image.bin", []byte{0x00, 0x01, 0x02})
+	if _, err := manager.Commit(ctx, fixture.admin, fixture.team.ID, fixture.project.ID, DefaultBranch, "Add binary fixture"); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := manager.Commit(ctx, fixture.admin, fixture.team.ID, fixture.project.ID, DefaultBranch, "Nothing")
 	var noChanges *OperationError
@@ -209,21 +221,84 @@ func TestCommitReturnsStableNoChangesAndMergeConflictErrors(t *testing.T) {
 	}
 
 	writeWorktreeFile(t, adminTree, "README.md", "alice\n")
+	writeWorktreeBytes(t, adminTree, "image.bin", []byte{0x00, 0x03, 0xff})
 	if _, err := manager.Commit(ctx, fixture.admin, fixture.team.ID, fixture.project.ID, DefaultBranch, "Alice README"); err != nil {
 		t.Fatal(err)
 	}
 	writeWorktreeFile(t, memberTree, "README.md", "bob\n")
+	currentBinary := []byte{0x00, 0x04, 0xfe}
+	writeWorktreeBytes(t, memberTree, "image.bin", currentBinary)
 	_, err = manager.Commit(ctx, fixture.member, fixture.team.ID, fixture.project.ID, DefaultBranch, "Bob README")
 	var conflict *OperationError
 	if !errors.As(err, &conflict) || conflict.Code != ErrorCodeMergeConflict {
 		t.Fatalf("merge conflict error = %#v", err)
 	}
-	if conflict.Details.ConflictCount != 1 || conflict.Details.PendingCommit == "" || conflict.Details.SuggestedAction != SuggestedActionResolveConflicts {
+	if conflict.Details.ConflictCount != 2 || conflict.Details.PendingCommit == "" || conflict.Details.SuggestedAction != SuggestedActionResolveConflicts {
 		t.Fatalf("merge conflict details = %+v", conflict.Details)
 	}
 	_, err = manager.CompleteMerge(ctx, fixture.member, fixture.team.ID, fixture.project.ID, DefaultBranch, "Resolve")
 	var unresolved *OperationError
-	if !errors.As(err, &unresolved) || unresolved.Code != ErrorCodeMergeConflict || unresolved.Details.ConflictCount != 1 {
+	if !errors.As(err, &unresolved) || unresolved.Code != ErrorCodeMergeConflict || unresolved.Details.ConflictCount != 2 {
 		t.Fatalf("complete merge conflict error = %#v", err)
+	}
+	for _, path := range []string{"README.md", "image.bin"} {
+		if err := manager.ResolveConflict(ctx, fixture.member.ID, fixture.team.ID, fixture.project.ID, DefaultBranch, path, "", "current"); err != nil {
+			t.Fatalf("resolve %s conflict from current stage: %v", path, err)
+		}
+	}
+	resolved, err := manager.CompleteMerge(ctx, fixture.member, fixture.team.ID, fixture.project.ID, DefaultBranch, "Resolve README")
+	if err != nil {
+		t.Fatalf("complete resolved merge: %v", err)
+	}
+	if resolved == nil || resolved.ID == "" {
+		t.Fatal("complete resolved merge returned no commit")
+	}
+	remoteContent, err := gitRun(ctx, "", "--git-dir", manager.repoPath(fixture.team.ID, fixture.project.ID), "show", DefaultBranch+":README.md")
+	if err != nil || remoteContent != "bob" {
+		t.Fatalf("remote README = %q, err = %v", remoteContent, err)
+	}
+	remoteBinary, err := gitRun(ctx, "", "--git-dir", manager.repoPath(fixture.team.ID, fixture.project.ID), "show", DefaultBranch+":image.bin")
+	if err != nil || remoteBinary != string(currentBinary) {
+		t.Fatalf("remote binary = %v, err = %v; want %v", []byte(remoteBinary), err, currentBinary)
+	}
+}
+
+func TestTeamActivityAggregatesMemberAndProjectGitContributions(t *testing.T) {
+	manager, fixture := testGitCollaboration(t)
+	ctx := context.Background()
+	adminTree := worktreeFor(t, manager, fixture.admin.ID, fixture)
+	writeWorktreeFile(t, adminTree, "admin.txt", "admin contribution\n")
+	if _, err := manager.Commit(ctx, fixture.admin, fixture.team.ID, fixture.project.ID, DefaultBranch, "Admin contribution"); err != nil {
+		t.Fatal(err)
+	}
+	memberTree := worktreeFor(t, manager, fixture.member.ID, fixture)
+	writeWorktreeFile(t, memberTree, "member.txt", "member contribution\n")
+	if _, err := manager.Commit(ctx, fixture.member, fixture.team.ID, fixture.project.ID, DefaultBranch, "Member contribution"); err != nil {
+		t.Fatal(err)
+	}
+
+	activity, err := manager.TeamActivity(ctx, fixture.admin.ID, fixture.team.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activity.Days != 200 || len(activity.Members) != 2 || len(activity.Projects) != 1 {
+		t.Fatalf("activity shape = %+v", activity)
+	}
+	if !activity.Members[0].IsAdmin {
+		t.Fatalf("administrator should be first in activity rows: %+v", activity.Members)
+	}
+	byUID := map[string]TeamMemberActivity{}
+	for _, member := range activity.Members {
+		byUID[member.UID] = member
+	}
+	for _, user := range []*auth.User{fixture.admin, fixture.member} {
+		member, ok := byUID[user.UID]
+		if !ok || member.Total != 1 || member.Daily[len(member.Daily)-1] != 1 {
+			t.Fatalf("activity for %s = %+v", user.UID, member)
+		}
+	}
+	project := activity.Projects[0]
+	if project.ProjectID != fixture.project.ID || project.Total != 2 || project.Daily[len(project.Daily)-1] != 2 {
+		t.Fatalf("project activity = %+v", project)
 	}
 }

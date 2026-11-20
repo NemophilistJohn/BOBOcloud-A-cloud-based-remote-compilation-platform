@@ -71,6 +71,7 @@ type Request struct {
 	TargetBranch       string `json:"targetBranch,omitempty"`
 	CommitMessage      string `json:"commitMessage,omitempty"`
 	Content            string `json:"content,omitempty"`
+	Resolution         string `json:"resolution,omitempty"` // manual, current, or incoming team conflict resolution
 	CacheQuotaMB       int    `json:"cacheQuotaMB,omitempty"`
 	CacheRetentionDays int    `json:"cacheRetentionDays,omitempty"`
 	CacheScope         string `json:"cacheScope,omitempty"`

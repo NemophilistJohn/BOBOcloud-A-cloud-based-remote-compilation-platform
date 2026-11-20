@@ -641,7 +641,6 @@ export type {
   CollaborationHostPort,
   CollaborationImagePort,
   CollaborationI18nPort,
-  CollaborationInviteDto,
   CollaborationLocalMappingSelectionDto,
   CollaborationLocalPathInfoDto,
   CollaborationLogger,
@@ -684,7 +683,6 @@ export type {
   CollaborationWorkbenchPort,
   CollaborationWriteTeamMappingRequestDto,
   CollaborationDeleteResultDto,
-  CollaborationInviteActionResultDto,
   CollaborationMembershipActionResultDto,
   CollaborationReleaseLockResultDto,
   CollaborationProfileResponseDataDto

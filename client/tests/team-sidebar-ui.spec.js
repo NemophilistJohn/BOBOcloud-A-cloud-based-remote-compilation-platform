@@ -33,6 +33,9 @@ test('team sidebar orders roles, bounds expanded projects, and confirms project 
         { id: 'admin', name: 'Z admin team', is_admin: true, admin_user_id: 'me', project_count: 8, member_count: 1 }
       ];
       const projects = Array.from({ length: 8 }, (_, i) => ({ id: `p-${i}`, team_id: 'admin', name: `Project ${i}`, default_branch: 'main' }));
+      const daily = Array.from({ length: 200 }, (_, i) => i === 199 ? 2 : 0);
+      const secondDaily = Array.from({ length: 200 }, (_, i) => i === 199 ? 3 : 0);
+      let bouncedInvite = false;
       window.__teamSidebarCalls = [];
       host.sendToServer = async (action, payload) => {
         window.__teamSidebarCalls.push({ action, payload });
@@ -41,8 +44,38 @@ test('team sidebar orders roles, bounds expanded projects, and confirms project 
         if (action === 'getTeam') return { success: true, data: {
           team: teams.find(team => team.id === payload.teamId),
           projects: payload.teamId === 'admin' ? projects : [],
-          members: [{ user_id: 'me', uid: 'fixture-1', username: 'fixture' }]
+          members: payload.teamId === 'admin' ? [
+            { user_id: 'member-1', uid: 'member-uid-1', username: 'member1', name: 'Member One', avatar: 'ocean', is_admin: false },
+            { user_id: 'me', uid: 'fixture-1', username: 'fixture', name: 'Admin', avatar: 'forest', is_admin: true }
+          ] : [{ user_id: 'me', uid: 'fixture-1', username: 'fixture', name: 'Fixture', is_admin: false }]
         } };
+        if (action === 'teamActivity') return { success: true, data: {
+          start_date: new Date(Date.now() - 199 * 86400000).toISOString().slice(0, 10), days: 200,
+          members: [
+            { user_id: 'me', uid: 'fixture-1', name: 'Admin', is_admin: true, total: 12, daily },
+            { user_id: 'member-1', uid: 'member-uid-1', name: 'Member One', is_admin: false, total: 4, daily }
+          ],
+          projects: projects.map((project, i) => ({ project_id: project.id, daily: i === 0 ? daily : i === 1 ? secondDaily : Array(200).fill(0) }))
+        } };
+        if (action === 'getTeamCacheInfo') return { success: true, data: {
+          quota_bytes: 10000000, total_bytes: 2000000, shared_bytes: 250000, target_bytes: 750000, dependency_bytes: 1000000, scratch_bytes: 0,
+          namespaces: [
+            { project_id: 'p-0', branch: 'main', runtime: 'python:3.12', language: 'python', size_bytes: 500000, key: 'ns-p0', active: false },
+            { project_id: 'p-1', branch: 'main', runtime: 'python:3.12', language: 'python', size_bytes: 250000, key: 'ns-p1', active: false }
+          ],
+          dependencies: [{ project_id: 'p-0', branch: 'main', runtime: 'python:3.12', language: 'python', size_bytes: 1000000, key: 'dep-p0', active: false }],
+          project_usage: [{ project_id: 'p-0', size_bytes: 1500000 }, { project_id: 'p-1', size_bytes: 250000 }]
+        } };
+        if (action === 'listFriends') return { success: true, data: [
+          { uid: 'member-uid-1', name: 'Already in team', avatar: 'ocean' },
+          { uid: 'candidate-a', name: 'Candidate A', avatar: 'forest' },
+          { uid: 'candidate-b', name: 'Candidate B', avatar: 'sunset' }
+        ] };
+        if (action === 'sendInbox' && payload.recipientId === 'candidate-b' && !bouncedInvite) {
+          bouncedInvite = true;
+          return { success: false, error: 'Temporary failure' };
+        }
+        if (action === 'sendInbox') return { success: true, data: { id: 'invite-' + payload.recipientId, kind: 'invite', status: 'pending', createdAt: new Date().toISOString() } };
         if (action === 'listTeamBranches') return { success: true, data: [{ name: 'main' }] };
         return { success: true, data: [] };
       };
@@ -79,17 +112,46 @@ test('team sidebar orders roles, bounds expanded projects, and confirms project 
     await expect(page.locator('#editor > #collab-team-page')).toBeVisible();
     await expect(page.locator('[data-sidebar-view="team"] #collab-team-detail')).toHaveCount(0);
     await expect(page.locator('#collab-team-settings')).toBeVisible();
+    const memberCards = page.locator('#collab-member-list .team-member-card:not(.team-add-member-card)');
+    await expect(memberCards).toHaveCount(2);
+    await expect(memberCards.first()).toContainText('fixture-1');
+    await memberCards.last().hover();
+    await expect(memberCards.last().locator('.team-member-tooltip')).toContainText('4 commits');
+    await expect(page.locator('#team-member-activity .team-activity-series')).toHaveCount(2);
+    await page.locator('#team-add-member').click();
+    await expect(page.locator('.team-invite-option')).toHaveCount(2);
+    await page.locator('.team-invite-option input').first().check();
+    await page.locator('.team-invite-option input').last().check();
+    await page.locator('#collab-action-confirm').click();
+    await expect(page.locator('#collab-action-status')).toContainText('1 invitations delivered · 1 failed');
+    await expect(page.locator('.team-invite-option input')).toHaveCount(1);
+    await expect(page.locator('.team-invite-option input')).toBeChecked();
+    await page.locator('#collab-action-confirm').click();
+    await expect(page.locator('#collab-action-modal')).toBeHidden();
+    expect(await page.evaluate(() => window.__teamSidebarCalls.filter(call => call.action === 'sendInbox').map(call => call.payload.recipientId))).toEqual(['candidate-a', 'candidate-b', 'candidate-b']);
     const adminTab = page.locator('#tabbar [data-tab-path="team-page:admin"]');
     const memberTab = page.locator('#tabbar [data-tab-path="team-page:member"]');
     const fileTab = page.locator('#tabbar .tab').filter({ hasText: 'main.py' });
     await expect(adminTab).toHaveAttribute('aria-selected', 'true');
     await page.locator('[data-collab-tab="projects"]').click();
-    await expect(page.locator('#collab-new-project')).toBeVisible();
+    await expect(page.locator('#collab-new-project')).toHaveCount(0);
+    await expect(page.locator('.team-cache-segment')).toHaveCount(2);
+    await expect(page.locator('.team-project-card')).toHaveCount(8);
+    await expect(page.locator('.team-project-add')).toBeVisible();
+    await expect(page.locator('#team-project-activity [data-date]')).toHaveCount(200);
+    const activeDay = page.locator('#team-project-activity [data-date]').last();
+    await expect(activeDay).toHaveAttribute('title', /5 commits · Project 1 \(3\)/);
+    const color = await page.locator('.team-project-card').nth(1).evaluate(card => card.style.getPropertyValue('--project-accent'));
+    await expect(activeDay).toHaveAttribute('style', expect.stringContaining(color));
+    await expect(page.locator('.team-cache-segment').nth(1)).toHaveAttribute('style', expect.stringContaining(color));
+    await page.locator('.team-project-add').click();
+    await expect(page.locator('#collab-action-title')).toContainText('Create cloud project');
+    await page.locator('#collab-action-cancel').click();
     await rows.last().click();
     await expect(page.locator('#collab-team-name')).toHaveText('A member team');
     await expect(memberTab).toHaveAttribute('aria-selected', 'true');
     await expect(page.locator('#collab-team-settings')).toBeHidden();
-    await expect(page.locator('#collab-new-project')).toBeHidden();
+    await expect(page.locator('.team-project-add')).toHaveCount(0);
     const geometry = await page.locator('[data-sidebar-view="team"]').evaluate(el => ({
       width: el.clientWidth,
       contentWidth: el.scrollWidth,

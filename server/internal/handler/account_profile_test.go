@@ -1020,7 +1020,6 @@ func TestServeHTTPRejectsAccountDeletedBetweenAuthenticationAndRequestLease(t *t
 func TestServeHTTPDeletionBarrierRejectsTeamWritesAndReleasesCleanly(t *testing.T) {
 	for _, action := range []string{
 		`{"action":"createTeam","name":"Blocked team"}`,
-		`{"action":"joinTeam","inviteCode":"INVITE"}`,
 	} {
 		t.Run(action, func(t *testing.T) {
 			handler, _, user := newAuthenticatedLifecycleHandler(t)

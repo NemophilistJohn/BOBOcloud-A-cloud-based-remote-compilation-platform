@@ -124,39 +124,6 @@ func (h *HTTPHandler) handleCollaboration(w http.ResponseWriter, r *http.Request
 			return
 		}
 		success(map[string]bool{"deleted": true})
-	case "createTeamInvite":
-		invite, err := h.Collaboration.CreateInvite(user.ID, req.TeamID, req.ExpiresInHours, req.MaxUses)
-		if err != nil {
-			collabError(w, err)
-			return
-		}
-		success(invite)
-	case "listTeamInvites":
-		invites, err := h.Collaboration.ListInvites(user.ID, req.TeamID)
-		if err != nil {
-			collabError(w, err)
-			return
-		}
-		success(invites)
-	case "revokeTeamInvite":
-		if err := h.Collaboration.RevokeInvite(user.ID, req.TeamID, req.InviteCode); err != nil {
-			collabError(w, err)
-			return
-		}
-		success(map[string]bool{"revoked": true})
-	case "deleteTeamInvite":
-		if err := h.Collaboration.DeleteInvite(user.ID, req.TeamID, req.InviteCode); err != nil {
-			collabError(w, err)
-			return
-		}
-		success(map[string]bool{"deleted": true})
-	case "joinTeam":
-		team, err := h.Collaboration.JoinTeam(user.ID, req.InviteCode)
-		if err != nil {
-			collabError(w, err)
-			return
-		}
-		success(team)
 	case "leaveTeam":
 		if err := h.Collaboration.LeaveTeam(user.ID, req.TeamID); err != nil {
 			collabError(w, err)
@@ -255,6 +222,13 @@ func (h *HTTPHandler) handleCollaboration(w http.ResponseWriter, r *http.Request
 			return
 		}
 		success(history)
+	case "teamActivity":
+		activity, err := h.Collaboration.TeamActivity(ctx, user.ID, req.TeamID)
+		if err != nil {
+			collabError(w, err)
+			return
+		}
+		success(activity)
 	case "commitTeamChanges":
 		commit, err := h.Collaboration.Commit(ctx, user, req.TeamID, req.ProjectID, req.Branch, req.CommitMessage)
 		if err != nil {
@@ -284,7 +258,7 @@ func (h *HTTPHandler) handleCollaboration(w http.ResponseWriter, r *http.Request
 		}
 		success(files)
 	case "resolveTeamConflict":
-		if err := h.Collaboration.ResolveConflict(ctx, user.ID, req.TeamID, req.ProjectID, req.Branch, req.FilePath, req.Content); err != nil {
+		if err := h.Collaboration.ResolveConflict(ctx, user.ID, req.TeamID, req.ProjectID, req.Branch, req.FilePath, req.Content, req.Resolution); err != nil {
 			collabError(w, err)
 			return
 		}

@@ -97,18 +97,6 @@ export interface CollaborationMemberViewDto {
   readonly [key: string]: unknown;
 }
 
-export interface CollaborationInviteDto {
-  readonly code: string;
-  readonly team_id: string;
-  readonly created_by: string;
-  readonly created_at?: string;
-  readonly expires_at: string;
-  readonly max_uses: number;
-  readonly used_count: number;
-  readonly revoked: boolean;
-  readonly [key: string]: unknown;
-}
-
 export interface CollaborationProjectDto {
   readonly id: string;
   readonly team_id: string;
@@ -200,6 +188,41 @@ export interface CollaborationConflictFileDto {
   readonly [key: string]: unknown;
 }
 
+export interface CollaborationTeamMemberActivityDto {
+	readonly user_id: string;
+	readonly uid: string;
+	readonly is_admin: boolean;
+	readonly total: number;
+	readonly daily: readonly number[];
+}
+
+export interface CollaborationTeamProjectActivityDto {
+	readonly project_id: string;
+	readonly total: number;
+	readonly daily: readonly number[];
+}
+
+export interface CollaborationTeamActivityDto {
+	readonly start_date: string;
+	readonly days: number;
+	readonly members: readonly CollaborationTeamMemberActivityDto[];
+	readonly projects: readonly CollaborationTeamProjectActivityDto[];
+}
+
+export interface CollaborationSocialContactDto {
+	readonly uid: string;
+	readonly name: string;
+	readonly avatar?: string;
+	readonly lastSyncAt?: string | null;
+}
+
+export interface CollaborationInboxMessageDto {
+	readonly id: string;
+	readonly kind: string;
+	readonly status: string;
+	readonly createdAt: string;
+}
+
 export interface CollaborationCacheNamespaceDto {
   readonly project_id?: string;
   readonly branch: string;
@@ -222,6 +245,7 @@ export interface CollaborationCacheInfoDto {
   readonly scratch_bytes?: number;
   readonly namespaces: readonly CollaborationCacheNamespaceDto[];
   readonly dependencies?: readonly CollaborationCacheNamespaceDto[];
+  readonly project_usage?: readonly Readonly<{ project_id: string; size_bytes: number }>[];
   readonly [key: string]: unknown;
 }
 
@@ -306,11 +330,8 @@ export interface CollaborationServerRequestMap {
     cacheRetentionDays: number;
   }>;
   readonly deleteTeam: Readonly<{ teamId: string }>;
-  readonly createTeamInvite: Readonly<{ teamId: string; maxUses: number; expiresInHours: number }>;
-  readonly listTeamInvites: Readonly<{ teamId: string }>;
-  readonly revokeTeamInvite: Readonly<{ teamId: string; inviteCode: string }>;
-  readonly deleteTeamInvite: Readonly<{ teamId: string; inviteCode: string }>;
-  readonly joinTeam: Readonly<{ inviteCode: string }>;
+	readonly listFriends: Record<string, never>;
+	readonly sendInbox: Readonly<{ recipientId: string; kind: 'invite'; teamId: string }>;
   readonly leaveTeam: Readonly<{ teamId: string }>;
   readonly removeTeamMember: Readonly<{ teamId: string; userId: string }>;
   readonly createTeamProject: Readonly<{ teamId: string; name: string; description: string }>;
@@ -331,6 +352,7 @@ export interface CollaborationServerRequestMap {
     sourceBranch: string;
   }>;
   readonly teamProjectHistory: Readonly<{ teamId: string; projectId: string; limit: number }>;
+	readonly teamActivity: Readonly<{ teamId: string }>;
   readonly commitTeamChanges: Readonly<{
     teamId: string;
     projectId: string;
@@ -356,6 +378,7 @@ export interface CollaborationServerRequestMap {
     branch: string;
     filePath: string;
     content: string;
+    resolution?: 'manual' | 'current' | 'incoming';
   }>;
   readonly completeTeamMerge: Readonly<{
     teamId: string;
@@ -396,11 +419,6 @@ export interface CollaborationDeleteResultDto {
   readonly deleted: boolean;
 }
 
-export interface CollaborationInviteActionResultDto {
-  readonly revoked?: boolean;
-  readonly deleted?: boolean;
-}
-
 export interface CollaborationMembershipActionResultDto {
   readonly left?: boolean;
   readonly removed?: boolean;
@@ -429,11 +447,8 @@ export interface CollaborationServerResponseMap {
   readonly getTeam: CollaborationServerResponseEnvelopeDto<CollaborationTeamDetailDto>;
   readonly updateTeam: CollaborationServerResponseEnvelopeDto<CollaborationTeamDto>;
   readonly deleteTeam: CollaborationServerResponseEnvelopeDto<CollaborationDeleteResultDto>;
-  readonly createTeamInvite: CollaborationServerResponseEnvelopeDto<CollaborationInviteDto>;
-  readonly listTeamInvites: CollaborationServerResponseEnvelopeDto<readonly CollaborationInviteDto[]>;
-  readonly revokeTeamInvite: CollaborationServerResponseEnvelopeDto<CollaborationInviteActionResultDto>;
-  readonly deleteTeamInvite: CollaborationServerResponseEnvelopeDto<CollaborationInviteActionResultDto>;
-  readonly joinTeam: CollaborationServerResponseEnvelopeDto<CollaborationTeamDto>;
+	readonly listFriends: CollaborationServerResponseEnvelopeDto<readonly CollaborationSocialContactDto[]>;
+	readonly sendInbox: CollaborationServerResponseEnvelopeDto<CollaborationInboxMessageDto>;
   readonly leaveTeam: CollaborationServerResponseEnvelopeDto<CollaborationMembershipActionResultDto>;
   readonly removeTeamMember: CollaborationServerResponseEnvelopeDto<CollaborationMembershipActionResultDto>;
   readonly createTeamProject: CollaborationServerResponseEnvelopeDto<CollaborationProjectDto>;
@@ -443,6 +458,7 @@ export interface CollaborationServerResponseMap {
   readonly listTeamBranches: CollaborationServerResponseEnvelopeDto<readonly CollaborationBranchDto[]>;
   readonly createTeamBranch: CollaborationServerResponseEnvelopeDto<CollaborationBranchActionResultDto>;
   readonly teamProjectHistory: CollaborationServerResponseEnvelopeDto<readonly CollaborationCommitDto[]>;
+	readonly teamActivity: CollaborationServerResponseEnvelopeDto<CollaborationTeamActivityDto>;
   readonly commitTeamChanges: CollaborationServerResponseEnvelopeDto<CollaborationCommitDto>;
   readonly compareTeamBranches: CollaborationServerResponseEnvelopeDto<CollaborationDiffDto>;
   readonly mergeTeamBranch: CollaborationServerResponseEnvelopeDto<CollaborationWorktreeDto>;
@@ -702,6 +718,15 @@ export interface CollaborationImagePort {
   src: string;
 }
 
+/** Minimal Monaco surface owned by a temporary conflict session. */
+export interface CollaborationMonacoPort {
+  readonly editor: {
+    create(element: HTMLElement, options: Readonly<Record<string, unknown>>): any;
+    createModel(value: string, language?: string, uri?: unknown): any;
+    createDiffEditor(element: HTMLElement, options: Readonly<Record<string, unknown>>): any;
+  };
+}
+
 export interface CollaborationLogger {
   error(message?: unknown, ...values: unknown[]): void;
   warn?(message?: unknown, ...values: unknown[]): void;
@@ -720,6 +745,7 @@ export interface CollaborationDependencies {
   readonly getWorkspace: () => CollaborationWorkspacePort | null | undefined;
   readonly getDocumentViews?: () => { hideAll(options: { restoreEditor: false }): void } | null | undefined;
   readonly getViews?: () => { openSplit?(): void; openDiff?(original?: string, modified?: string): void } | null | undefined;
+  readonly getMonaco?: () => CollaborationMonacoPort | null | undefined;
   readonly getRclone: () => CollaborationRclonePort | null | undefined;
   readonly getRunner: () => CollaborationRunnerPort | null | undefined;
   readonly getWorkbench: () => CollaborationWorkbenchPort | null | undefined;

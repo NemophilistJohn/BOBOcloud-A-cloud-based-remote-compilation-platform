@@ -11,6 +11,7 @@ import type {
   CollaborationHostPort,
   CollaborationHostServiceId,
   CollaborationI18nPort,
+  CollaborationMonacoPort,
   CollaborationPanelPort,
   CollaborationRclonePort,
   CollaborationRendererState,
@@ -54,6 +55,7 @@ interface LegacyCollaborationBobo {
 
 type LegacyCollaborationWindow = Window & {
   BOBO?: LegacyCollaborationBobo;
+  monaco?: CollaborationMonacoPort;
   Image: typeof Image;
   URL: typeof URL;
 };
@@ -94,6 +96,7 @@ const collaboration: CollaborationService = createCollaborationService({
   getWorkspace: () => BOBO.workspace,
   getDocumentViews: () => BOBO.documentViews,
   getViews: () => BOBO.views,
+  getMonaco: () => legacyWindow.monaco,
   getRclone: () => BOBO.rclone as unknown as CollaborationRclonePort | undefined,
   getRunner: () => BOBO.runner,
   getWorkbench: () => BOBO.workbench as unknown as CollaborationWorkbenchPort | undefined,

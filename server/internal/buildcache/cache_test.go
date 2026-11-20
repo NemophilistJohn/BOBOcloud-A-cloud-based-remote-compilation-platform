@@ -63,6 +63,43 @@ func TestInspectReturnsEmptyNamespaceArray(t *testing.T) {
 	if info.Dependencies == nil || len(info.Dependencies) != 0 {
 		t.Fatalf("empty dependency namespaces must serialize as []: %+v", info.Dependencies)
 	}
+	if info.ProjectUsage == nil || len(info.ProjectUsage) != 0 {
+		t.Fatalf("empty project usage must serialize as []: %+v", info.ProjectUsage)
+	}
+}
+
+func TestInspectProjectUsageIncludesTargetDependencyAndScratchBytes(t *testing.T) {
+	manager := NewManager(t.TempDir(), 64)
+	ctx := context.Background()
+	build, err := manager.Prepare(ctx, BuildContext{TeamID: "team-usage", ProjectID: "project-a", Branch: "main", Runtime: "local", Language: "go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(build.TargetHost, "target.bin"), []byte("target"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(build.Buildspace, "scratch.bin"), []byte("scratch"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	build.Release()
+
+	dependencies, err := manager.SharedDependencies(BuildContext{TeamID: "team-usage", ProjectID: "project-a", Branch: "main", Runtime: "python:3.12", Language: "python"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dependencies.DependencyHost, "dependency.bin"), []byte("dependency"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dependencies.Release()
+
+	info := manager.Inspect("team-usage", 64)
+	if len(info.ProjectUsage) != 1 {
+		t.Fatalf("project usage rows = %+v", info.ProjectUsage)
+	}
+	usage := info.ProjectUsage[0]
+	if usage.ProjectID != "project-a" || usage.SizeBytes != info.TargetBytes+info.DependencyBytes+info.ScratchBytes {
+		t.Fatalf("project usage = %+v, totals target=%d dependencies=%d scratch=%d", usage, info.TargetBytes, info.DependencyBytes, info.ScratchBytes)
+	}
 }
 
 func TestInspectAndManualClearProtectActiveNamespace(t *testing.T) {

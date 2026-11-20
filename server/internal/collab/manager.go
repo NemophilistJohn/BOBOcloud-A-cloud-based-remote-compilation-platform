@@ -1,6 +1,7 @@
 package collab
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -188,98 +189,8 @@ func (m *Manager) GetTeam(userID, teamID string) (*Team, []MemberView, []*Projec
 		}
 		views = append(views, MemberView{UserID: user.ID, UID: user.UID, Username: user.Username, Name: user.Name, Avatar: user.Avatar, IsAdmin: team.AdminUserID == user.ID, JoinedAt: member.JoinedAt})
 	}
-	projects, _ := m.store.ListProjects(teamID)
-	return team, views, projects, nil
-}
-
-func (m *Manager) CreateInvite(userID, teamID string, expiresInHours, maxUses int) (*Invite, error) {
-	if _, err := m.requireAdmin(userID, teamID); err != nil {
-		return nil, err
-	}
-	if expiresInHours <= 0 {
-		expiresInHours = 168
-	}
-	if expiresInHours > 24*90 {
-		expiresInHours = 24 * 90
-	}
-	if maxUses <= 0 {
-		maxUses = 1
-	}
-	if maxUses > 100 {
-		maxUses = 100
-	}
-	now := time.Now().UTC()
-	invite := &Invite{Code: "BT-" + strings.ToUpper(auth.GenerateToken()[:12]), TeamID: teamID, CreatedBy: userID, CreatedAt: now, ExpiresAt: now.Add(time.Duration(expiresInHours) * time.Hour), MaxUses: maxUses}
-	return invite, m.store.SaveInvite(invite)
-}
-
-func (m *Manager) ListInvites(userID, teamID string) ([]*Invite, error) {
-	if _, err := m.requireAdmin(userID, teamID); err != nil {
-		return nil, err
-	}
-	return m.store.ListInvites(teamID)
-}
-
-func (m *Manager) RevokeInvite(userID, teamID, code string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, err := m.requireAdmin(userID, teamID); err != nil {
-		return err
-	}
-	invite, err := m.store.GetInvite(strings.TrimSpace(code))
-	if err != nil || invite.TeamID != teamID {
-		return fmt.Errorf("invite not found")
-	}
-	invite.Revoked = true
-	return m.store.SaveInvite(invite)
-}
-
-func (m *Manager) DeleteInvite(userID, teamID, code string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, err := m.requireAdmin(userID, teamID); err != nil {
-		return err
-	}
-	code = strings.TrimSpace(code)
-	invite, err := m.store.GetInvite(code)
-	if err != nil || invite.TeamID != teamID {
-		return fmt.Errorf("invite not found")
-	}
-	return m.store.DeleteInvite(code)
-}
-
-func (m *Manager) JoinTeam(userID, code string) (*Team, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	invite, err := m.store.GetInvite(strings.ToUpper(strings.TrimSpace(code)))
-	if err != nil {
-		return nil, fmt.Errorf("invalid team invitation")
-	}
-	if invite.Revoked {
-		return nil, fmt.Errorf("team invitation was revoked")
-	}
-	if time.Now().After(invite.ExpiresAt) {
-		return nil, fmt.Errorf("team invitation expired")
-	}
-	if invite.MaxUses > 0 && invite.UsedCount >= invite.MaxUses {
-		return nil, fmt.Errorf("team invitation has no remaining uses")
-	}
-	team, err := m.store.GetTeam(invite.TeamID)
-	if err != nil {
-		return nil, fmt.Errorf("team no longer exists")
-	}
-	if _, err := m.store.GetMember(team.ID, userID); err == nil {
-		return team, nil
-	}
-	if err := m.store.SaveMember(&Member{TeamID: team.ID, UserID: userID, JoinedAt: time.Now().UTC()}); err != nil {
-		return nil, err
-	}
-	invite.UsedCount++
-	if err := m.store.SaveInvite(invite); err != nil {
-		_ = m.store.DeleteMember(team.ID, userID)
-		return nil, err
-	}
-	return team, nil
+	projects, err := m.store.ListProjects(teamID)
+	return team, views, projects, err
 }
 
 // JoinDirectedInvitation admits exactly the inbox recipient and rechecks the
@@ -918,6 +829,96 @@ func (m *Manager) History(ctx context.Context, userID, teamID, projectID string,
 	return result, nil
 }
 
+// TeamActivity derives the recent member and project contribution series from
+// the existing team Git repositories, so no parallel activity ledger is needed.
+func (m *Manager) TeamActivity(ctx context.Context, userID, teamID string) (*TeamActivity, error) {
+	const days = 200
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	team, members, projects, err := m.GetTeam(userID, teamID)
+	if err != nil {
+		return nil, err
+	}
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	start := today.AddDate(0, 0, -(days - 1))
+	activity := &TeamActivity{
+		StartDate: start.Format("2006-01-02"), Days: days,
+		Members:  make([]TeamMemberActivity, 0, len(members)),
+		Projects: make([]TeamProjectActivity, 0, len(projects)),
+	}
+	memberIndexes := make(map[string]int, len(members))
+	for _, member := range members {
+		memberIndexes[member.UID] = len(activity.Members)
+		activity.Members = append(activity.Members, TeamMemberActivity{
+			UserID: member.UserID, UID: member.UID,
+			IsAdmin: team.AdminUserID == member.UserID, Daily: make([]int, days),
+		})
+	}
+	for _, project := range projects {
+		projectActivity := TeamProjectActivity{ProjectID: project.ID, Daily: make([]int, days)}
+		lease, err := m.AcquireProjectActivity(userID, teamID, project.ID)
+		if err != nil {
+			return nil, err
+		}
+		err = readTeamCommitActivity(ctx, m.repoPath(teamID, project.ID), func(email string, unix int64) {
+			if email == "system@bobocloud.local" {
+				return // Exclude the automatically created project seed.
+			}
+			uid, authoredByUser := strings.CutSuffix(email, "@users.bobocloud.local")
+			memberIndex, member := memberIndexes[uid]
+			if authoredByUser && member {
+				activity.Members[memberIndex].Total++
+			}
+			day := int(time.Unix(unix, 0).UTC().Truncate(24*time.Hour).Sub(start) / (24 * time.Hour))
+			if day < 0 || day >= days {
+				return
+			}
+			projectActivity.Daily[day]++
+			projectActivity.Total++
+			if authoredByUser && member {
+				activity.Members[memberIndex].Daily[day]++
+			}
+		})
+		lease.Release()
+		if err != nil {
+			return nil, err
+		}
+		activity.Projects = append(activity.Projects, projectActivity)
+	}
+	sort.SliceStable(activity.Members, func(i, j int) bool {
+		if activity.Members[i].IsAdmin != activity.Members[j].IsAdmin {
+			return activity.Members[i].IsAdmin
+		}
+		return activity.Members[i].UID < activity.Members[j].UID
+	})
+	return activity, nil
+}
+
+func readTeamCommitActivity(ctx context.Context, repo string, visit func(email string, unix int64)) error {
+	cmd := exec.CommandContext(ctx, "git", "--git-dir", repo, "log", "--branches", "--format=%ct%x1f%ae")
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("team commit history is unavailable")
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("team commit history is unavailable")
+	}
+	rows := bufio.NewScanner(out)
+	for rows.Scan() {
+		stamp, email, ok := strings.Cut(rows.Text(), "\x1f")
+		if unix, err := strconv.ParseInt(stamp, 10, 64); ok && err == nil {
+			visit(strings.TrimSpace(email), unix)
+		}
+	}
+	if rows.Err() != nil {
+		_ = out.Close()
+	}
+	if err := cmd.Wait(); err != nil || rows.Err() != nil {
+		return fmt.Errorf("team commit history is unavailable")
+	}
+	return nil
+}
+
 func (m *Manager) Commit(ctx context.Context, user *auth.User, teamID, projectID, branch, message string) (*CommitInfo, error) {
 	message = cleanText(message, 240)
 	if message == "" {
@@ -1246,7 +1247,7 @@ func safeWorktreeFile(root, rel string) (string, error) {
 	return full, nil
 }
 
-func (m *Manager) ResolveConflict(ctx context.Context, userID, teamID, projectID, branch, path, content string) error {
+func (m *Manager) ResolveConflict(ctx context.Context, userID, teamID, projectID, branch, path, content, resolution string) error {
 	project, err := m.projectForMember(userID, teamID, projectID)
 	if err != nil {
 		return err
@@ -1274,11 +1275,24 @@ func (m *Manager) ResolveConflict(ctx context.Context, userID, teamID, projectID
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
-		return err
+	switch strings.ToLower(strings.TrimSpace(resolution)) {
+	case "", "manual":
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, []byte(content), 0644); err != nil {
+			return err
+		}
+	case "current":
+		if _, err := gitRun(ctx, worktree, "checkout", "--ours", "--", path); err != nil {
+			return err
+		}
+	case "incoming":
+		if _, err := gitRun(ctx, worktree, "checkout", "--theirs", "--", path); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unsupported conflict resolution %q", resolution)
 	}
 	_, err = gitRun(ctx, worktree, "add", "--", path)
 	return err

@@ -472,9 +472,9 @@ func (h *HTTPHandler) routeRequest(w http.ResponseWriter, r *http.Request, req *
 
 	// ── 团队协作、Git 与团队编译缓存 ──
 	case "createTeam", "listTeams", "getTeam", "updateTeam", "deleteTeam",
-		"createTeamInvite", "listTeamInvites", "revokeTeamInvite", "deleteTeamInvite", "joinTeam", "leaveTeam", "removeTeamMember",
+		"leaveTeam", "removeTeamMember",
 		"createTeamProject", "listTeamProjects", "deleteTeamProject", "prepareTeamProject", "listTeamBranches", "createTeamBranch",
-		"teamProjectHistory", "commitTeamChanges", "compareTeamBranches", "mergeTeamBranch",
+		"teamProjectHistory", "teamActivity", "commitTeamChanges", "compareTeamBranches", "mergeTeamBranch",
 		"listTeamConflicts", "resolveTeamConflict", "completeTeamMerge",
 		"acquireTeamFileLock", "releaseTeamFileLock", "listTeamFileLocks",
 		"getTeamCacheInfo", "clearTeamCache":
