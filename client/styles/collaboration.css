@@ -508,3 +508,98 @@
 @media (max-width: 780px) {
   .team-workbench-grid { grid-template-columns: minmax(0, 1fr) minmax(230px, .92fr); }
 }
+
+/* Theme-aware finish for the team workspace. */
+.team-workbench-section { border-right-color: color-mix(in srgb, var(--brand) 22%, var(--border-default)); background: color-mix(in srgb, var(--bg-surface) 94%, var(--brand) 6%); }
+.team-workbench-right { background: color-mix(in srgb, var(--bg-surface) 97%, var(--brand) 3%); }
+.team-conflict-section { border-bottom-color: color-mix(in srgb, var(--brand) 20%, var(--border-default)); background: color-mix(in srgb, var(--bg-surface) 91%, var(--brand) 9%); }
+.team-lock-section { background: color-mix(in srgb, var(--bg-surface) 96%, var(--brand) 4%); }
+.team-lock-broadcast { border-color: color-mix(in srgb, var(--brand) 18%, var(--border-default)); background: color-mix(in srgb, var(--bg-elevated) 94%, var(--brand) 6%); }
+.team-lock-broadcast.is-mine { border-left-color: var(--brand); }
+.team-lock-broadcast-time { color: var(--brand-hover); }
+.team-detail-section-head h3 { font-family: var(--font-display); font-weight: var(--weight-semibold); }
+.team-detail-section-head > span { border-color: color-mix(in srgb, var(--brand) 22%, var(--border-default)); background: color-mix(in srgb, var(--bg-elevated) 94%, var(--brand) 6%); }
+.team-members-section,
+.team-member-activity-section,
+.team-cache-section,
+.team-project-activity-section {
+  border: 1px solid color-mix(in srgb, var(--brand) 20%, var(--border-default));
+  border-radius: var(--radius-lg);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--brand) 5%, transparent), transparent 48%), color-mix(in srgb, var(--team-panel) 88%, var(--bg-deep));
+  backdrop-filter: blur(14px) saturate(1.08);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 5%, transparent), 0 8px 24px color-mix(in srgb, var(--bg-deep) 18%, transparent);
+}
+.team-members-section .team-detail-section-head h3,
+.team-member-activity-section .team-detail-section-head h3,
+.team-cache-section .team-detail-section-head h3,
+.team-project-activity-section .team-detail-section-head h3 { color: var(--text-primary); }
+.team-member-card { border-color: color-mix(in srgb, var(--brand) 18%, var(--border-default)); background: color-mix(in srgb, var(--bg-elevated) 94%, var(--brand) 6%); backdrop-filter: blur(10px); }
+.team-member-card:hover { border-color: color-mix(in srgb, var(--brand) 48%, var(--border-strong)); background: color-mix(in srgb, var(--bg-elevated) 88%, var(--brand) 12%); }
+.team-member-avatar { border-color: color-mix(in srgb, var(--brand) 52%, var(--text-primary)); box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 14%, transparent), 0 5px 16px color-mix(in srgb, var(--bg-deep) 38%, transparent); }
+.team-member-avatar.avatar-graphite { background: color-mix(in srgb, var(--brand) 50%, var(--bg-elevated)); }
+.team-add-member { border-color: color-mix(in srgb, var(--brand) 62%, var(--border-strong)); background: color-mix(in srgb, var(--bg-elevated) 91%, var(--brand) 9%); color: var(--brand-hover); transition: transform var(--dur-base) var(--ease-out), background-color var(--dur-base) var(--ease-standard), border-color var(--dur-base) var(--ease-standard); }
+.team-add-member:hover { transform: translateY(-2px); border-color: var(--brand); color: var(--text-primary); background: color-mix(in srgb, var(--bg-elevated) 82%, var(--brand) 18%); }
+.team-activity-chart,
+.team-heatmap-scroll {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--brand) 22%, var(--border-default));
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--brand) 6%, transparent), transparent 44%), color-mix(in srgb, var(--bg-elevated) 94%, var(--brand) 6%);
+  backdrop-filter: blur(16px) saturate(1.1);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 6%, transparent), 0 6px 20px color-mix(in srgb, var(--bg-deep) 16%, transparent);
+  animation: team-panel-enter var(--dur-slow) var(--ease-out) both;
+}
+.team-activity-chart { padding: 10px 11px 8px; }
+.team-activity-chart svg { height: 176px; }
+.team-activity-gridline { stroke: color-mix(in srgb, var(--text-secondary) 24%, transparent); stroke-width: .8; }
+.team-activity-axis { fill: var(--text-secondary); font: 10px var(--font-ui); font-variant-numeric: tabular-nums; }
+.team-activity-series { stroke-width: 2.2; stroke-dasharray: 1; stroke-dashoffset: 1; filter: drop-shadow(0 1px 4px color-mix(in srgb, var(--brand) 22%, transparent)); animation: team-series-draw .9s var(--ease-out) both; }
+.team-activity-legend { gap: 7px 12px; margin-top: 6px; }
+.team-activity-legend-item { color: var(--text-secondary); font-family: var(--font-ui); font-size: 11px; }
+.team-activity-swatch { box-shadow: 0 0 8px color-mix(in srgb, currentColor 28%, transparent); }
+.team-project-insights { display: grid; grid-template-columns: minmax(0, .94fr) minmax(0, 1.06fr); align-items: stretch; gap: 14px; margin-bottom: 20px; }
+.team-project-insights > .team-detail-section { min-height: 0; margin: 0; padding: 13px; }
+.team-cache-overview { grid-template-columns: minmax(82px, .58fr) minmax(0, 1.42fr); gap: 12px; align-items: center; padding: 9px 10px; border-color: color-mix(in srgb, var(--brand) 16%, var(--border-default)); border-radius: var(--radius-md); background: linear-gradient(140deg, color-mix(in srgb, var(--brand) 5%, transparent), transparent 54%), color-mix(in srgb, var(--bg-elevated) 74%, transparent); backdrop-filter: blur(14px) saturate(1.08); }
+.team-cache-donut-wrap { position: relative; width: min(100%, 106px); aspect-ratio: 1; justify-self: center; filter: drop-shadow(0 0 9px color-mix(in srgb, var(--brand) 15%, transparent)); }
+.team-cache-donut { display: block; width: 100%; height: 100%; overflow: visible; transform: rotate(-90deg); }
+.team-cache-donut-track,
+.team-cache-segment { fill: none; stroke-width: 8; }
+.team-cache-donut-track { stroke: color-mix(in srgb, var(--text-secondary) 17%, var(--bg-deep)); }
+.team-cache-segment { stroke-linecap: butt; transition: stroke-dasharray var(--dur-slow) var(--ease-out), stroke-dashoffset var(--dur-slow) var(--ease-out), opacity var(--dur-base) var(--ease-standard); }
+.team-cache-segment:hover { opacity: .72; }
+.team-cache-donut-center { position: absolute; inset: 0; display: grid; align-content: center; justify-items: center; gap: 2px; pointer-events: none; }
+.team-cache-donut-center strong { max-width: 100%; overflow: hidden; color: var(--text-primary); font-family: var(--font-display); font-size: 11px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.team-cache-donut-center span { color: var(--text-secondary); font-size: 8px; line-height: 1.2; }
+.team-cache-summary { gap: 7px 10px; }
+.team-cache-summary-item { gap: 1px; }
+.team-cache-summary-item strong { font-family: var(--font-display); font-size: 12px; font-weight: var(--weight-semibold); }
+.team-cache-summary-item span { color: var(--text-secondary); font-size: 9px; line-height: 1.25; }
+.team-cache-summary-actions { gap: 4px; }
+.team-cache-summary-actions .team-tool-btn { min-height: 24px; padding-inline: 7px; font-size: 10px; }
+.team-project-card { border-color: color-mix(in srgb, var(--project-accent) 26%, var(--border-default)); background: linear-gradient(145deg, color-mix(in srgb, var(--project-accent) 7%, transparent), transparent 52%), color-mix(in srgb, var(--bg-elevated) 94%, var(--project-accent) 6%); backdrop-filter: blur(16px) saturate(1.1); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 5%, transparent), 0 6px 20px color-mix(in srgb, var(--project-accent) 8%, transparent); }
+.team-project-card:hover { border-color: color-mix(in srgb, var(--project-accent) 52%, var(--border-strong)); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 7%, transparent), 0 12px 28px color-mix(in srgb, var(--project-accent) 15%, transparent); }
+.team-project-add { border-color: color-mix(in srgb, var(--brand) 36%, var(--border-strong)); background: color-mix(in srgb, var(--bg-elevated) 94%, var(--brand) 6%); color: color-mix(in srgb, var(--brand) 68%, var(--text-secondary)); backdrop-filter: blur(14px); transition: transform var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-standard), background-color var(--dur-base) var(--ease-standard); }
+.team-project-add:hover { transform: translateY(-2px); border-color: var(--brand); color: var(--brand-hover); background: color-mix(in srgb, var(--bg-elevated) 87%, var(--brand) 13%); }
+.team-project-activity-section .team-detail-section-head { margin-bottom: 8px; }
+.team-heatmap-scroll { padding: 8px 9px 7px; }
+.team-heatmap-scroll { overflow-x: auto; overflow-y: hidden; }
+.team-heatmap-months { grid-auto-columns: 10px; margin-bottom: 4px; color: var(--text-secondary); font-family: var(--font-ui); font-size: 9px; }
+.team-heatmap { grid-template-rows: repeat(7, 8px); grid-auto-columns: 8px; gap: 2px; }
+.team-heatmap-cell { width: 8px; height: 8px; border-color: color-mix(in srgb, var(--brand) 18%, var(--border-default)); border-radius: 2px; transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-standard); }
+.team-heatmap-cell:not(.is-empty):hover { z-index: 1; transform: scale(1.55); box-shadow: 0 0 10px color-mix(in srgb, var(--brand) 34%, transparent); }
+.team-heatmap-caption { margin-top: 6px; color: var(--text-secondary); font-size: 9px; }
+.team-heatmap-legend i { width: 8px; height: 8px; }
+@keyframes team-panel-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes team-series-draw { to { stroke-dashoffset: 0; } }
+
+@media (max-width: 780px) {
+  .team-project-insights { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 420px) {
+  .team-cache-overview { grid-template-columns: 82px minmax(0, 1fr); gap: 8px; padding: 8px; }
+  .team-cache-summary { gap: 6px 8px; }
+  .team-cache-summary-item strong { font-size: 11px; }
+  .team-cache-summary-item span { font-size: 8px; }
+  .team-project-insights > .team-detail-section { padding: 10px; }
+}

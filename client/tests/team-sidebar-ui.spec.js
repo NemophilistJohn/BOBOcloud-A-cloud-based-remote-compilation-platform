@@ -152,6 +152,14 @@ test('team sidebar orders roles, bounds expanded projects, and confirms project 
     await page.locator('[data-collab-tab="projects"]').click();
     await expect(page.locator('#collab-new-project')).toHaveCount(0);
     await expect(page.locator('.team-cache-segment')).toHaveCount(2);
+    const insightsLayout = await page.locator('.team-project-insights').evaluate(el => {
+      const cache = el.querySelector('.team-cache-section').getBoundingClientRect();
+      const activity = el.querySelector('.team-project-activity-section').getBoundingClientRect();
+      return { sameRow: Math.abs(cache.top - activity.top) < 8, cacheWidth: cache.width, activityWidth: activity.width };
+    });
+    expect(insightsLayout.sameRow).toBe(true);
+    expect(insightsLayout.cacheWidth).toBeGreaterThan(250);
+    expect(insightsLayout.activityWidth).toBeGreaterThan(250);
     await expect(page.locator('.team-project-card')).toHaveCount(8);
     await expect(page.locator('.team-project-add')).toBeVisible();
     await expect(page.locator('#team-project-activity [data-date]')).toHaveCount(200);
@@ -159,7 +167,12 @@ test('team sidebar orders roles, bounds expanded projects, and confirms project 
     await expect(activeDay).toHaveAttribute('title', /5 commits · Project 1 \(3\)/);
     const color = await page.locator('.team-project-card').nth(1).evaluate(card => card.style.getPropertyValue('--project-accent'));
     await expect(activeDay).toHaveAttribute('style', expect.stringContaining(color));
-    await expect(page.locator('.team-cache-segment').nth(1)).toHaveAttribute('style', expect.stringContaining(color));
+    await expect(page.locator('.team-cache-segment').nth(1)).toHaveAttribute('stroke', color);
+    const firstCacheColor = await page.locator('.team-cache-segment').first().evaluate(segment => getComputedStyle(segment).stroke);
+    await page.evaluate(() => document.documentElement.style.setProperty('--brand', 'rgb(181, 91, 157)'));
+    const themedCacheColor = await page.locator('.team-cache-segment').first().evaluate(segment => getComputedStyle(segment).stroke);
+    expect(themedCacheColor).not.toBe(firstCacheColor);
+    await page.evaluate(() => document.documentElement.style.removeProperty('--brand'));
     await page.locator('.team-project-add').click();
     await expect(page.locator('#collab-action-title')).toContainText('Create cloud project');
     await page.locator('#collab-action-cancel').click();

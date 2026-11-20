@@ -896,18 +896,24 @@ export function createCollaborationService(
       return { name: project.name, size: sizes[project.id] || 0, color: colors[index] };
     }).filter(function(item) { return item.size > 0; });
     var allocated = allocations.reduce(function(total, item) { return total + item.size; }, 0);
-    var percent = info.quota_bytes ? Math.min(100, Number(info.total_bytes || 0) / Number(info.quota_bytes) * 100) : 0;
-    var summary = '<div class="team-cache-summary"><div class="team-cache-summary-item"><strong>' + formatBytes(info.total_bytes) + '</strong><span>' + esc(t('TOTAL USED')) + '</span></div><div class="team-cache-summary-item"><strong>' + formatBytes(info.quota_bytes) + '</strong><span>' + esc(t('TEAM LIMIT')) + '</span></div><div class="team-cache-summary-item"><strong>' + formatBytes(info.shared_bytes) + '</strong><span>' + esc(t('SHARED DEPENDENCIES')) + '</span></div><div class="team-cache-summary-item"><strong>' + formatBytes(info.target_bytes) + '</strong><span>' + esc(t('INCREMENTAL TARGETS')) + '</span></div><div class="team-cache-summary-item"><strong>' + formatBytes(info.dependency_bytes) + '</strong><span>' + esc(t('PROJECT DEPENDENCIES')) + '</span></div><div class="team-cache-summary-item"><strong>' + formatBytes(info.scratch_bytes) + '</strong><span>' + esc(t('SCRATCH WORKSPACES')) + '</span></div><div class="team-cache-summary-item"><strong>' + percent.toFixed(1) + '%</strong><span>' + esc(t('QUOTA USED')) + '</span></div>' +
+    var totalBytes = Math.max(0, Number(info.total_bytes || 0));
+    var percent = info.quota_bytes ? Math.min(100, totalBytes / Number(info.quota_bytes) * 100) : 0;
+    var circumference = 2 * Math.PI * 32;
+    var offset = 0;
+    var segments = allocations.map(function(item) {
+      var length = allocated > 0 ? item.size / allocated * circumference : 0;
+      var segment = '<circle class="team-cache-segment" cx="40" cy="40" r="32" pathLength="' + circumference.toFixed(2) + '" stroke="' + item.color + '" stroke-dasharray="' + length.toFixed(2) + ' ' + circumference.toFixed(2) + '" stroke-dashoffset="-' + offset.toFixed(2) + '"><title>' + esc(item.name + ' · ' + formatBytes(item.size)) + '</title></circle>';
+      offset += length;
+      return segment;
+    }).join('');
+    var donut = '<div class="team-cache-donut-wrap"><svg class="team-cache-donut" viewBox="0 0 80 80" role="img" aria-label="' + esc(t('Project cache allocation, {size}', { size: formatBytes(allocated) })) + '"><circle class="team-cache-donut-track" cx="40" cy="40" r="32"></circle>' + segments + '</svg><div class="team-cache-donut-center"><strong>' + formatBytes(totalBytes) + '</strong><span>' + esc(t('TOTAL USED')) + '</span></div></div>';
+    var summary = '<div class="team-cache-summary"><div class="team-cache-summary-item"><strong>' + formatBytes(info.quota_bytes) + '</strong><span>' + esc(t('TEAM LIMIT')) + '</span></div><div class="team-cache-summary-item"><strong>' + percent.toFixed(1) + '%</strong><span>' + esc(t('QUOTA USED')) + '</span></div><div class="team-cache-summary-item"><strong>' + formatBytes(info.shared_bytes) + '</strong><span>' + esc(t('SHARED DEPENDENCIES')) + '</span></div><div class="team-cache-summary-item"><strong>' + formatBytes(info.target_bytes) + '</strong><span>' + esc(t('INCREMENTAL TARGETS')) + '</span></div><div class="team-cache-summary-item"><strong>' + formatBytes(info.dependency_bytes) + '</strong><span>' + esc(t('PROJECT DEPENDENCIES')) + '</span></div><div class="team-cache-summary-item"><strong>' + formatBytes(info.scratch_bytes) + '</strong><span>' + esc(t('SCRATCH WORKSPACES')) + '</span></div>' +
       (isAdmin ? '<div class="team-cache-summary-actions"><button type="button" class="team-tool-btn cache-clear-shared" data-i18n="Clear shared">' + esc(t('Clear shared')) + '</button><button type="button" class="team-tool-btn cache-clear-all" data-i18n="Clear all">' + esc(t('Clear all')) + '</button></div>' : '') + '</div>';
-    var bar = allocated > 0 ? '<div class="team-cache-bar" role="img" aria-label="' + esc(t('Project cache allocation, {size}', { size: formatBytes(allocated) })) + '">' + allocations.map(function(item) {
-      var width = item.size / allocated * 100;
-      return '<span class="team-cache-segment" title="' + esc(item.name + ' · ' + formatBytes(item.size)) + '" style="width:' + width.toFixed(3) + '%;background:' + item.color + '"></span>';
-    }).join('') + '</div><span class="collab-row-secondary">' + esc(t('Project-specific cache · {size}', { size: formatBytes(allocated) })) + '</span>' : '<div class="team-cache-bar-empty" data-i18n="No project cache allocated">' + esc(t('No project cache allocated')) + '</div>';
-    target.innerHTML = '<div class="team-cache-overview">' + summary + '<div class="team-cache-bar-wrap">' + bar + '</div></div>';
+    target.innerHTML = '<div class="team-cache-overview">' + donut + summary + '</div>';
   }
   function teamSeriesColor(index) {
-    var palette = ['#65c8e8', '#78b8ed', '#8bc4f3', '#59b5d7', '#a2d0f4', '#6bc7d5', '#72a6dc', '#91c9e3'];
-    return palette[index] || 'hsl(' + (index * 137.508 % 360).toFixed(2) + ' 64% ' + (index % 2 ? 66 : 48) + '%)';
+    var palette = ['var(--brand)', 'var(--blue)', 'var(--green)', 'var(--orange)', 'var(--purple)', 'var(--yellow)', 'var(--red)'];
+    return palette[index % palette.length];
   }
   function renderMemberActivity(activity) {
     var target = $('team-member-activity');
@@ -932,7 +938,7 @@ export function createCollaborationService(
         var y = top + (1 - value / max) * plotHeight;
         points.push((i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1));
       }
-      return '<path class="team-activity-series" stroke="' + teamSeriesColor(index) + '" d="' + points.join(' ') + '"><title>' + esc(member.uid + ' · ' + member.total) + '</title></path>';
+      return '<path class="team-activity-series" pathLength="1" stroke="' + teamSeriesColor(index) + '" d="' + points.join(' ') + '"><title>' + esc(member.uid + ' · ' + member.total) + '</title></path>';
     }).join('');
     var start = new Date(activity.start_date + 'T00:00:00Z');
     var labels = [0, 50, 100, 150, days - 1].map(function(index) {
