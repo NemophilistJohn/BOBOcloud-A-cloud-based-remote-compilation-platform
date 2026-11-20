@@ -1,5 +1,21 @@
 # Friends, inbox and project snapshots
 
+## Team workspace and navigation
+
+The sidebar contains Friends and Teams lists. A team's disclosure arrow expands
+its project shortcuts (at most five visible rows with scrolling); clicking its
+name opens an independent workbench tab with Members and Projects. Team tabs
+use the shared tab ordering and close lifecycle. The bottom Team workbench is
+retained for Git and workspace actions.
+
+A mapped team workspace is identified by team ID, project ID and branch; it
+does not need a personal folder key to prepare its private team worktree.
+The earlier client required both and rejected valid mappings before HTTP.
+Successful team uploads remain directed at that private worktree for execution
+and Git. A separate personal mirror uses the normal personal quota preflight,
+so a failed personal backup is reported without redirecting team execution.
+Successful uploads alone record the public last-sync timestamp.
+
 ## Boundaries and storage
 
 - Every enabled account on one server is discoverable. The directory returns
@@ -44,6 +60,11 @@ The recipient downloads a pending project at authenticated
 `GET /inbox/project/{messageId}`, which streams the existing ZIP and does not
 archive the message. After successful local extraction the native client
 acknowledges with `respondInbox`, decision `local`.
+The native client chooses a destination using the operating system picker and
+extracts with bounded file counts, sizes, paths and checksum validation. Its ZIP
+temporary file exists on the receiving computer, never once per recipient on
+the server. An acknowledgement retry during the same app session reuses the
+successful local receipt without another download or duplicate folder.
 
 ## Retention and bounds
 

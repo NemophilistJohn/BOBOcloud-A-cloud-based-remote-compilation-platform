@@ -761,7 +761,16 @@ func TestLSPWebSocketDependencyAPIIndexControl(t *testing.T) {
 	}
 	starter := &bridgeTestStarter{launches: make(chan lsp.LaunchSpec, 1), inbound: make(chan []byte, 8)}
 	manager := lsp.NewManager(catalog, lsp.NewCacheManager(filepath.Join(t.TempDir(), "lsp-cache"), 16, 7), starter, lsp.ManagerOptions{MaxSessions: 2, MaxPerUser: 2, IdleTTL: time.Minute, MaxMessageBytes: 1 << 20, CleanupInterval: time.Hour})
-	defer manager.Close()
+	defer func() {
+		// Closing a hijacked WebSocket or asking the manager to stop does not
+		// join the session's asynchronous cache-lease release. Wait for its
+		// owned resources before testing.T removes the temporary namespace.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := manager.CloseContext(ctx); err != nil {
+			t.Errorf("close dependency-index session resources: %v", err)
+		}
+	}()
 	dependencyViews, err := lsp.NewDependencyRegistry(bridgePythonDependencyAdapter{})
 	if err != nil {
 		t.Fatal(err)
