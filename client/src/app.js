@@ -177,6 +177,10 @@
     var modal = document.getElementById('history-modal');
     var list = document.getElementById('history-list');
     var detail = document.getElementById('history-detail');
+    var detailRunId = document.getElementById('history-detail-run-id');
+    var detailMetadata = document.getElementById('history-detail-metadata');
+    var detailCopy = document.getElementById('history-detail-copy');
+    var selectedOutput = '';
     list.innerHTML = '<div class="history-empty">Loading...</div>';
     detail.style.display = 'none';
     modal.style.display = 'flex';
@@ -215,18 +219,43 @@
       var metadata = document.createElement('span');
       metadata.className = 'history-row-meta';
       metadata.textContent = '[' + (rec.runtime || 'local') + '] ' + historyText(statusKeys[rec.status] || rec.status || 'Failed') +
-        ' rc=' + rec.exit_code + ' ' + (rec.duration_ms || 0) + 'ms ' + time;
+        ' rc=' + rec.exit_code + ' ' + (rec.duration_ms || 0) + 'ms ' + time + ' · ' + historyText('Run ID: {id}', { id: rec.run_id || '?' });
+      row.setAttribute('data-run-id', rec.run_id || '');
       row.append(status, document.createTextNode(' '), targetElement, document.createTextNode(' '), metadata);
       row.onclick = function() {
         var output = rec.output_summary || '(no output captured)';
         if (rec.output_truncated) {
           output = historyText('Earlier output was not retained.') + '\n\n' + output;
         }
+        selectedOutput = output;
         document.getElementById('history-detail-output').textContent = output;
+        if (detailRunId) detailRunId.textContent = historyText('Run ID: {id}', { id: rec.run_id || '?' });
+        if (detailMetadata) {
+          var contextLines = [
+            historyText('Runtime: {value}', { value: rec.runtime || 'local' }),
+            historyText('Language: {value}', { value: rec.language || '?' }),
+            historyText('Workspace: {value}', { value: rec.folder_name || '?' }),
+            rec.branch ? historyText('Branch: {value}', { value: rec.branch }) : '',
+            rec.compile_args && rec.compile_args.length ? historyText('Compile arguments: {value}', { value: rec.compile_args.join(' ') }) : '',
+            rec.run_args && rec.run_args.length ? historyText('Run arguments: {value}', { value: rec.run_args.join(' ') }) : '',
+            historyText('Started: {value}', { value: rec.started_at ? new Date(rec.started_at).toLocaleString() : '?' }),
+            historyText('Completed: {value}', { value: rec.completed_at ? new Date(rec.completed_at).toLocaleString() : '?' })
+          ].filter(Boolean);
+          detailMetadata.textContent = contextLines.join('\n');
+        }
         detail.style.display = 'block';
       };
       list.appendChild(row);
     });
+    if (detailCopy) detailCopy.onclick = async function() {
+      if (!selectedOutput) return;
+      try {
+        await navigator.clipboard.writeText(selectedOutput);
+        if (BOBO.toast) BOBO.toast.success(historyText('Output copied'));
+      } catch (_) {
+        if (BOBO.toast) BOBO.toast.error(historyText('Copy failed'));
+      }
+    };
   }
 
   // ── IPC events ──

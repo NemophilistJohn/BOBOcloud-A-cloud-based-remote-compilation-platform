@@ -694,16 +694,66 @@
       childrenUl._boboChildren = BOBO.workspaceSettings && BOBO.workspaceSettings.filterTreeChildren
         ? BOBO.workspaceSettings.filterTreeChildren(node.children)
         : (node.children || []);
+      childrenUl._boboChildrenLoaded = node.childrenLoaded !== false;
       childrenUl.setAttribute('data-rendered-count', '0');
 
       if (!isExpanded) {
         childrenUl.style.display = 'none';
       }
       li.appendChild(childrenUl);
-      if (isRootExpanded || isExpanded) renderNextChildPage(childrenUl);
+      if (isRootExpanded || isExpanded) {
+        if (childrenUl._boboChildrenLoaded) renderNextChildPage(childrenUl);
+        else loadTreeChildren(row, node.path, childrenUl);
+      }
     }
 
     return li;
+  }
+
+  function loadTreeChildren(row, nodePath, childrenUl) {
+    var host = BOBO.platform && BOBO.platform.services && BOBO.platform.services.get('host.fileSearch');
+    if (!row || !childrenUl || childrenUl._boboLoading || !host || typeof host.readTreeChildren !== 'function') return;
+    var identity = S.workspaceIdentity;
+    var node = findTreeModelNode(S.workspaceTree, nodePath);
+    if (!node) return;
+    childrenUl._boboLoading = true;
+    row.setAttribute('aria-busy', 'true');
+    var placeholder = document.createElement('li');
+    placeholder.className = 'tree-placeholder tree-loading';
+    placeholder.textContent = t('Loading folder...');
+    childrenUl.appendChild(placeholder);
+    Promise.resolve(host.readTreeChildren(nodePath)).then(function(result) {
+      if (!result || identity !== S.workspaceIdentity || result.workspaceIdentity !== identity ||
+          result.rootPath !== S.workspaceRoot || result.directoryPath !== nodePath) return;
+      node.children = Array.isArray(result.children) ? result.children : [];
+      node.childrenLoaded = true;
+      node.truncated = result.truncated === true;
+      childrenUl.innerHTML = '';
+      childrenUl._boboChildren = BOBO.workspaceSettings && BOBO.workspaceSettings.filterTreeChildren
+        ? BOBO.workspaceSettings.filterTreeChildren(node.children)
+        : node.children;
+      childrenUl._boboChildrenLoaded = true;
+      childrenUl.setAttribute('data-rendered-count', '0');
+      renderNextChildPage(childrenUl);
+    }).catch(function() {
+      if (identity !== S.workspaceIdentity) return;
+      childrenUl.innerHTML = '';
+      var retry = document.createElement('li');
+      retry.className = 'tree-placeholder';
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'tree-load-more';
+      button.textContent = t('Retry folder loading');
+      button.addEventListener('click', function(event) {
+        event.stopPropagation();
+        loadTreeChildren(row, nodePath, childrenUl);
+      });
+      retry.appendChild(button);
+      childrenUl.appendChild(retry);
+    }).finally(function() {
+      childrenUl._boboLoading = false;
+      row.removeAttribute('aria-busy');
+    });
   }
 
   // ──── Toggle folder expand/collapse via CSS only (children already in DOM) ────
@@ -721,7 +771,10 @@
       row.setAttribute('aria-expanded', 'false');
     } else {
       S.expandedPaths.add(nodePath);
-      if (childrenUl && Number(childrenUl.getAttribute('data-rendered-count') || 0) === 0) {
+      var node = findTreeModelNode(S.workspaceTree, nodePath);
+      if (childrenUl && node && node.childrenLoaded === false) {
+        loadTreeChildren(row, nodePath, childrenUl);
+      } else if (childrenUl && Number(childrenUl.getAttribute('data-rendered-count') || 0) === 0) {
         renderNextChildPage(childrenUl);
       }
       if (childrenUl) childrenUl.style.display = '';

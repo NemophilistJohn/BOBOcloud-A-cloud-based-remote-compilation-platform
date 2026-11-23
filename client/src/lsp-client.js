@@ -542,8 +542,10 @@
         var sizeMiB = Math.max(1, Math.min(1024, Math.floor(Number(policy && policy.sizeMiB) || 32)));
         // Keep at most 8 MiB of already-sanitized summaries in Electron. The
         // durable layer has a larger, separately enforced quota.
-        maxBytes = enabled ? Math.min(8 * 1024 * 1024, Math.floor(sizeMiB * 1024 * 1024 * 0.25)) : 0;
-        maxEntries = enabled ? Math.max(1, Math.min(8, Math.floor(maxBytes / (256 * 1024)) || 1)) : 0;
+        maxBytes = enabled
+          ? Math.min(8 * 1024 * 1024, Math.floor(sizeMiB * 1024 * 1024 * 0.25))
+          : 5 * 1024 * 1024;
+        maxEntries = enabled ? Math.max(1, Math.min(8, Math.floor(maxBytes / (256 * 1024)) || 1)) : 1;
         evict();
       },
       peek: function(scopeId, key) {
@@ -1043,7 +1045,11 @@
     var result = await provider.provideCompletionItems(model, position);
     var snippetFlag = monacoRef.languages.CompletionItemInsertTextRule.InsertAsSnippet;
     return virtualCompletionItems(result?.suggestions?.filter(function(item) {
-      return !item.additionalTextEdits?.length && !item.command;
+      // The history command only records the accepted item and does not alter
+      // the projected notebook cell. Other commands may carry side effects
+      // that the plain-text cell editor cannot safely replay.
+      return !item.additionalTextEdits?.length &&
+        (!item.command || item.command.id === 'bobo.completionHistory.accept');
     }).map(function(item) {
       var label = completionItemLabel(item);
       // The cell editor inserts plain text. Offer identifier snippets by name.
@@ -1472,7 +1478,7 @@
     return { value: value.value || '' };
   }
 
-  function mapCompletion(item, fallbackRange, localHint) {
+  function mapCompletion(item, fallbackRange, localHint, historyContext) {
     var textEdit = item.textEdit && item.textEdit.newText !== undefined ? item.textEdit : null;
     var insertText = textEdit ? textEdit.newText : (typeof item.insertText === 'string' ? item.insertText : item.label);
     var mapped = {
@@ -1487,7 +1493,9 @@
         : (textEdit && textEdit.insert && textEdit.replace
           ? { insert: fromLspRange(textEdit.insert), replace: fromLspRange(textEdit.replace) }
           : fallbackRange),
-      sortText: '0000:' + (item.sortText || item.label || ''),
+      sortText: global.completionHistory && typeof global.completionHistory.sortText === 'function'
+        ? '0000:' + global.completionHistory.sortText(item, historyContext || {}, item.sortText || item.label || '')
+        : '0000:' + (item.sortText || item.label || ''),
       filterText: item.filterText || item.label,
       preselect: !!item.preselect,
       commitCharacters: item.commitCharacters,
@@ -1497,6 +1505,9 @@
       // completion-item data to resolve after a reconnect.
       _boboLsp: localHint ? null : item
     };
+    if (global.completionHistory && typeof global.completionHistory.command === 'function') {
+      mapped.command = global.completionHistory.command(historyContext || {}, item);
+    }
     if (item.additionalTextEdits) {
       mapped.additionalTextEdits = item.additionalTextEdits.map(function(edit) {
         return { range: fromLspRange(edit.range), text: edit.newText };
@@ -1606,7 +1617,8 @@
     if (version !== null) completionSourceHashes.set(model, { version: version, hash: hash });
     return hash;
   }
-  var dependencyApiIdentifier = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  var dependencyApiIdentifier = /^[A-Za-z@_][A-Za-z0-9_@-]*$/;
+  var dependencyApiLanguages = ['python', 'javascript', 'typescript', 'go', 'rust', 'java', 'c', 'cpp'];
 
   function clientCacheDependencyIndexEnabled() {
     return settings && settings.clientCacheDependencyIndexEnabled === true &&
@@ -1620,7 +1632,7 @@
     var languages = Array.isArray(value.languages) ? value.languages.map(function(language) {
       return canonicalRuntimeLanguage(language);
     }) : [];
-    return languages.indexOf('python') >= 0 ? value : null;
+    return languages.some(function(language) { return dependencyApiLanguages.indexOf(language) >= 0; }) ? value : null;
   }
 
   function dependencyApiIndexScope(model) {
@@ -1657,8 +1669,8 @@
     }));
   }
 
-  function canUseDependencyApiIndex(model) {
-    return clientCacheDependencyIndexEnabled() && settings.mode !== 'local' &&
+  function canUseDependencyApiIndex(model, persistent) {
+    return (persistent !== false ? clientCacheDependencyIndexEnabled() : true) && settings.mode !== 'local' &&
       (status.state === 'ready' ? !!dependencyApiIndexCapability() : !!verifiedDependencyIndexScope) &&
       !!dependencyApiIndexScope(model) && !!(global.api && global.api.lspClientCacheDependencyIndexGet &&
         global.api.lspClientCacheDependencyIndexPut && global.api.lspControl);
@@ -2032,12 +2044,13 @@
     build.timer = null;
     dependencyApiIndexBuilds.delete(build.id);
     var value = dependencyApiIndexResult(build);
-    if (!value || !dependencyApiIndexCurrentScope(build.scopeId, build.key) || !clientCacheDependencyIndexEnabled()) return false;
+    if (!value || !dependencyApiIndexCurrentScope(build.scopeId, build.key)) return false;
     if (!dependencyApiIndexCache.prime(build.scopeId, build.key, value)) return false;
     verifiedDependencyIndexScope = build.scope;
-    // Persist partial library names with explicit coverage and exact revision.
-    try { Promise.resolve(global.api.lspClientCacheDependencyIndexPut(build.scope, build.key, value)).catch(function() {}); } catch (_) {}
-    dependencyApiIndexUi = { state: 'enabled', error: '' };
+    if (clientCacheDependencyIndexEnabled()) {
+      try { Promise.resolve(global.api.lspClientCacheDependencyIndexPut(build.scope, build.key, value)).catch(function() {}); } catch (_) {}
+    }
+    dependencyApiIndexUi = { state: clientCacheDependencyIndexEnabled() ? 'enabled' : 'session', error: '' };
     renderClientCacheUi();
     var model = currentModel();
     var position = S.editor && S.editor.getPosition ? S.editor.getPosition() : null;
@@ -2076,10 +2089,10 @@
       return Promise.resolve().then(function() {
         return global.api.lspClientCacheDependencyIndexGet(scope, key);
       }).then(function(value) {
-        if (!dependencyApiIndexCache.isCurrent(epoch) || !dependencyApiIndexCurrentScope(scopeId, key) || !clientCacheDependencyIndexEnabled()) return false;
+        if (!dependencyApiIndexCache.isCurrent(epoch) || !dependencyApiIndexCurrentScope(scopeId, key)) return false;
         if (value && dependencyApiIndexCache.prime(scopeId, key, value)) {
           verifiedDependencyIndexScope = scope;
-          dependencyApiIndexUi = { state: 'enabled', error: '' };
+          dependencyApiIndexUi = { state: clientCacheDependencyIndexEnabled() ? 'enabled' : 'session', error: '' };
           renderClientCacheUi();
           var model = currentModel();
           var position = S.editor && S.editor.getPosition ? S.editor.getPosition() : null;
@@ -2096,14 +2109,17 @@
     });
   }
 
-  function ensureDependencyApiIndex(model) {
-    if (!canUseDependencyApiIndex(model)) return null;
+  function ensureDependencyApiIndex(model, persistent) {
+    if (!canUseDependencyApiIndex(model, persistent)) return null;
     var scope = dependencyApiIndexScope(model);
     var scopeId = clientCompletionCacheScopeId(scope);
     var key = dependencyApiIndexKey(scope);
     var value = dependencyApiIndexCache.peekView(scopeId, key);
     if (value && status.state === 'ready') verifiedDependencyIndexScope = scope;
-    if (!value) hydrateDependencyApiIndex(scope, scopeId, key);
+    if (!value) {
+      if (persistent === false) startDependencyApiIndexBuild(scope, scopeId, key);
+      else hydrateDependencyApiIndex(scope, scopeId, key);
+    }
     return { scope: scope, scopeId: scopeId, key: key, value: value };
   }
 
@@ -2224,8 +2240,14 @@
     var items = Array.isArray(result) ? result : (result && result.items) || [];
     var word = model.getWordUntilPosition(position);
     var range = new monacoRef.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
+    var prefix = '';
+    try { prefix = model.getLineContent(position.lineNumber).slice(0, Math.max(0, position.column - 1)); } catch (_) {}
+    var historyContext = { language: model.getLanguageId(), prefix: prefix };
+    if (global.completionHistory && typeof global.completionHistory.rememberSuggestions === 'function') {
+      global.completionHistory.rememberSuggestions(historyContext, items);
+    }
     return {
-      suggestions: items.slice(0, 100).map(function(item) { return mapCompletion(item, range, localHint); }),
+      suggestions: items.slice(0, 100).map(function(item) { return mapCompletion(item, range, localHint, historyContext); }),
       incomplete: !!(result && result.isIncomplete)
     };
   }
@@ -2271,7 +2293,7 @@
     // API summaries are only enabled for Active cache. They remain inside this
     // provider rather than registering another Monaco provider, so local
     // module/member names cannot race or duplicate semantic LSP candidates.
-    var dependencyIndex = ensureDependencyApiIndex(model);
+    var dependencyIndex = ensureDependencyApiIndex(model, false);
     var apiHint = dependencyIndex && dependencyIndex.value
       ? dependencyApiIndexCompletions(dependencyIndex.value, snapshot)
       : null;
@@ -2897,21 +2919,24 @@
     var supported = dependencyApiIndexSupportedHere();
     var configured = clientCacheDependencyIndexEnabled();
     var enabled = configured && supported;
-    panel.hidden = mode !== 'active';
+    panel.hidden = false;
     // Keep the disable action available after switching away from Python, but
     // never let an unsupported analyzer promise that it can build an index.
-    toggle.disabled = (!eligible || (!configured && !supported)) || !!clientCacheUi.operation;
+    toggle.disabled = (!configured && !supported) || !!clientCacheUi.operation;
     toggle.setAttribute('aria-pressed', configured ? 'true' : 'false');
     toggle.textContent = configured ? t('Disable library API cache') : t('Enable library API cache');
-    var stateValue = enabled ? (dependencyApiIndexUi.state || 'enabled') : (supported ? 'disabled' : 'unavailable');
+    var sessionReady = !configured && dependencyApiIndexUi.state === 'session';
+    var stateValue = enabled ? (dependencyApiIndexUi.state || 'enabled') : (sessionReady ? 'session' : (supported ? 'disabled' : 'unavailable'));
     var indexScope = enabled && dependencyApiIndexScope(currentModel());
     var indexValue = indexScope && dependencyApiIndexCache.peekView(clientCompletionCacheScopeId(indexScope), dependencyApiIndexKey(indexScope));
     state.dataset.state = stateValue === 'loading' ? 'loading' : (stateValue === 'error' ? 'error' : (enabled ? 'enabled' : 'disabled'));
-    state.textContent = !eligible
+    state.textContent = sessionReady
+      ? t('Session import hints are active')
+      : (!eligible
       ? t('Library API cache is disabled')
       : (!enabled && !supported ? t('Library API cache is unavailable for the current analysis.') : (enabled
       ? (status.state !== 'ready' ? t('Using verified library API cache while reconnecting') : (stateValue === 'loading' ? t('Loading local cache...') : (indexValue && indexValue.truncated ? t('Library API cache is enabled (partial coverage)') : t('Library API cache is enabled'))))
-      : t('Library API cache is disabled')));
+      : t('Library API cache is disabled'))));
     hint.textContent = mode !== 'active'
       ? t('Library API cache is available only with active cache.')
       : (!eligible ? t('Requires active cache and at least 30 MB.') : (!supported
@@ -3009,6 +3034,12 @@
       detail.textContent = effectiveState === 'error' && clientCacheUi.error ? clientCacheUi.error : '';
     }
     renderDependencyApiIndexUi();
+    var history = global.completionHistory;
+    var historyToggle = document.getElementById('lsp-completion-history-enabled');
+    if (historyToggle && history) {
+      historyToggle.checked = typeof history.isEnabled !== 'function' || history.isEnabled();
+      historyToggle.disabled = !!clientCacheUi.operation;
+    }
   }
 
   async function refreshClientCacheStats() {
@@ -3102,7 +3133,9 @@
 
   async function setClientCacheDependencyIndexEnabled(enabled) {
     var nextEnabled = enabled === true;
-    if (nextEnabled && !dependencyApiIndexEligible()) throw new Error(t('Invalid local cache policy'));
+    if (nextEnabled && clientCacheMode() !== 'active') throw new Error(t('Library API cache is available only with active cache.'));
+    if (nextEnabled && clientCacheSizeMiB() < 30) throw new Error(t('Increase cache capacity to at least 30 MB to enable persistent library API caching.'));
+    if (nextEnabled && !dependencyApiIndexSupportedHere()) throw new Error(t('A compatible Python dependency view is required.'));
     if (!global.api || typeof global.api.lspSettingsWrite !== 'function') throw new Error(t('Local cache is unavailable'));
     var next = await global.api.lspSettingsWrite({
       mode: settings.mode,
@@ -3293,6 +3326,7 @@
         var sizeMiB = clientCacheSizeMiB(clientCacheSize.value);
         clientCacheSize.setAttribute('aria-valuetext', sizeMiB + ' MB');
         if (output) output.textContent = sizeMiB + ' MB';
+        renderDependencyApiIndexUi();
       });
       clientCacheSize.addEventListener('change', function() {
         setClientCachePolicyFromUi(clientCacheMode(), clientCacheSizeMiB(clientCacheSize.value));
@@ -3309,6 +3343,18 @@
         renderClientCacheUi();
         if (BOBO.toast) BOBO.toast.error(error && error.message ? error.message : t('Local cache is unavailable'));
       });
+    });
+    var historyToggle = document.getElementById('lsp-completion-history-enabled');
+    if (historyToggle) historyToggle.addEventListener('change', function() {
+      if (global.completionHistory && typeof global.completionHistory.setEnabled === 'function') {
+        global.completionHistory.setEnabled(historyToggle.checked);
+      }
+      renderClientCacheUi();
+    });
+    var historyClear = document.getElementById('lsp-completion-history-clear');
+    if (historyClear) historyClear.addEventListener('click', function() {
+      if (global.completionHistory && typeof global.completionHistory.clear === 'function') global.completionHistory.clear();
+      if (BOBO.toast) BOBO.toast.success(t('Completion history cleared'));
     });
     var restart = document.getElementById('lsp-restart');
     if (restart) restart.addEventListener('click', async function() {

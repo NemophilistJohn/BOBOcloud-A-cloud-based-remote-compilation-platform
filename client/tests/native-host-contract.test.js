@@ -6,6 +6,7 @@ const vm = require('node:vm');
 const ts = require('typescript');
 
 const CLIENT_ROOT = path.resolve(__dirname, '..');
+const { IPC_CHANNEL_POLICY } = require('../main/ipc-channel-policy');
 
 function sourceFile(relativePath, scriptKind) {
   const absolutePath = path.join(CLIENT_ROOT, relativePath);
@@ -111,4 +112,14 @@ test('IPC contract declarations cover every channel exposed by preload', () => {
   assert.deepEqual([...channels.invoke].sort(), interfaceKeys('types/ipc-contracts.ts', 'IpcInvokeContracts'));
   assert.deepEqual([...channels.send].sort(), interfaceKeys('types/ipc-contracts.ts', 'IpcSendContracts'));
   assert.deepEqual([...channels.event].sort(), interfaceKeys('types/ipc-contracts.ts', 'IpcEventContracts'));
+});
+
+test('every preload channel is allowed by the main-process runtime policy', () => {
+  const channels = preloadChannels();
+  for (const direction of ['invoke', 'send', 'event']) {
+    const allowed = new Set(IPC_CHANNEL_POLICY[direction]);
+    for (const channel of channels[direction]) {
+      assert.ok(allowed.has(channel), `${direction} channel is missing from ipc-channel-policy.js: ${channel}`);
+    }
+  }
 });

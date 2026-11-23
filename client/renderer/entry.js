@@ -9,6 +9,7 @@ import './core/bootstrap.ts';
 import './core/native-host-adapter.ts';
 import './compat/platform-adapter.ts';
 import './compat/theme-manager-adapter.ts';
+import '../src/completion-history.js';
 import '../editor-rules/completion-engine.ts';
 import '../completion-rules.ts';
 import './compat/editor-rules-adapter.ts';

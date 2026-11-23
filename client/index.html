@@ -638,7 +638,11 @@
             </div>
           </div>
         </div>
-        <div class="settings-pane" data-spane="lsp" role="tabpanel">
+        <div class="settings-pane lsp-settings-pane" data-spane="lsp" role="tabpanel">
+          <header class="lsp-settings-intro">
+            <div class="ss-section-label">Code intelligence</div>
+            <p>Configure language services, adaptive completion, and local acceleration for this editor.</p>
+          </header>
           <section aria-labelledby="lsp-strategy-heading">
             <div class="ss-section-label" id="lsp-strategy-heading">Completion strategy</div>
             <div class="lsp-mode-selector" role="radiogroup" aria-label="Completion strategy">
@@ -691,6 +695,19 @@
                 <button id="lsp-client-cache-clear-all" class="ss-btn ss-btn-ghost" type="button" disabled>Clear all local cache</button>
               </div>
             </div>
+            <div class="lsp-adaptive-completion">
+              <div class="lsp-adaptive-completion-copy">
+                <div class="lsp-client-cache-dependency-index-heading">Context-aware completion ranking</div>
+                <p>Use accepted suggestions from this device to adjust ordering for similar code contexts.</p>
+              </div>
+              <div class="lsp-adaptive-completion-actions">
+                <label class="lsp-adaptive-completion-toggle" for="lsp-completion-history-enabled">
+                  <input id="lsp-completion-history-enabled" type="checkbox" checked>
+                  <span>Personalize suggestion order</span>
+                </label>
+                <button id="lsp-completion-history-clear" class="ss-btn ss-btn-ghost" type="button">Clear history</button>
+              </div>
+            </div>
             <div class="lsp-client-cache-mode-selector" role="radiogroup" aria-label="Local completion cache policy">
               <label class="lsp-client-cache-mode-option">
                 <input type="radio" name="lsp-client-cache-mode" value="off">
@@ -719,13 +736,13 @@
             <div id="lsp-client-cache-dependency-index" class="lsp-client-cache-dependency-index" aria-labelledby="lsp-client-cache-dependency-index-heading" hidden>
               <div class="lsp-client-cache-dependency-index-copy">
                 <div id="lsp-client-cache-dependency-index-heading" class="lsp-client-cache-dependency-index-heading">Library API cache</div>
-                <p>Cache safe module and public API summaries for faster imports and member completion.</p>
+                <p>Keep bounded module and public API names from the active Python dependency view.</p>
               </div>
               <div class="lsp-client-cache-dependency-index-control">
                 <button id="lsp-client-cache-dependency-index-toggle" class="ss-btn ss-btn-ghost" type="button" aria-pressed="false" aria-describedby="lsp-client-cache-dependency-index-hint" disabled>Enable library API cache</button>
                 <div id="lsp-client-cache-dependency-index-state" class="lsp-client-cache-dependency-index-state" data-state="disabled" role="status" aria-live="polite">Library API cache is disabled</div>
               </div>
-              <p id="lsp-client-cache-dependency-index-hint" class="lsp-client-cache-dependency-index-hint">Requires active cache and at least 30 MB.</p>
+              <p id="lsp-client-cache-dependency-index-hint" class="lsp-client-cache-dependency-index-hint">Session import hints work while connected. Persistent API cache requires Active cache and 30 MB.</p>
             </div>
             <div id="lsp-client-cache-state" class="lsp-client-cache-state" data-state="loading" role="status" aria-live="polite" aria-atomic="true">Loading local cache...</div>
             <div class="lsp-client-cache-metrics" aria-label="Local acceleration cache metrics">
@@ -977,6 +994,8 @@
       </div>
       <div id="history-list" class="history-list-container"></div>
       <div id="history-detail" class="history-detail">
+        <div class="history-detail-toolbar"><span id="history-detail-run-id"></span><button id="history-detail-copy" class="ss-btn ss-btn-ghost" type="button">Copy</button></div>
+        <div id="history-detail-metadata" class="history-detail-metadata"></div>
         <pre id="history-detail-output"></pre>
       </div>
     </div>

@@ -28,6 +28,7 @@ export interface FileSearchFileDto {
 
 export interface FileSearchStatePort {
   readonly workspaceRoot: string | null;
+  readonly workspaceIdentity?: unknown;
   readonly workspaceTree: unknown;
   readonly tabs: readonly FileSearchTabDto[];
 }
@@ -84,9 +85,15 @@ export interface FileSearchDependencies {
   readonly getIcons: () => FileSearchIconsPort | null | undefined;
   readonly getWorkspaceLaunch: () => FileSearchWorkspaceLaunchPort | null | undefined;
   readonly getWorkspace: () => FileSearchWorkspacePort | null | undefined;
+  readonly scanWorkspaceFiles?: () => Promise<unknown>;
   readonly getWorkbench: () => FileSearchWorkbenchPort | null | undefined;
   readonly setTimer: (callback: () => void, delayMs: number) => number;
   readonly clearTimer: (timer: number) => void;
+}
+
+export interface FileSearchHost {
+  readTreeChildren(directoryPath: string): Promise<unknown>;
+  scanWorkspaceFiles(): Promise<unknown>;
 }
 
 export interface FileSearchFacade {

@@ -18,6 +18,7 @@ const EXPECTED_MODULES = [
   './core/native-host-adapter.ts',
   './compat/platform-adapter.ts',
   './compat/theme-manager-adapter.ts',
+  '../src/completion-history.js',
   '../editor-rules/completion-engine.ts',
   '../completion-rules.ts',
   './compat/editor-rules-adapter.ts',

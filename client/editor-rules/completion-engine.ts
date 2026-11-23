@@ -60,6 +60,17 @@ type LexicalState = EditorRuleAnalyzedContextDto['lexicalState'];
 type CompletionSource = 'symbol' | 'static';
 type CompletionItems = readonly EditorRuleCompletionItemDto[];
 
+const COMMON_IMPORTS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  python: ['matplotlib', 'numpy', 'pandas', 'scipy', 'sklearn', 'torch', 'tensorflow', 'requests', 'flask', 'fastapi'],
+  javascript: ['react', 'vue', 'angular', 'express', 'lodash', 'axios', 'vite', 'node:fs', 'node:path'],
+  typescript: ['react', 'vue', 'angular', 'express', 'lodash', 'axios', 'vite', 'node:fs', 'node:path'],
+  go: ['fmt', 'os', 'io', 'net/http', 'encoding/json', 'context', 'strings', 'time'],
+  rust: ['std', 'alloc', 'core', 'serde', 'tokio', 'anyhow', 'clap'],
+  java: ['java', 'javax', 'jakarta', 'org', 'com', 'junit'],
+  c: ['stdio.h', 'stdlib.h', 'string.h', 'stdint.h', 'stdbool.h'],
+  cpp: ['iostream', 'vector', 'string', 'algorithm', 'filesystem', 'memory']
+});
+
 (function initCompletionEngine(globalScope: CompletionEngineGlobal): void {
   'use strict';
 
@@ -266,6 +277,39 @@ type CompletionItems = readonly EditorRuleCompletionItemDto[];
     return -1;
   }
 
+  function isImportContext(context: MutableAnalyzedContext): boolean {
+    const language = String(context.language || '').toLowerCase();
+    const prefix = String(context.linePrefix || '');
+    return language === 'python'
+      ? /^\s*(?:import|from)\s+[A-Za-z_][\w.]*$/.test(prefix)
+      : language === 'java'
+        ? /^\s*import\s+[A-Za-z_][\w.]*$/.test(prefix)
+        : language === 'javascript' || language === 'typescript'
+          ? /(?:from\s*|import\s*|require\s*\()\s*['"][^'"]*$/.test(prefix)
+          : language === 'go'
+            ? /^\s*import\s+\(?\s*["'][^"']*$/.test(prefix)
+            : language === 'rust'
+              ? /^\s*use\s+[A-Za-z_][\w:]*$/.test(prefix)
+              : language === 'c' || language === 'cpp'
+                ? /^\s*#\s*include\s*[<"][^>"]*$/.test(prefix)
+                : false;
+  }
+
+  function importSuggestions(context: MutableAnalyzedContext): EditorRuleCompletionItemDto[] {
+    const language = String(context.language || '').toLowerCase();
+    if (!isImportContext(context)) return [];
+    const query = String(context.word || '').toLowerCase();
+    return (COMMON_IMPORTS[language] || []).filter((name) => {
+      const normalized = name.toLowerCase();
+      return !query || normalized.startsWith(query) || normalized.split(/[.:/]/).some((part) => part.startsWith(query));
+    }).map((name) => ({
+      label: name,
+      kind: 9,
+      insertText: name,
+      detail: 'import'
+    }));
+  }
+
   function rewriteForMember(
     item: EditorRuleCompletionItemDto,
     context: EditorRuleAnalyzedContextDto
@@ -342,7 +386,17 @@ type CompletionItems = readonly EditorRuleCompletionItemDto[];
     }
 
     const sourceRank = source === 'symbol' ? '0' : '1';
-    normalized.sortText = normalized.sortText || sourceRank + String(score) + '_' + labelText(normalized).toLowerCase() + '_' + index;
+    const baseSort = sourceRank + String(score) + '_' + labelText(normalized).toLowerCase() + '_' + index;
+    const history = (globalThis as unknown as {
+      completionHistory?: {
+        sortText?: (item: unknown, context: unknown, fallback: string) => string;
+        command?: (context: unknown, item: unknown) => unknown;
+      };
+    }).completionHistory;
+    normalized.sortText = history && typeof history.sortText === 'function'
+      ? history.sortText(normalized, context, normalized.sortText || baseSort)
+      : (normalized.sortText || baseSort);
+    if (history && typeof history.command === 'function') normalized.command = history.command(context, normalized);
     return normalized as unknown as EditorRuleCompletionItemDto;
   }
 
@@ -362,19 +416,25 @@ type CompletionItems = readonly EditorRuleCompletionItemDto[];
     context: MutableAnalyzedContext,
     monaco: EditorRuleMonacoPort
   ): EditorRuleCompletionListDto {
-    if (context.invalidTrigger || context.lexicalState !== 'code') return { suggestions: [] };
+    if (context.invalidTrigger || (context.lexicalState !== 'code' && !isImportContext(context))) return { suggestions: [] };
     const combined: EditorRuleCompletionItemDto[] = [];
 
     (symbolSuggestions || []).forEach((item, index) => {
       const normalized = normalizeSuggestion(item, context, monaco, 'symbol', index);
       if (normalized) combined.push(normalized);
     });
-    (staticSuggestions || []).forEach((item, index) => {
+    staticSuggestions = (staticSuggestions || []).concat(importSuggestions(context));
+    staticSuggestions.forEach((item, index) => {
       const normalized = normalizeSuggestion(item, context, monaco, 'static', index);
       if (normalized) combined.push(normalized);
     });
 
-    return { suggestions: dedupeSuggestions(combined).slice(0, 120) };
+    const suggestions = dedupeSuggestions(combined).slice(0, 120);
+    const history = (globalThis as unknown as {
+      completionHistory?: { rememberSuggestions?: (context: unknown, items: unknown[]) => void };
+    }).completionHistory;
+    if (history && typeof history.rememberSuggestions === 'function') history.rememberSuggestions(context, suggestions);
+    return { suggestions };
   }
 
   function createProvider(options: EditorRuleCompletionProviderOptions): EditorRuleCompletionProvider {
@@ -420,7 +480,9 @@ type CompletionItems = readonly EditorRuleCompletionItemDto[];
           language,
           requestContext || {}
         );
-        if (context.invalidTrigger || context.lexicalState !== 'code') return { suggestions: [] };
+        if (context.invalidTrigger || (context.lexicalState !== 'code' && !isImportContext(context))) {
+          return { suggestions: [] };
+        }
         const symbols = symbolProvider(
           model as EditorRuleTextModelPort,
           position as EditorRulePositionDto,

@@ -129,6 +129,13 @@ test('suppresses suggestions in comments, strings and invalid structural trigger
   }), true);
 });
 
+test('offers context-specific import roots before the remote analyzer responds', function () {
+  const python = complete('python', 'import m').suggestions;
+  assert.ok(python.some(function (item) { return item.label === 'matplotlib'; }));
+  const javascript = complete('javascript', "import { useState } from 'r").suggestions;
+  assert.ok(javascript.some(function (item) { return item.label === 'react'; }));
+});
+
 test('turns legacy plain placeholders into snippets and deduplicates labels', function () {
   const suggestions = complete('c', 'void f(void) {\n  put').suggestions;
   const putchar = suggestions.find(function (item) { return item.label === 'putchar'; });

@@ -340,6 +340,16 @@ export function createEditorCoreService(
     state.editor = editor;
     ownedEditor = editor as EditorCoreEditorPort & { dispose?(): void };
 
+    const completionHistory = (globalThis as typeof globalThis & {
+      completionHistory?: { install?: (api: unknown, getEditor: () => unknown) => unknown };
+    }).completionHistory;
+    if (completionHistory && typeof completionHistory.install === 'function') {
+      const historyDisposable = completionHistory.install(monacoRef.editor, () => editor);
+      if (historyDisposable && typeof (historyDisposable as { dispose?: () => void }).dispose === 'function') {
+        addDisposable(lifecycle, historyDisposable as { dispose(): void });
+      }
+    }
+
     // setMonaco already called above — no need to call it again.
     registerCompletionProviders(monacoRef);
 

@@ -519,7 +519,7 @@ test('configured LSP address, strategy settings and status bar work in all built
 
     await page.locator('.lsp-client-cache-mode-option').filter({ has: page.locator('input[value="off"]') }).click();
     await expect(page.locator('input[name="lsp-client-cache-mode"][value="off"]')).toBeChecked();
-    await expect(page.locator('#lsp-client-cache-dependency-index')).toBeHidden();
+    await expect(page.locator('#lsp-client-cache-dependency-index')).toBeVisible();
     await expect(cacheCapacity).toBeDisabled();
 
     const dependencyHookState = await page.evaluate(() => ({

@@ -30,7 +30,7 @@ import type { PluginExtensionNativeHost } from './plugin-extension-bootstrap';
 import type { AgentDescriptorDto, AgentStateStoreContract } from './agent';
 import type { SourceControlStateStoreContract } from './source-control';
 import type { SourceControlViewService } from './source-control-view';
-import type { FileSearchService } from './file-search';
+import type { FileSearchHost, FileSearchService } from './file-search';
 import type {
   DocumentViewDescriptorDto,
   DocumentViewHost,
@@ -94,6 +94,7 @@ export interface RendererServiceMap {
   readonly 'host.diagnostics': Readonly<DiagnosticsHost>;
   readonly 'host.documentViews': Readonly<DocumentViewHost>;
   readonly 'host.environmentCenter': Readonly<EnvironmentCenterNativeHostPort>;
+  readonly 'host.fileSearch': Readonly<FileSearchHost>;
   readonly 'host.languagePacks': Readonly<LanguagePacksHost>;
   readonly 'host.pluginManagement': Readonly<PluginManagementHost>;
   readonly 'host.pluginExtensions': Readonly<PluginExtensionNativeHost>;

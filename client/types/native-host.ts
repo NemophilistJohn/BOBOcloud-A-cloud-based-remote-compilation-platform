@@ -113,6 +113,8 @@ export interface NativeHost {
   forgetRecentWorkspace: Invoke<'forget-recent-workspace'>;
   closeWorkspace: Invoke<'close-workspace'>;
   readTree: Invoke<'read-tree'>;
+  readTreeChildren: Invoke<'read-tree-children'>;
+  scanWorkspaceFiles: Invoke<'scan-workspace-files'>;
   onWorkspaceOpened: Subscribe<'workspace-opened'>;
   onWorkspaceRefresh: Subscribe<'workspace-refresh'>;
   onWorkspaceLeaveRequest: Subscribe<'workspace-leave-request'>;

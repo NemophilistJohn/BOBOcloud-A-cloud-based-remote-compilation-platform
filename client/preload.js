@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('api', {
   forgetRecentWorkspace: (dirPath) => ipcRenderer.invoke('forget-recent-workspace', dirPath),
   closeWorkspace: () => ipcRenderer.invoke('close-workspace'),
   readTree: (path) => ipcRenderer.invoke('read-tree', path),
+  readTreeChildren: (path) => ipcRenderer.invoke('read-tree-children', path),
+  scanWorkspaceFiles: () => ipcRenderer.invoke('scan-workspace-files'),
   onWorkspaceOpened: (cb) => subscribePayload('workspace-opened', cb),
   onWorkspaceRefresh: (cb) => subscribePayload('workspace-refresh', cb),
   onWorkspaceLeaveRequest: (cb) => subscribePayload('workspace-leave-request', cb),

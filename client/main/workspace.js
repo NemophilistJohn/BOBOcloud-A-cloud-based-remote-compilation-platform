@@ -403,6 +403,81 @@ function createWorkspaceController(options) {
     return scanTreeDirectory(directoryPath);
   }
 
+  async function readTreeShallow(directoryPath) {
+    let stat = null;
+    try { stat = await withTreeReadSlot(() => fs.promises.stat(directoryPath)); } catch (_) {}
+    if (!stat || !stat.isDirectory()) return null;
+    let batch;
+    try {
+      batch = await withTreeReadSlot(() => readDirectoryEntriesBounded(
+        directoryPath,
+        treeScanLimits.maxEntriesPerDirectory
+      ));
+    } catch (_) { return null; }
+    const entries = batch.entries.sort(compareTreeEntries);
+    const children = [];
+    for (const entry of entries) {
+      const fullPath = path.join(directoryPath, entry.name);
+      if (fullPath.length > treeScanLimits.maxPathChars) continue;
+      if (entry.isDirectory()) {
+        if (isIgnoredDirectory(entry.name)) {
+          children.push({ name: entry.name, path: fullPath, type: 'folder', children: [], childrenLoaded: true });
+        } else {
+          children.push({ name: entry.name, path: fullPath, type: 'folder', children: [], childrenLoaded: false });
+        }
+      } else if (entry.isFile()) {
+        children.push({ name: entry.name, path: fullPath, type: 'file' });
+      }
+    }
+    return {
+      name: path.basename(directoryPath),
+      path: directoryPath,
+      type: 'folder',
+      children,
+      childrenLoaded: true,
+      truncated: batch.truncated
+    };
+  }
+
+  async function scanWorkspaceFiles() {
+    const rootPath = workspaceRoot;
+    const identity = workspaceIdentity;
+    if (!rootPath) return null;
+    const files = [];
+    const pending = [{ path: rootPath, depth: 0 }];
+    const maxEntries = 50_000;
+    const maxDepth = 64;
+    let scanned = 0;
+    let truncated = false;
+    while (pending.length && scanned < maxEntries) {
+      if (rootPath !== workspaceRoot || identity !== workspaceIdentity) return null;
+      const directory = pending.pop();
+      let batch;
+      try {
+        batch = await withTreeReadSlot(() => readDirectoryEntriesBounded(
+          directory.path,
+          treeScanLimits.maxEntriesPerDirectory
+        ));
+      } catch (_) { continue; }
+      if (batch.truncated) truncated = true;
+      const entries = batch.entries.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: 'base', numeric: true }));
+      for (const entry of entries) {
+        if (scanned >= maxEntries) { truncated = true; break; }
+        scanned += 1;
+        const filePath = path.join(directory.path, entry.name);
+        if (filePath.length > treeScanLimits.maxPathChars) { truncated = true; continue; }
+        if (entry.isDirectory()) {
+          if (isIgnoredDirectory(entry.name)) continue;
+          if (directory.depth >= maxDepth) { truncated = true; continue; }
+          pending.push({ path: filePath, depth: directory.depth + 1 });
+        } else if (entry.isFile()) {
+          files.push({ path: filePath, name: entry.name });
+        }
+      }
+    }
+    return { rootPath, workspaceIdentity: identity, files, truncated };
+  }
+
   function setTreeCache(tree) {
     treeCache = tree;
     treeCacheIndex = new Map();
@@ -456,7 +531,7 @@ function createWorkspaceController(options) {
     if (watcherDebounceTimers.has(rootPath)) return;
     const refreshSequence = ++treeRefreshSequence;
     invalidateTreeCache();
-    void readTree(rootPath, false).then((fullTree) => {
+    void readTreeShallow(rootPath).then((fullTree) => {
       if (rootPath !== workspaceRoot || identity !== workspaceIdentity || refreshSequence !== treeRefreshSequence || !fullTree) return;
       setTreeCache(fullTree);
     }).catch(() => {});
@@ -480,7 +555,7 @@ function createWorkspaceController(options) {
         }
       }
       invalidateTreeCache();
-      const fullTree = await readTree(rootPath);
+      const fullTree = await readTreeShallow(rootPath);
       if (rootPath !== workspaceRoot || identity !== workspaceIdentity || refreshSequence !== treeRefreshSequence || !fullTree) return;
       setTreeCache(fullTree);
       send('workspace-refresh', { rootPath, workspaceIdentity: identity, tree: fullTree });
@@ -591,7 +666,7 @@ function createWorkspaceController(options) {
     const stat = safeStat(folder);
     if (!stat || !stat.isDirectory()) throw new Error('Workspace folder does not exist');
     const currentOpenSequence = ++openSequence;
-    let tree = await scanTreeDirectory(folder);
+    let tree = await readTreeShallow(folder);
     if (currentOpenSequence !== openSequence || !tree) return null;
     let leaveToken = null;
     if (workspaceRoot) {
@@ -624,7 +699,7 @@ function createWorkspaceController(options) {
             // The renderer has approved the transition. Terminals are scoped to
             // the old remote snapshot and must not survive into the new one.
             await Promise.resolve(stopTerminal('workspace-switch'));
-            tree = await scanTreeDirectory(folder);
+            tree = await readTreeShallow(folder);
           } catch (error) {
             abortLeave(leaveToken);
             throw error;
@@ -1090,12 +1165,29 @@ function createWorkspaceController(options) {
       if (!directoryPath) return null;
       return readTree(resolveWorkspacePath(directoryPath, { allowRoot: true }));
     });
+    ipcMain.handle('read-tree-children', async (_event, directoryPath) => {
+      if (!directoryPath) return null;
+      const rootPath = workspaceRoot;
+      const identity = workspaceIdentity;
+      const target = resolveWorkspacePathWithin(rootPath, directoryPath, { allowRoot: true });
+      const tree = await readTreeShallow(target);
+      if (!tree || rootPath !== workspaceRoot || identity !== workspaceIdentity || target !== path.resolve(directoryPath)) return null;
+      const cachedParent = findTreeNode(target);
+      if (cachedParent) {
+        cachedParent.children = tree.children;
+        cachedParent.childrenLoaded = true;
+        cachedParent.truncated = tree.truncated === true;
+        setTreeCache(treeCache);
+      }
+      return { rootPath, workspaceIdentity: identity, directoryPath: target, children: tree.children, truncated: tree.truncated === true };
+    });
+    ipcMain.handle('scan-workspace-files', async () => scanWorkspaceFiles());
     ipcMain.handle('refresh-workspace', async () => {
       if (!workspaceRoot) return null;
       const rootPath = workspaceRoot;
       const refreshSequence = ++treeRefreshSequence;
       invalidateTreeCache();
-      const tree = await readTree(rootPath);
+      const tree = await readTreeShallow(rootPath);
       if (workspaceRoot !== rootPath || refreshSequence !== treeRefreshSequence) return null;
       setTreeCache(tree);
       send('workspace-refresh', { rootPath, workspaceIdentity, tree });

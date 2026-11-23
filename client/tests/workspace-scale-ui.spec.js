@@ -85,10 +85,12 @@ test('large workspaces stay searchable while the tree renders in pages', async (
       const dependency = opened.tree.children.find(entry => entry.name === 'node_modules');
       return {
         manyCount: many && many.children.length,
-        dependencyCount: dependency && dependency.children.length
+        dependencyCount: dependency && dependency.children.length,
+        manyLoaded: many && many.childrenLoaded,
+        dependencyLoaded: dependency && dependency.childrenLoaded
       };
     }, workspaceDir);
-    expect(modelSummary).toEqual({ manyCount: 250, dependencyCount: 0 });
+    expect(modelSummary).toEqual({ manyCount: 0, dependencyCount: 0, manyLoaded: false, dependencyLoaded: true });
 
     stage = 'first page';
     await page.locator('.tree-row[data-name="many"]').click();

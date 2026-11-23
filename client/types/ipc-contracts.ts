@@ -95,6 +95,8 @@ export interface IpcInvokeContracts {
   'forget-recent-workspace': IpcInvokeContract<[dirPath: string], boolean>;
   'close-workspace': IpcInvokeContract;
   'read-tree': IpcInvokeContract<[path: string]>;
+  'read-tree-children': IpcInvokeContract<[path: string]>;
+  'scan-workspace-files': IpcInvokeContract;
   'workspace-leave-choice': IpcInvokeContract<[details: unknown]>;
   'workspace-identity': IpcInvokeContract;
   'workspace-settings-read': IpcInvokeContract<[identity: WorkspaceSettingsRequestDto]>;

@@ -221,7 +221,7 @@ function createRuntime(fileCount) {
   return { sandbox, elements, files, root, tabs, service };
 }
 
-test('Quick Open keeps legacy ranking while avoiding whole-result sorting', () => {
+test('Quick Open keeps legacy ranking while avoiding whole-result sorting', async () => {
   const runtime = createRuntime(5000);
   runtime.service.show();
   const suggested = runtime.elements['quick-file-search-results']
@@ -232,6 +232,7 @@ test('Quick Open keeps legacy ranking while avoiding whole-result sorting', () =
   const input = runtime.elements['quick-file-search-input'];
   input.value = 'file';
   input.dispatch('input', {});
+  await new Promise(resolve => setTimeout(resolve, 1000));
 
   const actual = runtime.elements['quick-file-search-results']
     .querySelectorAll('.file-search-result')

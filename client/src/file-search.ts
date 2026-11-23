@@ -48,6 +48,11 @@ export function createFileSearchService(
   let selectedIndex = 0;
   let visibleItems: FileSearchFileDto[] = [];
   let focusTimer: number | null = null;
+  let filterTimer: number | null = null;
+  let indexGeneration = 0;
+  let renderGeneration = 0;
+  let indexing = false;
+  let indexTruncated = false;
   let disposed = false;
 
   function t(source: unknown, params?: Readonly<Record<string, unknown>> | null): string {
@@ -72,6 +77,28 @@ export function createFileSearchService(
     return file.split('/').pop() || file;
   }
 
+  function fileDto(filePath: unknown, fileName: unknown, rootPath: unknown): FileSearchFileDto {
+    const path = String(filePath || '');
+    const relative = relativePath(path, rootPath);
+    const parts = relative.split('/');
+    const name = String(fileName || parts[parts.length - 1] || '');
+    const lowerName = name.toLowerCase();
+    const importantIndex = IMPORTANT_FILES.indexOf(lowerName as typeof IMPORTANT_FILES[number]);
+    let suggestionBase = importantIndex >= 0 ? 400 - importantIndex : 0;
+    if (/^(?:main|index|app|application|program)\.[a-z0-9]+$/.test(lowerName)) suggestionBase += 260;
+    suggestionBase += Math.max(0, 80 - (parts.length - 1) * 20);
+    return {
+      path,
+      normalizedPath: normalizedPath(path),
+      name,
+      dir: parts.slice(0, -1).join('/'),
+      relativePath: relative,
+      searchName: lowerName,
+      searchPath: relative.toLowerCase(),
+      suggestionBase
+    };
+  }
+
   function flattenTree(tree: FileSearchTreeNodeDto): FileSearchFileDto[] {
     const flattened: FileSearchFileDto[] = [];
     // Workspace settings are stable for this synchronous rebuild. Resolve the
@@ -84,29 +111,7 @@ export function createFileSearchService(
             settings.isPathExcluded(node.path)) return;
       }
       if (node.type === 'file') {
-        const path = String(node.path || '');
-        const relative = relativePath(path, tree.path);
-        const parts = relative.split('/');
-        const name = String(node.name || parts[parts.length - 1] || '');
-        const lowerName = name.toLowerCase();
-        const importantIndex = IMPORTANT_FILES.indexOf(
-          lowerName as typeof IMPORTANT_FILES[number]
-        );
-        let suggestionBase = importantIndex >= 0 ? 400 - importantIndex : 0;
-        if (/^(?:main|index|app|application|program)\.[a-z0-9]+$/.test(lowerName)) {
-          suggestionBase += 260;
-        }
-        suggestionBase += Math.max(0, 80 - (parts.length - 1) * 20);
-        flattened.push({
-          path,
-          normalizedPath: normalizedPath(path),
-          name,
-          dir: parts.slice(0, -1).join('/'),
-          relativePath: relative,
-          searchName: lowerName,
-          searchPath: relative.toLowerCase(),
-          suggestionBase
-        });
+        flattened.push(fileDto(node.path, node.name, tree.path));
       }
       if (Array.isArray(node.children)) {
         // Avoid allocating a filtered child array for every directory in a
@@ -137,6 +142,45 @@ export function createFileSearchService(
     cachedRoot = root;
     cachedFiles = flattenTree(tree);
     if (rootChanged && input) input.value = '';
+  }
+
+  function startAsyncIndex(): void {
+    if (disposed || indexing || !dependencies.scanWorkspaceFiles || !dependencies.state.workspaceRoot) return;
+    const generation = ++indexGeneration;
+    indexing = true;
+    if (status) status.textContent = t('Indexing workspace...');
+    Promise.resolve(dependencies.scanWorkspaceFiles()).then(async (result: unknown) => {
+      if (disposed || generation !== indexGeneration || !isTreeNode(result)) return;
+      const payload = result as { rootPath?: unknown; workspaceIdentity?: unknown; files?: unknown[] };
+      if (String(payload.rootPath || '') !== String(dependencies.state.workspaceRoot || '') ||
+          dependencies.state.workspaceIdentity !== undefined && payload.workspaceIdentity !== dependencies.state.workspaceIdentity) return;
+      const entries = Array.isArray(payload.files) ? payload.files : [];
+      const nextFiles: FileSearchFileDto[] = [];
+      const pathSettings = dependencies.getWorkspaceSettings();
+      for (let start = 0; start < entries.length; start += 1200) {
+        if (disposed || generation !== indexGeneration) return;
+        const end = Math.min(start + 1200, entries.length);
+        for (let index = start; index < end; index += 1) {
+          const entry = entries[index];
+          if (!isTreeNode(entry)) continue;
+          const filePath = String(entry.path || '');
+          if (!filePath || pathSettings && pathSettings.isPathExcluded && pathSettings.isPathExcluded(filePath)) continue;
+          nextFiles.push(fileDto(filePath, entry.name, dependencies.state.workspaceRoot));
+        }
+        if (end < entries.length) await yieldToUi();
+      }
+      if (disposed || generation !== indexGeneration) return;
+      cachedFiles = nextFiles;
+      indexTruncated = (result as { truncated?: unknown }).truncated === true;
+      if (input) render();
+    }).catch(() => {
+      if (!disposed && generation === indexGeneration && status) status.textContent = t('Workspace index unavailable.');
+    }).finally(() => {
+      if (generation === indexGeneration) {
+        indexing = false;
+        if (input) render();
+      }
+    });
   }
 
   function storageKey(): string {
@@ -241,15 +285,25 @@ export function createFileSearchService(
     if (matches.length > limit) matches.pop();
   }
 
-  function searchFiles(query: string): FileSearchFileDto[] {
+  function yieldToUi(): Promise<void> {
+    return new Promise((resolve) => dependencies.setTimer(resolve, 0));
+  }
+
+  async function searchFiles(query: string, generation: number): Promise<FileSearchFileDto[]> {
     const normalizedQuery = String(query || '').toLowerCase();
     const matches: RankedFile[] = [];
-    cachedFiles.forEach((file) => {
-      const nameScore = fuzzyMatch(normalizedQuery, file.searchName);
-      const pathScore = fuzzyMatch(normalizedQuery, file.searchPath);
-      const score = Math.max(nameScore >= 0 ? nameScore + 4 : -1, pathScore);
-      if (score >= 0) insertBoundedMatch(matches, { file, score }, RESULT_LIMIT);
-    });
+    for (let start = 0; start < cachedFiles.length; start += 1600) {
+      if (disposed || generation !== renderGeneration) return [];
+      const end = Math.min(start + 1600, cachedFiles.length);
+      for (let index = start; index < end; index += 1) {
+        const file = cachedFiles[index]!;
+        const nameScore = fuzzyMatch(normalizedQuery, file.searchName);
+        const pathScore = fuzzyMatch(normalizedQuery, file.searchPath);
+        const score = Math.max(nameScore >= 0 ? nameScore + 4 : -1, pathScore);
+        if (score >= 0) insertBoundedMatch(matches, { file, score }, RESULT_LIMIT);
+      }
+      if (end < cachedFiles.length) await yieldToUi();
+    }
     return matches.map((match) => match.file);
   }
 
@@ -401,8 +455,9 @@ export function createFileSearchService(
     if (!buttons.length) searchInput.removeAttribute('aria-activedescendant');
   }
 
-  function render(): void {
+  async function render(): Promise<void> {
     if (!input || !results || !status || disposed) return;
+    const generation = ++renderGeneration;
     results.innerHTML = '';
     visibleItems = [];
     const query = input.value.trim();
@@ -415,7 +470,9 @@ export function createFileSearchService(
     }
     input.disabled = false;
     if (query) {
-      const matches = searchFiles(query);
+      status.textContent = t('Searching workspace...');
+      const matches = await searchFiles(query, generation);
+      if (disposed || generation !== renderGeneration || !results || !status) return;
       if (matches.length) appendSection('Search results', matches, { kind: 'results' });
       else renderEmpty('No matching files', false);
       status.textContent = matches.length
@@ -430,7 +487,11 @@ export function createFileSearchService(
       if (!recent.length && !suggestions.length) {
         renderEmpty('Start typing to search your workspace.', false);
       }
-      status.textContent = t('{count} files available', { count: cachedFiles.length });
+      status.textContent = indexing
+        ? t('Indexing workspace...')
+        : indexTruncated
+          ? t('Showing a partial workspace index: {count} files', { count: cachedFiles.length })
+          : t('{count} files available', { count: cachedFiles.length });
     }
     if (visibleItems.length === 0) selectedIndex = 0;
     else selectedIndex = Math.max(0, Math.min(selectedIndex, visibleItems.length - 1));
@@ -442,6 +503,14 @@ export function createFileSearchService(
     rebuildCache(false);
     selectedIndex = 0;
     render();
+  }
+
+  function scheduleFilter(): void {
+    if (filterTimer !== null) dependencies.clearTimer(filterTimer);
+    filterTimer = dependencies.setTimer(() => {
+      filterTimer = null;
+      filter();
+    }, 80);
   }
 
   function navigate(direction: number): void {
@@ -472,7 +541,7 @@ export function createFileSearchService(
     status = dependencies.document.getElementById('quick-file-search-status');
     if (!input || !results || !status) return;
     const searchInput = input;
-    listen(searchInput, 'input', () => filter());
+    listen(searchInput, 'input', () => scheduleFilter());
     listen(searchInput, 'keydown', (event) => {
       const keyboardEvent = event as KeyboardEvent;
       if (keyboardEvent.key === 'ArrowDown') {
@@ -488,13 +557,14 @@ export function createFileSearchService(
         keyboardEvent.preventDefault();
         if (searchInput.value) {
           searchInput.value = '';
-          filter();
+          scheduleFilter();
         } else {
           hide();
         }
       }
     });
     filter();
+    startAsyncIndex();
   }
 
   function focusSoon(): void {
@@ -527,8 +597,14 @@ export function createFileSearchService(
 
   function refreshCache(force = false): void {
     if (disposed) return;
+    if (force) {
+      indexGeneration += 1;
+      indexing = false;
+      indexTruncated = false;
+    }
     rebuildCache(force === true);
     if (input) render();
+    if (input) startAsyncIndex();
   }
 
   listen(dependencies.eventTarget, 'bobo:language-changed', () => {
@@ -542,7 +618,10 @@ export function createFileSearchService(
     if (disposed) return;
     disposed = true;
     if (focusTimer !== null) dependencies.clearTimer(focusTimer);
+    if (filterTimer !== null) dependencies.clearTimer(filterTimer);
     focusTimer = null;
+    filterTimer = null;
+    indexGeneration += 1;
     lifecycle.dispose();
     input = null;
     results = null;

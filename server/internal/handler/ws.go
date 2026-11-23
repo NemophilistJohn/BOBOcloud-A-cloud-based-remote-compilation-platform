@@ -259,6 +259,7 @@ func (h *WSHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		stdinReader = stdinRead
 	}
 
+	runStartedAt := time.Now()
 	var runResult *model.RunResult
 	if sess.Task != nil {
 		runResult = h.runProjectTask(runCtx, msg.RunID, sess, channel, stdinReader)
@@ -276,6 +277,7 @@ func (h *WSHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// ── 保存运行历史（仅 BoltDB 模式）──
 	if h.RunHistory != nil && runResult != nil {
+		completedAt := time.Now()
 		status := runHistoryStatus(runResult)
 		summary, outputTruncated := runHistorySummary(runResult)
 
@@ -284,16 +286,26 @@ func (h *WSHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			RunID:           msg.RunID,
 			UserID:          sess.UserID,
 			FolderName:      sess.FolderName,
+			FolderKey:       sess.FolderKey,
 			FilePath:        displayTarget,
 			TargetType:      targetType,
 			TaskLabel:       taskLabel,
 			TaskKind:        taskKind,
 			Runtime:         sess.Runtime,
+			Language:        model.LanguageFromExtension(filepath.Ext(sess.FilePath)),
 			BuildTarget:     sess.BuildTarget,
+			TeamID:          sess.TeamID,
+			ProjectID:       sess.ProjectID,
+			Branch:          sess.Branch,
+			CompileArgs:     append([]string(nil), sess.CompileArgs...),
+			RunArgs:         append([]string(nil), sess.RunArgs...),
+			SetupCount:      len(sess.SetupCommands),
 			Status:          status,
 			ExitCode:        runResult.ReturnCode,
-			DurationMs:      time.Since(sess.CreatedAt).Milliseconds(),
+			DurationMs:      completedAt.Sub(runStartedAt).Milliseconds(),
 			CreatedAt:       sess.CreatedAt,
+			StartedAt:       runStartedAt,
+			CompletedAt:     completedAt,
 			OutputSummary:   summary,
 			OutputTruncated: outputTruncated,
 		}

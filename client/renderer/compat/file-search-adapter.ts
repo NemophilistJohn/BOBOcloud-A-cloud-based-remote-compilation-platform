@@ -39,6 +39,7 @@ const legacyWindow = window as LegacyFileSearchWindow;
 const BOBO = legacyWindow.BOBO = legacyWindow.BOBO || {};
 const state = BOBO.state;
 if (!state) throw new Error('File Search requires renderer state.');
+const fileSearchHost = rendererPlatform.services.require('host.fileSearch');
 
 let storage: Storage | null = null;
 try {
@@ -58,6 +59,7 @@ export const fileSearch = createFileSearchService({
   getIcons: () => BOBO.icons,
   getWorkspaceLaunch: () => BOBO.workspaceLaunch,
   getWorkspace: () => BOBO.workspace,
+  scanWorkspaceFiles: fileSearchHost.scanWorkspaceFiles,
   getWorkbench: () => BOBO.workbench,
   setTimer: (callback, delayMs) => legacyWindow.setTimeout(callback, delayMs),
   clearTimer: (timer) => legacyWindow.clearTimeout(timer)

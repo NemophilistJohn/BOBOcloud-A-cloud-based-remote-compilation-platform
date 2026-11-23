@@ -742,7 +742,16 @@ type UnknownRecord = Record<string, unknown>;
     const engine = globalScope.completionEngine;
     if (!engine) throw new Error('completionEngine must be loaded before registering completion providers');
 
-    listLanguageRulePlugins().forEach((plugin) => {
+    const plugins = listLanguageRulePlugins().slice();
+    const registered = new Set(plugins.map((plugin) => plugin.language));
+    // JavaScript and TypeScript share the analyzer-backed completion path even
+    // when they do not need a language-specific static snippet catalogue.
+    ['javascript', 'typescript'].forEach((language) => {
+      if (!registered.has(language as EditorRuleLanguageId)) {
+        plugins.push({ language: language as EditorRuleLanguageId });
+      }
+    });
+    plugins.forEach((plugin) => {
       const staticProvider = plugin.createCompletionProvider
         ? plugin.createCompletionProvider(monacoRef, sharedHelpers)
         : null;

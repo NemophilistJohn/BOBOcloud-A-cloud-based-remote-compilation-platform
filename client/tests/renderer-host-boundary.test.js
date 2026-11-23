@@ -512,6 +512,7 @@ test('native host services remain private to the workbench', () => {
   assert.match(adapter, /PLUGIN_MANAGEMENT_HOST_SERVICE_ID\s*=\s*['"]host\.pluginManagement['"]/);
   assert.match(adapter, /PLUGIN_EXTENSIONS_HOST_SERVICE_ID\s*=\s*['"]host\.pluginExtensions['"]/);
   assert.match(adapter, /ENVIRONMENT_CENTER_HOST_SERVICE_ID\s*=\s*['"]host\.environmentCenter['"]/);
+  assert.match(adapter, /FILE_SEARCH_HOST_SERVICE_ID\s*=\s*['"]host\.fileSearch['"]/);
   assert.match(adapter, /VIEWS_HOST_SERVICE_ID\s*=\s*['"]host\.views['"]/);
   assert.match(adapter, /PROJECTS_HOST_SERVICE_ID\s*=\s*['"]host\.projects['"]/);
   assert.match(adapter,
@@ -523,7 +524,7 @@ test('native host services remain private to the workbench', () => {
   assert.match(adapter, /AI_CHAT_PANEL_HOST_SERVICE_ID\s*=\s*['"]host\.aiChatPanel['"]/);
   assert.match(adapter,
     /COLLABORATION_HOST_SERVICE_ID(?:\s*:\s*[^=;\n]+)?\s*=\s*['"]host\.collaboration['"]/);
-  assert.equal((adapter.match(/services\.registerPrivate\(/g) || []).length, 18,
+  assert.equal((adapter.match(/services\.registerPrivate\(/g) || []).length, 19,
     'all host-only services must use the explicit private registration path');
   assert.doesNotMatch(adapter, /pluginView\s*:/);
   assert.match(diagnosticsAdapter,

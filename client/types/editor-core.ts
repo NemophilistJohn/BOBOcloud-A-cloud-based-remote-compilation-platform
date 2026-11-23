@@ -19,7 +19,7 @@ export interface EditorCoreModelPort {
   getOptions(): EditorCoreModelOptionsDto;
   getLineCount(): number;
   isDisposed?(): boolean;
-  onDidChangeContent(listener: () => void): Disposable | void;
+  onDidChangeContent(listener: (event?: unknown) => void): Disposable | void;
   onWillDispose?(listener: () => void): Disposable | void;
   updateOptions?(options: Readonly<Record<string, unknown>>): void;
 }

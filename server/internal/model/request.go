@@ -296,16 +296,26 @@ type RunRecord struct {
 	RunID           string    `json:"run_id"`
 	UserID          string    `json:"user_id"`
 	FolderName      string    `json:"folder_name"`
+	FolderKey       string    `json:"folder_key,omitempty"`
 	FilePath        string    `json:"file_path"`
 	TargetType      string    `json:"target_type,omitempty"`
 	TaskLabel       string    `json:"task_label,omitempty"`
 	TaskKind        string    `json:"task_kind,omitempty"`
 	Runtime         string    `json:"runtime"`
+	Language        string    `json:"language,omitempty"`
 	BuildTarget     string    `json:"build_target,omitempty"`
+	TeamID          string    `json:"team_id,omitempty"`
+	ProjectID       string    `json:"project_id,omitempty"`
+	Branch          string    `json:"branch,omitempty"`
+	CompileArgs     []string  `json:"compile_args,omitempty"`
+	RunArgs         []string  `json:"run_args,omitempty"`
+	SetupCount      int       `json:"setup_count,omitempty"`
 	Status          string    `json:"status"` // "completed", "failed", "timed_out", "cancelled"
 	ExitCode        int       `json:"exit_code"`
 	DurationMs      int64     `json:"duration_ms"`
 	CreatedAt       time.Time `json:"created_at"`
+	StartedAt       time.Time `json:"started_at,omitempty"`
+	CompletedAt     time.Time `json:"completed_at,omitempty"`
 	OutputSummary   string    `json:"output_summary,omitempty"` // 尾部最多64KB
 	OutputTruncated bool      `json:"output_truncated,omitempty"`
 }

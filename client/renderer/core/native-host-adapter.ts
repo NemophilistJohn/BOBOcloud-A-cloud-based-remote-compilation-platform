@@ -11,6 +11,7 @@ import type {
 } from '../../types/project-tasks';
 import type { DocumentViewHost } from '../../types/document-view';
 import type { EnvironmentCenterNativeHostPort } from '../../types/environment-center';
+import type { FileSearchHost } from '../../types/file-search';
 import type {
   LanguagePacksHost,
   LanguagePacksInvalidationHint,
@@ -76,6 +77,7 @@ import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
 export const DIAGNOSTICS_HOST_SERVICE_ID = 'host.diagnostics';
 export const DOCUMENT_VIEWS_HOST_SERVICE_ID = 'host.documentViews';
 export const ENVIRONMENT_CENTER_HOST_SERVICE_ID = 'host.environmentCenter';
+export const FILE_SEARCH_HOST_SERVICE_ID = 'host.fileSearch';
 export const LANGUAGE_PACKS_HOST_SERVICE_ID = 'host.languagePacks';
 export const PLUGIN_MANAGEMENT_HOST_SERVICE_ID = 'host.pluginManagement';
 export const PLUGIN_EXTENSIONS_HOST_SERVICE_ID = 'host.pluginExtensions';
@@ -136,6 +138,13 @@ function createEnvironmentCenterHost(
     onFileEvent: (listener: (event: unknown) => void) => (
       host.onFileEvent((event) => listener(event))
     )
+  });
+}
+
+function createFileSearchHost(host: NativeHost): Readonly<FileSearchHost> {
+  return Object.freeze({
+    readTreeChildren: (directoryPath: string) => host.readTreeChildren(directoryPath),
+    scanWorkspaceFiles: () => host.scanWorkspaceFiles()
   });
 }
 
@@ -496,6 +505,11 @@ const environmentCenterRegistration = rendererPlatform.services.registerPrivate(
   createEnvironmentCenterHost(nativeHost)
 );
 rendererPlatform.lifecycle.add(environmentCenterRegistration);
+
+rendererPlatform.lifecycle.add(rendererPlatform.services.registerPrivate(
+  FILE_SEARCH_HOST_SERVICE_ID,
+  createFileSearchHost(nativeHost)
+));
 
 const viewsRegistration = rendererPlatform.services.registerPrivate(
   VIEWS_HOST_SERVICE_ID,
