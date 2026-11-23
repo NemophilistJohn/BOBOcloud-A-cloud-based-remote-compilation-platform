@@ -292,6 +292,21 @@ export function createWorkspaceSyncStatus(
       }
     });
 
+    // A lazy tree intentionally omits descendants until their folder is
+    // opened. Conflicts are path facts, so fold an unresolved path into its
+    // nearest loaded ancestor even when the conflicted file is not indexed.
+    conflicts.forEach((conflictKey) => {
+      if (treeIndex.has(conflictKey)) return;
+      let cursor = nearestTreeAncestor(conflictKey);
+      while (cursor && treeIndex.has(cursor)) {
+        const current = aggregate.get(cursor) || { state: baselineState, count: 0 };
+        current.state = highestState(current.state, 'conflict');
+        current.count += 1;
+        aggregate.set(cursor, current);
+        cursor = treeIndex.get(cursor)?.parent || '';
+      }
+    });
+
     if (rootOperation && aggregate.has(rootKey)) {
       const root = aggregate.get(rootKey) as AggregateEntry;
       root.state = highestState(root.state, rootOperation.state);
