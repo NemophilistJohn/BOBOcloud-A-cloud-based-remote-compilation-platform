@@ -912,7 +912,7 @@ export function createCollaborationService(
     target.innerHTML = '<div class="team-cache-overview">' + donut + summary + '</div>';
   }
   function teamSeriesColor(index) {
-    var palette = ['var(--brand)', 'var(--blue)', 'var(--green)', 'var(--orange)', 'var(--purple)', 'var(--yellow)', 'var(--red)'];
+    var palette = ['var(--brand)', 'color-mix(in oklab, var(--green) 65%, var(--text-secondary))', 'var(--orange)', 'var(--purple)', 'var(--red)', 'var(--blue)'];
     return palette[index % palette.length];
   }
   function renderMemberActivity(activity) {
@@ -920,36 +920,36 @@ export function createCollaborationService(
     if (!activity || !Number(activity.days)) { target.innerHTML = '<div class="collab-empty" data-i18n="Activity is unavailable">' + esc(t('Activity is unavailable')) + '</div>'; return; }
     var members = asArray(activity.members);
     var days = Math.min(200, Number(activity.days));
-    var width = 1000, height = 176, left = 34, right = 8, top = 10, bottom = 24;
-    var max = members.reduce(function(peak, member) {
-      return asArray(member.daily).slice(0, days).reduce(function(high, value) { return Math.max(high, Number(value) || 0); }, peak);
-    }, 1);
-    var plotWidth = width - left - right, plotHeight = height - top - bottom;
-    var grid = [0, .5, 1].map(function(fraction) {
-      var y = top + plotHeight * fraction;
-      return '<line class="team-activity-gridline" x1="' + left + '" x2="' + (width - right) + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '"/><text class="team-activity-axis" x="2" y="' + (y + 3).toFixed(1) + '">' + Math.round(max * (1 - fraction)) + '</text>';
+    const width = 800, height = 150;
+    const peak = members.reduce((high, member) => Math.max(high, ...asArray(member.daily).slice(0, days).map(Number)), 1);
+    const ticks = [...new Set([peak, Math.floor(peak / 2), 0])];
+    const grid = ticks.map(value => {
+      const y = height * (1 - value / peak);
+      return `<line class="team-activity-gridline" x1="0" x2="${width}" y1="${y}" y2="${y}"/>`;
     }).join('');
-    var series = members.map(function(member, index) {
-      var daily = asArray(member.daily);
-      var points = [];
-      for (var i = 0; i < days; i++) {
-        var value = Math.max(0, Number(daily[i] || 0));
-        var x = left + (days <= 1 ? 0 : i / (days - 1) * plotWidth);
-        var y = top + (1 - value / max) * plotHeight;
-        points.push((i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1));
-      }
-      return '<path class="team-activity-series" pathLength="1" stroke="' + teamSeriesColor(index) + '" d="' + points.join(' ') + '"><title>' + esc(member.uid + ' · ' + member.total) + '</title></path>';
+    const axis = ticks.map(value => `<span class="team-activity-y" style="top:${100 * (1 - value / peak)}%">${value}</span>`).join('');
+    const series = members.map((member, index) => {
+      const daily = asArray(member.daily);
+      const points = Array.from({ length: days }, (_, i) => {
+        const x = width * i / Math.max(1, days - 1);
+        const y = height * (1 - Math.max(0, Number(daily[i]) || 0) / peak);
+        return x.toFixed(2) + ' ' + y.toFixed(2);
+      });
+      const line = 'M' + points.join(' L');
+      const id = 'team-trend-fill-' + index;
+      return `<g style="color:${teamSeriesColor(index)}"><defs><linearGradient id="${id}" x2="0%" y2="100%"><stop stop-color="currentColor" stop-opacity=".22"/><stop offset="1" stop-color="currentColor" stop-opacity=".015"/></linearGradient></defs>
+        <path fill="url(#${id})" d="${line} L${days > 1 ? width : 0} ${height} L0 ${height} Z"/>
+        <path class="team-activity-series" stroke="currentColor" d="${line}"><title>${esc(member.uid + ' · ' + member.total)}</title></path></g>`;
     }).join('');
-    var start = new Date(activity.start_date + 'T00:00:00Z');
-    var labels = [0, 50, 100, 150, days - 1].map(function(index) {
-      var date = new Date(start.getTime() + index * 86400000);
-      var x = left + index / Math.max(1, days - 1) * plotWidth;
-      return '<text class="team-activity-axis" x="' + x.toFixed(1) + '" y="' + (height - 4) + '" text-anchor="middle">' + esc(date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })) + '</text>';
+    const start = Date.parse(activity.start_date + 'T00:00:00Z');
+    const dates = [...new Set([0, .25, .5, .75, 1].map(fraction => Math.round(fraction * (days - 1))))].map(index => {
+      const date = new Date(start + index * 86400000);
+      return '<span>' + esc(date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })) + '</span>';
     }).join('');
-    var legend = members.map(function(member, index) {
-      return '<span class="team-activity-legend-item"><i class="team-activity-swatch" style="background:' + teamSeriesColor(index) + '"></i>' + esc(member.uid) + '</span>';
-    }).join('');
-    target.innerHTML = '<div class="team-activity-chart"><svg viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="' + esc(t('Daily commits by team member')) + '" preserveAspectRatio="none">' + grid + series + labels + '</svg><div class="team-activity-legend">' + legend + '</div></div>';
+    const legend = members.map((member, index) =>
+      `<span class="team-activity-legend-item"><i class="team-activity-swatch" style="background:${teamSeriesColor(index)}"></i>${esc(member.uid)} <b>${Number(member.total) || 0}</b></span>`
+    ).join('');
+    target.innerHTML = `<div class="team-activity-chart"><div class="team-activity-plot">${axis}<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(t('Daily commits by team member'))}" preserveAspectRatio="none">${grid}${series}</svg></div><div class="team-activity-dates">${dates}</div><div class="team-activity-legend">${legend}</div></div>`;
   }
   function renderProjectActivity(activity) {
     var target = $('team-project-activity');

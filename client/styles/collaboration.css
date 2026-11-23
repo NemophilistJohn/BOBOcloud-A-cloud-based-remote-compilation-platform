@@ -177,15 +177,15 @@
 .collab-expanded-project span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .collab-main { min-width: 0; margin-top: 9px; border-top: 1px solid var(--border-primary); }
 .collab-team-page {
-  --team-panel: color-mix(in srgb, var(--bg-surface) 82%, var(--blue) 18%);
-  --team-heatmap-empty: color-mix(in srgb, var(--bg-elevated) 76%, var(--blue) 24%);
+  --team-panel: var(--bg-surface);
+  --team-heatmap-empty: color-mix(in srgb, var(--text-secondary) 14%, var(--bg-elevated));
   position: absolute; inset: 0; z-index: 12; overflow: auto; overscroll-behavior: contain; background: var(--bg-deep); color: var(--text-primary);
 }
 .collab-team-page[hidden], .collab-team-page [hidden] { display: none; }
 #editor.debug-session .collab-team-page { top: 42px; }
 .collab-team-page-inner { width: min(100%, 1060px); min-height: 100%; margin: 0 auto; padding: clamp(18px, 4vw, 42px) clamp(18px, 5vw, 52px) 56px; box-sizing: border-box; }
 .collab-team-page .collab-main { margin: 0; border: 0; }
-.collab-team-page .collab-team-head { align-items: center; padding: 16px 18px; gap: 20px; margin-bottom: 18px; border: 1px solid color-mix(in srgb, var(--blue) 38%, var(--border-primary)); border-left: 4px solid var(--blue); border-radius: 8px; background: color-mix(in srgb, var(--team-panel) 84%, var(--bg-deep)); box-shadow: 0 8px 24px color-mix(in srgb, var(--blue) 8%, transparent); }
+.collab-team-page .collab-team-head { align-items: center; padding: 16px 18px; gap: 20px; margin-bottom: 18px; border: 1px solid color-mix(in srgb, var(--brand) 38%, var(--border-primary));  border-radius: 8px; background: linear-gradient(115deg, var(--team-panel), var(--bg-elevated)); box-shadow: 0 8px 24px color-mix(in srgb, var(--brand) 8%, transparent); }
 .collab-team-page .collab-team-head-copy { flex: 1; min-width: 0; }
 .collab-team-title-row { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; }
 .collab-team-page .collab-team-head h2 { min-width: 0; font-size: 25px; line-height: 1.2; font-weight: 680; }
@@ -193,10 +193,10 @@
 .collab-team-head-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .collab-team-page .collab-team-head .collab-team-head-actions { flex: 0 0 auto; }
 .collab-team-page .collab-team-head button:not([hidden]) { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; }
-#collab-admin-badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 9px; border: 1px solid color-mix(in srgb, var(--blue) 52%, var(--border-primary)); border-radius: 999px; color: var(--blue-hover); background: color-mix(in srgb, var(--blue) 18%, var(--bg-elevated)); font-size: 10px; font-weight: 700; letter-spacing: .02em; }
+#collab-admin-badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 9px; border: 1px solid color-mix(in srgb, var(--brand) 52%, var(--border-primary)); border-radius: 999px; color: var(--text-primary); background: color-mix(in srgb, var(--brand) 18%, var(--bg-elevated)); font-size: 10px; font-weight: 700; letter-spacing: .02em; }
 .collab-team-page .collab-tabs { min-height: 42px; display: flex; align-items: center; gap: 5px; padding: 4px; border: 1px solid var(--border-primary); border-radius: 7px; background: var(--bg-surface); }
 .collab-team-page .collab-tabs button { min-height: 32px; padding: 0 16px; border: 1px solid transparent; border-radius: 5px; color: var(--text-secondary); font-size: 12px; font-weight: 600; }
-.collab-team-page .collab-tabs button.active { border-color: color-mix(in srgb, var(--blue) 42%, var(--border-primary)); color: var(--text-primary); background: color-mix(in srgb, var(--blue) 22%, var(--bg-elevated)); box-shadow: 0 2px 8px color-mix(in srgb, var(--blue) 12%, transparent); }
+.collab-team-page .collab-tabs button.active { border-color: color-mix(in srgb, var(--brand) 42%, var(--border-primary)); color: var(--text-primary); background: color-mix(in srgb, var(--brand) 22%, var(--bg-elevated)); box-shadow: 0 2px 8px color-mix(in srgb, var(--brand) 12%, transparent); }
 .collab-team-page .collab-pane { padding: 22px 0; }
 .collab-team-page .collab-project-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 245px), 1fr)); gap: 12px; }
 .collab-team-page .collab-project-card { min-height: 130px; padding: 14px; gap: 10px; }
@@ -550,14 +550,28 @@
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 6%, transparent), 0 6px 20px color-mix(in srgb, var(--bg-deep) 16%, transparent);
   animation: team-panel-enter var(--dur-slow) var(--ease-out) both;
 }
-.team-activity-chart { padding: 10px 11px 8px; }
-.team-activity-chart svg { height: 176px; }
-.team-activity-gridline { stroke: color-mix(in srgb, var(--text-secondary) 24%, transparent); stroke-width: .8; }
-.team-activity-axis { fill: var(--text-secondary); font: 10px var(--font-ui); font-variant-numeric: tabular-nums; }
-.team-activity-series { stroke-width: 2.2; stroke-dasharray: 1; stroke-dashoffset: 1; filter: drop-shadow(0 1px 4px color-mix(in srgb, var(--brand) 22%, transparent)); animation: team-series-draw .9s var(--ease-out) both; }
-.team-activity-legend { gap: 7px 12px; margin-top: 6px; }
-.team-activity-legend-item { color: var(--text-secondary); font-family: var(--font-ui); font-size: 11px; }
-.team-activity-swatch { box-shadow: 0 0 8px color-mix(in srgb, currentColor 28%, transparent); }
+.team-member-activity-section .team-detail-section-head h3 {
+  font: 600 clamp(17px, 1.5vw, 21px)/1.25 Georgia, "Songti SC", "SimSun", serif;
+  letter-spacing: -.025em;
+}
+/* Keep the axes in HTML so labels retain their size as the editor narrows. */
+.team-activity-chart {
+  padding: 16px;
+  background: var(--bg-elevated);
+  border-color: var(--border-default);
+  box-shadow: inset 0 1px var(--border-subtle);
+}
+.team-activity-plot { position: relative; margin: 8px 6px 0 3ch; }
+.team-activity-plot svg { width: 100%; height: clamp(126px, 16vh, 182px); display: block; overflow: visible; }
+.team-activity-y { position: absolute; right: calc(100% + 8px); transform: translateY(-50%); }
+.team-activity-dates { display: flex; justify-content: space-between; margin: 8px 2px 12px 3ch; }
+.team-activity-y, .team-activity-dates { color: var(--text-secondary); font: 550 11px var(--font-ui); font-variant-numeric: tabular-nums; }
+.team-activity-gridline { stroke: var(--border-strong); stroke-dasharray: 2 5; vector-effect: non-scaling-stroke; }
+.team-activity-series { stroke-width: 2; vector-effect: non-scaling-stroke; filter: none; }
+.team-activity-legend { gap: 6px; padding-top: 10px; border-top: 1px solid var(--border-default); }
+.team-activity-legend-item { border-radius: 99px; padding: 4px 9px; background: var(--bg-surface); color: var(--text-primary); font: 600 11px var(--font-ui); }
+.team-activity-legend-item b { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.team-activity-swatch { width: 12px; height: 3px; border-radius: 3px; }
 .team-project-insights { display: grid; grid-template-columns: minmax(0, .94fr) minmax(0, 1.06fr); align-items: stretch; gap: 14px; margin-bottom: 20px; }
 .team-project-insights > .team-detail-section { min-height: 0; margin: 0; padding: 13px; }
 .team-cache-overview { grid-template-columns: minmax(82px, .58fr) minmax(0, 1.42fr); gap: 12px; align-items: center; padding: 9px 10px; border-color: color-mix(in srgb, var(--brand) 16%, var(--border-default)); border-radius: var(--radius-md); background: linear-gradient(140deg, color-mix(in srgb, var(--brand) 5%, transparent), transparent 54%), color-mix(in srgb, var(--bg-elevated) 74%, transparent); backdrop-filter: blur(14px) saturate(1.08); }
@@ -591,7 +605,7 @@
 .team-heatmap-caption { margin-top: 6px; color: var(--text-secondary); font-size: 9px; }
 .team-heatmap-legend i { width: 8px; height: 8px; }
 @keyframes team-panel-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes team-series-draw { to { stroke-dashoffset: 0; } }
+
 
 @media (max-width: 780px) {
   .team-project-insights { grid-template-columns: minmax(0, 1fr); }
