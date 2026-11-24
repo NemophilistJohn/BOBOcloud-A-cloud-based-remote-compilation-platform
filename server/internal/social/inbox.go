@@ -237,6 +237,30 @@ func (s *Store) Get(recipient, id string, now time.Time) (Entry, error) {
 	return entry, err
 }
 
+// DeleteArchived shares the decision lock so deletion cannot race an active
+// acceptance or import. Only the recipient's archived metadata is removed.
+func (s *Store) DeleteArchived(recipient, id string, now time.Time) error {
+	unlock, err := s.LockDecision(recipient, id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return s.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(inboxBucket).Bucket([]byte(recipient))
+		entry, err := get(bucket, id)
+		if errors.Is(err, ErrNotFound) {
+			return nil // Deleting an already absent row is safe to retry.
+		}
+		if err != nil {
+			return err
+		}
+		if entry.effective(now).Status == "pending" {
+			return ErrInactive
+		}
+		return bucket.Delete([]byte(id))
+	})
+}
+
 // LockDecision does not hold a Bolt transaction during filesystem or team work.
 // The lock belongs to one recipient/message; concurrent decisions fail promptly.
 func (s *Store) LockDecision(recipient, id string) (func(), error) {

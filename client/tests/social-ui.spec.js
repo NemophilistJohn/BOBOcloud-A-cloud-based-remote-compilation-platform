@@ -33,6 +33,8 @@ test('friends menus preserve cancelled confirmations and inbox handles notes and
         { id: 'note-1', sender, kind: 'note', title: '', note: '<script>safe message</script>', status: 'pending', createdAt: now }
       ];
       window.__socialCalls = [];
+      let failNote = true;
+      let failDelete = true;
       b.sendToServer = async (action, payload) => {
         window.__socialCalls.push({ action, payload });
         if (action === 'listFriends') return { success: true, data: [sender] };
@@ -49,6 +51,16 @@ test('friends menus preserve cancelled confirmations and inbox handles notes and
           const item = inbox.find(m => m.id === payload.messageId);
           item.read = true;
           if (payload.decision !== 'read' || item.kind === 'note') item.status = payload.decision === 'read' ? 'read' : 'accepted';
+          return { success: true, data: {} };
+        }
+        if (action === 'sendInbox' && payload.kind === 'note' && failNote) {
+          failNote = false;
+          return { success: false, error: 'Temporary send failure' };
+        }
+        if (action === 'deleteInbox') {
+          if (failDelete) { failDelete = false; return { success: false, error: 'Temporary delete failure' }; }
+          const index = inbox.findIndex(m => m.id === payload.messageId);
+          if (index >= 0) inbox.splice(index, 1);
           return { success: true, data: {} };
         }
         return { success: true, data: {} };
@@ -84,9 +96,25 @@ test('friends menus preserve cancelled confirmations and inbox handles notes and
     await expect(page.locator('[data-offer="member-team"]')).toHaveCount(0);
     await page.locator('[data-sub="note"]').hover();
     await page.locator('#social-note').fill('A short note');
+    await page.mouse.move(1000, 100);
+    await page.waitForTimeout(650);
+    await page.keyboard.type(' with focus');
+    await expect(page.locator('#social-note')).toHaveValue('A short note with focus');
+    await page.locator('[data-sub="note"]').click();
+    await expect(page.locator('#social-note')).toHaveValue('A short note with focus');
+    await page.setViewportSize({ width: 1100, height: 760 });
+    await expect(page.locator('#social-note')).toHaveValue('A short note with focus');
+    await page.locator('[data-social="refresh"]').click();
+    await page.locator('.social-friend-menu').hover();
+    await page.locator('[data-sub="note"]').hover();
+    await expect(page.locator('#social-note')).toHaveValue('A short note with focus');
+    await page.locator('[data-send-note]').click();
+    await expect(page.locator('.social-menu .social-error')).toContainText('Temporary send failure');
+    await expect(page.locator('#social-note')).toHaveValue('A short note with focus');
     await page.locator('[data-send-note]').click();
     await expect(page.locator('#social-note')).toHaveValue('');
-    expect(await page.evaluate(() => window.__socialCalls.filter(c => c.action === 'sendInbox').length)).toBe(2);
+    await expect(page.locator('.toast-success').last()).toContainText('Message sent');
+    expect(await page.evaluate(() => window.__socialCalls.filter(c => c.action === 'sendInbox').length)).toBe(3);
     await page.keyboard.press('Escape');
     await page.locator('[data-social="inbox"]').click();
     await page.locator('[data-message="note-1"]').click();
@@ -94,6 +122,7 @@ test('friends menus preserve cancelled confirmations and inbox handles notes and
     await expect(page.locator('.social-note-body script')).toHaveCount(0);
     await expect(page.locator('.social-unread')).toHaveText('1');
     await page.locator('[data-message="project-1"]').click();
+    await expect(page.locator('[data-delete-message]')).toHaveCount(0);
     await expect(page.locator('.social-unread')).toHaveCount(0);
     await expect(page.locator('[data-message="project-1"]')).toBeVisible();
     await expect(page.locator('[data-decision="cloud"]')).toBeVisible();
@@ -102,6 +131,19 @@ test('friends menus preserve cancelled confirmations and inbox handles notes and
     await expect(page.locator('.social-unread')).toHaveCount(0);
     await page.locator('[data-inbox-tab="archive"]').click();
     await expect(page.locator('.social-message-row')).toHaveCount(2);
+    await expect(page.locator('[data-delete-message]')).toHaveCount(2);
+    await page.locator('[data-message="note-1"]').click();
+    await page.locator('[data-delete-message="note-1"]').click();
+    await expect(page.locator('.social-inbox-dialog .social-error')).toContainText('Temporary delete failure');
+    await expect(page.locator('[data-message="note-1"]')).toBeVisible();
+    await page.locator('[data-delete-message="note-1"]').click();
+    await expect(page.locator('[data-message="note-1"]')).toHaveCount(0);
+    await expect(page.locator('.social-message-detail')).toContainText('Select a message');
+    await page.locator('[data-inbox-tab="pending"]').click();
+    await page.locator('[data-inbox-tab="archive"]').click();
+    await expect(page.locator('.social-message-row')).toHaveCount(1);
+    await page.locator('[data-delete-message="project-1"]').click();
+    await expect(page.locator('.social-messages')).toContainText('No messages');
     await page.screenshot({ path: testInfo.outputPath('social-inbox.png') });
     await page.locator('[data-close]').click();
     await page.evaluate(() => {

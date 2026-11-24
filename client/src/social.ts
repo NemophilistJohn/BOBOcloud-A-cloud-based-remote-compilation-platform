@@ -19,6 +19,7 @@ interface Dependencies {
   profile(): void;
   signIn(): void;
   download(id: string, name: string): Promise<{ archived: boolean } | null>;
+  notify(message: string): void;
 }
 
 const icons: Record<string, string> = {
@@ -52,6 +53,8 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
   let revision = 0;
   let identity = '';
   let refreshingRevision: number | undefined;
+  let refreshRequest = 0;
+  const noteDrafts = new Map<string, string>();
   let friends: Person[] = [];
   let inbox: Inbox = { pending: [], archived: [], unread: 0 };
   let friend: Person | undefined;
@@ -114,6 +117,7 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
   }
   function closeMenu(): void {
     if (confirming) return;
+    rememberNote();
     clearTimeout(closeTimer);
     menu.hidden = true;
     menuPinned = false;
@@ -122,10 +126,16 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
   }
   function scheduleClose(): void {
     clearTimeout(closeTimer);
-    if (menuPinned || confirming || busy) return;
-    closeTimer = events.setTimeout(closeMenu, 400);
+    if (menuPinned || confirming || busy || menu.contains(doc.activeElement)) return;
+    closeTimer = events.setTimeout(() => {
+      if (!menu.contains(doc.activeElement) && !menuPinned && !confirming && !busy) closeMenu();
+    }, 400);
   }
   function cancelClose(): void { clearTimeout(closeTimer); }
+  function rememberNote(): void {
+    const input = menu.querySelector<HTMLTextAreaElement>('#social-note');
+    if (friend && input) noteDrafts.set(friend.uid, input.value);
+  }
   function position(anchor: HTMLElement): void {
     const rect = anchor.getBoundingClientRect();
     const width = Math.min(530, events.innerWidth - 24);
@@ -138,6 +148,7 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
     if (confirming || busy) return;
     menuPinned = false;
     if (friend?.uid === p.uid && !menu.hidden) return;
+    rememberNote();
     friend = p;
     submenu = '';
     menu.innerHTML = '<div class="social-menu-main" role="menu"><button role="menuitem" data-sub="project">' + esc(t('Send project')) + '<span>›</span></button><button role="menuitem" data-sub="note">' + esc(t('Send note')) + '<span>›</span></button><button role="menuitem" data-sub="invite">' + esc(t('Invite to team')) + '<span>›</span></button></div><div class="social-submenu" hidden></div>';
@@ -145,7 +156,8 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
     position(button);
   }
   async function showSub(kind: typeof submenu): Promise<void> {
-    if (!kind || !friend || busy) return;
+    if (!kind || !friend || busy || submenu === kind) return;
+    rememberNote();
     submenu = kind;
     const r = revision;
     const uid = friend.uid;
@@ -155,7 +167,12 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
     menu.querySelectorAll<HTMLElement>('[data-sub]').forEach(el => el.classList.toggle('active', el.dataset.sub === kind));
     if (kind === 'note') {
       sub.innerHTML = '<label for="social-note">' + esc(t('Note (up to 150 characters)')) + '</label><textarea id="social-note" rows="4" maxlength="300"></textarea><div class="social-note-footer"><span id="social-note-count">0 / 150</span><button class="social-icon" data-send-note aria-label="' + esc(t('Send note')) + '">' + icon('send') + '</button></div>';
-      sub.querySelector('textarea')?.focus();
+      const input = sub.querySelector('textarea')!;
+      input.value = noteDrafts.get(uid) || '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const anchor = host?.querySelector<HTMLElement>('[data-friend="' + friends.findIndex(p => p.uid === uid) + '"]');
+      if (anchor) position(anchor);
+      input.focus();
       return;
     }
     try {
@@ -192,7 +209,7 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
       button.setAttribute('disabled', '');
       await d.send('sendInbox', { recipientId: uid, kind, ...(kind === 'project' ? { projectKey: key } : { teamId: key }) });
       sent = true;
-      if (valid(r)) { button.textContent = t('Sent'); button.setAttribute('disabled', ''); }
+      if (valid(r)) { button.textContent = t('Sent'); button.setAttribute('disabled', ''); d.notify(t('Message sent')); }
     } catch (error) { if (valid(r)) { button.removeAttribute('disabled'); notice(error, menu.querySelector<HTMLElement>('.social-submenu')); } }
     finally { cancelClose(); busy = false; confirming = false; if (!sent) button.removeAttribute('disabled'); }
   }
@@ -201,10 +218,17 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
     const note = input?.value.trim() || '';
     if (!friend || busy || !note || [...note].length > 150) return;
     const r = revision;
+    const uid = friend.uid;
+    const draft = input!.value;
     busy = true;
     try {
-      await d.send('sendInbox', { recipientId: friend.uid, kind: 'note', note });
-      if (valid(r) && input) { input.value = ''; input.dispatchEvent(new Event('input')); }
+      await d.send('sendInbox', { recipientId: uid, kind: 'note', note });
+      if (valid(r)) {
+        if (noteDrafts.get(uid) === draft) noteDrafts.delete(uid);
+        if (input && input.value === draft) { input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true })); }
+        menu.querySelector('.social-error')?.remove();
+        d.notify(t('Message sent'));
+      }
     } catch (error) { if (valid(r)) notice(error, menu.querySelector<HTMLElement>('.social-submenu')); }
     finally { busy = false; }
   }
@@ -224,8 +248,9 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
     const messages = archive ? inbox.archived : inbox.pending;
     const list = modal.querySelector<HTMLElement>('.social-messages')!;
     modal.querySelectorAll<HTMLElement>('[data-inbox-tab]').forEach(el => el.setAttribute('aria-selected', String((el.dataset.inboxTab === 'archive') === archive)));
-    list.innerHTML = messages.length ? messages.map(m => '<button class="social-message-row" data-message="' + esc(m.id) + '" aria-pressed="' + String(m.id === selected) + '">' + avatar(m.sender) +
-      '<span><strong dir="auto">' + esc(label(m)) + '</strong><small>' + esc(m.sender.name) + ' · ' + esc(time(m.createdAt)) + '</small><span class="social-message-preview" dir="auto">' + esc(m.note || t(m.kind === 'project' ? 'Project snapshot' : 'Team invitation')) + '</span></span></button>').join('') :
+    list.innerHTML = messages.length ? messages.map(m => '<div class="social-message-item' + (archive ? ' is-archived' : '') + '"><button class="social-message-row" data-message="' + esc(m.id) + '" aria-pressed="' + String(m.id === selected) + '">' + avatar(m.sender) +
+      '<span><strong dir="auto">' + esc(label(m)) + '</strong><small>' + esc(m.sender.name) + ' · ' + esc(time(m.createdAt)) + '</small><span class="social-message-preview" dir="auto">' + esc(m.note || t(m.kind === 'project' ? 'Project snapshot' : 'Team invitation')) + '</span></span></button>' +
+      (archive ? '<button class="social-icon social-message-delete" data-delete-message="' + esc(m.id) + '" title="' + esc(t('Permanently delete message')) + '" aria-label="' + esc(t('Permanently delete message')) + '">' + icon('close') + '</button>' : '') + '</div>').join('') :
       '<div class="collab-empty">' + esc(t('No messages')) + '</div>';
     renderMessage(messages.find(m => m.id === selected) || (inbox.archived.find(m => m.id === selected)));
   }
@@ -247,6 +272,24 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
     renderInbox();
     const message = inbox.pending.find(m => m.id === id);
     if (message && !message.read) await decide('read');
+  }
+  async function deleteMessage(button: HTMLButtonElement): Promise<void> {
+    const id = button.dataset.deleteMessage;
+    if (!id || busy || !archive || !inbox.archived.some(m => m.id === id)) return;
+    const r = revision;
+    busy = true;
+    button.disabled = true;
+    modal.querySelector('.social-inbox-dialog .social-error')?.remove();
+    try {
+      await d.send('deleteInbox', { messageId: id });
+      if (!valid(r)) return;
+      inbox.archived = inbox.archived.filter(m => m.id !== id);
+      if (selected === id) selected = '';
+      renderInbox();
+      await refresh(true);
+    } catch (error) {
+      if (valid(r)) notice(error, modal.querySelector<HTMLElement>('.social-inbox-dialog'));
+    } finally { busy = false; button.disabled = false; }
   }
   async function decide(decision: string): Promise<void> {
     const message = inbox.pending.find(m => m.id === selected);
@@ -270,25 +313,27 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
     } catch (error) { if (valid(r)) notice(error, article); }
     finally { busy = false; article?.querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.disabled = false; }); }
   }
-  async function refresh(): Promise<void> {
-    if (refreshingRevision === revision || !state.auth?.token || !state.auth.user) { render(); return; }
+  async function refresh(force = false): Promise<void> {
+    if ((!force && refreshingRevision === revision) || !state.auth?.token || !state.auth.user) { render(); return; }
     const r = revision;
+    const request = ++refreshRequest;
     refreshingRevision = r;
     try {
       const [people, messages] = await Promise.all([d.send('listFriends'), d.send('listInbox')]);
-      if (!valid(r)) return;
+      if (!valid(r) || request !== refreshRequest) return;
       friends = (people as Person[]).filter(p => p.uid !== self().uid);
       inbox = messages as Inbox;
       render();
       renderInbox();
     } catch (error) { if (valid(r)) notice(error, modal.hidden ? host : modal.querySelector<HTMLElement>('.social-inbox-dialog')); }
-    finally { if (refreshingRevision === r) refreshingRevision = undefined; }
+    finally { if (request === refreshRequest) refreshingRevision = undefined; }
   }
   function reset(): void {
     revision++;
     identity = currentIdentity();
     confirming = false;
     closeMenu();
+    noteDrafts.clear();
     modal.hidden = true;
     friends = [];
     inbox = { pending: [], archived: [], unread: 0 };
@@ -305,6 +350,7 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
     if (el.dataset.friend !== undefined) openMenu(el, friends[Number(el.dataset.friend)]!);
   });
   on(host, 'pointerover', (ev) => {
+    if (menu.contains(doc.activeElement)) return;
     const el = (ev.target as Element).closest<HTMLElement>('[data-friend]');
     if (el) openMenu(el, friends[Number(el.dataset.friend)]!);
   });
@@ -313,9 +359,11 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
   });
   on(menu, 'pointerenter', () => { menuPinned = false; cancelClose(); });
   on(menu, 'pointerleave', scheduleClose);
+  on(menu, 'focusin', cancelClose);
+  on(menu, 'focusout', scheduleClose);
   on(menu, 'pointerover', (ev) => {
     const el = (ev.target as Element).closest<HTMLElement>('[data-sub]');
-    if (el?.dataset.sub && submenu !== el.dataset.sub) void showSub(el.dataset.sub as typeof submenu);
+    if (el?.dataset.sub && submenu !== el.dataset.sub && doc.activeElement?.id !== 'social-note') void showSub(el.dataset.sub as typeof submenu);
   });
   on(menu, 'click', (ev) => {
     const el = (ev.target as Element).closest<HTMLElement>('button');
@@ -329,6 +377,7 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
     const counter = menu.querySelector('#social-note-count');
     if (input && !(ev as InputEvent).isComposing && [...input.value].length > 150) input.value = [...input.value].slice(0, 150).join('');
     if (input && counter) counter.textContent = [...input.value].length + ' / 150';
+    rememberNote();
   });
   on(modal, 'click', (ev) => {
     const el = (ev.target as Element).closest<HTMLElement>('button');
@@ -337,12 +386,14 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
     if (el.dataset.inboxTab) { archive = el.dataset.inboxTab === 'archive'; selected = ''; renderInbox(); }
     if (el.dataset.message) void readMessage(el.dataset.message);
     if (el.dataset.decision) void decide(el.dataset.decision);
+    if (el.hasAttribute('data-delete-message')) void deleteMessage(el as HTMLButtonElement);
   });
   on(doc, 'pointerdown', (ev) => {
     if (!menu.contains(ev.target as Node) && !modal.contains(ev.target as Node) && !(ev.target as Element).closest('[data-friend]')) closeMenu();
   });
   on(doc, 'keydown', (ev) => {
     const key = ev as KeyboardEvent;
+    if (key.isComposing) return;
     if (key.key === 'Escape' && !confirming) { closeMenu(); if (!modal.hidden) { modal.hidden = true; returnFocus?.focus(); } }
     if (key.key === 'Tab' && !modal.hidden) {
       const elements = Array.from(modal.querySelectorAll<HTMLElement>('button:not([disabled])'));
@@ -361,7 +412,11 @@ export function createSocialService(d: Dependencies): { dispose(): void } {
   on(events, 'bobo:social-friends-hidden', () => { visible = false; clearInterval(refreshTimer); closeMenu(); });
   on(events, 'bobo:auth-changed', () => { if (identity !== currentIdentity()) { reset(); if (visible) void refresh(); } });
   on(events, 'bobo:language-changed', () => { render(); closeMenu(); if (!modal.hidden) showInbox(); });
-  on(events, 'resize', closeMenu);
+  on(events, 'resize', () => {
+    if (!friend || menu.hidden) return;
+    const anchor = host.querySelector<HTMLElement>('[data-friend="' + friends.findIndex(p => p.uid === friend?.uid) + '"]');
+    if (anchor) position(anchor);
+  });
   reset();
   return { dispose() { gone = true; revision++; listeners.splice(0).forEach(fn => fn()); clearInterval(refreshTimer); clearTimeout(closeTimer); menu.remove(); modal.remove(); } };
 }

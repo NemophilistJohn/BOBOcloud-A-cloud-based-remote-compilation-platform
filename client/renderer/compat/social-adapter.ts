@@ -1,6 +1,7 @@
 import { createSocialService } from '../../src/social';
 import { CONFIRM_SERVICE_ID } from '../../src/confirm-dialog';
 import { I18N_SERVICE_ID } from './i18n-adapter';
+import { TOAST_SERVICE_ID } from '../../src/toast';
 import { rendererPlatform } from '../core/bootstrap';
 import type { RendererState } from '../../types/state';
 import type { CollaborationAuthPort } from '../../types/collaboration';
@@ -17,6 +18,7 @@ const social = createSocialService({
   document, events: window, state: bobo.state!,
   t: (key, params) => rendererPlatform.services.require(I18N_SERVICE_ID).t(key, params),
   confirm: rendererPlatform.services.require(CONFIRM_SERVICE_ID).confirm,
+  notify: (message) => rendererPlatform.services.require(TOAST_SERVICE_ID).success(message),
   async send(action, payload) {
     if (!bobo.sendToServer) throw new Error('Server transport unavailable');
     const result = await bobo.sendToServer(action, payload);

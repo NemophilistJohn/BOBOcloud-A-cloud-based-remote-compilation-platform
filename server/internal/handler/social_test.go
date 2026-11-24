@@ -146,6 +146,41 @@ func TestSocialDirectoryOnlyExposesPublicProfilesAndRecordedSync(t *testing.T) {
 	}
 }
 
+func TestDeleteInboxRequiresAuthenticationAndOnlyDeletesOwnArchives(t *testing.T) {
+	h, users := newSocialHandler(t)
+	message := sendSocial(t, h, users["alice"], model.Request{RecipientID: "u_bob", Kind: "note", Note: "keep this until read"})
+	request := model.Request{Action: "deleteInbox", MessageID: message.ID}
+	w, _ := socialRequest(t, h, nil, request)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated delete returned %d", w.Code)
+	}
+	w, _ = socialRequest(t, h, users["bob"], request)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("pending delete returned %d", w.Code)
+	}
+	w, response := socialRequest(t, h, users["bob"], model.Request{Action: "respondInbox", MessageID: message.ID, Decision: "read"})
+	if w.Code != http.StatusOK || !response.Success {
+		t.Fatalf("read failed: %s", w.Body.String())
+	}
+	_, _ = socialRequest(t, h, users["carol"], request)
+	if _, err := h.Social.Get("bob", message.ID, time.Now()); err != nil {
+		t.Fatalf("another account deleted Bob's archive: %v", err)
+	}
+	for range 2 {
+		w, response = socialRequest(t, h, users["bob"], request)
+		if w.Code != http.StatusOK || !response.Success {
+			t.Fatalf("delete/retry failed: %s", w.Body.String())
+		}
+	}
+	if _, err := h.Social.Get("bob", message.ID, time.Now()); !errors.Is(err, social.ErrNotFound) {
+		t.Fatalf("archive still exists: %v", err)
+	}
+	w, _ = socialRequest(t, h, users["bob"], model.Request{Action: "deleteInbox", MessageID: "../invalid"})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("invalid ID returned %d", w.Code)
+	}
+}
+
 func TestSocialProjectSnapshotsAreImmutableSharedAndRecipientScoped(t *testing.T) {
 	h, users := newSocialHandler(t)
 	source := sourceProject(t, h, "alice", "original", "print('before')\n")

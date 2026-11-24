@@ -37,6 +37,11 @@
 .social-inbox-content { flex:1; min-height:0; display:grid; grid-template-columns:minmax(240px,42%) 1fr; }
 .social-messages { overflow:auto; border-right:1px solid var(--border); padding:8px; }
 .social-message-row { display:flex; width:100%; padding:14px 10px; gap:10px; text-align:start; border:0; border-radius:8px; background:transparent; color:inherit; cursor:pointer; }
+.social-message-item { position:relative; }
+.social-message-item.is-archived .social-message-row { padding-inline-end:34px; }
+.social-message-delete { position:absolute; top:5px; inset-inline-end:4px; width:24px; height:24px; }
+.social-message-delete:hover { color:var(--red); background:var(--red-muted); }
+.social-message-delete:disabled { opacity:.5; cursor:wait; }
 .social-message-row[aria-pressed="true"],.social-message-row:hover { background:var(--bg-hover); }
 .social-message-row>span:last-child { min-width:0; display:flex; flex-direction:column; gap:6px; }
 .social-message-row strong,.social-message-preview { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }

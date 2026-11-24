@@ -184,3 +184,61 @@ func TestInvitationDeduplicationAndRecipientCleanup(t *testing.T) {
 		t.Fatalf("deleted recipient retained presence: %+v %v", stamps, err)
 	}
 }
+
+func TestDeleteArchivedIsRecipientScopedAndSerialized(t *testing.T) {
+	store, path := fixture(t)
+	now := time.Now().UTC()
+	entry := offer(now)
+	for _, recipient := range []string{"recipient", "other"} {
+		if err := store.Put(recipient, entry, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.DeleteArchived("recipient", entry.ID, now); !errors.Is(err, ErrInactive) {
+		t.Fatalf("pending offer was deletable: %v", err)
+	}
+	if _, err := store.Finish("recipient", entry.ID, "reject", "", now, now); err != nil {
+		t.Fatal(err)
+	}
+	release, err := store.LockDecision("recipient", entry.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteArchived("recipient", entry.ID, now); !errors.Is(err, ErrBusy) {
+		t.Fatalf("delete raced a decision: %v", err)
+	}
+	release()
+	for range 2 {
+		if err := store.DeleteArchived("recipient", entry.ID, now); err != nil {
+			t.Fatalf("delete or retry failed: %v", err)
+		}
+	}
+	if _, err := store.Get("recipient", entry.ID, now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted archive still exists: %v", err)
+	}
+	if _, err := store.Get("other", entry.ID, now); err != nil {
+		t.Fatalf("another recipient lost its copy: %v", err)
+	}
+	if live, err := store.SnapshotLive(entry.SnapshotID, now); err != nil || !live {
+		t.Fatalf("another recipient lost its snapshot reference: %v, %v", live, err)
+	}
+	if err := store.DeleteArchived("other", entry.ID, now.Add(OfferTTL)); err != nil {
+		t.Fatalf("expired offer could not be deleted before prune: %v", err)
+	}
+	if err := store.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := bolt.Open(path, 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	reopened, err := NewStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inbox, err := reopened.List("recipient", now)
+	if err != nil || len(inbox.Archived) != 0 {
+		t.Fatalf("archive deletion did not persist: %+v, %v", inbox, err)
+	}
+}

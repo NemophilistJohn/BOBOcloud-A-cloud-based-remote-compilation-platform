@@ -439,7 +439,7 @@ func (h *HTTPHandler) routeRequest(w http.ResponseWriter, r *http.Request, req *
 		h.handleUpdateProfile(w, r, req)
 	case "getCompileActivity":
 		h.handleGetCompileActivity(w, r)
-	case "listFriends", "listInbox", "sendInbox", "respondInbox", "recordWorkspaceSync", "downloadInboxProject":
+	case "listFriends", "listInbox", "sendInbox", "respondInbox", "deleteInbox", "recordWorkspaceSync", "downloadInboxProject":
 		h.handleSocial(w, r, req)
 	case "findUser":
 		h.handleFindUser(w, r, req)

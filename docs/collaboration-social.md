@@ -48,6 +48,7 @@ All actions use the existing authenticated POST JSON envelope at `/`.
 | `listInbox` | none | `{pending: Message[], archived: Message[], unread: number}` |
 | `sendInbox` | `recipientId` (public UID), `kind`, plus `projectKey`, `teamId` or `note` | Created public message |
 | `respondInbox` | `messageId`, `decision` | Updated public message; cloud acceptance also returns `projectKey` |
+| `deleteInbox` | `messageId` | Permanently removes the current recipient's archived message; repeated deletion succeeds. Pending offers return a conflict. |
 | `recordWorkspaceSync` | none | Success after a completed workspace sync; throttled to one stored stamp per 30 seconds |
 
 Message kinds are `project`, `invite`, `note`. Decisions are `read`, `reject`,

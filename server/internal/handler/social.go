@@ -73,6 +73,12 @@ func (h *HTTPHandler) handleSocial(w http.ResponseWriter, r *http.Request, req *
 		data, err = h.sendInbox(r, user, req)
 	case "respondInbox":
 		data, err = h.respondInbox(r, user, req)
+	case "deleteInbox":
+		if !validMessageID(req.MessageID) {
+			err = social.ErrNotFound
+		} else {
+			err = h.Social.DeleteArchived(user.ID, req.MessageID, time.Now().UTC())
+		}
 	case "recordWorkspaceSync":
 		err = h.Social.RecordSync(user.ID, time.Now().UTC())
 	case "downloadInboxProject":

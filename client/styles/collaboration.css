@@ -427,10 +427,10 @@
 .team-member-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 86px), 1fr)); gap: 12px 10px; }
 .team-member-card { position: relative; min-width: 0; display: grid; justify-items: center; align-content: start; gap: 8px; padding: 10px 6px 9px; border: 1px solid color-mix(in srgb, var(--blue) 24%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--bg-elevated) 78%, var(--blue) 22%); color: var(--text-primary); cursor: default; transition: border-color .14s ease, background-color .14s ease, transform .14s ease; }
 .team-member-card:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--blue) 54%, var(--border-primary)); background: color-mix(in srgb, var(--bg-elevated) 68%, var(--blue) 32%); }
-.team-member-avatar { width: 48px; height: 48px; display: grid; place-items: center; overflow: hidden; border: 2px solid color-mix(in srgb, var(--text-primary) 38%, transparent); border-radius: 50%; background: var(--bg-tertiary); color: white; font-size: 13px; font-weight: 700; box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 27%, transparent), 0 4px 12px color-mix(in srgb, var(--bg-deep) 50%, transparent); }
-.team-member-avatar.avatar-graphite { background: color-mix(in srgb, var(--blue) 58%, var(--bg-elevated)); }
+.team-member-avatar { width: 48px; height: 48px; display: grid; place-items: center; overflow: hidden; border: 2px solid color-mix(in srgb, var(--text-primary) 38%, transparent); border-radius: 50%; color: white; font-size: 13px; font-weight: 700; box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 27%, transparent), 0 4px 12px color-mix(in srgb, var(--bg-deep) 50%, transparent); }
 .team-member-avatar img { width: 100%; height: 100%; object-fit: cover; }
-.team-member-uid { width: 100%; overflow: hidden; color: var(--text-primary); font: 10px var(--font-mono); text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.team-member-name, .team-member-uid { width: 100%; overflow: hidden; color: var(--text-primary); font: 10px var(--font-mono); text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.team-member-name { font: 600 12px var(--font-ui); }
 .team-member-tooltip { position: absolute; z-index: 30; left: 50%; bottom: calc(100% - 2px); width: max-content; max-width: min(230px, 75vw); display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--border-focus); border-radius: 6px; background: var(--bg-elevated, var(--bg-tertiary)); box-shadow: var(--shadow-md); color: var(--text-secondary); font-size: 10px; opacity: 0; visibility: hidden; pointer-events: none; transform: translate(-50%, 4px); transition: opacity .12s ease, transform .12s ease, visibility .12s; }
 .team-member-card:hover .team-member-tooltip, .team-member-card:focus-within .team-member-tooltip { opacity: 1; visibility: visible; transform: translate(-50%, 0); pointer-events: auto; }
 .team-member-tooltip strong { color: var(--text-primary); font-size: 11px; }
@@ -536,7 +536,6 @@
 .team-member-card { border-color: color-mix(in srgb, var(--brand) 18%, var(--border-default)); background: color-mix(in srgb, var(--bg-elevated) 94%, var(--brand) 6%); backdrop-filter: blur(10px); }
 .team-member-card:hover { border-color: color-mix(in srgb, var(--brand) 48%, var(--border-strong)); background: color-mix(in srgb, var(--bg-elevated) 88%, var(--brand) 12%); }
 .team-member-avatar { border-color: color-mix(in srgb, var(--brand) 52%, var(--text-primary)); box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 14%, transparent), 0 5px 16px color-mix(in srgb, var(--bg-deep) 38%, transparent); }
-.team-member-avatar.avatar-graphite { background: color-mix(in srgb, var(--brand) 50%, var(--bg-elevated)); }
 .team-add-member { border-color: color-mix(in srgb, var(--brand) 62%, var(--border-strong)); background: color-mix(in srgb, var(--bg-elevated) 91%, var(--brand) 9%); color: var(--brand-hover); transition: transform var(--dur-base) var(--ease-out), background-color var(--dur-base) var(--ease-standard), border-color var(--dur-base) var(--ease-standard); }
 .team-add-member:hover { transform: translateY(-2px); border-color: var(--brand); color: var(--text-primary); background: color-mix(in srgb, var(--bg-elevated) 82%, var(--brand) 18%); }
 .team-activity-chart,

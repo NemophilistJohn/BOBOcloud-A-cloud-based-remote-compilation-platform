@@ -2498,5 +2498,7 @@
   "Modules load when requested": "要求されたモジュールを読み込みます",
   "Dependency summaries are ready": "依存関係の要約を利用できます",
   "{completed} of {total} modules prepared": "{total} モジュール中 {completed} 個を準備済み",
-  "Please complete the required fields.": "必須項目を入力してください。"
+  "Please complete the required fields.": "必須項目を入力してください。",
+  "Permanently delete message": "メッセージを完全に削除",
+  "Message sent": "メッセージを送信しました"
 }

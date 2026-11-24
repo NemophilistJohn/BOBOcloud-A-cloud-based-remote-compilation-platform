@@ -45,8 +45,8 @@ test('team sidebar orders roles, bounds expanded projects, and confirms project 
           team: teams.find(team => team.id === payload.teamId),
           projects: payload.teamId === 'admin' ? projects : [],
           members: payload.teamId === 'admin' ? [
-            { user_id: 'member-1', uid: 'member-uid-1', username: 'member1', name: 'Member One', avatar: 'ocean', is_admin: false },
-            { user_id: 'me', uid: 'fixture-1', username: 'fixture', name: 'Admin', avatar: 'forest', is_admin: true }
+            { user_id: 'member-1', uid: 'member-uid-1', username: 'member1', name: 'Member One', avatar: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jY1sAAAAASUVORK5CYII=', is_admin: false },
+            { user_id: 'me', uid: 'fixture-1', username: 'fixture', name: 'Admin', avatar: 'graphite', is_admin: true }
           ] : [{ user_id: 'me', uid: 'fixture-1', username: 'fixture', name: 'Fixture', is_admin: false }]
         } };
         if (action === 'teamActivity') return { success: true, data: {
@@ -131,6 +131,14 @@ test('team sidebar orders roles, bounds expanded projects, and confirms project 
     const memberCards = page.locator('#collab-member-list .team-member-card:not(.team-add-member-card)');
     await expect(memberCards).toHaveCount(2);
     await expect(memberCards.first()).toContainText('fixture-1');
+    await expect(memberCards.first().locator('.team-member-name')).toHaveText('Admin');
+    await expect(memberCards.last().locator('.team-member-name')).toHaveText('Member One');
+    expect(await memberCards.first().locator('.team-member-avatar').evaluate(el => getComputedStyle(el).backgroundColor)).toBe('rgb(82, 96, 109)');
+    await expect(memberCards.first().locator('.team-member-name')).toHaveText('Admin');
+    await expect(memberCards.last().locator('.team-member-name')).toHaveText('Member One');
+    expect(await memberCards.first().locator('.team-member-avatar').evaluate(el => getComputedStyle(el).backgroundColor)).toBe('rgb(82, 96, 109)');
+    await expect(memberCards.last().locator('.team-member-avatar img')).toHaveAttribute('src', /^data:image\/png;base64,/);
+    await expect.poll(() => memberCards.last().locator('.team-member-avatar img').evaluate(img => img.naturalWidth)).toBe(1);
     await memberCards.last().hover();
     await expect(memberCards.last().locator('.team-member-tooltip')).toContainText('4 commits');
     await expect(page.locator('#team-member-activity .team-activity-series')).toHaveCount(2);
