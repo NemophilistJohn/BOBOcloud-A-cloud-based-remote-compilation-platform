@@ -30,6 +30,7 @@ BOBOCLOUD 是一套可自行部署的云端开发工作台：Electron 桌面端�
 | --- | --- |
 | [小白上手教程](docs/getting-started.zh-CN.md) | 首次启动、连接、第一次运行、安装依赖、调试和常见问题。 |
 | [性能与架构说明](docs/performance-and-architecture.zh-CN.md) | 缓存了什么、为什么有效、隔离边界、事实依据和当前限制。 |
+| [新手指引设计提案](docs/onboarding-design.zh-CN.md) | 首次运行指引、连接诊断与生命周期集成的设计，尚未实现。 |
 | [插件快速入门](docs/plugin-quickstart.zh-CN.md) | 打包真实示例、理解权限、选择合适的扩展入口。 |
 | [参与贡献](CONTRIBUTING.zh-CN.md) | 找到功能所属模块、选择有效测试、提交聚焦的改动。 |
 

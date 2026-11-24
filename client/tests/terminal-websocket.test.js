@@ -10,6 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { WebSocketServer } = require('ws');
 const { TerminalTransport } = require('../terminal-transport');
+const { createTerminalController } = require('../main/terminal');
 const {
   createTerminalWebSocketFactory,
   verifyTerminalPeer,
@@ -149,6 +150,51 @@ test('real WSS terminal handshake checks a private certificate before the termin
     await assert.rejects(unpinned.pending);
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(fixture.received.length, receivedBeforeUnpinned, 'untrusted unpinned certificate must not receive terminal.start');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('terminal main HTTPS settings validate the actual WSS endpoint before reading credentials', { timeout: 30000 }, async () => {
+  const fixture = await createSelfSignedTerminalServer();
+  assert.ok(fixture, 'OpenSSL is required for the controller TLS regression');
+  try {
+    for (const [pin, expectedError] of [[fixture.fingerprint, null], ['00'.repeat(32), 'certificate_mismatch'], ['', null]]) {
+      const handlers = new Map();
+      const webContents = { isDestroyed: () => false };
+      let credentialReads = 0;
+      const endpoint = new URL(fixture.url);
+      const controller = createTerminalController({
+        ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
+        getWindow: () => ({ isDestroyed: () => false, webContents }),
+        getWorkspaceIdentity: () => ({ rootPath: 'C:/demo', workspaceIdentity: 1 }),
+        sendToRenderer: () => {},
+        settings: {
+          readServerSettings: async () => ({ ip: endpoint.hostname, wsPort: Number(endpoint.port),
+            secureTransport: true, certificateFingerprint: pin, apiKey: 'controller-secret' }),
+          readAuth: () => { credentialReads++; return {}; }
+        }
+      });
+      controller.registerIpc();
+      const startsBefore = fixture.received.filter(message => message.type === 'terminal.start').length;
+      try {
+        const pending = handlers.get('terminal:start')({ sender: webContents }, {
+          runtimeId: 'python:3.12', workspace: { kind: 'personal', folderKey: 'demo' },
+          context: { workspaceRoot: 'C:/demo', workspaceIdentity: 1 }
+        });
+        if (pin === fixture.fingerprint) {
+          assert.equal((await pending).sessionId, 'wss-test');
+          assert.equal(credentialReads, 1);
+          assert.equal(fixture.received.at(-1).token, 'controller-secret');
+        } else {
+          await assert.rejects(pending, error => expectedError ? error.code === expectedError : /certificate/i.test(error.message));
+          assert.equal(credentialReads, 0);
+          assert.equal(fixture.received.filter(message => message.type === 'terminal.start').length, startsBefore);
+        }
+      } finally {
+        await controller.dispose();
+      }
+    }
   } finally {
     await fixture.close();
   }

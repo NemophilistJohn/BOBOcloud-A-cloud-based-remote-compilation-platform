@@ -315,7 +315,7 @@ class TerminalTransport {
         try {
           // A main-process transport may require a pinned TLS certificate.
           // Verify it before reading or transmitting the session credential.
-          if (typeof config.verifyPeer === 'function') await config.verifyPeer(socket);
+          if (typeof config.verifyPeer === 'function') await config.verifyPeer(socket, url);
           const token = await this.getCredential(serverHost);
           if (generation !== this.generation || socket !== this.socket || this.state !== 'connecting') {
             closeWithError(terminalError('start_cancelled', 'Cloud terminal start was cancelled'));

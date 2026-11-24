@@ -30,6 +30,7 @@ This edited recording uses a new, isolated demonstration project and a real auth
 | --- | --- |
 | [Beginner walkthrough](docs/getting-started.en.md) | First launch, connecting, first run, dependencies, debugging, and common mistakes. |
 | [Performance and architecture](docs/performance-and-architecture.en.md) | What is cached, why it helps, isolation boundaries, evidence, and limitations. |
+| [Beginner onboarding proposal](docs/onboarding-design.en.md) | Proposed guided first run, connection diagnostics, and lifecycle integration; not implemented. |
 | [Plugin quick start](docs/plugin-quickstart.en.md) | Package a real example, understand permissions, choose the right extension surface. |
 | [Contributing](CONTRIBUTING.md) | Find an owning module, select useful tests, submit a focused change. |
 

@@ -425,7 +425,9 @@ test('EventEmitter WebSockets verify a pinned peer before terminal credentials a
   const pending = transport.start({
     serverHost: 'https://cloud.example:3101', runtimeId: 'python:3.12',
     workspace: { kind: 'personal', folderKey: 'demo' },
-    verifyPeer: async () => {
+    verifyPeer: async (peer, url) => {
+      assert.equal(peer, socket);
+      assert.equal(url, 'wss://cloud.example:3101/terminal');
       const error = new Error('certificate mismatch');
       error.code = 'certificate_mismatch';
       throw error;

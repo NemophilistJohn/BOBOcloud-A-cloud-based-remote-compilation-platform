@@ -162,7 +162,7 @@ function createTerminalController(options) {
         cols: boundedInteger(value.cols, 120),
         rows: boundedInteger(value.rows, 32),
         localContext: context,
-        verifyPeer: (socket) => createTerminalPeerVerifier(serverSettings)(socket, terminalEndpoint)
+        verifyPeer: createTerminalPeerVerifier(serverSettings)
       });
       return Object.assign({}, result, { context: publicContext(context) });
     } catch (error) {
