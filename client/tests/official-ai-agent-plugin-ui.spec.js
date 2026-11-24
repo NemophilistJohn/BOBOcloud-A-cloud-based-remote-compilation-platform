@@ -413,21 +413,21 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
     const input = composer.locator('.agent-composer-input');
     const controlsButton = composer.getByRole('button', { name: 'Agent controls', exact: true });
     const controls = composer.locator('.agent-composer-control-menu[aria-label="Agent controls"]');
-    const openControls = async () => {
-      if (!await controls.isVisible()) await controlsButton.click();
-      await expect(controls).toBeVisible();
+    const openControls = async (timeout) => {
+      if (!await controls.isVisible()) await controlsButton.click(timeout ? { timeout } : {});
+      await expect(controls).toBeVisible(timeout ? { timeout } : {});
     };
     const clickControlValue = async (value) => {
       const option = controls.locator('button[data-value="' + value + '"]');
-      // Cancelling the access confirmation can finish by replacing the
-      // composer. Reopen only the menu while that update settles; the actual
-      // state-changing choice is clicked once through Playwright's locator.
+      // Cancelling the access confirmation can replace the composer between
+      // the visibility check and the click. Retry the real locator click with
+      // the menu reopening, then assert the selected state below.
       await expect(async () => {
-        await openControls();
+        await openControls(1200);
         await expect(option).toBeVisible({ timeout: 750 });
         await expect(option).toBeEnabled({ timeout: 750 });
-      }).toPass({ timeout: 5000, intervals: [100, 250] });
-      await option.click();
+        await option.click({ timeout: 1200 });
+      }).toPass({ timeout: 10000, intervals: [100, 250] });
     };
     const dispatchComposerKeys = async (value, keys) => {
       return workbench.evaluate((root, payload) => {

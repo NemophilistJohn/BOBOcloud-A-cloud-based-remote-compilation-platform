@@ -142,7 +142,14 @@ func (p *notebookProcess) execute(ctx context.Context, code string) (notebookRes
 	// A dead interpreter can leave its stdin pipe full. Cancel the whole
 	// interpreter when the cell deadline expires, including during the write.
 	stop := context.AfterFunc(ctx, p.cancel)
-	defer stop()
+	defer func() {
+		stop()
+		// The deadline may be observed by receive before the AfterFunc callback
+		// starts. Stopping that pending callback must not leave the kernel alive.
+		if ctx.Err() != nil {
+			p.cancel()
+		}
+	}()
 	if err := json.NewEncoder(p.input).Encode(notebookRequest{Code: code}); err != nil {
 		if ctx.Err() != nil {
 			return notebookResult{}, ctx.Err()
