@@ -8,7 +8,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { componentChanges, chooseBaseline, changedSince, shouldRelease } = require('../../scripts/auto-release/plan.cjs');
-const { expectedAssets, digest } = require('../../scripts/auto-release/publish.cjs');
+const { expectedAssets, digest, main: publish } = require('../../scripts/auto-release/publish.cjs');
 const { verifyPe } = require('../../scripts/auto-release/verify-pe.cjs');
 const { satisfiesVersionRange } = require('../shared/plugin-semver');
 
@@ -77,4 +77,37 @@ test('Windows architecture verification rejects incorrectly labelled executables
   bytes.write('PE\0\0', 64, 'ascii'); bytes.writeUInt16LE(0xaa64, 68); fs.writeFileSync(file, bytes);
   assert.doesNotThrow(() => verifyPe(file, 'arm64'));
   assert.throws(() => verifyPe(file, 'x64'), /architecture/);
+});
+
+test('draft assets and commit are verified before creating a tag and publishing', (t) => {
+  const original = process.cwd();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-release-draft-'));
+  const keys = ['RELEASE_HEAD', 'RELEASE_BASELINE', 'RELEASE_VERSION', 'RELEASE_APP_VERSION', 'RELEASE_TAG', 'GITHUB_REPOSITORY', 'RUNNER_TEMP'];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  t.after(() => {
+    process.chdir(original);
+    for (const key of keys) previous[key] === undefined ? delete process.env[key] : process.env[key] = previous[key];
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  process.chdir(root); fs.mkdirSync('release-assets');
+  const head = 'a'.repeat(40); const baseline = 'b'.repeat(40);
+  const version = '2.8.1-ci.123.1'; const tag = 'auto-v' + version;
+  Object.assign(process.env, { RELEASE_HEAD: head, RELEASE_BASELINE: baseline, RELEASE_VERSION: version, RELEASE_APP_VERSION: '2.8.1', RELEASE_TAG: tag, GITHUB_REPOSITORY: 'owner/repo', RUNNER_TEMP: root });
+  for (const name of expectedAssets(version)) fs.writeFileSync(path.join('release-assets', name), name);
+  const events = []; let draft = true;
+  const fakeGh = (...args) => {
+    if (args[0] === 'release' && args[1] === 'create') { events.push('draft'); return ''; }
+    if (args[0] === 'release' && args[1] === 'view' && draft) {
+      events.push('verify-draft');
+      const assets = fs.readdirSync('release-assets').map((name) => ({ name, size: fs.statSync(path.join('release-assets', name)).size, digest: 'sha256:' + digest(path.join('release-assets', name)) }));
+      return JSON.stringify({ isDraft: true, tagName: tag, targetCommitish: head, assets });
+    }
+    if (args[0] === 'api' && args[1] === '--method') { events.push('create-tag'); return '{}'; }
+    if (args[0] === 'api') { events.push('verify-tag'); return JSON.stringify({ object: { type: 'commit', sha: head } }); }
+    if (args[0] === 'release' && args[1] === 'edit') { events.push('publish'); draft = false; return ''; }
+    if (args[0] === 'release' && args[1] === 'view') { events.push('verify-published'); return JSON.stringify({ isDraft: false, tagName: tag }); }
+    throw new Error('Unexpected GitHub call');
+  };
+  publish({ gh: fakeGh, log: () => '- Test', check: () => events.push('check') });
+  assert.deepEqual(events, ['check', 'draft', 'verify-draft', 'check', 'create-tag', 'verify-tag', 'check', 'publish', 'verify-published']);
 });
