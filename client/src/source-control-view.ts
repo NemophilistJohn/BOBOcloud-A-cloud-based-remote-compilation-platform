@@ -31,11 +31,6 @@ type SourceControlFormActionDto = SourceControlActionDto & {
   readonly form: SourceControlFormDto;
 };
 
-interface FormDraft {
-  readonly actionId: string;
-  readonly values: SourceControlRawFormValues;
-}
-
 interface SourceControlPanel {
   readonly id: string;
   readonly view: string;
@@ -50,7 +45,7 @@ interface SourceControlPanel {
   readonly registration: Disposable;
   activeForm: string;
   renderedForm: string;
-  formDraft: FormDraft | null;
+  formDrafts: Record<string, SourceControlRawFormValues>;
   overflowOpen: boolean;
   overflowCleanup: (() => void) | null;
   overflowMenu: HTMLDivElement | null;
@@ -340,7 +335,6 @@ export function createSourceControlViewService(
   ): void {
     if (action.form) {
       panel.activeForm = panel.activeForm === action.id ? '' : action.id;
-      panel.formDraft = null;
       closeOverflow(panel);
       renderPanel(panel, sourceControls.get(record.id) || record);
       return;
@@ -524,7 +518,7 @@ export function createSourceControlViewService(
         let itemNode: HTMLElement;
         if (command) {
           const itemButton = button('', 'source-control-list-item source-control-list-item-action');
-          itemButton.disabled = panel.busy || item.disabled === true;
+          itemButton.disabled = panel.busy || record.state?.phase === 'loading' || item.disabled === true;
           itemButton.addEventListener('click', () => {
             void invoke(panel, record, command, item.id, {}, {
               sectionId: section.id,
@@ -556,7 +550,21 @@ export function createSourceControlViewService(
           }
           itemNode.appendChild(metadata);
         }
-        list.appendChild(itemNode);
+        if (item.secondaryAction) {
+          const row = element('div', 'source-control-item-row');
+          row.appendChild(itemNode);
+          const secondary = button('', 'source-control-item-secondary', item.secondaryAction.title);
+          secondary.setAttribute('aria-label', item.secondaryAction.title + ': ' + item.title);
+          secondary.textContent = item.secondaryAction.icon === 'remove' ? '−' : '+';
+          secondary.disabled = panel.busy || record.state?.phase === 'loading' || item.disabled === true;
+          secondary.addEventListener('click', () => {
+            void invoke(panel, record, item.secondaryAction!.command, item.id, {}, {
+              sectionId: section.id, itemId: item.id, kind: 'item'
+            });
+          });
+          row.appendChild(secondary);
+          list.appendChild(row);
+        } else list.appendChild(itemNode);
       });
     }
     container.appendChild(list);
@@ -643,25 +651,28 @@ export function createSourceControlViewService(
   ): void {
     const formSchema = action.form;
     const form = element('form', 'source-control-form');
-    const draft = panel.formDraft && panel.formDraft.actionId === action.id
-      ? panel.formDraft.values
-      : null;
+    const draft = panel.formDrafts[action.id] || null;
     form.id = 'source-control-form-' + record.id.replace(/[^A-Za-z0-9_-]/g, '-') + '-' + action.id;
     form.noValidate = true;
     if (formSchema.title) form.appendChild(element('h2', 'source-control-form-title', formSchema.title));
     formSchema.fields.forEach((field) => { form.appendChild(appendField(form, field, draft)); });
+    if (panel.busy || action.disabled) {
+      form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select')
+        .forEach((control) => { control.disabled = true; });
+    }
     const controls = element('div', 'source-control-form-actions');
     const submit = button(formSchema.submitLabel || action.title, 'source-control-action source-control-action-primary');
     submit.type = 'submit';
     submit.disabled = panel.busy || action.disabled === true;
-    const cancel = button(t('Cancel'), 'source-control-action source-control-action-secondary');
-    cancel.addEventListener('click', () => {
-      panel.activeForm = '';
-      panel.formDraft = null;
-      renderPanel(panel, sourceControls.get(record.id) || record);
-    });
     controls.appendChild(submit);
-    controls.appendChild(cancel);
+    if (action.placement !== 'inline') {
+      const cancel = button(t('Cancel'), 'source-control-action source-control-action-secondary');
+      cancel.addEventListener('click', () => {
+        panel.activeForm = '';
+        renderPanel(panel, sourceControls.get(record.id) || record);
+      });
+      controls.appendChild(cancel);
+    } else form.classList.add('source-control-form-inline');
     form.appendChild(controls);
     form.addEventListener('submit', (event) => {
       event.preventDefault();
@@ -716,11 +727,16 @@ export function createSourceControlViewService(
         ? control.checked === true
         : control.value;
     });
-    panel.formDraft = { actionId: panel.renderedForm, values };
+    panel.formDrafts[panel.renderedForm] = values;
   }
 
   function renderPanel(panel: SourceControlPanel, record: SourceControlSnapshot): void {
     if (panel.disposed) return;
+    const focused = hostDocument.activeElement as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
+    const focusName = focused && panel.body.contains(focused) ? focused.name : '';
+    const selectionStart = focused && ('selectionStart' in focused) ? focused.selectionStart : null;
+    const selectionEnd = focused && ('selectionEnd' in focused) ? focused.selectionEnd : null;
+    const scrollTop = panel.body.scrollTop;
     captureFormDraft(panel);
     applyLabels(panel, record);
     appendHeaderActions(panel, record, record.state ? record.state.actions : EMPTY_ACTIONS);
@@ -736,6 +752,21 @@ export function createSourceControlViewService(
     status.setAttribute('aria-live', 'polite');
     panel.body.appendChild(status);
     if (state.message) panel.body.appendChild(element('p', 'source-control-message', state.message));
+    if (state.detail) {
+      const detail = element('section', 'source-control-detail');
+      detail.appendChild(element('h2', 'source-control-detail-title', state.detail.title));
+      const content = element('pre', 'source-control-detail-content');
+      const lines = state.detail.content.split('\n');
+      lines.slice(0, 500).forEach((line) => {
+        const tone = line.startsWith('+') && !line.startsWith('+++') ? 'added'
+          : line.startsWith('-') && !line.startsWith('---') ? 'removed'
+          : line.startsWith('@@') ? 'hunk' : 'context';
+        content.appendChild(element('span', 'source-control-diff-' + tone, line + '\n'));
+      });
+      if (lines.length > 500) content.appendChild(element('span', 'source-control-diff-context', lines.slice(500).join('\n')));
+      detail.appendChild(content);
+      panel.body.appendChild(detail);
+    }
     if (panel.error) {
       const error = element('div', 'source-control-host-error', panel.error);
       error.setAttribute('role', 'alert');
@@ -743,17 +774,28 @@ export function createSourceControlViewService(
     }
     if (state.phase === 'loading' && !state.summary && !state.sections.length && !state.actions.length) return;
     if (state.phase === 'error' && !state.summary && !state.sections.length && !state.actions.length) return;
-    const active = state.actions.find((action): action is SourceControlFormActionDto => (
+    let active = state.actions.find((action): action is SourceControlFormActionDto => (
       action.id === panel.activeForm && isFormAction(action)
     ));
+    if (!active && !panel.activeForm) active = state.actions.find((action): action is SourceControlFormActionDto => action.placement === 'inline' && isFormAction(action));
     if (active) appendActionForm(panel, record, active);
     else if (panel.activeForm) {
       panel.activeForm = '';
-      panel.formDraft = null;
     }
     appendSummary(panel.body, state.summary);
     state.sections.forEach((section) => { panel.body.appendChild(renderSection(panel, record, section)); });
     appendActions(panel, record, state);
+    panel.body.scrollTop = scrollTop;
+    if (focusName) {
+      const next = Array.from(panel.body.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select'))
+        .find((control) => control.name === focusName);
+      if (next && !next.disabled) {
+        next.focus({ preventScroll: true });
+        if (selectionStart !== null && selectionEnd !== null && 'setSelectionRange' in next) {
+          try { (next as HTMLInputElement | HTMLTextAreaElement).setSelectionRange(selectionStart, selectionEnd); } catch (_) {}
+        }
+      }
+    }
   }
 
   function createPanel(record: SourceControlSnapshot): SourceControlPanel | null {
@@ -813,7 +855,7 @@ export function createSourceControlViewService(
       navigation,
       activeForm: '',
       renderedForm: '',
-      formDraft: null,
+      formDrafts: Object.create(null) as Record<string, SourceControlRawFormValues>,
       overflowOpen: false,
       overflowCleanup: null,
       overflowMenu: null,
@@ -913,6 +955,11 @@ export function createSourceControlViewService(
     if (panel && current) {
       // Other host listeners may synchronously publish a newer state while an
       // older event is still being delivered. Always render the current DTO.
+      if (event.type === 'state' && current.version === event.version && current.state?.completedAction && current.state.completedAction === panel.renderedForm) {
+        delete panel.formDrafts[current.state.completedAction];
+        panel.activeForm = '';
+        panel.renderedForm = '';
+      }
       renderPanel(panel, current);
       return;
     }

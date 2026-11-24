@@ -91,6 +91,10 @@ test('local SCM Git broker keeps repository roots opaque and workspace-scoped', 
   });
   assert.deepEqual(initialBranch, { repositoryId: repository.repositoryId, branch: 'main', checkedOut: true });
   await broker.request('scm.git.stageAll', { repositoryId: repository.repositoryId });
+  await broker.request('scm.git.unstage', { repositoryId: repository.repositoryId, paths: ['README.md'] });
+  assert.equal((await fs.readFile(path.join(root, 'README.md'), 'utf8')), 'first line\n');
+  assert.equal((await git(root, ['diff', '--cached', '--name-only'])).stdout.trim(), '');
+  await broker.request('scm.git.stage', { repositoryId: repository.repositoryId, paths: ['README.md'] });
   await git(root, ['config', 'user.name', 'SCM Test']);
   await git(root, ['config', 'user.email', 'scm-test@example.invalid']);
   const committed = await broker.request('scm.git.commit', {
@@ -148,6 +152,34 @@ test('local SCM Git broker keeps repository roots opaque and workspace-scoped', 
     () => broker.request('scm.git.status', { repositoryId: repository.repositoryId }),
     { code: 'SCM_GIT_STALE_REPOSITORY' }
   );
+});
+
+test('push without an explicit branch respects a differently named upstream branch', async (t) => {
+  const observed = [];
+  const { root, broker } = await createWorkspace(t, {
+    execFile(file, args, options, callback) {
+      if (args.includes('push')) {
+        observed.push(args);
+        queueMicrotask(() => callback(null, '', ''));
+        return {};
+      }
+      return execFile(file, args, options, callback);
+    }
+  });
+  const repository = await broker.request('scm.git.init', {});
+  await git(root, ['config', 'user.name', 'SCM Test']);
+  await git(root, ['config', 'user.email', 'scm-test@example.invalid']);
+  await fs.writeFile(path.join(root, 'file.txt'), 'data\n');
+  await git(root, ['add', 'file.txt']);
+  await git(root, ['commit', '--quiet', '-m', 'initial']);
+  await git(root, ['branch', '-M', 'local-feature']);
+  await git(root, ['remote', 'add', 'upstream', 'https://example.invalid/repo.git']);
+  await git(root, ['config', 'branch.local-feature.remote', 'upstream']);
+  await git(root, ['config', 'branch.local-feature.merge', 'refs/heads/review-feature']);
+  await broker.request('scm.git.push', { repositoryId: repository.repositoryId, remote: 'upstream' });
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].includes('HEAD:refs/heads/review-feature'), true);
+  assert.equal(observed[0].includes('local-feature'), false);
 });
 
 test('local SCM clone is workspace-bound, empty-directory-only, and returns stable failures', async (t) => {

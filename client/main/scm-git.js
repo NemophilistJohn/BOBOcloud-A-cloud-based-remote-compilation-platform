@@ -488,6 +488,9 @@ function createScmGitBroker(options = {}) {
         assertScope: () => assertCurrentScope(scope, { scopeKey: scope.key })
       });
     } catch (error) {
+      if (error && error.killed && options.timeoutMs === GIT_MUTATION_TIMEOUT_MS) {
+        throw scmError('SCM_GIT_OUTCOME_UNKNOWN', 'Git timed out. The operation may have changed the repository or remote; refresh and verify before retrying.');
+      }
       throw gitFailure(error, scope.root);
     }
   }
@@ -921,9 +924,14 @@ function createScmGitBroker(options = {}) {
       if (Object.keys(payload).some((key) => !['repositoryId', 'paths'].includes(key))) throw scmError('SCM_GIT_INVALID_ARGUMENT', method + ' has an unsupported field.');
       const paths = normalizePaths(payload.paths);
       return queueMutation(scope, repository, async () => {
-        const args = method === 'scm.git.stage'
-          ? ['add', '--', ...paths]
-          : ['restore', '--staged', '--', ...paths];
+        let args;
+        if (method === 'scm.git.stage') args = ['add', '--', ...paths];
+        else {
+          const branchState = await runGit(scope, repository.root, ['status', '--porcelain=v2', '-z', '--branch']);
+          args = parseStatus(branchState.stdout).branch.oid === '(initial)'
+            ? ['rm', '--cached', '-r', '--ignore-unmatch', '--', ...paths]
+            : ['restore', '--staged', '--', ...paths];
+        }
         await runGit(scope, repository.root, args, { timeoutMs: GIT_MUTATION_TIMEOUT_MS });
         return readStatus(scope, repository);
       });
@@ -1007,7 +1015,19 @@ function createScmGitBroker(options = {}) {
           if (branch) args.push(branch);
         } else {
           const targetBranch = branch || await readCurrentBranch(scope, repository);
-          args = ['push', '--porcelain', '--no-verify', remote, targetBranch];
+          let refspec = targetBranch;
+          if (!branch) {
+            // Respect a configured upstream whose remote branch has a different
+            // name. A bare `git push remote local-name` would silently create
+            // or update another branch instead of the branch being tracked.
+            const configuredRemote = await runGit(scope, repository.root, ['config', '--get', 'branch.' + targetBranch + '.remote']).catch(() => ({ stdout: '' }));
+            const configuredMerge = await runGit(scope, repository.root, ['config', '--get', 'branch.' + targetBranch + '.merge']).catch(() => ({ stdout: '' }));
+            const tracked = configuredMerge.stdout.trim();
+            if (configuredRemote.stdout.trim() === remote && tracked.startsWith('refs/heads/')) {
+              refspec = 'HEAD:refs/heads/' + normalizeBranchName(tracked.slice('refs/heads/'.length));
+            }
+          }
+          args = ['push', '--porcelain', '--no-verify', remote, refspec];
           if (payload.force === true) args.splice(1, 0, '--force-with-lease');
           if (payload.setUpstream === true) args.splice(1, 0, '--set-upstream');
         }

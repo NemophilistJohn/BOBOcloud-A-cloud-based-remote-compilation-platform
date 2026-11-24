@@ -135,7 +135,7 @@ test('source-control DTOs preserve normalized defaults, discriminants, and store
     '};',
     'const nullableStateInput: SourceControlStateRegistrationDto = { summary: null };',
     'const state: SourceControlStateDto = {',
-    "  phase: 'ready', title: null, message: null, summary: null, sections: [], actions: []",
+    "  phase: 'ready', title: null, message: null, detail: null, completedAction: null, summary: null, sections: [], actions: []",
     '};',
     '// @ts-expect-error A normalized state contains every defaulted field.',
     "const incompleteState: SourceControlStateDto = { phase: 'ready', title: null, message: null, summary: null, sections: [] };",

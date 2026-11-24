@@ -331,7 +331,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: NemophilistJohn/BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-
-          ref: d94565a2dbd81c7891c2ef9b54edfae20bae02ff
+          ref: d6485add04288c543ba805f47e954ea6c8780457
           path: .ci-plugins/local-scm
           persist-credentials: false
       - name: Set up Node.js
@@ -349,7 +349,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm ci --prefix .ci-plugins/document-preview
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # The fixed SCM release predates its lockfile; package.json pins esbuild exactly.
+          # The fixed SCM release pins esbuild exactly in package.json.
           npm install --prefix .ci-plugins/local-scm --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package fixed official plugins

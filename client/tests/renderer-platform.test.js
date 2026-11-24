@@ -441,7 +441,7 @@ test('renderer platform bootstrap exposes the precise runtime contract without a
     'declare const compatibility: RendererPlatformCompatibilityFacade;',
     'const bootstrapped: RendererPlatform = rendererPlatform;',
     'const created: RendererPlatform = createRendererPlatform();',
-    "const apiVersion: '1.10.0' = created.apiVersion;",
+    "const apiVersion: '1.11.0' = created.apiVersion;",
     'const disposed: boolean = created.disposed;',
     'const disposal: Promise<void> = created.dispose();',
     "created.services.require('workbench.projectTasks').refresh();",
@@ -483,7 +483,7 @@ test('renderer platform bootstrap exposes the precise runtime contract without a
     'created.sourceControls.list();',
     'created.agents.list();',
     'created.plugins.list();',
-    "const compatibilityApiVersion: '1.10.0' = compatibility.apiVersion;",
+    "const compatibilityApiVersion: '1.11.0' = compatibility.apiVersion;",
     "const compatibilityService: unknown = compatibility.services.get('host.pluginExtensions');",
     "const compatibilityCommand: Promise<unknown> = compatibility.commands.execute('plugin.dynamic', { value: 1 });",
     "const compatibilityContribution: Disposable = compatibility.contributions.register('plugin.dynamic', { id: 'acme.dynamic' });",
@@ -1754,6 +1754,21 @@ test('static SCM decoration provider reaches the generic SCM tree lane without t
   assert.equal(BOBO.platform.fileDecorations.get('scm', 'src/main.go', { type: 'file' }), null);
 });
 
+test('SCM inline actions, secondary commands, and text details remain bounded and owned', () => {
+  const state = core.validateSourceControlState({
+    detail: { title: 'Patch', content: '+safe text\n<script>' },
+    completedAction: 'commit',
+    sections: [{ id: 'files', title: 'Files', items: [{ id: 'one', title: 'file', command: 'acme.scm.view', secondaryAction: { command: 'acme.scm.stage', title: 'Stage', icon: 'add' } }] }],
+    actions: [{ id: 'commit', title: 'Commit', command: 'acme.scm.commit', placement: 'inline', form: { fields: [{ id: 'message', label: 'Message' }] } }]
+  }, { commandPrefix: 'acme.scm.' });
+  assert.equal(state.sections[0].items[0].secondaryAction.command, 'acme.scm.stage');
+  assert.equal(state.actions[0].placement, 'inline');
+  assert.equal(state.detail.content, '+safe text\n<script>');
+  assert.throws(() => core.validateSourceControlState({ detail: { title: 'x', content: 'x'.repeat(32001) } }), /bounded/);
+  assert.throws(() => core.validateSourceControlState({ sections: [{ id: 'files', title: 'Files', items: [{ id: 'one', title: 'file', secondaryAction: { command: 'other.plugin.run', title: 'Run' } }] }] }, { commandPrefix: 'acme.scm.' }), /owning extension/);
+  assert.throws(() => core.validateSourceControlState({ actions: [{ id: 'commit', title: 'Commit', command: 'acme.scm.commit', placement: 'inline' }] }, { commandPrefix: 'acme.scm.' }), /require a form/);
+});
+
 test('source-control state providers are bounded, localized, and removed with their extension', async () => {
   const platform = core.createRendererPlatform();
   let sandbox;
@@ -2374,7 +2389,7 @@ test('thin BOBO adapters project registered file icon and command palette servic
   vm.runInNewContext(compatibilityBundle, context);
 
   const BOBO = context.window.BOBO;
-  assert.equal(BOBO.platform.apiVersion, '1.10.0');
+  assert.equal(BOBO.platform.apiVersion, '1.11.0');
   assert.equal(Object.isFrozen(BOBO.platform), true);
   for (const key of [
     'fileDecorations', 'sourceControl', 'agents', 'services', 'commands', 'contributions', 'plugins'

@@ -1,6 +1,6 @@
-# BOBOCloud Plugin API 1.10.0
+# BOBOCloud Plugin API 1.11.0
 
-Status: public package and isolated extension-host contract. BOBOCloud desktop `2.8.1` implements Plugin API `1.10.0`. API `1.6.0` introduced truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism; later API 1.x releases extend that contract.
+Status: public package and isolated extension-host contract. BOBOCloud desktop `2.8.1` implements Plugin API `1.11.0`. API `1.6.0` introduced truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism; later API 1.x releases extend that contract.
 
 The reference guide, package checklist, and complete example are in [Plugin Development Guide](./plugin-development.md).
 
@@ -271,6 +271,17 @@ In API 1.9, a document iframe can call `context.setNavigation({ providerId, acti
 ## Source-Control Sidebar
 
 `context.sourceControl` is a generic, data-only sidebar API. The workbench creates its activity-bar item and panel dynamically for each registered provider. The extension may publish localized titles, bounded summary facts, sections, item lists, forms, and named actions, but cannot provide HTML, CSS, URLs, DOM nodes, callbacks, or arbitrary command arguments.
+
+API 1.11 adds an optional `secondaryAction: { command, title, icon? }` to each
+section item. `command` must belong to the provider owner; `icon` is `add` or
+`remove`, and the host sends the same opaque item ID as the primary action.
+State may also contain `detail: { title, content }`, with up to 32,000
+characters of plain text, rendered as a bounded scrollable patch preview.
+`completedAction` names a successfully completed form action whose host-owned
+draft can be cleared. Keep it absent on failures. Providers supporting older
+hosts must check `context.apiVersion` before sending these 1.11 fields.
+An action with `placement: 'inline'` and a form is shown by default; opening
+another form temporarily replaces it while retaining the inline draft.
 
 ### Registration and state
 
