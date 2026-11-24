@@ -1021,14 +1021,14 @@ function createScmGitBroker(options = {}) {
           }
         }
         await runGit(scope, repository.root, ['commit', '--no-verify', '--no-gpg-sign', '-m', message], { timeoutMs: GIT_MUTATION_TIMEOUT_MS });
-        if (expectedBranch) {
-          let committedBranch;
-          try { committedBranch = await readCurrentBranch(scope, repository); }
-          catch (_) { throw scmError('SCM_GIT_OUTCOME_UNKNOWN', 'The commit outcome could not be verified. Verify the repository before retrying.'); }
-          if (committedBranch !== expectedBranch) throw scmError('SCM_GIT_OUTCOME_UNKNOWN', 'The branch changed during commit. Verify the repository before retrying.');
+        try {
+          if (expectedBranch && await readCurrentBranch(scope, repository) !== expectedBranch) throw new Error('Branch changed');
+          const hash = (await runGit(scope, repository.root, ['rev-parse', 'HEAD'])).stdout.trim();
+          if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i.test(hash)) throw new Error('Invalid commit');
+          return immutable({ repositoryId: repository.id, commit: hash });
+        } catch (_) {
+          throw scmError('SCM_GIT_OUTCOME_UNKNOWN', 'The commit outcome could not be verified. Verify the repository before retrying.');
         }
-        const hash = (await runGit(scope, repository.root, ['rev-parse', 'HEAD'])).stdout.trim();
-        return immutable({ repositoryId: repository.id, commit: /^[a-f0-9]{40,64}$/i.test(hash) ? hash : '' });
       });
     }
     if (method === 'scm.git.checkout') {
@@ -1136,7 +1136,17 @@ function createScmGitBroker(options = {}) {
           if (payload.force === true) args.splice(1, 0, '--force-with-lease');
           if (payload.setUpstream === true) args.splice(1, 0, '--set-upstream');
         }
-        const result = await runGit(scope, repository.root, args, { timeoutMs: GIT_MUTATION_TIMEOUT_MS });
+        let result;
+        try {
+          result = await runGit(scope, repository.root, args, { timeoutMs: GIT_MUTATION_TIMEOUT_MS });
+        } catch (error) {
+          const definitelyFailed = ['SCM_GIT_AUTH_REQUIRED', 'SCM_GIT_UNAVAILABLE', 'SCM_GIT_STALE_REPOSITORY'].includes(error && error.code) ||
+            (error && error.code === 'SCM_GIT_OPERATION_FAILED' && error.message.startsWith('The remote rejected the Git update.'));
+          if (method === 'scm.git.push' && !definitelyFailed) {
+            throw scmError('SCM_GIT_OUTCOME_UNKNOWN', 'The push outcome could not be confirmed. Verify the remote before retrying.');
+          }
+          throw error;
+        }
         return immutable({ repositoryId: repository.id, remote, branch: branch || '', output: redactText(result.stdout + result.stderr, scope.root) });
       });
     }

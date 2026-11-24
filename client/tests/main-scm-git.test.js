@@ -169,11 +169,12 @@ test('local SCM Git broker keeps repository roots opaque and workspace-scoped', 
 
 test('push without an explicit branch respects a differently named upstream branch', async (t) => {
   const observed = [];
+  let pushFailure = '';
   const { root, broker } = await createWorkspace(t, {
     execFile(file, args, options, callback) {
       if (args.includes('push')) {
         observed.push(args);
-        queueMicrotask(() => callback(null, '', ''));
+        queueMicrotask(() => callback(pushFailure ? new Error('Git exited') : null, '', pushFailure));
         return {};
       }
       return execFile(file, args, options, callback);
@@ -211,6 +212,36 @@ test('push without an explicit branch respects a differently named upstream bran
   const current = (await broker.request('scm.git.remotes', { repositoryId: repository.repositoryId })).remotes[0];
   await assert.rejects(() => broker.request('scm.git.push', { repositoryId: repository.repositoryId, remote: 'upstream', expectedHead: '0'.repeat(40), expectedTarget: current.pushFingerprint }), { code: 'SCM_GIT_HEAD_CHANGED' });
   assert.equal(observed.length, 1);
+  pushFailure = 'fatal: connection reset while waiting for remote response';
+  await assert.rejects(() => broker.request('scm.git.push', { repositoryId: repository.repositoryId, remote: 'upstream', expectedHead: head, expectedBranch: 'local-feature', expectedTarget: current.pushFingerprint }), { code: 'SCM_GIT_OUTCOME_UNKNOWN' });
+  pushFailure = 'error: failed to push some refs (non-fast-forward rejected)';
+  await assert.rejects(() => broker.request('scm.git.push', { repositoryId: repository.repositoryId, remote: 'upstream', expectedHead: head, expectedBranch: 'local-feature', expectedTarget: current.pushFingerprint }), { code: 'SCM_GIT_OPERATION_FAILED' });
+});
+
+test('a commit remains unconfirmed if reading its result fails after Git completed it', async (t) => {
+  let failCommitRead = false;
+  const { root, broker } = await createWorkspace(t, {
+    execFile(file, args, options, callback) {
+      if (failCommitRead && args.slice(-2).join(' ') === 'rev-parse HEAD') {
+        return queueMicrotask(() => callback(new Error('read failed'), '', ''));
+      }
+      if (args.includes('commit')) {
+        return execFile(file, args, options, (error, stdout, stderr) => {
+          if (!error) failCommitRead = true;
+          callback(error, stdout, stderr);
+        });
+      }
+      return execFile(file, args, options, callback);
+    }
+  });
+  const repository = await broker.request('scm.git.init', {});
+  await git(root, ['config', 'user.name', 'SCM Test']);
+  await git(root, ['config', 'user.email', 'scm-test@example.invalid']);
+  await fs.writeFile(path.join(root, 'file.txt'), 'data\n');
+  await git(root, ['add', 'file.txt']);
+  const branch = (await git(root, ['branch', '--show-current'])).stdout.trim();
+  await assert.rejects(() => broker.request('scm.git.commit', { repositoryId: repository.repositoryId, message: 'committed once', expectedBranch: branch, expectedHead: '(initial)' }), { code: 'SCM_GIT_OUTCOME_UNKNOWN' });
+  assert.equal((await git(root, ['log', '-1', '--format=%s'])).stdout.trim(), 'committed once');
 });
 
 test('remote history includes commits reachable from all fetched branches of the selected remote', async (t) => {
