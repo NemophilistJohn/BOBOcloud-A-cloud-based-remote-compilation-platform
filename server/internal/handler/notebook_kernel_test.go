@@ -92,6 +92,40 @@ func TestNotebookKernelTimeoutStopsInterpreter(t *testing.T) {
 	}
 }
 
+// delayedNotebookCallback models a deadline whose AfterFunc callback has been
+// scheduled but has not yet run when execute returns and stops the callback.
+type delayedNotebookCallback struct{ context.Context }
+
+func (c delayedNotebookCallback) Value(any) any { return nil }
+func (c delayedNotebookCallback) AfterFunc(func()) func() bool {
+	return func() bool { return true }
+}
+
+type cancelOnNotebookWrite struct{ cancel context.CancelFunc }
+
+func (w cancelOnNotebookWrite) Write(p []byte) (int, error) {
+	w.cancel()
+	return len(p), nil
+}
+func (w cancelOnNotebookWrite) Close() error { return nil }
+
+func TestNotebookDeadlineStopsKernelWhenCallbackIsDelayed(t *testing.T) {
+	base, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stopped := false
+	process := &notebookProcess{
+		input:   cancelOnNotebookWrite{cancel: cancel},
+		replies: make(chan notebookResult),
+		cancel:  func() { stopped = true },
+	}
+	if _, err := process.execute(delayedNotebookCallback{base}, "print(1)"); err != context.Canceled {
+		t.Fatalf("cell error = %v, want context.Canceled", err)
+	}
+	if !stopped {
+		t.Fatal("interpreter was not cancelled when the cell deadline won the race")
+	}
+}
+
 func TestNotebookKernelFigureIDDoesNotChangeExecutionCount(t *testing.T) {
 	python := notebookPython(t)
 	process, err := startNotebookProcess(context.Background(), python, "-u", "-c", notebookKernelPython)
