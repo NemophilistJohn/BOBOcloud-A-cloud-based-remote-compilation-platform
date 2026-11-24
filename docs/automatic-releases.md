@@ -40,3 +40,7 @@ release artifacts; it does not connect to or modify any server.
 The `ssh2` optional native acceleration and CPU-detection modules are omitted
 from packaged applications; its supported JavaScript fallback avoids shipping
 an addon built for the runner architecture in a cross-architecture package.
+Linux ARM64 is cross-packaged on an x64 runner because the pinned
+electron-builder DEB/RPM tool is an x86 executable. Its Electron binary is
+checked for the target ELF architecture; native ARM hardware runtime testing is
+separate.

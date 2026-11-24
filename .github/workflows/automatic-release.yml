@@ -127,7 +127,7 @@ jobs:
           - arch: x64
             runner: ubuntu-24.04
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-24.04
     env:
       RELEASE_VERSION: ${{ needs.plan.outputs.version }}
       RELEASE_ARCH: ${{ matrix.arch }}
@@ -153,15 +153,24 @@ jobs:
             "--config.extraMetadata.version=$RELEASE_VERSION" \
             '--config.extraMetadata.homepage=https://github.com/NemophilistJohn/BOBOcloud-A-cloud-based-remote-compilation-platform' \
             '--config.linux.maintainer=BOBOCloud <noreply@github.com>' \
+            '--config.linux.icon=ico/app-icon.png' \
             '--config.linux.artifactName=BOBOCloud-${version}-linux-${arch}.${ext}'
           mapfile -t asars < <(find dist -type f -path '*/resources/app.asar')
           test "${#asars[@]}" -eq 1
+          executable="$(dirname "$(dirname "${asars[0]}")")/bobocloud-editer"
+          if [ "$RELEASE_ARCH" = x64 ]; then readelf -h "$executable" | grep -q 'Advanced Micro Devices X86-64'; else readelf -h "$executable" | grep -q 'AArch64'; fi
           node scripts/audit-release.js "${asars[0]}"
           mkdir -p release-assets
           for ext in AppImage deb rpm; do
             name="BOBOCloud-$RELEASE_VERSION-linux-$RELEASE_ARCH.$ext"
-            test -s "dist/$name"
-            cp "dist/$name" "release-assets/$name"
+            mapfile -t built < <(find dist -maxdepth 1 -type f -name "*.$ext")
+            test "${#built[@]}" -eq 1
+            test -s "${built[0]}"
+            if [ "$ext" = deb ]; then
+              expected=amd64; if [ "$RELEASE_ARCH" = arm64 ]; then expected=arm64; fi
+              test "$(dpkg-deb -f "${built[0]}" Architecture)" = "$expected"
+            fi
+            cp "${built[0]}" "release-assets/$name"
           done
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
