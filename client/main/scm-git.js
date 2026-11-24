@@ -733,6 +733,33 @@ function createScmGitBroker(options = {}) {
     return normalizeBranchName(branch);
   }
 
+  async function readPushBranchMapping(scope, repository, branch) {
+    if (!branch) return { remote: '', branch: '', valid: true };
+    const config = await runGit(scope, repository.root, ['config', '--null', '--list']);
+    let remote = '';
+    let merge = '';
+    for (const entry of config.stdout.split('\0')) {
+      const separator = entry.indexOf('\n');
+      if (separator < 0) continue;
+      const key = entry.slice(0, separator);
+      const value = entry.slice(separator + 1).trim();
+      if (key === 'branch.' + branch + '.remote') remote = value;
+      if (key === 'branch.' + branch + '.merge') merge = value;
+    }
+    if (!merge) return { remote, branch: '', valid: true };
+    if (!merge.startsWith('refs/heads/')) return { remote, branch: '', valid: false };
+    try { return { remote, branch: normalizeBranchName(merge.slice('refs/heads/'.length)), valid: true }; }
+    catch (_) { return { remote, branch: '', valid: false }; }
+  }
+
+  function pushDestination(remote, localBranch, mapping) {
+    return mapping.remote === remote && mapping.branch ? mapping.branch : localBranch;
+  }
+
+  function fingerprintPushTarget(url, localBranch, destination) {
+    return crypto.createHash('sha256').update(JSON.stringify([normalizeRemoteUrl(url), localBranch, destination])).digest('hex');
+  }
+
   async function assertRemote(scope, repository, remoteName) {
     let result;
     try {
@@ -892,6 +919,8 @@ function createScmGitBroker(options = {}) {
       if (Object.keys(payload).some((key) => key !== 'repositoryId')) throw scmError('SCM_GIT_INVALID_ARGUMENT', 'scm.git.remotes has an unsupported field.');
       const namesResult = await runGit(scope, repository.root, ['remote']);
       const verboseResult = await runGit(scope, repository.root, ['remote', '-v']);
+      const activeBranch = await readCurrentBranch(scope, repository).catch(() => '');
+      const pushMapping = await readPushBranchMapping(scope, repository, activeBranch);
       const remoteUrls = new Map();
       for (const line of verboseResult.stdout.split(/\r?\n/)) {
         const match = line.match(/^([^\t]+)\t(.*) \((fetch|push)\)$/);
@@ -934,8 +963,8 @@ function createScmGitBroker(options = {}) {
         const safeMeta = (value, max) => typeof value === 'string' && value.trim() && value.length <= max && !/[\x00-\x1f\x7f]/.test(value) ? value.trim() : '';
         const rawPushUrls = urls.push;
         let pushFingerprint = '';
-        if (rawPushUrls.length === 1) {
-          try { pushFingerprint = crypto.createHash('sha256').update(normalizeRemoteUrl(rawPushUrls[0])).digest('hex'); } catch (_) {}
+        if (rawPushUrls.length === 1 && activeBranch && pushMapping.valid) {
+          try { pushFingerprint = fingerprintPushTarget(rawPushUrls[0], activeBranch, pushDestination(name, activeBranch, pushMapping)); } catch (_) {}
         }
         remotes.push({ name, urls: fetchUrls, fetchUrls, pushUrls, hasUnsupportedUrls,
           label: safeMeta(meta.label, 96), platform: safeMeta(meta.platform, 64), selected: meta.selected === 'true', pushFingerprint });
@@ -1107,30 +1136,28 @@ function createScmGitBroker(options = {}) {
           const pushUrls = (await runGit(scope, repository.root, ['remote', 'get-url', '--push', '--all', remote])).stdout.split(/\r?\n/).filter(Boolean);
           if (!pushUrls.length) throw scmError('SCM_GIT_REMOTE_DENIED', 'No supported push target is configured.');
           for (const pushUrl of pushUrls) normalizeRemoteUrl(pushUrl);
-          if (payload.expectedTarget !== undefined && (pushUrls.length !== 1 || crypto.createHash('sha256').update(pushUrls[0]).digest('hex') !== payload.expectedTarget)) {
-            throw scmError('SCM_GIT_REMOTE_CHANGED', 'The push target changed. Refresh and review the remote before retrying.');
-          }
-          const currentBranch = !branch || expectedBranch ? await readCurrentBranch(scope, repository) : '';
+          const currentBranch = !branch || expectedBranch || payload.expectedTarget !== undefined ? await readCurrentBranch(scope, repository) : '';
           if (expectedBranch && currentBranch !== expectedBranch) throw scmError('SCM_GIT_HEAD_CHANGED', 'The current branch changed. Refresh before retrying.');
           if (payload.expectedHead !== undefined && (await runGit(scope, repository.root, ['rev-parse', 'HEAD'])).stdout.trim().toLowerCase() !== payload.expectedHead.toLowerCase()) {
             throw scmError('SCM_GIT_HEAD_CHANGED', 'The current commit changed. Refresh before retrying.');
           }
           const targetBranch = branch || currentBranch;
           let refspec = targetBranch;
+          let destination = targetBranch;
           if (!branch) {
             // Respect a configured upstream whose remote branch has a different
             // name. A bare `git push remote local-name` would silently create
             // or update another branch instead of the branch being tracked.
-            const configuredRemote = await runGit(scope, repository.root, ['config', '--get', 'branch.' + targetBranch + '.remote']).catch(() => ({ stdout: '' }));
-            const configuredMerge = await runGit(scope, repository.root, ['config', '--get', 'branch.' + targetBranch + '.merge']).catch(() => ({ stdout: '' }));
-            const tracked = configuredMerge.stdout.trim();
-            if (configuredRemote.stdout.trim() === remote && tracked.startsWith('refs/heads/')) {
-              refspec = 'HEAD:refs/heads/' + normalizeBranchName(tracked.slice('refs/heads/'.length));
-            }
+            const mapping = await readPushBranchMapping(scope, repository, targetBranch);
+            if (!mapping.valid) throw scmError('SCM_GIT_REMOTE_CHANGED', 'The configured destination branch is invalid. Refresh and review the remote.');
+            destination = pushDestination(remote, targetBranch, mapping);
+            if (mapping.remote === remote && mapping.branch) refspec = 'HEAD:refs/heads/' + destination;
+          }
+          if (payload.expectedTarget !== undefined && (pushUrls.length !== 1 || fingerprintPushTarget(pushUrls[0], currentBranch, destination) !== payload.expectedTarget)) {
+            throw scmError('SCM_GIT_REMOTE_CHANGED', 'The push destination changed. Refresh and review the remote before retrying.');
           }
           if (payload.expectedHead !== undefined) {
-            const destination = refspec.startsWith('HEAD:') ? refspec.slice(5) : 'refs/heads/' + targetBranch;
-            refspec = payload.expectedHead + ':' + destination;
+            refspec = payload.expectedHead + ':refs/heads/' + destination;
           }
           args = ['push', '--porcelain', '--no-verify', remote, refspec];
           if (payload.force === true) args.splice(1, 0, '--force-with-lease');

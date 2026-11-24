@@ -331,7 +331,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: NemophilistJohn/BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-
-          ref: 892ada7aeb1c1f30f42e449a3b242a572bdacd38
+          ref: 0e87d0ca8a0e0d06aee5848a794c11dc6866c633
           path: .ci-plugins/local-scm
           persist-credentials: false
       - name: Set up Node.js

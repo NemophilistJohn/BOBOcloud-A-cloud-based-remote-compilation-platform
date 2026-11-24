@@ -298,8 +298,9 @@ plus remote-scoped `history`. Card labels, platform and selection are stored
 as local Git configuration attached to the corresponding remote. Removing a
 remote also removes its local remote-tracking references. For multi-target
 pushes, a caller can provide the expected HEAD, current branch and opaque push
-fingerprint; the broker checks them before running Git, rejects changed or
-ambiguous targets and pins the pushed object to the expected commit. A guarded
+fingerprint (binding the URL and resolved destination branch). The broker checks
+them before running Git, rejects changed or ambiguous targets and pins the
+pushed object to the expected commit. A guarded
 commit can also require the expected branch and HEAD (`(initial)` for an unborn
 branch). These operations require the existing `scm.git.write`
 permission and do not expose shell or arbitrary filesystem access.

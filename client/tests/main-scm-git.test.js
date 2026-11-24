@@ -206,6 +206,14 @@ test('push without an explicit branch respects a differently named upstream bran
   assert.equal((await git(root, ['rev-parse', 'HEAD'])).stdout.trim(), head);
   assert.equal(observed.length, 1);
   await git(root, ['checkout', 'local-feature']);
+  await git(root, ['config', 'branch.local-feature.merge', 'refs/heads/changed-target']);
+  await assert.rejects(() => broker.request('scm.git.push', { repositoryId: repository.repositoryId, remote: 'upstream', expectedHead: head, expectedBranch: 'local-feature', expectedTarget: target.pushFingerprint }), { code: 'SCM_GIT_REMOTE_CHANGED' });
+  assert.equal(observed.length, 1);
+  await git(root, ['config', 'branch.local-feature.merge', 'refs/heads/review-feature']);
+  await git(root, ['config', 'branch.local-feature.merge', 'refs/tags/not-a-branch']);
+  assert.equal((await broker.request('scm.git.remotes', { repositoryId: repository.repositoryId })).remotes[0].pushFingerprint, '');
+  await assert.rejects(() => broker.request('scm.git.push', { repositoryId: repository.repositoryId, remote: 'upstream', expectedHead: head, expectedBranch: 'local-feature', expectedTarget: target.pushFingerprint }), { code: 'SCM_GIT_REMOTE_CHANGED' });
+  await git(root, ['config', 'branch.local-feature.merge', 'refs/heads/review-feature']);
   await git(root, ['remote', 'set-url', '--push', 'upstream', 'https://example.invalid/changed.git']);
   await assert.rejects(() => broker.request('scm.git.push', { repositoryId: repository.repositoryId, remote: 'upstream', expectedHead: head, expectedTarget: target.pushFingerprint }), { code: 'SCM_GIT_REMOTE_CHANGED' });
   assert.equal(observed.length, 1);
