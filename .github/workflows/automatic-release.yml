@@ -1,0 +1,254 @@
+name: Automatic Release
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/automatic-release.yml'
+      - 'scripts/auto-release/**'
+      - 'client/tests/release-automation.test.js'
+      - 'client/package*.json'
+      - 'client/scripts/before-pack.js'
+      - 'server/cmd/default-config/**'
+      - 'docs/server-release-readme.md'
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Emergency release even if only one component changed (successful main CI is still required)'
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17,47 * * * *'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: automatic-release-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    outputs:
+      eligible: ${{ steps.plan.outputs.eligible }}
+      head: ${{ steps.plan.outputs.head }}
+      baseline: ${{ steps.plan.outputs.baseline }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'main' }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
+          RELEASE_PREVIEW: ${{ github.event_name == 'pull_request' }}
+        run: node scripts/auto-release/plan.cjs
+
+  windows:
+    needs: plan
+    if: needs.plan.outputs.eligible == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    env:
+      RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+      RELEASE_ARCH: ${{ matrix.arch }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.head }}
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Install dependencies
+        shell: pwsh
+        run: npm ci --prefix client
+      - name: Build Windows installer and portable application
+        shell: pwsh
+        working-directory: client
+        run: |
+          $archFlag = "--$env:RELEASE_ARCH"
+          $buildArgs = @('--win', 'nsis', 'portable', $archFlag, '--publish', 'never', '--config.npmRebuild=false', "--config.extraMetadata.version=$env:RELEASE_VERSION", "--config.nsis.artifactName=BOBOCloud-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH-setup.exe", "--config.portable.artifactName=BOBOCloud-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH-portable.exe")
+          & npx electron-builder @buildArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $asars = @(Get-ChildItem -LiteralPath dist -Recurse -Filter app.asar | Where-Object { $_.Directory.Name -eq 'resources' })
+          if ($asars.Count -ne 1) { throw "Expected exactly one packaged app.asar, found $($asars.Count)" }
+          node scripts/audit-release.js $asars[0].FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $executable = Join-Path $asars[0].Directory.Parent.FullName 'BOBOCloudEditer.exe'
+          node ../scripts/auto-release/verify-pe.cjs $executable $env:RELEASE_ARCH
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force release-assets | Out-Null
+          foreach ($kind in @('setup', 'portable')) {
+            $name = "BOBOCloud-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH-$kind.exe"
+            $source = Join-Path 'dist' $name
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing required package $name" }
+            Copy-Item -LiteralPath $source -Destination (Join-Path 'release-assets' $name)
+          }
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: windows-${{ matrix.arch }}
+          path: client/release-assets/*
+          if-no-files-found: error
+          retention-days: 3
+
+  linux:
+    needs: plan
+    if: needs.plan.outputs.eligible == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04
+    env:
+      RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+      RELEASE_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.head }}
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Install dependencies
+        run: npm ci --prefix client
+      - name: Build Linux AppImage, DEB and RPM
+        working-directory: client
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx electron-builder --linux AppImage deb rpm "--$RELEASE_ARCH" --publish never \
+            '--config.npmRebuild=false' \
+            "--config.extraMetadata.version=$RELEASE_VERSION" \
+            '--config.extraMetadata.homepage=https://github.com/NemophilistJohn/BOBOcloud-A-cloud-based-remote-compilation-platform' \
+            '--config.linux.maintainer=BOBOCloud <noreply@github.com>' \
+            '--config.linux.icon=ico/app-icon.png' \
+            '--config.linux.artifactName=BOBOCloud-${version}-linux-${arch}.${ext}'
+          mapfile -t asars < <(find dist -type f -path '*/resources/app.asar')
+          test "${#asars[@]}" -eq 1
+          executable="$(dirname "$(dirname "${asars[0]}")")/bobocloud-editer"
+          if [ "$RELEASE_ARCH" = x64 ]; then readelf -h "$executable" | grep -q 'Advanced Micro Devices X86-64'; else readelf -h "$executable" | grep -q 'AArch64'; fi
+          node scripts/audit-release.js "${asars[0]}"
+          mkdir -p release-assets
+          for ext in AppImage deb rpm; do
+            name="BOBOCloud-$RELEASE_VERSION-linux-$RELEASE_ARCH.$ext"
+            mapfile -t built < <(find dist -maxdepth 1 -type f -name "*.$ext")
+            test "${#built[@]}" -eq 1
+            test -s "${built[0]}"
+            if [ "$ext" = deb ]; then
+              expected=amd64; if [ "$RELEASE_ARCH" = arm64 ]; then expected=arm64; fi
+              test "$(dpkg-deb -f "${built[0]}" Architecture)" = "$expected"
+            fi
+            cp "${built[0]}" "release-assets/$name"
+          done
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: linux-${{ matrix.arch }}
+          path: client/release-assets/*
+          if-no-files-found: error
+          retention-days: 3
+
+  server:
+    needs: plan
+    if: needs.plan.outputs.eligible == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.head }}
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Build binary and packages with and without defaults
+        env:
+          RELEASE_ARCH: ${{ matrix.arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/server-release"
+          mkdir -p "$output/assets" "$output/plain" "$output/configured"
+          name="bobocloud-server-linux-$RELEASE_ARCH"
+          (cd server && GOOS=linux GOARCH="$RELEASE_ARCH" CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o "$output/assets/$name" ./cmd/bobocloud)
+          file "$output/assets/$name"
+          if [ "$RELEASE_ARCH" = amd64 ]; then readelf -h "$output/assets/$name" | grep -q 'Advanced Micro Devices X86-64'; else readelf -h "$output/assets/$name" | grep -q 'AArch64'; fi
+          install -m 755 "$output/assets/$name" "$output/plain/bobocloud-server"
+          install -m 755 "$output/assets/$name" "$output/configured/bobocloud-server"
+          (cd server && go run ./cmd/default-config "$output/configured/config.json")
+          jq -e '.admin_api_key == "" and .root_user.password == ""' "$output/configured/config.json" > /dev/null
+          cp docs/server-release-readme.md "$output/configured/README.md"
+          tar -C "$output/plain" -czf "$output/assets/$name-binary.tar.gz" bobocloud-server
+          tar -C "$output/configured" -czf "$output/assets/$name-with-config.tar.gz" bobocloud-server config.json README.md
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: server-${{ matrix.arch }}
+          path: ${{ runner.temp }}/server-release/assets/*
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: [plan, windows, linux, server]
+    if: github.event_name != 'pull_request' && needs.plan.outputs.eligible == 'true' && needs.windows.result == 'success' && needs.linux.result == 'success' && needs.server.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_HEAD: ${{ needs.plan.outputs.head }}
+      RELEASE_BASELINE: ${{ needs.plan.outputs.baseline }}
+      RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+      RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+      RELEASE_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.head }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Verify and publish a complete prerelease
+        run: node scripts/auto-release/publish.cjs
