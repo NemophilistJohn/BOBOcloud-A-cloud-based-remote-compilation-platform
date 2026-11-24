@@ -68,6 +68,8 @@ function main() {
   const check = () => execFileSync(process.execPath, ['scripts/auto-release/plan.cjs', '--verify', head, baseline], { stdio: 'inherit' });
   check();
   gh('release', 'create', tag, '--target', head, '--draft', '--prerelease', '--title', 'BOBOCloud ' + version, '--notes-file', notePath, ...assets.map((name) => path.join(dir, name)));
+  const reference = JSON.parse(gh('api', 'repos/' + process.env.GITHUB_REPOSITORY + '/git/ref/tags/' + tag));
+  if (reference.object.type !== 'commit' || reference.object.sha !== head) throw new Error('Release tag does not point to the verified source commit');
   const release = JSON.parse(gh('release', 'view', tag, '--json', 'isDraft,assets'));
   if (!release.isDraft || release.assets.length !== assets.length) throw new Error('Draft release has an incomplete set of assets');
   for (const name of assets) {
