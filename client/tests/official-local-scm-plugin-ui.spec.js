@@ -32,6 +32,10 @@ function git(workspace, args) {
   });
 }
 
+function gitConfig(workspace, key) {
+  try { return git(workspace, ['config', '--local', '--get', key]).trim(); } catch (_) { return ''; }
+}
+
 function createRepository(root) {
   fs.mkdirSync(root, { recursive: true });
   git(root, ['init']);
@@ -41,6 +45,9 @@ function createRepository(root) {
   git(root, ['add', 'main.py']);
   git(root, ['commit', '-m', 'Initial local commit']);
   git(root, ['branch', '-M', 'main']);
+  git(root, ['remote', 'add', 'origin', 'https://github.com/example/project.git']);
+  for (const name of ['archive1', 'archive2', 'archive3']) git(root, ['remote', 'add', name, 'https://example.invalid/' + name + '.git']);
+  git(root, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
   fs.writeFileSync(path.join(root, 'main.py'), 'print("changed")\nprint("second")\n', 'utf8');
   fs.writeFileSync(path.join(root, 'notes.txt'), 'untracked\n', 'utf8');
 }
@@ -149,13 +156,50 @@ test('official local SCM plugin accepts cross-realm broker data and controls fil
     await activity.click();
     const panel = page.locator('.source-control-sidebar.active');
     await expect(panel).toBeVisible();
-    await panel.locator('.source-control-section-toggle', { hasText: 'History' }).click();
-    await expect(panel).toContainText('Initial local commit');
     await expect(panel).toContainText('main.py');
     await expect(panel).toContainText('notes.txt');
     await expect(panel).not.toContainText('Extension payload must contain plain objects only.');
-    await expect(panel.locator('.source-control-tool-button[aria-label="Push"]')).toBeVisible();
     await panel.locator('.source-control-form-inline textarea[name="message"]').fill('UI commit\n\nCommit body');
+
+    // Real host-rendered cards manage actual Git remotes and persist selections.
+    const cardArea = panel.locator('.source-control-cards');
+    await expect(cardArea.locator('.source-control-card')).toHaveCount(4);
+    await expect.poll(() => cardArea.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
+    expect(await cardArea.evaluate((node) => node.clientHeight)).toBeLessThanOrEqual(112);
+    await cardArea.locator('.source-control-card').filter({ hasText: 'origin' }).locator('.source-control-card-select').click();
+    await expect.poll(() => gitConfig(workspace, 'remote.origin.bobocloudSelected')).toBe('true');
+    await cardArea.locator('.source-control-card-add').click();
+    const dialog = page.locator('.source-control-dialog');
+    await expect(dialog).toBeVisible();
+    await dialog.locator('input[name="label"]').fill('Mirror');
+    await dialog.locator('input[name="platform"]').fill('Gitee');
+    await dialog.locator('input[name="url"]').fill('https://gitee.com/example/project.git');
+    await dialog.locator('input[name="name"]').fill('mirror');
+    await dialog.locator('button[type="submit"]').click();
+    await expect(dialog).toHaveCount(0);
+    await expect(cardArea.locator('.source-control-card')).toHaveCount(5);
+    const mirror = cardArea.locator('.source-control-card').filter({ hasText: 'Mirror' });
+    await mirror.locator('.source-control-card-select').click();
+    await expect.poll(() => gitConfig(workspace, 'remote.mirror.bobocloudSelected')).toBe('true');
+    await expect(mirror.locator('.source-control-card-select')).toHaveAttribute('aria-checked', 'true');
+    await expect(mirror.locator('.source-control-card-select')).toBeEnabled();
+    await mirror.click({ button: 'right' });
+    await page.locator('.source-control-card-menu-item', { hasText: 'Edit' }).click();
+    await dialog.locator('input[name="label"]').fill('Team mirror');
+    await dialog.locator('button[type="submit"]').click();
+    await expect(dialog).toHaveCount(0);
+    await expect(cardArea).toContainText('Team mirror');
+    await cardArea.evaluate((node) => { node.scrollTop = 0; });
+    await page.screenshot({ path: path.join(evidenceDirectory, 'official-local-scm-plugin-cards.png'), fullPage: true });
+    await panel.locator('[role="tab"]', { hasText: 'Commits & branches' }).click();
+    await cardArea.locator('.source-control-card').filter({ hasText: 'origin' }).locator('.source-control-card-select').click();
+    await expect(panel.locator('.source-control-graph').first()).toBeVisible();
+    await expect(panel).toContainText('Initial local commit');
+    await page.screenshot({ path: path.join(evidenceDirectory, 'official-local-scm-plugin-history.png'), fullPage: true });
+    await panel.locator('[role="tab"]', { hasText: 'Local changes' }).click();
+    await expect(panel.locator('.source-control-form-inline textarea[name="message"]')).toHaveValue('UI commit\n\nCommit body');
+    await expect(cardArea.locator('[role="checkbox"][aria-checked="true"]')).toHaveCount(2);
+    await expect(panel.locator('.source-control-form-inline button', { hasText: 'Commit and push (2)' })).toBeEnabled();
 
     const modified = page.locator('.tree-row[data-name="main.py"]');
     const untracked = page.locator('.tree-row[data-name="notes.txt"]');
@@ -181,7 +225,7 @@ test('official local SCM plugin accepts cross-realm broker data and controls fil
     await panel.locator('.source-control-more-button').click();
     const overflow = page.locator('.source-control-overflow-menu');
     await expect(overflow).toBeVisible();
-    await expect(overflow).toContainText('Pull');
+    await expect(overflow).toContainText('Hide file tree status');
     await expect.poll(() => overflow.locator('.source-control-overflow-item').first().evaluate((node) => node.getBoundingClientRect().height)).toBeGreaterThanOrEqual(33);
     await expect.poll(() => overflow.evaluate((menu) => menu.getBoundingClientRect().left)).toBeGreaterThanOrEqual(7);
     await expect.poll(() => overflow.evaluate((menu) => {
@@ -212,18 +256,15 @@ test('official local SCM plugin accepts cross-realm broker data and controls fil
     await page.locator('.source-control-overflow-item', { hasText: 'Show file tree status' }).click();
     await expect(modified.locator('.tree-scm-rail[data-decoration-status="modified"]')).toHaveCount(1);
 
-    // A real Git failure must cross the Worker boundary through the protocol's
-    // serialized error channel. The old plugin returned an Error as a fulfilled
-    // command value, which the host correctly rejected as a non-plain payload.
-    await panel.locator('.source-control-tool-button[aria-label="Push"]').click();
-    await panel.locator('.source-control-form button[type="submit"]').click();
-    await expect(panel).toContainText('The remote is missing or uses an unsupported address.');
-    await expect(panel.locator('.source-control-host-error')).toHaveCount(0);
-    await expect(panel).not.toContainText('Extension payload must contain plain objects only.');
-    await panel.locator('.source-control-form button', { hasText: 'Cancel' }).click();
+    await cardArea.locator('.source-control-card').filter({ hasText: 'Team mirror' }).click({ button: 'right' });
+    await page.locator('.source-control-card-menu-item', { hasText: 'Remove' }).click();
+    await dialog.locator('input[name="confirm"]').check();
+    await dialog.locator('button[type="submit"]').click();
+    await expect(dialog).toHaveCount(0);
+    await expect.poll(() => git(workspace, ['remote'])).not.toContain('mirror');
     await expect(panel.locator('.source-control-form-inline textarea[name="message"]')).toHaveValue('UI commit\n\nCommit body');
     await panel.locator('.source-control-item-secondary[aria-label="Stage: main.py"]').click();
-    await panel.locator('.source-control-form-inline button[type="submit"]').click();
+    await panel.locator('.source-control-form-inline').getByRole('button', { name: 'Commit', exact: true }).click();
     await expect.poll(() => git(workspace, ['log', '-1', '--format=%B'])).toContain('Commit body');
     await expect(panel.locator('.source-control-form-inline textarea[name="message"]')).toHaveValue('');
 
@@ -294,13 +335,8 @@ test('official local SCM treats an unborn repository as a first-publish workflow
     await page.locator('.source-control-activity').click();
     const panel = page.locator('.source-control-sidebar.active');
     await expect(panel).toContainText('no commits yet');
-    await panel.locator('.source-control-section-toggle', { hasText: 'History' }).click();
-    await expect(panel.locator('.source-control-section').filter({ hasText: 'History' })).toContainText('No data available');
-    await panel.locator('.source-control-action', { hasText: 'Initialize and publish' }).click();
-    await expect(panel.locator('.source-control-form')).toBeVisible();
-    await expect(panel.locator('input[name="remote"]')).toBeVisible();
-    await expect(panel.locator('input[name="branch"]')).toHaveValue('master');
-    await expect(panel.locator('textarea[name="message"]')).toHaveValue('Initial commit');
+    await expect(panel.locator('.source-control-card-add')).toBeVisible();
+    await expect(panel.locator('.source-control-form-inline textarea[name="message"]')).toBeVisible();
     await expect(panel.locator('.source-control-tool-button[aria-label="Stage all changes"]')).toBeVisible();
     await expect(panel).not.toContainText('Extension payload must contain plain objects only.');
     await page.screenshot({ path: path.join(evidenceDirectory, 'official-local-scm-plugin-unborn.png'), fullPage: true });

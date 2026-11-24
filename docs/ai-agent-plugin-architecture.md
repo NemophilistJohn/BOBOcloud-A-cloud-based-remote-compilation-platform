@@ -1,6 +1,6 @@
 # BOBOCloud Local AI Agent Plugin Architecture
 
-Status: host Agent architecture reference. Desktop 2.8.1 currently implements Plugin API 1.11.0. API 1.6 established the streaming/state/approval baseline described here; the rollout checklist is historical context, while the current SDK, package manifest, and implemented brokers define compatibility. See the paired [English](performance-and-architecture.en.md) / [中文](performance-and-architecture.zh-CN.md) product architecture guides and [Plugin API](plugin-api.md).
+Status: host Agent architecture reference. Desktop 2.8.1 currently implements Plugin API 1.12.0. API 1.6 established the streaming/state/approval baseline described here; the rollout checklist is historical context, while the current SDK, package manifest, and implemented brokers define compatibility. See the paired [English](performance-and-architecture.en.md) / [中文](performance-and-architecture.zh-CN.md) product architecture guides and [Plugin API](plugin-api.md).
 
 ## Scope and product boundary
 

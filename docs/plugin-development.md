@@ -1,6 +1,6 @@
 # BOBOCloud Plugin Development Guide
 
-This guide covers BOBOCloud Plugin API `1.11.0`. BOBOCloud desktop `2.8.1` implements API `1.11.0`; check `context.apiVersion` when a plugin uses a capability introduced after its declared minimum.
+This guide covers BOBOCloud Plugin API `1.12.0`. BOBOCloud desktop `2.8.1` implements API `1.12.0`; check `context.apiVersion` when a plugin uses a capability introduced after its declared minimum.
 
 Unless a tested incompatibility requires a cap, declare only the oldest supported host and Plugin API versions. Published plugin tags, artifacts, and Registry descriptors are immutable, so apply a changed compatibility range in the next plugin version rather than rewriting an existing release.
 
@@ -196,7 +196,7 @@ Do not start background work during activation. API v1 requires activation event
 
 ## 6. Runtime API
 
-The activation sandbox receives a frozen `context` object. All methods are asynchronous except adding a subscription. Arguments and results cross a JSON-like data boundary: plain objects, arrays, strings, booleans, finite numbers, and `null`. Functions, DOM nodes, class instances, accessors, circular data, and oversized payloads are rejected. TypeScript projects can reference [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts) for the current API `1.11.0` declarations.
+The activation sandbox receives a frozen `context` object. All methods are asynchronous except adding a subscription. Arguments and results cross a JSON-like data boundary: plain objects, arrays, strings, booleans, finite numbers, and `null`. Functions, DOM nodes, class instances, accessors, circular data, and oversized payloads are rejected. TypeScript projects can reference [plugin-sdk/bobocloud-plugin.d.ts](../client/plugin-sdk/bobocloud-plugin.d.ts) for the current API `1.12.0` declarations.
 
 ```ts
 interface Disposable { dispose(): void }

@@ -1,5 +1,5 @@
 /**
- * BOBOCloud Plugin API 1.11.0 declarations.
+ * BOBOCloud Plugin API 1.12.0 declarations.
  *
  * Copy or reference this file from a plugin's TypeScript project. The runtime
  * is a sandboxed ES module; Node.js, Electron, DOM, and window APIs are not
@@ -142,6 +142,7 @@ export interface SourceControlSectionItem {
   readonly disabled?: boolean;
   /** Optional independent action for the row, owned by this extension. */
   readonly secondaryAction?: { readonly command: string; readonly title: string; readonly icon?: 'add' | 'remove' };
+  readonly graph?: { readonly width: number; readonly node: number; readonly incoming: boolean; readonly links: readonly { readonly from: number; readonly to: number; readonly viaNode: boolean }[] };
 }
 
 export interface SourceControlLoadMoreAction {
@@ -200,6 +201,7 @@ export interface SourceControlForm {
   readonly title?: string;
   readonly submitLabel?: string;
   readonly fields: readonly SourceControlFormField[];
+  readonly secondarySubmit?: { readonly id: string; readonly title: string; readonly command: string; readonly disabled?: boolean };
 }
 
 export interface SourceControlAction {
@@ -227,6 +229,14 @@ export interface SourceControlState {
   readonly detail?: { readonly title: string; readonly content: string };
   /** Close and clear a matching form after a completed successful operation. */
   readonly completedAction?: string;
+  /** Optional host-rendered card selector and page tabs, introduced in API 1.12. */
+  readonly dashboard?: {
+    readonly title: string;
+    readonly selectionMode: 'multiple' | 'single';
+    readonly items: readonly { readonly id: string; readonly title: string; readonly subtitle: string; readonly description: string; readonly selected: boolean; readonly disabled?: boolean; readonly command: string; readonly actions?: readonly SourceControlAction[] }[];
+    readonly addAction: SourceControlAction;
+    readonly tabs: { readonly active: string; readonly items: readonly { readonly id: string; readonly title: string; readonly command: string }[] };
+  };
   readonly summary?: SourceControlSummary;
   readonly sections?: readonly SourceControlSection[];
   readonly actions?: readonly SourceControlAction[];
@@ -379,6 +389,11 @@ export interface ScmRemote {
   readonly pushUrls: readonly string[];
   /** True when a configured remote URL was omitted because its form is unsupported. */
   readonly hasUnsupportedUrls: boolean;
+  readonly label: string;
+  readonly platform: string;
+  readonly selected: boolean;
+  /** Empty when there is no single supported push destination. */
+  readonly pushFingerprint: string;
 }
 
 export interface PluginScmGit {
@@ -387,7 +402,7 @@ export interface PluginScmGit {
     repositories: readonly ScmRepositoryDescriptor[];
   }>>;
   status(args: Readonly<{ repositoryId: string; offset?: number; limit?: number }>): Promise<ScmStatus>;
-  history(args: Readonly<{ repositoryId: string; offset?: number; limit?: number; ref?: string }>): Promise<Readonly<{
+  history(args: Readonly<{ repositoryId: string; offset?: number; limit?: number; ref?: string; remote?: string }>): Promise<Readonly<{
     repositoryId: string;
     commits: readonly ScmCommit[];
     offset: number;
@@ -420,10 +435,12 @@ export interface PluginScmGit {
     name: string;
     url: string;
   }>>;
+  configureRemote(args: Readonly<{ repositoryId: string; name: string; create: boolean; url?: string; label?: string; platform?: string; selected?: boolean }>): Promise<Readonly<{ repositoryId: string; name: string }>>;
+  removeRemote(args: Readonly<{ repositoryId: string; name: string }>): Promise<Readonly<{ repositoryId: string; name: string; removed: true }>>;
   stage(args: Readonly<{ repositoryId: string; paths: readonly string[] }>): Promise<ScmStatus>;
   stageAll(args: Readonly<{ repositoryId: string }>): Promise<ScmStatus>;
   unstage(args: Readonly<{ repositoryId: string; paths: readonly string[] }>): Promise<ScmStatus>;
-  commit(args: Readonly<{ repositoryId: string; message: string }>): Promise<Readonly<{
+  commit(args: Readonly<{ repositoryId: string; message: string; expectedHead?: string; expectedBranch?: string }>): Promise<Readonly<{
     repositoryId: string;
     commit: string;
   }>>;
@@ -450,6 +467,9 @@ export interface PluginScmGit {
     branch?: string;
     force?: boolean;
     setUpstream?: boolean;
+    expectedHead?: string;
+    expectedBranch?: string;
+    expectedTarget?: string;
   }>): Promise<ScmRemoteOperationResult>;
 }
 

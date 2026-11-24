@@ -6,7 +6,7 @@ BOBOCLOUD is a self-hosted cloud development workbench: an Electron desktop edit
 
 **Keep your source locally. Bring the toolchain to the cloud.** Open a normal project folder, choose a server runtime, and run, inspect, debug, or extend it from one desktop workbench. You can use the local editor without a cloud account; a connected service supplies the remote capabilities.
 
-Documentation refreshed against the current source on **2026-11-24**. The English and [Chinese](README.zh-CN.md) editions follow the same structure. Plugin API: **1.11.0**. Available images, adapters, quotas, and optional plugins depend on your deployment.
+Documentation refreshed against the current source on **2026-11-24**. The English and [Chinese](README.zh-CN.md) editions follow the same structure. Plugin API: **1.12.0**. Available images, adapters, quotas, and optional plugins depend on your deployment.
 
 The editor is useful before a server is connected. You can open a folder, edit with Monaco, search, inspect Problems, and configure the workbench locally. Run, Debug, cloud terminals, project dependencies, teams, and server storage become available only after a compatible BOBOCLOUD service is selected.
 
@@ -370,7 +370,7 @@ This AI settings image is a local UI fixture with illustrative connection data, 
 
 Built-in Chat and inline completion are optional, independent workflows. Schema 4 keeps separate connections, selections, prompts, sampling parameters, and context budgets; connection metadata and model capabilities guide provider routing. OpenAI-compatible and Anthropic-style transports support streaming, cancellation, Chat/Completions/FIM routing, response limits, and explicit connection tests. Requests execute in Electron main. AI settings use the same OS-backed secret codec described above; some settings still reach the trusted workbench renderer, which is not a security boundary. Downloaded plugins do not receive raw keys: the official Agent uses opaque model references.
 
-BOBOCLOUD 2.8.1 implements Plugin API **1.11.0**. The official AI Agent plugin opens an editor-sized tab with persistent sessions, Chat/Goal modes, provider-dependent reasoning choices, selected local `SKILL.md` files, context compaction, safe Markdown, streaming model calls, and structured workspace/process tools. Request approval, assisted approval, and unrestricted access modes change approval behavior but never remove permissions, workspace confinement, path/hash checks, process allowlists, quotas, or cancellation. Requested and provider-effective reasoning are distinct; a selector is not proof a provider supports every level.
+BOBOCLOUD 2.8.1 implements Plugin API **1.12.0**. The official AI Agent plugin opens an editor-sized tab with persistent sessions, Chat/Goal modes, provider-dependent reasoning choices, selected local `SKILL.md` files, context compaction, safe Markdown, streaming model calls, and structured workspace/process tools. Request approval, assisted approval, and unrestricted access modes change approval behavior but never remove permissions, workspace confinement, path/hash checks, process allowlists, quotas, or cancellation. Requested and provider-effective reasoning are distinct; a selector is not proof a provider supports every level.
 
 The Agent is a desktop capability and adds no Go service endpoint. Downloaded orchestration runs in the isolated plugin Worker; credentials, canonical approvals, workspace-root and absolute-path resolution, writes, and `shell: false` processes stay in trusted Electron main. Generic MCP execution is not implemented. See [Local AI Agent plugin architecture](docs/ai-agent-plugin-architecture.md).
 
@@ -594,7 +594,7 @@ Generated renderer bundles under `client/renderer-dist/` must be rebuilt, never 
 
 ## For plugin developers
 
-BOBOCLOUD desktop 2.8 implements [Plugin API](docs/plugin-api.md) `1.11.0` while retaining compatible API 1.x packages. A `.boboplugin` is a ZIP with `manifest.json` at its root:
+BOBOCLOUD desktop 2.8 implements [Plugin API](docs/plugin-api.md) `1.12.0` while retaining compatible API 1.x packages. A `.boboplugin` is a ZIP with `manifest.json` at its root:
 
 - schema 1 contains one bundled ESM activation entry;
 - schema 2 additionally allows only explicitly declared document-view entries/resources;

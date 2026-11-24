@@ -75,6 +75,7 @@ export interface SourceControlSectionItemRegistrationDto {
   readonly command?: string | null;
   readonly disabled?: boolean;
   readonly secondaryAction?: { readonly command: string; readonly title: string; readonly icon?: 'add' | 'remove' } | null;
+  readonly graph?: { readonly width: number; readonly node: number; readonly incoming: boolean; readonly links: readonly { readonly from: number; readonly to: number; readonly viaNode: boolean }[] } | null;
 }
 
 export interface SourceControlSectionItemDto {
@@ -86,6 +87,7 @@ export interface SourceControlSectionItemDto {
   readonly command: string | null;
   readonly disabled: boolean;
   readonly secondaryAction: { readonly command: string; readonly title: string; readonly icon: 'add' | 'remove' } | null;
+  readonly graph: { readonly width: number; readonly node: number; readonly incoming: boolean; readonly links: readonly { readonly from: number; readonly to: number; readonly viaNode: boolean }[] } | null;
 }
 
 export interface SourceControlLoadMoreRegistrationDto {
@@ -216,12 +218,14 @@ export interface SourceControlFormRegistrationDto {
   readonly title?: string | null;
   readonly submitLabel?: string | null;
   readonly fields: readonly SourceControlFormFieldRegistrationDto[];
+  readonly secondarySubmit?: { readonly id: string; readonly title: string; readonly command: string; readonly disabled?: boolean } | null;
 }
 
 export interface SourceControlFormDto {
   readonly title: string | null;
   readonly submitLabel: string | null;
   readonly fields: readonly SourceControlFormFieldDto[];
+  readonly secondarySubmit: { readonly id: string; readonly title: string; readonly command: string; readonly disabled: boolean } | null;
 }
 
 interface SourceControlActionRegistrationBaseDto {
@@ -301,12 +305,37 @@ export type SourceControlActionDto =
   | SourceControlMenuActionDto
   | SourceControlInlineActionDto;
 
+export interface SourceControlDashboardRegistrationDto {
+  readonly title: string;
+  readonly selectionMode: 'multiple' | 'single';
+  readonly items: readonly {
+    readonly id: string; readonly title: string; readonly subtitle: string; readonly description: string;
+    readonly selected: boolean; readonly disabled?: boolean; readonly command: string;
+    readonly actions?: readonly SourceControlActionRegistrationDto[];
+  }[];
+  readonly addAction: SourceControlActionRegistrationDto;
+  readonly tabs: { readonly active: string; readonly items: readonly { readonly id: string; readonly title: string; readonly command: string }[] };
+}
+
+export interface SourceControlDashboardDto {
+  readonly title: string;
+  readonly selectionMode: 'multiple' | 'single';
+  readonly items: readonly {
+    readonly id: string; readonly title: string; readonly subtitle: string; readonly description: string;
+    readonly selected: boolean; readonly disabled: boolean; readonly command: string;
+    readonly actions: readonly SourceControlActionDto[];
+  }[];
+  readonly addAction: SourceControlActionDto;
+  readonly tabs: { readonly active: string; readonly items: readonly { readonly id: string; readonly title: string; readonly command: string }[] };
+}
+
 export interface SourceControlStateRegistrationDto {
   readonly phase?: SourceControlPhaseDto;
   readonly title?: string | null;
   readonly message?: string | null;
   readonly detail?: { readonly title: string; readonly content: string } | null;
   readonly completedAction?: string | null;
+  readonly dashboard?: SourceControlDashboardRegistrationDto | null;
   readonly summary?: SourceControlSummaryRegistrationDto | null;
   readonly sections?: readonly SourceControlSectionRegistrationDto[];
   readonly actions?: readonly SourceControlActionRegistrationDto[];
@@ -318,6 +347,7 @@ export interface SourceControlStateDto {
   readonly message: string | null;
   readonly detail: { readonly title: string; readonly content: string } | null;
   readonly completedAction: string | null;
+  readonly dashboard: SourceControlDashboardDto | null;
   readonly summary: SourceControlSummaryDto | null;
   readonly sections: readonly SourceControlSectionDto[];
   readonly actions: readonly SourceControlActionDto[];

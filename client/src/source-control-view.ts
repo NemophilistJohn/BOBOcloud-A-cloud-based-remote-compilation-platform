@@ -8,6 +8,7 @@ import type { DocumentNavigation, DocumentNavigationPort } from '../types/docume
 import type {
   SourceControlActionDto,
   SourceControlButtonActionDto,
+  SourceControlDashboardDto,
   SourceControlChangeEvent,
   SourceControlCommandDetailsDto,
   SourceControlFormDto,
@@ -40,6 +41,7 @@ interface SourceControlPanel {
   readonly hide: HTMLButtonElement;
   readonly tools: HTMLDivElement;
   readonly body: HTMLDivElement;
+  readonly common: HTMLDivElement;
   readonly navigation: HTMLDivElement;
   readonly collapsed: Record<string, boolean>;
   readonly registration: Disposable;
@@ -49,6 +51,8 @@ interface SourceControlPanel {
   overflowOpen: boolean;
   overflowCleanup: (() => void) | null;
   overflowMenu: HTMLDivElement | null;
+  cardMenuCleanup: (() => void) | null;
+  dialogCleanup: (() => void) | null;
   busy: boolean;
   error: string;
   commandEpoch: number;
@@ -85,6 +89,7 @@ export function createSourceControlViewService(
     navigationPanel.navigation.replaceChildren();
     navigationPanel.navigation.hidden = true;
     navigationPanel.body.hidden = false;
+    navigationPanel.common.hidden = !sourceControls.get(navigationPanel.id)?.state?.dashboard;
     navigationPanel = undefined;
   }
 
@@ -123,6 +128,7 @@ export function createSourceControlViewService(
     }
     panel.navigation.replaceChildren(modes, nav);
     panel.body.hidden = true;
+    panel.common.hidden = true;
     panel.navigation.hidden = false;
     panel.navigation.scrollTop = top;
     navigationPanel = panel;
@@ -283,8 +289,8 @@ export function createSourceControlViewService(
     actionId: string,
     values: SourceControlFormValues,
     details: SourceControlCommandDetailsDto
-  ): Promise<void> {
-    if (panel.busy || panel.disposed) return;
+  ): Promise<boolean> {
+    if (panel.busy || panel.disposed) return false;
     panel.busy = true;
     panel.error = '';
     const expectedLifecycleEpoch = lifecycleEpoch;
@@ -302,7 +308,7 @@ export function createSourceControlViewService(
       failed = true;
       failure = error;
     } finally {
-      if (!isCurrentInvocation(panel, expectedLifecycleEpoch, expectedCommandEpoch)) return;
+      if (!isCurrentInvocation(panel, expectedLifecycleEpoch, expectedCommandEpoch)) return false;
       if (failed) {
         const message = exceptionMessage(failure);
         const current = sourceControls.get(record.id);
@@ -319,6 +325,7 @@ export function createSourceControlViewService(
       const current = sourceControls.get(record.id);
       if (current) renderPanel(panel, current);
     }
+    return !failed;
   }
 
   function button(label: string, className: string, title?: string): HTMLButtonElement {
@@ -530,6 +537,36 @@ export function createSourceControlViewService(
         } else {
           itemNode = element('div', 'source-control-list-item');
         }
+        if (item.graph) {
+          const graph = item.graph;
+          const visual = hostDocument.createElementNS('http://www.w3.org/2000/svg', 'svg');
+          visual.classList.add('source-control-graph');
+          visual.setAttribute('aria-hidden', 'true');
+          visual.setAttribute('viewBox', '0 0 ' + (graph.width * 12 + 4) + ' 44');
+          visual.style.width = (graph.width * 12 + 4) + 'px';
+          visual.setAttribute('preserveAspectRatio', 'none');
+          const x = (column: number): number => 8 + column * 12;
+          for (const link of graph.links) {
+            const path = hostDocument.createElementNS('http://www.w3.org/2000/svg', 'path');
+            const startY = link.viaNode ? 22 : 0;
+            path.setAttribute('d', 'M' + x(link.from) + ' ' + startY + ' C' + x(link.from) + ' 32 ' + x(link.to) + ' 32 ' + x(link.to) + ' 44');
+            path.setAttribute('class', 'source-control-graph-line source-control-graph-color-' + (link.from % 4));
+            visual.appendChild(path);
+          }
+          if (graph.incoming) {
+            const line = hostDocument.createElementNS('http://www.w3.org/2000/svg', 'line');
+            line.setAttribute('x1', String(x(graph.node))); line.setAttribute('x2', String(x(graph.node)));
+            line.setAttribute('y1', '0'); line.setAttribute('y2', '22');
+            line.setAttribute('class', 'source-control-graph-line source-control-graph-color-' + (graph.node % 4));
+            visual.appendChild(line);
+          }
+          const dot = hostDocument.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          dot.setAttribute('cx', String(x(graph.node))); dot.setAttribute('cy', '22'); dot.setAttribute('r', '3.5');
+          dot.setAttribute('class', 'source-control-graph-dot source-control-graph-color-' + (graph.node % 4));
+          visual.appendChild(dot);
+          itemNode.appendChild(visual);
+          itemNode.classList.add('source-control-list-graph-item');
+        }
         const copy = element('span', 'source-control-list-copy');
         copy.appendChild(element('strong', '', item.title));
         if (item.description) copy.appendChild(element('small', '', item.description));
@@ -665,6 +702,13 @@ export function createSourceControlViewService(
     submit.type = 'submit';
     submit.disabled = panel.busy || action.disabled === true;
     controls.appendChild(submit);
+    let secondarySubmit: HTMLButtonElement | null = null;
+    if (formSchema.secondarySubmit) {
+      secondarySubmit = button(formSchema.secondarySubmit.title, 'source-control-action source-control-action-secondary');
+      secondarySubmit.type = 'submit';
+      secondarySubmit.disabled = panel.busy || action.disabled === true || formSchema.secondarySubmit.disabled;
+      controls.appendChild(secondarySubmit);
+    }
     if (action.placement !== 'inline') {
       const cancel = button(t('Cancel'), 'source-control-action source-control-action-secondary');
       cancel.addEventListener('click', () => {
@@ -691,7 +735,8 @@ export function createSourceControlViewService(
         renderPanel(panel, sourceControls.get(record.id) || record);
         return;
       }
-      void invoke(panel, record, action.command, action.id, values, { kind: 'action' });
+      const alternative = (event as SubmitEvent).submitter === secondarySubmit ? formSchema.secondarySubmit : null;
+      void invoke(panel, record, alternative?.command || action.command, alternative?.id || action.id, values, { kind: 'action' });
     });
     panel.renderedForm = action.id;
     panel.body.appendChild(form);
@@ -730,6 +775,181 @@ export function createSourceControlViewService(
     panel.formDrafts[panel.renderedForm] = values;
   }
 
+  function openDashboardDialog(panel: SourceControlPanel, record: SourceControlSnapshot, action: SourceControlActionDto, itemId?: string): void {
+    if (!action.form || panel.disposed || panel.busy) return;
+    panel.dialogCleanup?.();
+    const schema = action.form;
+    const previous = hostDocument.activeElement as HTMLElement | null;
+    const overlay = element('div', 'source-control-dialog-overlay');
+    const dialog = element('section', 'source-control-dialog');
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-label', schema.title || action.title);
+    const form = element('form', 'source-control-dialog-form');
+    form.id = 'source-control-dialog-' + action.id;
+    form.noValidate = true;
+    form.appendChild(element('h2', 'source-control-dialog-title', schema.title || action.title));
+    schema.fields.forEach((field) => { form.appendChild(appendField(form, field, null)); });
+    const errorNode = element('div', 'source-control-dialog-error');
+    errorNode.setAttribute('role', 'alert');
+    errorNode.hidden = true;
+    form.appendChild(errorNode);
+    const controls = element('div', 'source-control-dialog-actions');
+    const cancel = button(t('Cancel'), 'source-control-action source-control-action-secondary');
+    const submit = button(schema.submitLabel || action.title, 'source-control-action source-control-action-' + (action.kind === 'danger' ? 'danger' : 'primary'));
+    submit.type = 'submit';
+    controls.append(cancel, submit);
+    form.appendChild(controls);
+    dialog.appendChild(form);
+    overlay.appendChild(dialog);
+    hostDocument.body.appendChild(overlay);
+    let submitting = false;
+    const close = (): void => {
+      hostDocument.removeEventListener('keydown', keydown, true);
+      overlay.remove();
+      if (panel.dialogCleanup === close) panel.dialogCleanup = null;
+      if (previous?.isConnected) previous.focus({ preventScroll: true });
+      else {
+        const card = itemId ? Array.from(panel.common.querySelectorAll<HTMLElement>('[data-card-id]')).find((entry) => entry.dataset.cardId === itemId) : null;
+        (card?.querySelector<HTMLElement>('.source-control-card-select') || panel.common.querySelector<HTMLElement>('.source-control-card-add'))?.focus({ preventScroll: true });
+      }
+    };
+    const keydown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && !submitting) { event.preventDefault(); close(); return; }
+      if (event.key !== 'Tab') return;
+      const targets = Array.from(dialog.querySelectorAll<HTMLElement>('input:not(:disabled),select:not(:disabled),textarea:not(:disabled),button:not(:disabled)'));
+      if (!targets.length) return;
+      const index = targets.indexOf(hostDocument.activeElement as HTMLElement);
+      if (event.shiftKey && index <= 0) { event.preventDefault(); targets[targets.length - 1]!.focus(); }
+      else if (!event.shiftKey && index === targets.length - 1) { event.preventDefault(); targets[0]!.focus(); }
+    };
+    panel.dialogCleanup = close;
+    hostDocument.addEventListener('keydown', keydown, true);
+    cancel.addEventListener('click', () => { if (!submitting) close(); });
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (submitting) return;
+      const raw: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      schema.fields.forEach((field) => {
+        const input = asFormValueControl(form.elements.namedItem(field.id));
+        raw[field.id] = field.type === 'checkbox' ? Boolean(input && 'checked' in input && input.checked) : (input?.value || '');
+      });
+      let values: SourceControlFormValues;
+      try { values = normalizeSourceControlFormValues(schema, raw); }
+      catch (_) { errorNode.textContent = t('Please complete the required fields.'); errorNode.hidden = false; return; }
+      submitting = true; submit.disabled = true; cancel.disabled = true; errorNode.hidden = true;
+      const ok = await invoke(panel, record, action.command, action.id, values, itemId ? { kind: 'item', sectionId: 'cards', itemId } : { kind: 'action' });
+      if (ok) close();
+      else if (panel.dialogCleanup === close) { submitting = false; submit.disabled = false; cancel.disabled = false; errorNode.textContent = panel.error || sourceControls.get(record.id)?.state?.message || t('Error'); errorNode.hidden = false; }
+    });
+    (form.querySelector<HTMLElement>('input,select,textarea,button') || submit).focus();
+  }
+
+  function openDashboardCardMenu(panel: SourceControlPanel, record: SourceControlSnapshot, card: SourceControlDashboardDto['items'][number], trigger: HTMLElement): void {
+    panel.cardMenuCleanup?.();
+    const menu = element('div', 'source-control-card-menu');
+    menu.setAttribute('role', 'menu');
+    for (const action of card.actions) {
+      const item = button(action.title, 'source-control-card-menu-item' + (action.kind === 'danger' ? ' is-danger' : ''));
+      item.setAttribute('role', 'menuitem');
+      item.disabled = panel.busy || action.disabled;
+      item.addEventListener('click', () => {
+        panel.cardMenuCleanup?.();
+        if (action.form) openDashboardDialog(panel, record, action, card.id);
+        else void invoke(panel, record, action.command, action.id, {}, { kind: 'item', sectionId: 'cards', itemId: card.id });
+      });
+      menu.appendChild(item);
+    }
+    hostDocument.body.appendChild(menu);
+    const bounds = trigger.getBoundingClientRect();
+    const width = menu.getBoundingClientRect().width;
+    menu.style.left = Math.max(8, Math.min(bounds.right - width, hostWindow.innerWidth - width - 8)) + 'px';
+    menu.style.top = Math.max(8, Math.min(bounds.bottom + 4, hostWindow.innerHeight - menu.getBoundingClientRect().height - 8)) + 'px';
+    const dismiss = (event: Event): void => {
+      if (event.type === 'keydown' && (event as KeyboardEvent).key !== 'Escape') return;
+      if (event.type === 'pointerdown' && menu.contains(event.target as Node)) return;
+      panel.cardMenuCleanup?.();
+    };
+    const close = (): void => {
+      hostDocument.removeEventListener('pointerdown', dismiss, true);
+      hostDocument.removeEventListener('keydown', dismiss, true);
+      hostWindow.removeEventListener('resize', close);
+      menu.remove();
+      if (panel.cardMenuCleanup === close) panel.cardMenuCleanup = null;
+    };
+    panel.cardMenuCleanup = close;
+    hostDocument.addEventListener('pointerdown', dismiss, true);
+    hostDocument.addEventListener('keydown', dismiss, true);
+    hostWindow.addEventListener('resize', close);
+    menu.querySelector<HTMLElement>('button')?.focus();
+  }
+
+  function renderDashboard(panel: SourceControlPanel, record: SourceControlSnapshot): void {
+    const dashboard = record.state?.dashboard;
+    const previousScroll = panel.common.querySelector<HTMLElement>('.source-control-cards')?.scrollTop || 0;
+    const focused = hostDocument.activeElement as HTMLElement | null;
+    const focusedCard = focused?.closest<HTMLElement>('[data-card-id]')?.dataset.cardId;
+    const focusedMore = focused?.classList.contains('source-control-card-more') === true;
+    const focusedTab = focused?.dataset.tabId;
+    const focusedAdd = focused?.classList.contains('source-control-card-add') === true;
+    panel.common.replaceChildren();
+    panel.common.hidden = !dashboard || navigationPanel === panel;
+    if (!dashboard) return;
+    panel.common.appendChild(element('div', 'source-control-cards-title', dashboard.title));
+    const cards = element('div', 'source-control-cards');
+    cards.setAttribute('role', dashboard.selectionMode === 'single' ? 'radiogroup' : 'group');
+    cards.setAttribute('aria-label', dashboard.title);
+    const disabled = panel.busy || record.state?.phase === 'loading';
+    for (const card of dashboard.items) {
+      const wrapper = element('div', 'source-control-card' + (card.selected ? ' is-selected' : ''));
+      wrapper.dataset.cardId = card.id;
+      const select = button('', 'source-control-card-select', card.title);
+      select.setAttribute('role', dashboard.selectionMode === 'single' ? 'radio' : 'checkbox');
+      select.setAttribute('aria-checked', String(card.selected));
+      select.disabled = disabled || card.disabled;
+      select.append(element('strong', 'source-control-card-name', card.title), element('span', 'source-control-card-subtitle', card.subtitle), element('small', 'source-control-card-description', card.description));
+      select.addEventListener('click', () => { void invoke(panel, record, card.command, card.id, {}, { kind: 'item', sectionId: 'cards', itemId: card.id }); });
+      wrapper.appendChild(select);
+      if (card.actions.length) {
+        const more = button('⋯', 'source-control-card-more', t('More source-control actions'));
+        more.setAttribute('aria-label', t('More source-control actions') + ': ' + card.title);
+        more.disabled = disabled;
+        more.addEventListener('click', () => { openDashboardCardMenu(panel, record, card, more); });
+        wrapper.addEventListener('contextmenu', (event) => { event.preventDefault(); if (!disabled) openDashboardCardMenu(panel, record, card, more); });
+        wrapper.appendChild(more);
+      }
+      cards.appendChild(wrapper);
+    }
+    const add = button('+', 'source-control-card-add', dashboard.addAction.title);
+    add.setAttribute('aria-label', dashboard.addAction.title);
+    add.disabled = disabled || dashboard.addAction.disabled;
+    add.addEventListener('click', () => {
+      const action = dashboard.addAction;
+      if (action.form) openDashboardDialog(panel, record, action);
+      else void invoke(panel, record, action.command, action.id, {}, { kind: 'action' });
+    });
+    cards.appendChild(add);
+    panel.common.appendChild(cards);
+    cards.scrollTop = previousScroll;
+    const tabs = element('div', 'source-control-dashboard-tabs');
+    tabs.setAttribute('role', 'tablist');
+    for (const tab of dashboard.tabs.items) {
+      const item = button(tab.title, 'source-control-dashboard-tab');
+      item.setAttribute('role', 'tab');
+      item.dataset.tabId = tab.id;
+      item.setAttribute('aria-selected', String(tab.id === dashboard.tabs.active));
+      item.disabled = disabled;
+      item.addEventListener('click', () => { void invoke(panel, record, tab.command, tab.id, {}, { kind: 'tab', itemId: tab.id }); });
+      tabs.appendChild(item);
+    }
+    panel.common.appendChild(tabs);
+    const restore = focusedCard
+      ? Array.from(cards.querySelectorAll<HTMLElement>('[data-card-id]')).find((item) => item.dataset.cardId === focusedCard)?.querySelector<HTMLElement>(focusedMore ? '.source-control-card-more' : '.source-control-card-select')
+      : focusedTab ? Array.from(tabs.querySelectorAll<HTMLElement>('[data-tab-id]')).find((item) => item.dataset.tabId === focusedTab)
+      : focusedAdd ? add : null;
+    if (restore && !('disabled' in restore && (restore as HTMLButtonElement).disabled)) restore.focus({ preventScroll: true });
+  }
+
   function renderPanel(panel: SourceControlPanel, record: SourceControlSnapshot): void {
     if (panel.disposed) return;
     const focused = hostDocument.activeElement as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
@@ -739,6 +959,7 @@ export function createSourceControlViewService(
     const scrollTop = panel.body.scrollTop;
     captureFormDraft(panel);
     applyLabels(panel, record);
+    renderDashboard(panel, record);
     appendHeaderActions(panel, record, record.state ? record.state.actions : EMPTY_ACTIONS);
     panel.body.replaceChildren();
     panel.renderedForm = '';
@@ -835,10 +1056,13 @@ export function createSourceControlViewService(
     header.appendChild(heading);
     header.appendChild(headerActions);
     const body = element('div', 'source-control-body sidebar-scroll');
+    const common = element('div', 'source-control-dashboard');
+    common.hidden = true;
     const navigation = element('div', 'document-navigation sidebar-scroll');
     navigation.hidden = true;
     section.appendChild(header);
     section.appendChild(navigation);
+    section.appendChild(common);
     section.appendChild(body);
     primary.appendChild(buttonNode);
     sidebar.appendChild(section);
@@ -852,6 +1076,7 @@ export function createSourceControlViewService(
       hide,
       tools,
       body,
+      common,
       navigation,
       activeForm: '',
       renderedForm: '',
@@ -859,6 +1084,8 @@ export function createSourceControlViewService(
       overflowOpen: false,
       overflowCleanup: null,
       overflowMenu: null,
+      cardMenuCleanup: null,
+      dialogCleanup: null,
       busy: false,
       error: '',
       collapsed: Object.create(null) as Record<string, boolean>,
@@ -886,6 +1113,8 @@ export function createSourceControlViewService(
     panel.disposed = true;
     panel.commandEpoch += 1;
     closeOverflow(panel);
+    panel.cardMenuCleanup?.();
+    panel.dialogCleanup?.();
     try {
       panel.registration.dispose();
     } catch (_) {

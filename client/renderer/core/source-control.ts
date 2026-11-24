@@ -11,6 +11,7 @@ import type {
   SourceControlCommandPayloadDto,
   SourceControlDescriptorDto,
   SourceControlDescriptorRegistrationDto,
+  SourceControlDashboardDto,
   SourceControlFormDto,
   SourceControlFormFieldDto,
   SourceControlFormFieldTypeDto,
@@ -103,14 +104,14 @@ const KNOWN_ACTION_PLACEMENTS: ReadonlySet<string> = new Set(Object.values(Sourc
 const KNOWN_ACTION_ICONS: ReadonlySet<string> = new Set(Object.values(SourceControlActionIcon));
 const KNOWN_FORM_FIELD_TYPES: ReadonlySet<string> = new Set(Object.values(SourceControlFormFieldType));
 const ALLOWED_DESCRIPTOR_FIELDS: ReadonlySet<string> = new Set(['id', 'title', 'icon', 'order', 'openCommand']);
-const ALLOWED_STATE_FIELDS: ReadonlySet<string> = new Set(['phase', 'title', 'message', 'detail', 'completedAction', 'summary', 'sections', 'actions']);
+const ALLOWED_STATE_FIELDS: ReadonlySet<string> = new Set(['phase', 'title', 'message', 'detail', 'completedAction', 'dashboard', 'summary', 'sections', 'actions']);
 const ALLOWED_SUMMARY_FIELDS: ReadonlySet<string> = new Set(['title', 'items']);
 const ALLOWED_SUMMARY_ITEM_FIELDS: ReadonlySet<string> = new Set(['label', 'value', 'detail']);
 const ALLOWED_SECTION_FIELDS: ReadonlySet<string> = new Set(['id', 'title', 'description', 'items', 'emptyMessage', 'collapsed', 'loadMore']);
-const ALLOWED_SECTION_ITEM_FIELDS: ReadonlySet<string> = new Set(['id', 'title', 'description', 'meta', 'badge', 'command', 'disabled', 'secondaryAction']);
+const ALLOWED_SECTION_ITEM_FIELDS: ReadonlySet<string> = new Set(['id', 'title', 'description', 'meta', 'badge', 'command', 'disabled', 'secondaryAction', 'graph']);
 const ALLOWED_LOAD_MORE_FIELDS: ReadonlySet<string> = new Set(['command', 'label', 'disabled']);
 const ALLOWED_ACTION_FIELDS: ReadonlySet<string> = new Set(['id', 'title', 'description', 'command', 'kind', 'disabled', 'form', 'placement', 'icon']);
-const ALLOWED_FORM_FIELDS: ReadonlySet<string> = new Set(['title', 'submitLabel', 'fields']);
+const ALLOWED_FORM_FIELDS: ReadonlySet<string> = new Set(['title', 'submitLabel', 'fields', 'secondarySubmit']);
 const ALLOWED_FORM_FIELD_FIELDS: ReadonlySet<string> = new Set(['id', 'label', 'type', 'description', 'placeholder', 'required', 'value', 'maxLength', 'options']);
 const ALLOWED_SELECT_OPTION_FIELDS: ReadonlySet<string> = new Set(['value', 'label']);
 const ALLOWED_COMMAND_DETAIL_FIELDS: ReadonlySet<string> = new Set(['sectionId', 'itemId', 'kind']);
@@ -234,6 +235,17 @@ function normalizeSectionItem(value: unknown, commandPrefix: string): SourceCont
     throw new TypeError('Source-control section item disabled must be a boolean.');
   }
   let secondaryAction: SourceControlSectionItemDto['secondaryAction'] = null;
+  let graph: SourceControlSectionItemDto['graph'] = null;
+  if (value.graph !== undefined && value.graph !== null) {
+    assertAllowedFields(value.graph, new Set(['width', 'node', 'incoming', 'links']), 'Source-control graph');
+    const { width, node, incoming, links } = value.graph;
+    if (typeof width !== 'number' || !Number.isInteger(width) || width < 1 || width > 12 || typeof node !== 'number' || !Number.isInteger(node) || node < 0 || node >= width || typeof incoming !== 'boolean' || !Array.isArray(links) || links.length > 24) throw new TypeError('Source-control graph is invalid.');
+    graph = { width, node, incoming, links: links.map((link: unknown) => {
+      assertAllowedFields(link, new Set(['from', 'to', 'viaNode']), 'Source-control graph link');
+      if (typeof link.from !== 'number' || !Number.isInteger(link.from) || link.from < 0 || link.from >= width || typeof link.to !== 'number' || !Number.isInteger(link.to) || link.to < 0 || link.to >= width || typeof link.viaNode !== 'boolean') throw new TypeError('Source-control graph link is invalid.');
+      return { from: link.from, to: link.to, viaNode: link.viaNode };
+    }) };
+  }
   if (value.secondaryAction !== undefined && value.secondaryAction !== null) {
     assertAllowedFields(value.secondaryAction, new Set(['command', 'title', 'icon']), 'Source-control secondary action');
     if (value.secondaryAction.icon !== undefined && value.secondaryAction.icon !== 'add' && value.secondaryAction.icon !== 'remove') {
@@ -253,7 +265,8 @@ function normalizeSectionItem(value: unknown, commandPrefix: string): SourceCont
     badge: optionalString(value.badge, 'Source-control section item badge', 32),
     command,
     disabled: value.disabled === true,
-    secondaryAction
+    secondaryAction,
+    graph
   });
 }
 
@@ -384,20 +397,32 @@ function normalizeFormField(value: unknown): SourceControlFormFieldDto {
   });
 }
 
-function normalizeForm(value: unknown): SourceControlFormDto | null {
+function normalizeForm(value: unknown, commandPrefix: string): SourceControlFormDto | null {
   if (value === undefined || value === null) return null;
   assertAllowedFields(value, ALLOWED_FORM_FIELDS, 'Source-control action form');
   if (!Array.isArray(value.fields) || value.fields.length === 0 || value.fields.length > MAX_FORM_FIELDS) {
     throw new TypeError('Source-control action form fields must be a bounded non-empty array.');
   }
   const fields = value.fields.map((field) => normalizeFormField(field));
+  let secondarySubmit: SourceControlFormDto['secondarySubmit'] = null;
+  if (value.secondarySubmit !== undefined && value.secondarySubmit !== null) {
+    assertAllowedFields(value.secondarySubmit, new Set(['id', 'title', 'command', 'disabled']), 'Source-control secondary submit');
+    if (value.secondarySubmit.disabled !== undefined && typeof value.secondarySubmit.disabled !== 'boolean') throw new TypeError('Source-control secondary submit disabled is invalid.');
+    secondarySubmit = {
+      id: requireScopedId(value.secondarySubmit.id, 'Source-control secondary submit id'),
+      title: requireNonEmptyString(value.secondarySubmit.title, 'Source-control secondary submit title', 128),
+      command: requireCommandId(value.secondarySubmit.command, 'Source-control secondary submit command', commandPrefix),
+      disabled: value.secondarySubmit.disabled === true
+    };
+  }
   if (new Set(fields.map((field) => field.id)).size !== fields.length) {
     throw new TypeError('Source-control action form field ids must be unique.');
   }
   return deepFreeze({
     title: optionalString(value.title, 'Source-control action form title', 128),
     submitLabel: optionalString(value.submitLabel, 'Source-control action form submit label', 96),
-    fields
+    fields,
+    secondarySubmit
   });
 }
 
@@ -428,7 +453,7 @@ function normalizeAction(value: unknown, commandPrefix: string): SourceControlAc
   const command = requireCommandId(value.command, 'Source-control action command', commandPrefix);
   const icon = value.icon as SourceControlActionIconDto | undefined;
   const disabled = value.disabled === true;
-  const form = normalizeForm(value.form);
+  const form = normalizeForm(value.form, commandPrefix);
   if (placement === SourceControlActionPlacement.INLINE) {
     if (!form) throw new TypeError('Source-control inline actions require a form.');
     return deepFreeze({ id, title, description, command, kind, placement, icon, disabled, form });
@@ -457,6 +482,39 @@ function normalizeAction(value: unknown, commandPrefix: string): SourceControlAc
     disabled,
     form
   });
+}
+
+function normalizeDashboard(value: unknown, commandPrefix: string): SourceControlDashboardDto | null {
+  if (value === undefined || value === null) return null;
+  assertAllowedFields(value, new Set(['title', 'selectionMode', 'items', 'addAction', 'tabs']), 'Source-control dashboard');
+  if (value.selectionMode !== 'multiple' && value.selectionMode !== 'single') throw new TypeError('Source-control dashboard selection is invalid.');
+  if (!Array.isArray(value.items) || value.items.length > 64) throw new TypeError('Source-control dashboard cards must be bounded.');
+  const items = value.items.map((item: unknown) => {
+    assertAllowedFields(item, new Set(['id', 'title', 'subtitle', 'description', 'selected', 'disabled', 'command', 'actions']), 'Source-control dashboard card');
+    if (typeof item.selected !== 'boolean' || (item.disabled !== undefined && typeof item.disabled !== 'boolean')) throw new TypeError('Source-control dashboard card selection is invalid.');
+    const actions = item.actions === undefined ? [] : item.actions;
+    if (!Array.isArray(actions) || actions.length > 4) throw new TypeError('Source-control dashboard card actions must be bounded.');
+    return {
+      id: requireScopedId(item.id, 'Source-control card id'),
+      title: requireNonEmptyString(item.title, 'Source-control card title', 96),
+      subtitle: requireNonEmptyString(item.subtitle, 'Source-control card subtitle', 96),
+      description: requireNonEmptyString(item.description, 'Source-control card description', 160),
+      selected: item.selected,
+      disabled: item.disabled === true,
+      command: requireCommandId(item.command, 'Source-control card command', commandPrefix),
+      actions: actions.map((action: unknown) => normalizeAction(action, commandPrefix))
+    };
+  });
+  if (new Set(items.map((item) => item.id)).size !== items.length || (value.selectionMode === 'single' && items.filter((item) => item.selected).length > 1)) throw new TypeError('Source-control dashboard card identities or selection are invalid.');
+  assertAllowedFields(value.tabs, new Set(['active', 'items']), 'Source-control dashboard tabs');
+  if (!Array.isArray(value.tabs.items) || value.tabs.items.length < 1 || value.tabs.items.length > 8) throw new TypeError('Source-control dashboard tabs must be bounded.');
+  const tabs = value.tabs.items.map((tab: unknown) => {
+    assertAllowedFields(tab, new Set(['id', 'title', 'command']), 'Source-control dashboard tab');
+    return { id: requireScopedId(tab.id, 'Source-control tab id'), title: requireNonEmptyString(tab.title, 'Source-control tab title', 96), command: requireCommandId(tab.command, 'Source-control tab command', commandPrefix) };
+  });
+  const active = requireScopedId(value.tabs.active, 'Source-control active tab');
+  if (new Set(tabs.map((tab) => tab.id)).size !== tabs.length || !tabs.some((tab) => tab.id === active)) throw new TypeError('Source-control active tab is invalid.');
+  return deepFreeze({ title: requireNonEmptyString(value.title, 'Source-control dashboard title', 96), selectionMode: value.selectionMode, items, addAction: normalizeAction(value.addAction, commandPrefix), tabs: { active, items: tabs } });
 }
 
 /**
@@ -540,6 +598,7 @@ export function validateSourceControlState(
     message: optionalString(value.message, 'Source-control state message', MAX_MESSAGE_LENGTH),
     detail,
     completedAction: value.completedAction == null ? null : requireScopedId(value.completedAction, 'Source-control completed action'),
+    dashboard: normalizeDashboard(value.dashboard, commandPrefix),
     summary: normalizeSummary(value.summary),
     sections: normalizedSections,
     actions: normalizedActions

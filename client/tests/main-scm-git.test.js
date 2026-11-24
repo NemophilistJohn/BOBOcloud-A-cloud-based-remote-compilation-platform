@@ -46,6 +46,8 @@ test('local SCM Git broker keeps repository roots opaque and workspace-scoped', 
       'scm.git.clone': 'scm.git.write',
       'scm.git.init': 'scm.git.write',
       'scm.git.setRemote': 'scm.git.write',
+      'scm.git.configureRemote': 'scm.git.write',
+      'scm.git.removeRemote': 'scm.git.write',
       'scm.git.stage': 'scm.git.write',
       'scm.git.stageAll': 'scm.git.write',
       'scm.git.unstage': 'scm.git.write',
@@ -127,10 +129,21 @@ test('local SCM Git broker keeps repository roots opaque and workspace-scoped', 
     name: 'origin',
     url: 'https://github.com/example/local-scm.git'
   });
+  await broker.request('scm.git.configureRemote', { repositoryId: repository.repositoryId, name: 'origin', create: false, label: 'Personal', platform: 'GitHub', selected: true });
+  await broker.request('scm.git.configureRemote', { repositoryId: repository.repositoryId, name: 'mirror', create: true, url: 'https://example.invalid/mirror.git', label: 'Mirror', platform: 'Gitee', selected: false });
+  await assert.rejects(() => broker.request('scm.git.configureRemote', { repositoryId: repository.repositoryId, name: 'mirror', create: true, url: 'https://example.invalid/wrong.git' }), { code: 'SCM_GIT_REMOTE_CONFLICT' });
   await git(root, ['remote', 'add', 'sanitized', 'https://token-value@example.invalid/private.git']);
   await git(root, ['remote', 'add', 'local-file', 'file:///tmp/bobocloud-private-remote.git']);
   const remotes = await broker.request('scm.git.remotes', { repositoryId: repository.repositoryId });
   assert.equal(remotes.remotes.some((entry) => entry.name === 'origin'), true);
+  const origin = remotes.remotes.find((entry) => entry.name === 'origin');
+  assert.equal(origin.label, 'Personal');
+  assert.equal(origin.platform, 'GitHub');
+  assert.equal(origin.selected, true);
+  assert.match(origin.pushFingerprint, /^[a-f0-9]{64}$/);
+  assert.equal(remotes.remotes.find((entry) => entry.name === 'mirror').selected, false);
+  await broker.request('scm.git.removeRemote', { repositoryId: repository.repositoryId, name: 'mirror' });
+  assert.equal((await git(root, ['remote'])).stdout.includes('mirror'), false);
   assert.match(remotes.remotes.find((entry) => entry.name === 'sanitized').urls[0], /^https:\/\/\*\*\*@example\.invalid\//);
   const localFileRemote = remotes.remotes.find((entry) => entry.name === 'local-file');
   assert.deepEqual(localFileRemote.urls, []);
@@ -176,10 +189,47 @@ test('push without an explicit branch respects a differently named upstream bran
   await git(root, ['remote', 'add', 'upstream', 'https://example.invalid/repo.git']);
   await git(root, ['config', 'branch.local-feature.remote', 'upstream']);
   await git(root, ['config', 'branch.local-feature.merge', 'refs/heads/review-feature']);
-  await broker.request('scm.git.push', { repositoryId: repository.repositoryId, remote: 'upstream' });
+  const target = (await broker.request('scm.git.remotes', { repositoryId: repository.repositoryId })).remotes[0];
+  const head = (await git(root, ['rev-parse', 'HEAD'])).stdout.trim();
+  await broker.request('scm.git.push', { repositoryId: repository.repositoryId, remote: 'upstream', expectedHead: head, expectedBranch: 'local-feature', expectedTarget: target.pushFingerprint });
   assert.equal(observed.length, 1);
-  assert.equal(observed[0].includes('HEAD:refs/heads/review-feature'), true);
+  assert.equal(observed[0].includes(head + ':refs/heads/review-feature'), true);
   assert.equal(observed[0].includes('local-feature'), false);
+  // A branch switch can leave HEAD at the same commit. Neither a guarded
+  // commit nor push should proceed with that stale selection.
+  await git(root, ['checkout', '-b', 'other-feature']);
+  await fs.writeFile(path.join(root, 'file.txt'), 'staged change\n');
+  await git(root, ['add', 'file.txt']);
+  await assert.rejects(() => broker.request('scm.git.commit', { repositoryId: repository.repositoryId, message: 'must not commit', expectedHead: head, expectedBranch: 'local-feature' }), { code: 'SCM_GIT_HEAD_CHANGED' });
+  await assert.rejects(() => broker.request('scm.git.push', { repositoryId: repository.repositoryId, remote: 'upstream', expectedHead: head, expectedBranch: 'local-feature', expectedTarget: target.pushFingerprint }), { code: 'SCM_GIT_HEAD_CHANGED' });
+  assert.equal((await git(root, ['rev-parse', 'HEAD'])).stdout.trim(), head);
+  assert.equal(observed.length, 1);
+  await git(root, ['checkout', 'local-feature']);
+  await git(root, ['remote', 'set-url', '--push', 'upstream', 'https://example.invalid/changed.git']);
+  await assert.rejects(() => broker.request('scm.git.push', { repositoryId: repository.repositoryId, remote: 'upstream', expectedHead: head, expectedTarget: target.pushFingerprint }), { code: 'SCM_GIT_REMOTE_CHANGED' });
+  assert.equal(observed.length, 1);
+  const current = (await broker.request('scm.git.remotes', { repositoryId: repository.repositoryId })).remotes[0];
+  await assert.rejects(() => broker.request('scm.git.push', { repositoryId: repository.repositoryId, remote: 'upstream', expectedHead: '0'.repeat(40), expectedTarget: current.pushFingerprint }), { code: 'SCM_GIT_HEAD_CHANGED' });
+  assert.equal(observed.length, 1);
+});
+
+test('remote history includes commits reachable from all fetched branches of the selected remote', async (t) => {
+  const { root, broker } = await createWorkspace(t);
+  const repository = await broker.request('scm.git.init', {});
+  await git(root, ['config', 'user.name', 'SCM Test']);
+  await git(root, ['config', 'user.email', 'scm-test@example.invalid']);
+  await fs.writeFile(path.join(root, 'a.txt'), 'first\n');
+  await git(root, ['add', 'a.txt']);
+  await git(root, ['commit', '--quiet', '-m', 'shared base']);
+  await git(root, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+  await fs.writeFile(path.join(root, 'a.txt'), 'second\n');
+  await git(root, ['add', 'a.txt']);
+  await git(root, ['commit', '--quiet', '-m', 'feature work']);
+  await git(root, ['update-ref', 'refs/remotes/origin/feature', 'HEAD']);
+  const history = await broker.request('scm.git.history', { repositoryId: repository.repositoryId, remote: 'origin', limit: 20 });
+  assert.deepEqual(history.commits.map((commit) => commit.subject), ['feature work', 'shared base']);
+  assert.equal(history.commits[0].parents[0], history.commits[1].hash);
+  assert.deepEqual((await broker.request('scm.git.history', { repositoryId: repository.repositoryId, remote: 'other', limit: 20 })).commits, []);
 });
 
 test('local SCM clone is workspace-bound, empty-directory-only, and returns stable failures', async (t) => {

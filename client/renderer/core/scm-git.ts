@@ -25,6 +25,8 @@ export const ScmGitOperation = Object.freeze({
   CLONE: 'clone',
   INIT: 'init',
   SET_REMOTE: 'setRemote',
+  CONFIGURE_REMOTE: 'configureRemote',
+  REMOVE_REMOTE: 'removeRemote',
   STAGE: 'stage',
   STAGE_ALL: 'stageAll',
   UNSTAGE: 'unstage',
@@ -52,6 +54,8 @@ const PERMISSION_BY_OPERATION = Object.freeze({
   [ScmGitOperation.CLONE]: ScmGitPermission.WRITE,
   [ScmGitOperation.INIT]: ScmGitPermission.WRITE,
   [ScmGitOperation.SET_REMOTE]: ScmGitPermission.WRITE,
+  [ScmGitOperation.CONFIGURE_REMOTE]: ScmGitPermission.WRITE,
+  [ScmGitOperation.REMOVE_REMOTE]: ScmGitPermission.WRITE,
   [ScmGitOperation.STAGE]: ScmGitPermission.WRITE,
   [ScmGitOperation.STAGE_ALL]: ScmGitPermission.WRITE,
   [ScmGitOperation.UNSTAGE]: ScmGitPermission.WRITE,
@@ -75,23 +79,25 @@ type ScmGitFieldMap = {
 const FIELDS_BY_OPERATION = Object.freeze({
   [ScmGitOperation.DETECT]: ['includeNested'],
   [ScmGitOperation.STATUS]: ['repositoryId', 'offset', 'limit'],
-  [ScmGitOperation.HISTORY]: ['repositoryId', 'offset', 'limit', 'ref'],
+  [ScmGitOperation.HISTORY]: ['repositoryId', 'offset', 'limit', 'ref', 'remote'],
   [ScmGitOperation.DIFF]: ['repositoryId', 'path', 'ref', 'staged'],
   [ScmGitOperation.BRANCHES]: ['repositoryId'],
   [ScmGitOperation.REMOTES]: ['repositoryId'],
   [ScmGitOperation.CLONE]: ['url', 'branch'],
   [ScmGitOperation.INIT]: [],
   [ScmGitOperation.SET_REMOTE]: ['repositoryId', 'name', 'url'],
+  [ScmGitOperation.CONFIGURE_REMOTE]: ['repositoryId', 'name', 'create', 'url', 'label', 'platform', 'selected'],
+  [ScmGitOperation.REMOVE_REMOTE]: ['repositoryId', 'name'],
   [ScmGitOperation.STAGE]: ['repositoryId', 'paths'],
   [ScmGitOperation.STAGE_ALL]: ['repositoryId'],
   [ScmGitOperation.UNSTAGE]: ['repositoryId', 'paths'],
-  [ScmGitOperation.COMMIT]: ['repositoryId', 'message'],
+  [ScmGitOperation.COMMIT]: ['repositoryId', 'message', 'expectedHead', 'expectedBranch'],
   [ScmGitOperation.CHECKOUT]: ['repositoryId', 'branch', 'force'],
   [ScmGitOperation.CREATE_BRANCH]: ['repositoryId', 'name', 'checkout'],
   [ScmGitOperation.DELETE_BRANCH]: ['repositoryId', 'name', 'force'],
   [ScmGitOperation.FETCH]: ['repositoryId', 'remote'],
   [ScmGitOperation.PULL]: ['repositoryId', 'remote', 'branch'],
-  [ScmGitOperation.PUSH]: ['repositoryId', 'remote', 'branch', 'force', 'setUpstream']
+  [ScmGitOperation.PUSH]: ['repositoryId', 'remote', 'branch', 'force', 'setUpstream', 'expectedHead', 'expectedBranch', 'expectedTarget']
 } as const satisfies ScmGitFieldMap);
 
 const ALLOWED_FIELDS_BY_OPERATION: Readonly<Record<ScmGitOperationDto, ReadonlySet<string>>> =
@@ -273,6 +279,8 @@ function normalizeArguments<Operation extends ScmGitOperationDto>(
         const ref = normalizeRef(value.ref, 'SCM ref');
         if (ref !== undefined) result.ref = ref;
       }
+      if (value.remote !== undefined && value.remote !== null && value.remote !== '') result.remote = normalizeRemoteName(value.remote, 'SCM remote');
+      if (result.ref && result.remote) throw new TypeError('SCM history accepts either a ref or remote.');
       break;
     case ScmGitOperation.DIFF:
       if (value.path !== undefined && value.path !== null && value.path !== '') {
@@ -295,12 +303,34 @@ function normalizeArguments<Operation extends ScmGitOperationDto>(
       result.name = normalizeRemoteName(value.name, 'SCM remote name');
       result.url = normalizeRemoteUrl(value.url);
       break;
+    case ScmGitOperation.CONFIGURE_REMOTE:
+      result.name = normalizeRemoteName(value.name, 'SCM remote name', '');
+      result.create = requireBoolean(value.create, 'SCM remote create');
+      if (value.url !== undefined && value.url !== '') result.url = normalizeRemoteUrl(value.url);
+      for (const [key, limit] of [['label', 96], ['platform', 64]] as const) {
+        if (value[key] !== undefined) {
+          const v = value[key];
+          if (typeof v !== 'string' || !v.trim() || v.length > limit || /[\x00-\x1f\x7f]/.test(v)) throw new TypeError('SCM remote ' + key + ' is invalid.');
+          result[key] = v.trim();
+        }
+      }
+      if (value.selected !== undefined) result.selected = requireBoolean(value.selected, 'SCM remote selected');
+      if (result.create === true && !result.url) throw new TypeError('A new SCM remote requires a URL.');
+      break;
+    case ScmGitOperation.REMOVE_REMOTE:
+      result.name = normalizeRemoteName(value.name, 'SCM remote name', '');
+      break;
     case ScmGitOperation.STAGE:
     case ScmGitOperation.UNSTAGE:
       result.paths = requirePaths(value.paths);
       break;
     case ScmGitOperation.COMMIT:
       result.message = normalizeCommitMessage(value.message);
+      if (value.expectedBranch !== undefined) result.expectedBranch = normalizeBranchName(value.expectedBranch, 'SCM expected branch');
+      if (value.expectedHead !== undefined) {
+        if (typeof value.expectedHead !== 'string' || !/^(?:\(initial\)|[a-f0-9]{40}(?:[a-f0-9]{24})?)$/i.test(value.expectedHead)) throw new TypeError('SCM expected commit is invalid.');
+        result.expectedHead = value.expectedHead;
+      }
       break;
     case ScmGitOperation.CHECKOUT:
       result.branch = normalizeBranchName(value.branch, 'SCM branch');
@@ -332,6 +362,15 @@ function normalizeArguments<Operation extends ScmGitOperationDto>(
       }
       if (value.force !== undefined) result.force = requireBoolean(value.force, 'SCM force');
       if (value.setUpstream !== undefined) result.setUpstream = requireBoolean(value.setUpstream, 'SCM setUpstream');
+      if (value.expectedBranch !== undefined) result.expectedBranch = normalizeBranchName(value.expectedBranch, 'SCM expected branch');
+      if (value.expectedHead !== undefined) {
+        if (typeof value.expectedHead !== 'string' || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i.test(value.expectedHead)) throw new TypeError('SCM expected commit is invalid.');
+        result.expectedHead = value.expectedHead;
+      }
+      if (value.expectedTarget !== undefined) {
+        if (typeof value.expectedTarget !== 'string' || !/^[a-f0-9]{64}$/i.test(value.expectedTarget)) throw new TypeError('SCM expected target is invalid.');
+        result.expectedTarget = value.expectedTarget;
+      }
       break;
     case ScmGitOperation.BRANCHES:
     case ScmGitOperation.REMOTES:

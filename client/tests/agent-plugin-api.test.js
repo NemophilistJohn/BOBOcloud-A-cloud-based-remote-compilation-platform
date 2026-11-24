@@ -159,7 +159,7 @@ test.after(() => {
 });
 
 test('Plugin API 1.6 publishes the complete Agent permission set', () => {
-  assert.equal(core.PLUGIN_API_VERSION, '1.11.0');
+  assert.equal(core.PLUGIN_API_VERSION, '1.12.0');
   assert.deepEqual([
     core.PluginPermission.AGENTS_REGISTER,
     core.PluginPermission.MODELS_GENERATE,

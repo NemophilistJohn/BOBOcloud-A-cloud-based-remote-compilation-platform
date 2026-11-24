@@ -2,7 +2,7 @@
 
 [English](plugin-quickstart.en.md) · [README](../README.zh-CN.md) · [完整 API](plugin-api.md)
 
-当前宿主为桌面端 **2.8.1**、Plugin API **1.11.0**。公开契约以 [SDK 声明](../client/plugin-sdk/bobocloud-plugin.d.ts) 为准，不是 `window.BOBO`、Electron IPC、内部 Renderer 服务或 VS Code 扩展 API。
+当前宿主为桌面端 **2.8.1**、Plugin API **1.12.0**。公开契约以 [SDK 声明](../client/plugin-sdk/bobocloud-plugin.d.ts) 为准，不是 `window.BOBO`、Electron IPC、内部 Renderer 服务或 VS Code 扩展 API。
 
 ## 1. 选择合适入口
 

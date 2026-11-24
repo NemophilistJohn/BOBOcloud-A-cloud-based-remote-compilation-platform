@@ -441,7 +441,7 @@ test('renderer platform bootstrap exposes the precise runtime contract without a
     'declare const compatibility: RendererPlatformCompatibilityFacade;',
     'const bootstrapped: RendererPlatform = rendererPlatform;',
     'const created: RendererPlatform = createRendererPlatform();',
-    "const apiVersion: '1.11.0' = created.apiVersion;",
+    "const apiVersion: '1.12.0' = created.apiVersion;",
     'const disposed: boolean = created.disposed;',
     'const disposal: Promise<void> = created.dispose();',
     "created.services.require('workbench.projectTasks').refresh();",
@@ -483,7 +483,7 @@ test('renderer platform bootstrap exposes the precise runtime contract without a
     'created.sourceControls.list();',
     'created.agents.list();',
     'created.plugins.list();',
-    "const compatibilityApiVersion: '1.11.0' = compatibility.apiVersion;",
+    "const compatibilityApiVersion: '1.12.0' = compatibility.apiVersion;",
     "const compatibilityService: unknown = compatibility.services.get('host.pluginExtensions');",
     "const compatibilityCommand: Promise<unknown> = compatibility.commands.execute('plugin.dynamic', { value: 1 });",
     "const compatibilityContribution: Disposable = compatibility.contributions.register('plugin.dynamic', { id: 'acme.dynamic' });",
@@ -1767,6 +1767,17 @@ test('SCM inline actions, secondary commands, and text details remain bounded an
   assert.throws(() => core.validateSourceControlState({ detail: { title: 'x', content: 'x'.repeat(32001) } }), /bounded/);
   assert.throws(() => core.validateSourceControlState({ sections: [{ id: 'files', title: 'Files', items: [{ id: 'one', title: 'file', secondaryAction: { command: 'other.plugin.run', title: 'Run' } }] }] }, { commandPrefix: 'acme.scm.' }), /owning extension/);
   assert.throws(() => core.validateSourceControlState({ actions: [{ id: 'commit', title: 'Commit', command: 'acme.scm.commit', placement: 'inline' }] }, { commandPrefix: 'acme.scm.' }), /require a form/);
+  assert.throws(() => core.validateSourceControlState({ actions: [{ id: 'commit', title: 'Commit', command: 'acme.scm.commit', placement: 'inline', form: { fields: [{ id: 'message', label: 'Message' }], secondarySubmit: { id: 'send', title: 'Send', command: 'other.plugin.run' } } }] }, { commandPrefix: 'acme.scm.' }), /owning extension/);
+});
+
+test('source-control dashboards reject foreign commands and invalid card selection', () => {
+  const card = { id: 'remote-origin', title: 'Personal', subtitle: 'GitHub', description: 'project', selected: true, command: 'acme.scm.select', actions: [{ id: 'edit', title: 'Edit', command: 'acme.scm.edit' }] };
+  const dashboard = { title: 'Repositories', selectionMode: 'single', items: [card], addAction: { id: 'add', title: 'Add', command: 'acme.scm.add' }, tabs: { active: 'changes', items: [{ id: 'changes', title: 'Changes', command: 'acme.scm.tab' }] } };
+  const state = core.validateSourceControlState({ dashboard }, { commandPrefix: 'acme.scm.' });
+  assert.equal(state.dashboard.items[0].selected, true);
+  assert.equal(Object.isFrozen(state.dashboard.items[0].actions), true);
+  assert.throws(() => core.validateSourceControlState({ dashboard: { ...dashboard, items: [card, { ...card, id: 'second' }] } }, { commandPrefix: 'acme.scm.' }), /selection/);
+  assert.throws(() => core.validateSourceControlState({ dashboard: { ...dashboard, items: [{ ...card, command: 'other.plugin.run' }] } }, { commandPrefix: 'acme.scm.' }), /owning extension/);
 });
 
 test('source-control state providers are bounded, localized, and removed with their extension', async () => {
@@ -2389,7 +2400,7 @@ test('thin BOBO adapters project registered file icon and command palette servic
   vm.runInNewContext(compatibilityBundle, context);
 
   const BOBO = context.window.BOBO;
-  assert.equal(BOBO.platform.apiVersion, '1.11.0');
+  assert.equal(BOBO.platform.apiVersion, '1.12.0');
   assert.equal(Object.isFrozen(BOBO.platform), true);
   for (const key of [
     'fileDecorations', 'sourceControl', 'agents', 'services', 'commands', 'contributions', 'plugins'

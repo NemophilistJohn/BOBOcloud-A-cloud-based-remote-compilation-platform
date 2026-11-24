@@ -6,7 +6,7 @@ BOBOCLOUD 是一套可自行部署的云端开发工作台：Electron 桌面端�
 
 **源码留在本地，工具链放到云端。** 打开普通项目文件夹，选择服务器运行时，就能在同一桌面工作台里运行、查看结果、调试和扩展。只编辑文件时不需要云账号；连接服务后再使用远程能力。
 
-本文于 **2026-11-24** 按当前源码更新，中文与 [English](README.md) 使用相同章节结构。当前 Plugin API 为 **1.11.0**。实际可用的镜像、调试器、配额及可选插件取决于你的部署。
+本文于 **2026-11-24** 按当前源码更新，中文与 [English](README.md) 使用相同章节结构。当前 Plugin API 为 **1.12.0**。实际可用的镜像、调试器、配额及可选插件取决于你的部署。
 
 没有服务器时，桌面端仍然可以打开文件夹、使用 Monaco 编辑器、搜索、查看 Problems 并调整工作台。运行、调试、云终端、项目依赖、团队和服务器存储则需要先连接兼容的 BOBOCLOUD 服务。
 
@@ -370,7 +370,7 @@ BOBOCLOUD 使用统一的 cache-v2 目录和目录表，但不同缓存域必须
 
 内置聊天和行内补全是两条可选且独立的工作流。Schema 4 分离连接、当前选择、提示词、采样参数与上下文预算，并通过连接元数据和模型能力处理不同提供商。OpenAI-compatible 与 Anthropic-style 传输支持流式响应、取消、Chat/Completions/FIM 路由、响应上限和显式连接测试。请求由 Electron 主进程发出，AI 配置使用上文所述的系统密钥 codec；部分设置仍会进入可信工作台 Renderer，后者不是安全边界。下载插件拿不到原始 Key，官方 Agent 使用不透明模型引用。
 
-BOBOCLOUD 2.8.1 实现 Plugin API **1.11.0**。官方 AI Agent 插件以编辑器同级大标签展示持久会话、Chat/Goal 模式、随提供商能力变化的思考选项、显式选择的本地 `SKILL.md`、上下文压缩、安全 Markdown、流式模型调用和结构化工作区/进程工具。请求批准、协助批准和不受限访问只改变批准行为，绝不会移除插件权限、工作区边界、路径/hash 校验、进程白名单、配额或取消机制。请求强度与提供商实际生效强度分别记录，界面存在选项不代表提供商支持所有档位。
+BOBOCLOUD 2.8.1 实现 Plugin API **1.12.0**。官方 AI Agent 插件以编辑器同级大标签展示持久会话、Chat/Goal 模式、随提供商能力变化的思考选项、显式选择的本地 `SKILL.md`、上下文压缩、安全 Markdown、流式模型调用和结构化工作区/进程工具。请求批准、协助批准和不受限访问只改变批准行为，绝不会移除插件权限、工作区边界、路径/hash 校验、进程白名单、配额或取消机制。请求强度与提供商实际生效强度分别记录，界面存在选项不代表提供商支持所有档位。
 
 Agent 是纯桌面能力，不新增任何 Go 服务端接口。下载的编排逻辑运行在隔离插件 Worker 中，密钥、规范化审批、工作区根与绝对路径解析、写操作和 `shell: false` 进程仍由可信 Electron 主进程负责。当前没有通用 MCP 执行运行时。详见[本地 AI Agent 插件架构](docs/ai-agent-plugin-architecture.md)。
 
@@ -589,7 +589,7 @@ Set-Location server/deploy
 
 ## 插件开发者
 
-BOBOCLOUD 2.8 实现 [Plugin API](docs/plugin-api.md) `1.11.0`，同时兼容匹配的 API 1.x 包。`.boboplugin` 是根目录含 `manifest.json` 的 ZIP：
+BOBOCLOUD 2.8 实现 [Plugin API](docs/plugin-api.md) `1.12.0`，同时兼容匹配的 API 1.x 包。`.boboplugin` 是根目录含 `manifest.json` 的 ZIP：
 
 - schema 1 只包含一个打包 ESM 激活入口；
 - schema 2 额外允许 manifest 明确声明的 document-view 入口与资源；
