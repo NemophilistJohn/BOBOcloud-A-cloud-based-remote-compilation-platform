@@ -10,7 +10,7 @@ export type SourceControlPhaseDto =
   | 'error';
 
 export type SourceControlActionKindDto = 'primary' | 'secondary' | 'danger';
-export type SourceControlActionPlacementDto = 'button' | 'toolbar' | 'menu';
+export type SourceControlActionPlacementDto = 'button' | 'toolbar' | 'menu' | 'inline';
 export type SourceControlActionIconDto =
   | 'refresh'
   | 'commit'
@@ -74,6 +74,7 @@ export interface SourceControlSectionItemRegistrationDto {
   readonly badge?: string | null;
   readonly command?: string | null;
   readonly disabled?: boolean;
+  readonly secondaryAction?: { readonly command: string; readonly title: string; readonly icon?: 'add' | 'remove' } | null;
 }
 
 export interface SourceControlSectionItemDto {
@@ -84,6 +85,7 @@ export interface SourceControlSectionItemDto {
   readonly badge: string | null;
   readonly command: string | null;
   readonly disabled: boolean;
+  readonly secondaryAction: { readonly command: string; readonly title: string; readonly icon: 'add' | 'remove' } | null;
 }
 
 export interface SourceControlLoadMoreRegistrationDto {
@@ -250,10 +252,17 @@ export interface SourceControlMenuActionRegistrationDto
   readonly icon?: SourceControlActionIconDto;
 }
 
+export interface SourceControlInlineActionRegistrationDto extends SourceControlActionRegistrationBaseDto {
+  readonly placement: 'inline';
+  readonly form: SourceControlFormRegistrationDto;
+  readonly icon?: SourceControlActionIconDto;
+}
+
 export type SourceControlActionRegistrationDto =
   | SourceControlButtonActionRegistrationDto
   | SourceControlToolbarActionRegistrationDto
-  | SourceControlMenuActionRegistrationDto;
+  | SourceControlMenuActionRegistrationDto
+  | SourceControlInlineActionRegistrationDto;
 
 interface SourceControlActionBaseDto {
   readonly id: string;
@@ -280,15 +289,24 @@ export interface SourceControlMenuActionDto extends SourceControlActionBaseDto {
   readonly icon: SourceControlActionIconDto | undefined;
 }
 
+export interface SourceControlInlineActionDto extends SourceControlActionBaseDto {
+  readonly placement: 'inline';
+  readonly icon: SourceControlActionIconDto | undefined;
+  readonly form: SourceControlFormDto;
+}
+
 export type SourceControlActionDto =
   | SourceControlButtonActionDto
   | SourceControlToolbarActionDto
-  | SourceControlMenuActionDto;
+  | SourceControlMenuActionDto
+  | SourceControlInlineActionDto;
 
 export interface SourceControlStateRegistrationDto {
   readonly phase?: SourceControlPhaseDto;
   readonly title?: string | null;
   readonly message?: string | null;
+  readonly detail?: { readonly title: string; readonly content: string } | null;
+  readonly completedAction?: string | null;
   readonly summary?: SourceControlSummaryRegistrationDto | null;
   readonly sections?: readonly SourceControlSectionRegistrationDto[];
   readonly actions?: readonly SourceControlActionRegistrationDto[];
@@ -298,6 +316,8 @@ export interface SourceControlStateDto {
   readonly phase: SourceControlPhaseDto;
   readonly title: string | null;
   readonly message: string | null;
+  readonly detail: { readonly title: string; readonly content: string } | null;
+  readonly completedAction: string | null;
   readonly summary: SourceControlSummaryDto | null;
   readonly sections: readonly SourceControlSectionDto[];
   readonly actions: readonly SourceControlActionDto[];

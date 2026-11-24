@@ -128,7 +128,7 @@ test('official local SCM plugin accepts cross-realm broker data and controls fil
       await window.api.plugins.enable(id);
       return record;
     }, PLUGIN_ID);
-    expect(installed.version).toBe('1.2.1');
+    expect(installed.version).toBe(ARTIFACT_INFO.version);
     expect([...installed.grantedPermissions].sort()).toEqual([...installed.requestedPermissions].sort());
 
     await page.waitForFunction(() => window.BOBO.commands.has('bobocloud.local-scm.refresh'), null, { timeout: 20000 });
@@ -149,11 +149,13 @@ test('official local SCM plugin accepts cross-realm broker data and controls fil
     await activity.click();
     const panel = page.locator('.source-control-sidebar.active');
     await expect(panel).toBeVisible();
+    await panel.locator('.source-control-section-toggle', { hasText: 'History' }).click();
     await expect(panel).toContainText('Initial local commit');
     await expect(panel).toContainText('main.py');
     await expect(panel).toContainText('notes.txt');
     await expect(panel).not.toContainText('Extension payload must contain plain objects only.');
     await expect(panel.locator('.source-control-tool-button[aria-label="Push"]')).toBeVisible();
+    await panel.locator('.source-control-form-inline textarea[name="message"]').fill('UI commit\n\nCommit body');
 
     const modified = page.locator('.tree-row[data-name="main.py"]');
     const untracked = page.locator('.tree-row[data-name="notes.txt"]');
@@ -162,10 +164,15 @@ test('official local SCM plugin accepts cross-realm broker data and controls fil
 
     const untrackedSection = panel.locator('.source-control-section').filter({ hasText: 'Untracked Changes' });
     await untrackedSection.locator('.source-control-list-item-action', { hasText: 'notes.txt' }).click();
+    await expect(panel.locator('.source-control-detail')).toContainText('untracked file');
+    expect(git(workspace, ['diff', '--cached', '--name-only'])).not.toContain('notes.txt');
+    await untrackedSection.locator('.source-control-item-secondary[aria-label="Stage: notes.txt"]').click();
     await expect.poll(() => git(workspace, ['diff', '--cached', '--name-only'])).toContain('notes.txt');
     const stagedSection = panel.locator('.source-control-section').filter({ hasText: 'Staged Changes' });
-    await stagedSection.locator('.source-control-list-item-action', { hasText: 'notes.txt' }).click();
+    await stagedSection.locator('.source-control-item-secondary[aria-label="Unstage: notes.txt"]').click();
     await expect.poll(() => git(workspace, ['diff', '--cached', '--name-only'])).not.toContain('notes.txt');
+    await panel.locator('.source-control-section').filter({ hasText: 'Changes ·' }).locator('.source-control-list-item-action', { hasText: 'main.py' }).first().click();
+    await expect(panel.locator('.source-control-detail')).toContainText('+print("second")');
 
     const changedStats = panel.locator('.source-control-line-stats').first();
     await expect(changedStats.locator('.source-control-line-stat-added')).toHaveCSS('color', 'rgb(86, 184, 122)');
@@ -210,9 +217,15 @@ test('official local SCM plugin accepts cross-realm broker data and controls fil
     // command value, which the host correctly rejected as a non-plain payload.
     await panel.locator('.source-control-tool-button[aria-label="Push"]').click();
     await panel.locator('.source-control-form button[type="submit"]').click();
-    await expect(panel).toContainText('The operation could not be completed in the local workspace.');
+    await expect(panel).toContainText('The remote is missing or uses an unsupported address.');
     await expect(panel.locator('.source-control-host-error')).toHaveCount(0);
     await expect(panel).not.toContainText('Extension payload must contain plain objects only.');
+    await panel.locator('.source-control-form button', { hasText: 'Cancel' }).click();
+    await expect(panel.locator('.source-control-form-inline textarea[name="message"]')).toHaveValue('UI commit\n\nCommit body');
+    await panel.locator('.source-control-item-secondary[aria-label="Stage: main.py"]').click();
+    await panel.locator('.source-control-form-inline button[type="submit"]').click();
+    await expect.poll(() => git(workspace, ['log', '-1', '--format=%B'])).toContain('Commit body');
+    await expect(panel.locator('.source-control-form-inline textarea[name="message"]')).toHaveValue('');
 
     await page.screenshot({
       path: path.join(evidenceDirectory, 'official-local-scm-plugin-ready.png'),
@@ -281,6 +294,7 @@ test('official local SCM treats an unborn repository as a first-publish workflow
     await page.locator('.source-control-activity').click();
     const panel = page.locator('.source-control-sidebar.active');
     await expect(panel).toContainText('no commits yet');
+    await panel.locator('.source-control-section-toggle', { hasText: 'History' }).click();
     await expect(panel.locator('.source-control-section').filter({ hasText: 'History' })).toContainText('No data available');
     await panel.locator('.source-control-action', { hasText: 'Initialize and publish' }).click();
     await expect(panel.locator('.source-control-form')).toBeVisible();

@@ -1,5 +1,5 @@
 /**
- * BOBOCloud Plugin API 1.10.0 declarations.
+ * BOBOCloud Plugin API 1.11.0 declarations.
  *
  * Copy or reference this file from a plugin's TypeScript project. The runtime
  * is a sandboxed ES module; Node.js, Electron, DOM, and window APIs are not
@@ -115,7 +115,7 @@ export interface SourceControlDescriptor {
 export type SourceControlPhase = 'idle' | 'loading' | 'ready' | 'empty' | 'error';
 export type SourceControlActionKind = 'primary' | 'secondary' | 'danger';
 /** Host-owned compact action layout. Menu actions render under the host overflow menu. */
-export type SourceControlActionPlacement = 'button' | 'toolbar' | 'menu';
+export type SourceControlActionPlacement = 'button' | 'toolbar' | 'menu' | 'inline';
 /** Semantic token only; plugins cannot provide SVG, HTML, or CSS. */
 export type SourceControlActionIcon = 'refresh' | 'commit' | 'pull' | 'push' | 'branch' | 'publish' | 'remote' | 'stage-all' | 'visibility';
 export type SourceControlFormFieldType = 'text' | 'textarea' | 'select' | 'checkbox';
@@ -140,6 +140,8 @@ export interface SourceControlSectionItem {
   /** Must be owned by this extension. */
   readonly command?: string;
   readonly disabled?: boolean;
+  /** Optional independent action for the row, owned by this extension. */
+  readonly secondaryAction?: { readonly command: string; readonly title: string; readonly icon?: 'add' | 'remove' };
 }
 
 export interface SourceControlLoadMoreAction {
@@ -221,6 +223,10 @@ export interface SourceControlState {
   readonly phase?: SourceControlPhase;
   readonly title?: string;
   readonly message?: string;
+  /** Plain text detail (maximum 32000 characters), rendered by the host. */
+  readonly detail?: { readonly title: string; readonly content: string };
+  /** Close and clear a matching form after a completed successful operation. */
+  readonly completedAction?: string;
   readonly summary?: SourceControlSummary;
   readonly sections?: readonly SourceControlSection[];
   readonly actions?: readonly SourceControlAction[];

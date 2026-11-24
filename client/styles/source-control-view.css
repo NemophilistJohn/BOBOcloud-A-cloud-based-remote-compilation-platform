@@ -201,6 +201,19 @@
   overflow-wrap: anywhere;
 }
 .source-control-list { display: flex; flex-direction: column; }
+.source-control-item-row { display: flex; align-items: center; min-width: 0; border-radius: 5px; }
+.source-control-item-row:hover, .source-control-item-row:focus-within { background: var(--bg-hover); }
+.source-control-item-row > .source-control-list-item { flex: 1; min-width: 0; }
+.source-control-item-secondary { flex: 0 0 26px; width: 26px; height: 26px; padding: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--text-secondary); font-size: 19px; line-height: 1; cursor: pointer; }
+.source-control-item-secondary:hover:not(:disabled), .source-control-item-secondary:focus-visible { color: var(--text-primary); border-color: var(--border-default); background: var(--bg-active); }
+.source-control-item-secondary:disabled { opacity: .45; cursor: default; }
+.source-control-detail { border: 1px solid var(--border-default); border-radius: 7px; overflow: hidden; background: var(--bg-deep); }
+.source-control-detail-title { margin: 0; padding: 9px 10px; color: var(--text-primary); font-size: var(--text-xs); overflow-wrap: anywhere; border-bottom: 1px solid var(--border-default); }
+.source-control-detail-content { max-height: 320px; margin: 0; padding: 8px 0; overflow: auto; font: 11px/1.55 var(--font-mono, monospace); white-space: pre; tab-size: 4; }
+.source-control-detail-content span { display: block; min-height: 1.55em; padding: 0 10px; }
+.source-control-diff-added { color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); }
+.source-control-diff-removed { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+.source-control-diff-hunk { color: var(--brand); }
 .source-control-list-item {
   min-width: 0;
   display: flex;
@@ -313,6 +326,8 @@ button.source-control-list-item:disabled { cursor: default; opacity: 0.5; }
 .source-control-input,
 .source-control-select { min-height: 28px; padding: 3px var(--space-2); }
 .source-control-textarea { min-height: 76px; padding: var(--space-1) var(--space-2); resize: vertical; }
+.source-control-form-inline { border-color: color-mix(in srgb, var(--brand) 25%, var(--border-default)); }
+.source-control-form-inline .source-control-form-actions > .source-control-action-primary { flex: 1; }
 .source-control-input:focus,
 .source-control-textarea:focus,
 .source-control-select:focus { border-color: var(--focus-ring); }

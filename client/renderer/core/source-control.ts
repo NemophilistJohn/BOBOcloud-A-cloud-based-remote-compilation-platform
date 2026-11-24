@@ -73,7 +73,8 @@ export const SourceControlActionKind = Object.freeze({
 export const SourceControlActionPlacement = Object.freeze({
   BUTTON: 'button',
   TOOLBAR: 'toolbar',
-  MENU: 'menu'
+  MENU: 'menu',
+  INLINE: 'inline'
 } as const);
 
 export const SourceControlActionIcon = Object.freeze({
@@ -102,11 +103,11 @@ const KNOWN_ACTION_PLACEMENTS: ReadonlySet<string> = new Set(Object.values(Sourc
 const KNOWN_ACTION_ICONS: ReadonlySet<string> = new Set(Object.values(SourceControlActionIcon));
 const KNOWN_FORM_FIELD_TYPES: ReadonlySet<string> = new Set(Object.values(SourceControlFormFieldType));
 const ALLOWED_DESCRIPTOR_FIELDS: ReadonlySet<string> = new Set(['id', 'title', 'icon', 'order', 'openCommand']);
-const ALLOWED_STATE_FIELDS: ReadonlySet<string> = new Set(['phase', 'title', 'message', 'summary', 'sections', 'actions']);
+const ALLOWED_STATE_FIELDS: ReadonlySet<string> = new Set(['phase', 'title', 'message', 'detail', 'completedAction', 'summary', 'sections', 'actions']);
 const ALLOWED_SUMMARY_FIELDS: ReadonlySet<string> = new Set(['title', 'items']);
 const ALLOWED_SUMMARY_ITEM_FIELDS: ReadonlySet<string> = new Set(['label', 'value', 'detail']);
 const ALLOWED_SECTION_FIELDS: ReadonlySet<string> = new Set(['id', 'title', 'description', 'items', 'emptyMessage', 'collapsed', 'loadMore']);
-const ALLOWED_SECTION_ITEM_FIELDS: ReadonlySet<string> = new Set(['id', 'title', 'description', 'meta', 'badge', 'command', 'disabled']);
+const ALLOWED_SECTION_ITEM_FIELDS: ReadonlySet<string> = new Set(['id', 'title', 'description', 'meta', 'badge', 'command', 'disabled', 'secondaryAction']);
 const ALLOWED_LOAD_MORE_FIELDS: ReadonlySet<string> = new Set(['command', 'label', 'disabled']);
 const ALLOWED_ACTION_FIELDS: ReadonlySet<string> = new Set(['id', 'title', 'description', 'command', 'kind', 'disabled', 'form', 'placement', 'icon']);
 const ALLOWED_FORM_FIELDS: ReadonlySet<string> = new Set(['title', 'submitLabel', 'fields']);
@@ -232,6 +233,18 @@ function normalizeSectionItem(value: unknown, commandPrefix: string): SourceCont
   if (value.disabled !== undefined && typeof value.disabled !== 'boolean') {
     throw new TypeError('Source-control section item disabled must be a boolean.');
   }
+  let secondaryAction: SourceControlSectionItemDto['secondaryAction'] = null;
+  if (value.secondaryAction !== undefined && value.secondaryAction !== null) {
+    assertAllowedFields(value.secondaryAction, new Set(['command', 'title', 'icon']), 'Source-control secondary action');
+    if (value.secondaryAction.icon !== undefined && value.secondaryAction.icon !== 'add' && value.secondaryAction.icon !== 'remove') {
+      throw new TypeError('Source-control secondary action icon is invalid.');
+    }
+    secondaryAction = Object.freeze({
+      command: requireCommandId(value.secondaryAction.command, 'Source-control secondary command', commandPrefix),
+      title: requireNonEmptyString(value.secondaryAction.title, 'Source-control secondary title', 96),
+      icon: value.secondaryAction.icon === 'remove' ? 'remove' : 'add'
+    });
+  }
   return Object.freeze({
     id: requireScopedId(value.id, 'Source-control section item id'),
     title: requireNonEmptyString(value.title, 'Source-control section item title', 256),
@@ -239,7 +252,8 @@ function normalizeSectionItem(value: unknown, commandPrefix: string): SourceCont
     meta: optionalString(value.meta, 'Source-control section item metadata', 160),
     badge: optionalString(value.badge, 'Source-control section item badge', 32),
     command,
-    disabled: value.disabled === true
+    disabled: value.disabled === true,
+    secondaryAction
   });
 }
 
@@ -415,6 +429,10 @@ function normalizeAction(value: unknown, commandPrefix: string): SourceControlAc
   const icon = value.icon as SourceControlActionIconDto | undefined;
   const disabled = value.disabled === true;
   const form = normalizeForm(value.form);
+  if (placement === SourceControlActionPlacement.INLINE) {
+    if (!form) throw new TypeError('Source-control inline actions require a form.');
+    return deepFreeze({ id, title, description, command, kind, placement, icon, disabled, form });
+  }
   if (placement === SourceControlActionPlacement.TOOLBAR) {
     return deepFreeze({
       id, title, description, command, kind, placement,
@@ -499,6 +517,17 @@ export function validateSourceControlState(
   }
   const normalizedSections = sections.map((section) => normalizeSection(section, commandPrefix));
   const normalizedActions = actions.map((action) => normalizeAction(action, commandPrefix));
+  let detail: SourceControlStateDto['detail'] = null;
+  if (value.detail !== undefined && value.detail !== null) {
+    assertAllowedFields(value.detail, new Set(['title', 'content']), 'Source-control detail');
+    if (typeof value.detail.content !== 'string' || value.detail.content.length > 32000) {
+      throw new TypeError('Source-control detail content must be bounded text.');
+    }
+    detail = Object.freeze({
+      title: requireNonEmptyString(value.detail.title, 'Source-control detail title', 256),
+      content: value.detail.content
+    });
+  }
   if (new Set(normalizedSections.map((section) => section.id)).size !== normalizedSections.length) {
     throw new TypeError('Source-control state section ids must be unique.');
   }
@@ -509,6 +538,8 @@ export function validateSourceControlState(
     phase,
     title: optionalString(value.title, 'Source-control state title', MAX_TITLE_LENGTH),
     message: optionalString(value.message, 'Source-control state message', MAX_MESSAGE_LENGTH),
+    detail,
+    completedAction: value.completedAction == null ? null : requireScopedId(value.completedAction, 'Source-control completed action'),
     summary: normalizeSummary(value.summary),
     sections: normalizedSections,
     actions: normalizedActions
