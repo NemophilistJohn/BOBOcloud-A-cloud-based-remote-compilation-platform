@@ -9,6 +9,7 @@ on:
       - 'client/tests/release-automation.test.js'
       - 'client/package*.json'
       - 'client/scripts/before-pack.js'
+      - 'client/scripts/verify-release-version.cjs'
       - 'server/cmd/default-config/**'
       - 'docs/server-release-readme.md'
   workflow_run:
@@ -43,6 +44,7 @@ jobs:
       head: ${{ steps.plan.outputs.head }}
       baseline: ${{ steps.plan.outputs.baseline }}
       version: ${{ steps.plan.outputs.version }}
+      appVersion: ${{ steps.plan.outputs.appVersion }}
       tag: ${{ steps.plan.outputs.tag }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -71,6 +73,7 @@ jobs:
         arch: [x64, arm64]
     env:
       RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+      RELEASE_APP_VERSION: ${{ needs.plan.outputs.appVersion }}
       RELEASE_ARCH: ${{ matrix.arch }}
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
@@ -91,12 +94,14 @@ jobs:
         working-directory: client
         run: |
           $archFlag = "--$env:RELEASE_ARCH"
-          $buildArgs = @('--win', 'nsis', 'portable', $archFlag, '--publish', 'never', '--config.npmRebuild=false', "--config.extraMetadata.version=$env:RELEASE_VERSION", "--config.nsis.artifactName=BOBOCloud-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH-setup.exe", "--config.portable.artifactName=BOBOCloud-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH-portable.exe")
+          $buildArgs = @('--win', 'nsis', 'portable', $archFlag, '--publish', 'never', '--config.npmRebuild=false', "--config.extraMetadata.version=$env:RELEASE_APP_VERSION", "--config.nsis.artifactName=BOBOCloud-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH-setup.exe", "--config.portable.artifactName=BOBOCloud-$env:RELEASE_VERSION-windows-$env:RELEASE_ARCH-portable.exe")
           & npx electron-builder @buildArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $asars = @(Get-ChildItem -LiteralPath dist -Recurse -Filter app.asar | Where-Object { $_.Directory.Name -eq 'resources' })
           if ($asars.Count -ne 1) { throw "Expected exactly one packaged app.asar, found $($asars.Count)" }
           node scripts/audit-release.js $asars[0].FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/verify-release-version.cjs $asars[0].FullName $env:RELEASE_APP_VERSION
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $executable = Join-Path $asars[0].Directory.Parent.FullName 'BOBOCloudEditer.exe'
           node ../scripts/auto-release/verify-pe.cjs $executable $env:RELEASE_ARCH
@@ -130,6 +135,7 @@ jobs:
             runner: ubuntu-24.04
     env:
       RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+      RELEASE_APP_VERSION: ${{ needs.plan.outputs.appVersion }}
       RELEASE_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -150,7 +156,7 @@ jobs:
           set -euo pipefail
           npx electron-builder --linux AppImage deb rpm "--$RELEASE_ARCH" --publish never \
             '--config.npmRebuild=false' \
-            "--config.extraMetadata.version=$RELEASE_VERSION" \
+            "--config.extraMetadata.version=$RELEASE_APP_VERSION" \
             '--config.extraMetadata.homepage=https://github.com/NemophilistJohn/BOBOcloud-A-cloud-based-remote-compilation-platform' \
             '--config.linux.maintainer=BOBOCloud <noreply@github.com>' \
             '--config.linux.icon=ico/app-icon.png' \
@@ -160,6 +166,7 @@ jobs:
           executable="$(dirname "$(dirname "${asars[0]}")")/bobocloud-editer"
           if [ "$RELEASE_ARCH" = x64 ]; then readelf -h "$executable" | grep -q 'Advanced Micro Devices X86-64'; else readelf -h "$executable" | grep -q 'AArch64'; fi
           node scripts/audit-release.js "${asars[0]}"
+          node scripts/verify-release-version.cjs "${asars[0]}" "$RELEASE_APP_VERSION"
           mkdir -p release-assets
           for ext in AppImage deb rpm; do
             name="BOBOCloud-$RELEASE_VERSION-linux-$RELEASE_ARCH.$ext"
@@ -236,6 +243,7 @@ jobs:
       RELEASE_BASELINE: ${{ needs.plan.outputs.baseline }}
       RELEASE_VERSION: ${{ needs.plan.outputs.version }}
       RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+      RELEASE_APP_VERSION: ${{ needs.plan.outputs.appVersion }}
       RELEASE_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0

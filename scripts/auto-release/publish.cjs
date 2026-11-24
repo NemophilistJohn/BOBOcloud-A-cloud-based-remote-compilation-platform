@@ -34,8 +34,9 @@ function main() {
   const head = process.env.RELEASE_HEAD || '';
   const baseline = process.env.RELEASE_BASELINE || '';
   const version = process.env.RELEASE_VERSION || '';
+  const appVersion = process.env.RELEASE_APP_VERSION || '';
   const tag = process.env.RELEASE_TAG || '';
-  if (!/^[0-9a-f]{40}$/.test(head) || !/^[0-9a-f]{40}$/.test(baseline) || !/^\d+\.\d+\.\d+-ci\.\d+\.\d+$/.test(version) || tag !== 'auto-v' + version) throw new Error('Invalid release identity');
+  if (!/^[0-9a-f]{40}$/.test(head) || !/^[0-9a-f]{40}$/.test(baseline) || !/^\d+\.\d+\.\d+$/.test(appVersion) || !/^\d+\.\d+\.\d+-ci\.\d+\.\d+$/.test(version) || !version.startsWith(appVersion + '-ci.') || tag !== 'auto-v' + version) throw new Error('Invalid release identity');
   const dir = path.resolve('release-assets');
   const names = expectedAssets(version);
   const actual = fs.readdirSync(dir).sort();
@@ -51,6 +52,7 @@ function main() {
   const notes = [
     `Automated BOBOCloud build from commit ${head}.`,
     `Previous release baseline: ${baseline}.`,
+    `Client application version: ${appVersion}; release build identifier: ${version}.`,
     '',
     'Windows: x64 and ARM64 installer and portable application.',
     'Linux desktop: x64 and ARM64 AppImage, DEB and RPM.',

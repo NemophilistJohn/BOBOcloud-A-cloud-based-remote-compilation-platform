@@ -10,6 +10,7 @@ const test = require('node:test');
 const { componentChanges, chooseBaseline, changedSince, shouldRelease } = require('../../scripts/auto-release/plan.cjs');
 const { expectedAssets, digest } = require('../../scripts/auto-release/publish.cjs');
 const { verifyPe } = require('../../scripts/auto-release/verify-pe.cjs');
+const { satisfiesVersionRange } = require('../shared/plugin-semver');
 
 test('release change detection distinguishes application changes from tests and documentation', () => {
   assert.deepEqual(componentChanges(['client/src/app.ts', 'server/internal/config/config.go']), { client: true, server: true });
@@ -23,6 +24,13 @@ test('automatic publication waits for both components, while emergency force sti
   assert.equal(shouldRelease('head', 'base', { client: true, server: true }, false), true);
   assert.equal(shouldRelease('head', 'base', { client: true, server: false }, true), true);
   assert.equal(shouldRelease('base', 'base', { client: true, server: true }, true), false);
+});
+
+test('the packaged numeric host version remains compatible with official plugin engine ranges', () => {
+  const version = require('../package.json').version;
+  assert.match(version, /^\d+\.\d+\.\d+$/);
+  assert.equal(satisfiesVersionRange(version, '>=2.6.0 <3.0.0'), true);
+  assert.equal(satisfiesVersionRange(version + '-ci.123.1', '>=2.6.0 <3.0.0'), false);
 });
 
 test('release baseline accumulates both components across commits and rejects a forged marker', (t) => {
