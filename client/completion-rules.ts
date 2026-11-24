@@ -9,6 +9,7 @@ import type {
   EditorRuleCompletionContextDto,
   EditorRuleCompletionItemDto,
   EditorRuleCompletionProvider,
+  EditorRuleCompletionResult,
   EditorRuleCancellationToken,
   EditorRuleDiagnosticEmit,
   EditorRuleDiagnosticsSettingsDto,
@@ -45,6 +46,7 @@ type EditorRuleMutableSettings = {
 
 type EditorRuleGlobal = typeof globalThis & EditorRuleGlobals & {
   monaco?: EditorRuleMonacoPort;
+  BOBO?: { platform?: { services?: { get(id: 'workbench.completion'): import('./src/completion-coordinator').CompletionCoordinatorService | undefined } } };
 };
 
 type SymbolCacheEntry = {
@@ -687,7 +689,11 @@ type UnknownRecord = Record<string, unknown>;
     const memberKey = memberAccess
       ? memberAccess.expression + memberAccess.operator
       : '';
-    const cacheKey = [prefixFingerprint(model, position.lineNumber), position.lineNumber, memberKey].join(':');
+    const isJavaScript = language === 'javascript' || language === 'typescript';
+    const currentDeclarationPrefix = isJavaScript && typeof model.getLineContent === 'function'
+      ? model.getLineContent(position.lineNumber).slice(0, Math.max(0, position.column - String((context as EditorRuleAnalyzedContextDto).word || '').length - 1))
+      : '';
+    const cacheKey = [prefixFingerprint(model, position.lineNumber), position.lineNumber, memberKey, currentDeclarationPrefix].join(':');
     const cached = symbolCompletionCache.get(model);
     if (cached && cached.key === cacheKey && cached.language === language) return cached.suggestions;
 
@@ -698,6 +704,10 @@ type UnknownRecord = Record<string, unknown>;
       symbols = typeof extractor.extractMembers === 'function'
         ? extractor.extractMembers(content, language, memberAccess.expression, position.lineNumber)
         : [];
+    } else if (isJavaScript) {
+      const preceding = content.split('\n').slice(0, Math.max(0, position.lineNumber - 1));
+      preceding.push(currentDeclarationPrefix, '');
+      symbols = extractor.extract(preceding.join('\n'), language, position.lineNumber + 1);
     } else {
       symbols = extractor.extract(content, language, position.lineNumber);
     }
@@ -763,7 +773,18 @@ type UnknownRecord = Record<string, unknown>;
           return getSymbolSuggestions(monacoRef, plugin.language, model, position, context, token);
         }
       });
-      const disposable = monacoRef.languages.registerCompletionItemProvider(plugin.language, provider);
+      const coordinatedProvider = {
+        get triggerCharacters() { return provider.triggerCharacters; },
+        provideCompletionItems(...args: Parameters<EditorRuleCompletionProvider['provideCompletionItems']>): EditorRuleCompletionResult {
+          const coordinator = globalScope.BOBO?.platform?.services?.get('workbench.completion');
+          return coordinator ? coordinator.provideWithLocal(provider, ...args) as EditorRuleCompletionResult : provider.provideCompletionItems(...args);
+        },
+        resolveCompletionItem(item: EditorRuleCompletionItemDto, token?: EditorRuleCancellationToken): unknown {
+          const coordinator = globalScope.BOBO?.platform?.services?.get('workbench.completion');
+          return coordinator ? coordinator.resolveCompletionItem(item, token) : item;
+        }
+      };
+      const disposable = monacoRef.languages.registerCompletionItemProvider(plugin.language, coordinatedProvider);
       completionProviders.set(plugin.language, provider);
       completionDisposables.push(disposable);
     });

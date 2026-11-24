@@ -59,6 +59,9 @@ type lspControlMessage struct {
 	RequestID    string `json:"requestId,omitempty"`
 	Cursor       string `json:"cursor,omitempty"`
 	MaxBytes     int    `json:"maxBytes,omitempty"`
+	QueryKind    string `json:"queryKind,omitempty"`
+	Module       string `json:"module,omitempty"`
+	Prefix       string `json:"prefix,omitempty"`
 }
 
 func validLSPSetupCommands(commands []string) bool {
@@ -892,7 +895,9 @@ func (h *WSHandler) HandleLSPWebSocket(w http.ResponseWriter, r *http.Request) {
 	pendingResourceRelease = nil
 	lspResourceOwnedByHandler = false
 	managerStarted := time.Now()
-	session, err := h.LSP.Start(lsp.SessionContext{UserID: user.ID, WorkspaceKind: start.Workspace.Kind, TeamID: teamID, ProjectID: projectID, Branch: branch, FolderKey: folderKey, RuntimeID: runtimeID, RuntimeImage: runtimeImage, LanguageID: start.LanguageID, Mode: mode, RemoteRoot: remoteRoot, DependencyRequest: dependencyRequest, DependencyView: dependencyView, DependencyResolved: dependencyResolved, SharedDependencies: shared, DependencyStoreRelease: sessionResourceRelease, ProcessContext: r.Context(), ResourceLease: lspResourceLease})
+	runtimeDependencyRevision, runtimeDependencyQuery := h.runtimeDependenciesForSession(r.Context(), user.ID,
+		projectResourceScope(workspaceActivityKey, teamID, projectID), runtimeID, runtimeImage, start.LanguageID, dependencyView.Revision)
+	session, err := h.LSP.Start(lsp.SessionContext{UserID: user.ID, WorkspaceKind: start.Workspace.Kind, TeamID: teamID, ProjectID: projectID, Branch: branch, FolderKey: folderKey, RuntimeID: runtimeID, RuntimeImage: runtimeImage, LanguageID: start.LanguageID, Mode: mode, RemoteRoot: remoteRoot, DependencyRequest: dependencyRequest, DependencyView: dependencyView, DependencyResolved: dependencyResolved, SharedDependencies: shared, DependencyStoreRelease: sessionResourceRelease, ProcessContext: r.Context(), ResourceLease: lspResourceLease, RuntimeDependencyRevision: runtimeDependencyRevision, RuntimeDependencyQuery: runtimeDependencyQuery})
 	if h.Metrics != nil {
 		h.Metrics.ObserveSince("lsp.gateway.session_start", managerStarted)
 	}
@@ -1236,7 +1241,8 @@ clientLoop:
 				}
 				break clientLoop
 			case "lsp.dependency.index.request":
-				if !validDependencyIndexRequestID(control.RequestID) || len(control.Cursor) > 128 || lsp.ValidateDependencyAPIIndexPageBytes(control.MaxBytes) != nil {
+				query := lsp.DependencyAPIQuery{Kind: control.QueryKind, Module: control.Module, Prefix: control.Prefix, Cursor: control.Cursor, MaxBytes: control.MaxBytes}
+				if !validDependencyIndexRequestID(control.RequestID) || lsp.ValidateDependencyAPIQuery(query) != nil {
 					if writeBoundedControlJSON(dependencyIndexControlError("", "invalid_request", "dependency API index request is invalid", 0)) != nil {
 						closing.Store(true)
 						break clientLoop
@@ -1250,7 +1256,7 @@ clientLoop:
 					}
 					continue
 				}
-				requestID, cursor, maxBytes := control.RequestID, control.Cursor, control.MaxBytes
+				requestID := control.RequestID
 				go func() {
 					indexStarted := time.Now()
 					defer func() {
@@ -1259,10 +1265,14 @@ clientLoop:
 						}
 					}()
 					defer dependencyIndexRequests.release()
-					page, indexErr := session.DependencyAPIIndexPage(cursor, maxBytes)
+					page, indexErr := session.DependencyAPIQueryPage(query)
 					if indexErr != nil {
 						code, message := dependencyIndexError(indexErr)
-						if writeBoundedControlJSON(dependencyIndexControlError(requestID, code, message, 0)) != nil {
+						retryAfterMS := int64(0)
+						if errors.Is(indexErr, lsp.ErrDependencyDiscoveryBusy) {
+							retryAfterMS = 1000
+						}
+						if writeBoundedControlJSON(dependencyIndexControlError(requestID, code, message, retryAfterMS)) != nil {
 							closeBridge()
 						}
 						return
@@ -1491,6 +1501,8 @@ func dependencyIndexControlError(requestID, code, message string, retryAfterMS i
 
 func dependencyIndexError(err error) (string, string) {
 	switch {
+	case errors.Is(err, lsp.ErrDependencyDiscoveryBusy):
+		return "runtime_discovery_busy", "dependency discovery is temporarily busy; retry this request"
 	case errors.Is(err, lsp.ErrDependencyAPIIndexUnsupported):
 		return "unsupported", "dependency API index is unavailable for this language"
 	case errors.Is(err, lsp.ErrDependencyAPIIndexCursor):

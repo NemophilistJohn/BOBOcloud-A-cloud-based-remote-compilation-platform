@@ -164,7 +164,7 @@ test('dependency API candidates survive a full remote completion list', () => {
     ]
   };
   const merged = mergeLocalCompletionResults(remote, publicApi);
-  assert.equal(merged.items.length, 100);
+  assert.equal(merged.items.length, 102);
   assert.equal(merged.items.some((item) => item.label === 'numpy'), true);
   assert.equal(merged.items.some((item) => item.label === 'array'), true);
 });

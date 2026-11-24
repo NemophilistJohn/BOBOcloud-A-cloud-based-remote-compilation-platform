@@ -101,6 +101,9 @@ type DependencyAPIIndexPage struct {
 	NextCursor string                    `json:"nextCursor,omitempty"`
 	Complete   bool                      `json:"complete"`
 	Truncated  bool                      `json:"truncated,omitempty"`
+	QueryKind  string                    `json:"queryKind,omitempty"`
+	Module     string                    `json:"module,omitempty"`
+	Coverage   string                    `json:"coverage,omitempty"`
 }
 
 type pythonIndexModule struct {
@@ -365,6 +368,7 @@ func DependencyAPIIndexCapability(languageID string, dependenciesResolved bool) 
 		"recommendedPageBytes": DependencyAPIIndexPageDefaultBytes,
 		"maxIndexBytes":        dependencyAPIIndexMaxBytes,
 		"maxPages":             DependencyAPIIndexMaxPages,
+		"queryKinds":           dependencyQueryKinds(languageID, dependenciesResolved),
 	}
 }
 
@@ -375,7 +379,14 @@ func (s *Session) DependencyAPIIndexCapability() map[string]any {
 	if s == nil {
 		return DependencyAPIIndexCapability("", false)
 	}
-	return DependencyAPIIndexCapability(s.Context.LanguageID, dependencyAPIIndexAvailable(s.Context.LanguageID, s.Context.RuntimeID, s.Context.DependencyResolved, s.Context.DependencyView))
+	capability := DependencyAPIIndexCapability(s.Context.LanguageID, dependencyQueryAvailable(s.Context))
+	capability["enabled"] = dependencyQueryAvailable(s.Context)
+	capability["languages"] = []string{normalizeLanguage(s.Context.LanguageID)}
+	capability["revision"] = s.dependencyQueryRevision()
+	if s.Context.RuntimeDependencyRevision != "" {
+		capability["runtimeRevision"] = s.Context.RuntimeDependencyRevision
+	}
+	return capability
 }
 
 func dependencyAPIIndexPageBytes(maxBytes int) int {

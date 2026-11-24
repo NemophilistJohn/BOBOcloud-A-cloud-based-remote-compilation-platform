@@ -18,24 +18,26 @@ import (
 )
 
 type SessionContext struct {
-	UserID                 string
-	WorkspaceKind          string
-	TeamID                 string
-	ProjectID              string
-	Branch                 string
-	FolderKey              string
-	RuntimeID              string
-	RuntimeImage           string
-	LanguageID             string
-	Mode                   Mode
-	RemoteRoot             string
-	DependencyRequest      AnalysisDependencyRequest
-	DependencyView         AnalysisDependencyView
-	DependencyResolved     bool
-	SharedDependencies     *SharedDependencies
-	DependencyStoreRelease func()
-	ProcessContext         context.Context
-	ResourceLease          *resourcecontrol.Lease
+	UserID                    string
+	WorkspaceKind             string
+	TeamID                    string
+	ProjectID                 string
+	Branch                    string
+	FolderKey                 string
+	RuntimeID                 string
+	RuntimeImage              string
+	LanguageID                string
+	Mode                      Mode
+	RemoteRoot                string
+	DependencyRequest         AnalysisDependencyRequest
+	DependencyView            AnalysisDependencyView
+	DependencyResolved        bool
+	SharedDependencies        *SharedDependencies
+	DependencyStoreRelease    func()
+	ProcessContext            context.Context
+	ResourceLease             *resourcecontrol.Lease
+	RuntimeDependencyQuery    func(context.Context, DependencyAPIQuery) (DependencyAPIIndexPage, error)
+	RuntimeDependencyRevision string
 }
 
 // SharedDependencies is a server-issued, non-exclusive lease over a team's
@@ -52,7 +54,7 @@ func (c SessionContext) Owner() (kind, id string) {
 }
 
 func SessionKey(c SessionContext) string {
-	parts := []string{c.UserID, c.WorkspaceKind, c.TeamID, c.ProjectID, c.Branch, c.FolderKey, c.RuntimeID, normalizeLanguage(c.LanguageID), string(c.Mode), c.DependencyView.Revision}
+	parts := []string{c.UserID, c.WorkspaceKind, c.TeamID, c.ProjectID, c.Branch, c.FolderKey, c.RuntimeID, normalizeLanguage(c.LanguageID), string(c.Mode), c.DependencyView.Revision, c.RuntimeDependencyRevision}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:16])
 }

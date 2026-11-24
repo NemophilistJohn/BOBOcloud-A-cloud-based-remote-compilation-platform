@@ -52,6 +52,7 @@ const EXPECTED_MODULES = [
   './compat/run-output-adapter.ts',
   './compat/server-capabilities-adapter.ts',
   './compat/cloud-feature-policy-adapter.ts',
+  './compat/completion-coordinator-adapter.ts',
   '../src/lsp-client.js',
   './compat/output-panel-adapter.ts',
   '../src/terminal.js',

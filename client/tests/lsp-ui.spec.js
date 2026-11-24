@@ -10,6 +10,27 @@ function electronExecutablePath() {
   return path.join(dist, 'electron');
 }
 
+async function observeCompletionWidget(page) {
+  await page.evaluate(() => {
+    const controller = window.BOBO.state.editor.getContribution('editor.contrib.suggestController');
+    const widget = controller.widget.value;
+    const result = window.__boboCompletionStability = { triggered: 0, shown: 0, hidden: 0, focused: [] };
+    window.__boboCompletionDisposables = [
+      controller.model.onDidTrigger(() => { result.triggered += 1; }),
+      widget.onDidShow(() => { result.shown += 1; }),
+      widget.onDidHide(() => { result.hidden += 1; }),
+      widget.onDidFocus(({ item }) => { result.focused.push(typeof item.completion.label === 'string' ? item.completion.label : item.completion.label.label); })
+    ];
+  });
+}
+
+async function collectCompletionWidgetObservation(page) {
+  return page.evaluate(() => {
+    window.__boboCompletionDisposables.forEach(dispose => dispose.dispose());
+    return window.__boboCompletionStability;
+  });
+}
+
 test('configured LSP address, strategy settings and status bar work in all built-in locales', async ({}, testInfo) => {
   test.setTimeout(60000);
   const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-lsp-ui-'));
@@ -98,6 +119,7 @@ test('configured LSP address, strategy settings and status bar work in all built
                   enabled: message.languageId === 'python',
                   schema: 'dependency-api-index-v1',
                   languages: ['python'],
+                  queryKinds: globalThis.__boboLspProbe.demand ? ['catalog', 'module', 'project'] : undefined,
                   maxPageBytes: 194560
                 }
               },
@@ -133,6 +155,30 @@ test('configured LSP address, strategy settings and status bar work in all built
             globalThis.__boboLspProbe.dependencyIndexRequests += 1;
             if (globalThis.__boboLspProbe.ignoreDependencyIndex) return;
             const start = this.startMessage || {};
+            const warmup = globalThis.__boboLspProbe.warmup;
+            if (warmup && message.queryKind === 'project') {
+              const index = Number(message.cursor || 0);
+              const module = 'unrelated_module_' + index;
+              const response = {
+                type: 'lsp.dependency.index', requestId: message.requestId, success: true,
+                page: {
+                  schema: 'dependency-api-index-v1', languageId: 'python', runtimeId: start.runtimeId,
+                  revision: globalThis.__boboLspProbe.dependencyRevision,
+                  queryKind: 'project', module, roots: [module],
+                  entries: [{ module, kind: 'module', symbols: [{ name: 'helper', kind: 'function' }] }],
+                  complete: index + 1 >= warmup.total,
+                  nextCursor: index + 1 < warmup.total ? String(index + 1) : undefined
+                }
+              };
+              const deliver = () => {
+                warmup.delivered += 1;
+                this.respond(response, 120);
+              };
+              warmup.requested += 1;
+              if (index < warmup.releaseThrough) deliver();
+              else warmup.pending.push({ index, deliver });
+              return;
+            }
             this.respond({
               type: 'lsp.dependency.index',
               requestId: message.requestId,
@@ -142,11 +188,16 @@ test('configured LSP address, strategy settings and status bar work in all built
                 languageId: 'python',
                 runtimeId: start.runtimeId,
                 revision: globalThis.__boboLspProbe.dependencyRevision || 'deps-' + globalThis.__boboLspProbe.starts.length,
-                roots: ['numpy'],
+                queryKind: message.queryKind,
+                module: message.module,
+                roots: warmup && message.queryKind === 'catalog'
+                  ? ['numpy', ...Array.from({ length: warmup.total }, (_, index) => 'unrelated_module_' + index)]
+                  : ['numpy'],
                 entries: [{
                   module: 'numpy',
                   kind: 'package',
                   symbols: [
+                    { name: 'all', kind: 'function' },
                     { name: 'array', kind: 'function' },
                     { name: 'ndarray', kind: 'class' }
                   ]
@@ -174,7 +225,9 @@ test('configured LSP address, strategy settings and status bar work in all built
               id: message.id,
               result: {
                 isIncomplete: false,
-                items: [{ label: 'alpha_remote_value', kind: 6, insertText: 'alpha_remote_value', detail: 'Remote semantic result' }]
+                items: globalThis.__boboLspProbe.demand
+                  ? [{ label: 'all', kind: 3, insertText: 'all', preselect: true }, { label: 'array', kind: 3, insertText: 'array' }]
+                  : [{ label: 'alpha_remote_value', kind: 6, insertText: 'alpha_remote_value', detail: 'Remote semantic result' }]
               }
             }, globalThis.__boboLspProbe.completionDelayMs);
           } else if (message.method === 'shutdown') {
@@ -327,7 +380,7 @@ test('configured LSP address, strategy settings and status bar work in all built
 
     await expect(page.locator('.settings-tab[data-stab="lsp"]')).toHaveClass(/active/);
     await expect(page.locator('input[name="lsp-mode"]')).toHaveCount(3);
-    await expect(page.locator('input[name="lsp-client-cache-mode"][value="lazy"]')).toBeChecked();
+    await expect(page.locator('input[name="lsp-client-cache-strategy"][value="smart"]')).toBeChecked();
     await expect(page.locator('#lsp-client-cache-size-mib')).toHaveValue('32');
     await expect(page.locator('#lsp-client-cache-size-mib')).toHaveAttribute('min', '1');
     await expect(page.locator('#lsp-client-cache-size-mib')).toHaveAttribute('max', '1024');
@@ -349,13 +402,15 @@ test('configured LSP address, strategy settings and status bar work in all built
     expect(probe.starts[0].message.token).toBe('ui-test-api-key');
     expect(probe.starts[0].message.mode).toBe('standard');
 
-    await page.locator('.lsp-client-cache-mode-option').filter({ has: page.locator('input[value="active"]') }).click();
-    await expect(page.locator('input[name="lsp-client-cache-mode"][value="active"]')).toBeChecked();
+    await page.locator('.lsp-client-cache-mode-option').filter({ has: page.locator('input[value="project"]') }).click();
+    await expect(page.locator('input[name="lsp-client-cache-strategy"][value="project"]')).toBeChecked();
+    await page.locator('.lsp-client-cache-mode-option').filter({ has: page.locator('input[value="on-demand"]') }).click();
+    await expect(page.locator('input[name="lsp-client-cache-strategy"][value="on-demand"]')).toBeChecked();
     await expect(page.locator('#lsp-client-cache-dependency-index')).toBeVisible();
-    await expect(page.locator('#lsp-client-cache-dependency-index-toggle')).toBeDisabled();
-    await expect(page.locator('#lsp-client-cache-dependency-index-toggle')).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.locator('#lsp-client-cache-dependency-index-toggle')).toBeEnabled();
+    await expect(page.locator('#lsp-client-cache-dependency-index-toggle')).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('#lsp-client-cache-dependency-index-state')).toHaveText('Library API cache is unavailable for the current analysis.');
-    await expect(page.locator('#lsp-client-cache-dependency-index-hint')).toHaveText('A compatible Python dependency view is required.');
+    await expect(page.locator('#lsp-client-cache-dependency-index-hint')).toHaveText('Module summaries become available when a compatible analysis environment is ready.');
     await expect(page.locator('#lsp-client-cache-size')).toHaveText('0 B / 32.0 MB');
     const cacheCapacity = page.locator('#lsp-client-cache-size-mib');
     await cacheCapacity.focus();
@@ -417,8 +472,13 @@ test('configured LSP address, strategy settings and status bar work in all built
     await expect(page.locator('.suggest-widget.visible')).toContainText('alpha_value', { timeout: 500 });
     await expect.poll(async () => (await app.evaluate(() => globalThis.__boboLspProbe.completionRequests))).toBe(1);
     expect((await app.evaluate(() => globalThis.__boboLspProbe.completionContexts[0])).triggerKind).toBe(1);
+    await observeCompletionWidget(page);
     await expect(page.locator('.suggest-widget.visible')).toContainText('alpha_remote_value', { timeout: 2500 });
     await page.waitForTimeout(100);
+    const semanticStability = await collectCompletionWidgetObservation(page);
+    expect(semanticStability.triggered).toBe(1);
+    expect(semanticStability.shown).toBe(0);
+    expect(semanticStability.hidden).toBe(0);
     expect(await app.evaluate(() => globalThis.__boboLspProbe.completionRequests)).toBe(1);
 
     await page.keyboard.press('Escape');
@@ -491,11 +551,11 @@ test('configured LSP address, strategy settings and status bar work in all built
           actualCacheHeading: document.getElementById('lsp-client-cache-heading').textContent,
           expectedCapacity: window.BOBO.i18n.t('Cache capacity'),
           actualCapacity: document.getElementById('lsp-client-cache-capacity-label').textContent,
-          expectedLazy: window.BOBO.i18n.t('Lazy cache'),
-          actualLazy: document.querySelector('input[name="lsp-client-cache-mode"][value="lazy"]').nextElementSibling.querySelector('strong').textContent,
+          expectedLazy: window.BOBO.i18n.t('Smart'),
+          actualLazy: document.querySelector('input[name="lsp-client-cache-strategy"][value="smart"]').nextElementSibling.querySelector('strong').textContent,
           expectedLibraryApiCache: window.BOBO.i18n.t('Library API cache'),
           actualLibraryApiCache: document.getElementById('lsp-client-cache-dependency-index-heading').textContent,
-          expectedLibraryApiHint: window.BOBO.i18n.t('A compatible Python dependency view is required.'),
+          expectedLibraryApiHint: window.BOBO.i18n.t('Module summaries become available when a compatible analysis environment is ready.'),
           actualLibraryApiHint: document.getElementById('lsp-client-cache-dependency-index-hint').textContent
         };
       }, locale);
@@ -507,9 +567,9 @@ test('configured LSP address, strategy settings and status bar work in all built
       expect(dependencyCopy.actualLazy).toBe(dependencyCopy.expectedLazy);
       expect(dependencyCopy.actualLibraryApiCache).toBe(dependencyCopy.expectedLibraryApiCache);
       expect(dependencyCopy.actualLibraryApiHint).toBe(dependencyCopy.expectedLibraryApiHint);
-      if (locale === 'ja') {
+      if (locale === 'ja' || locale === 'zh-CN') {
         await page.locator('.lsp-client-cache-section').scrollIntoViewIfNeeded();
-        await page.screenshot({ path: testInfo.outputPath('lsp-dependency-ja-ready.png'), fullPage: true });
+        await page.screenshot({ path: testInfo.outputPath('lsp-dependency-' + locale + '-ready.png'), fullPage: true });
       }
     }
     await page.evaluate(async () => {
@@ -517,8 +577,8 @@ test('configured LSP address, strategy settings and status bar work in all built
       window.BOBO.lsp.renderStatus();
     });
 
-    await page.locator('.lsp-client-cache-mode-option').filter({ has: page.locator('input[value="off"]') }).click();
-    await expect(page.locator('input[name="lsp-client-cache-mode"][value="off"]')).toBeChecked();
+    await page.locator('#lsp-client-cache-persistence').uncheck();
+    await expect(page.locator('#lsp-client-cache-persistence')).not.toBeChecked();
     await expect(page.locator('#lsp-client-cache-dependency-index')).toBeVisible();
     await expect(cacheCapacity).toBeDisabled();
 
@@ -616,10 +676,9 @@ test('configured LSP address, strategy settings and status bar work in all built
     await expect.poll(async () => app.evaluate(() => {
       return globalThis.__boboLspProbe.starts.some((entry) => entry.message.languageId === 'python' && entry.message.runtimeId === 'python:3.10');
     })).toBe(true);
-    await page.locator('.lsp-client-cache-mode-option').filter({ has: page.locator('input[value="active"]') }).click();
-    await expect(page.locator('#lsp-client-cache-dependency-index-toggle')).toBeEnabled();
     await app.evaluate(() => { globalThis.__boboLspProbe.indexTruncated = true; });
-    await page.locator('#lsp-client-cache-dependency-index-toggle').click();
+    await page.locator('#lsp-client-cache-persistence').check();
+    await expect(page.locator('#lsp-client-cache-dependency-index-toggle')).toBeEnabled();
     await expect.poll(async () => (await app.evaluate(() => globalThis.__boboLspProbe.dependencyIndexRequests))).toBeGreaterThan(0);
     await expect(page.locator('#lsp-client-cache-dependency-index-toggle')).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('#lsp-client-cache-dependency-index-state')).toHaveText('Library API cache is enabled (partial coverage)');
@@ -736,6 +795,109 @@ test('configured LSP address, strategy settings and status bar work in all built
     });
     await expect(page.locator('.suggest-widget.visible')).not.toContainText('array', { timeout: 600 });
 
+    // Exercise actual Monaco entry points with the demand protocol. Package
+    // names come from the verified catalog and manual use changes selection.
+    await app.evaluate(() => {
+      globalThis.__boboLspProbe.demand = true;
+      globalThis.__boboLspProbe.ignoreDependencyIndex = false;
+      globalThis.__boboLspProbe.indexTruncated = false;
+      globalThis.__boboLspProbe.dependencyRevision = 'demand-generation';
+      globalThis.__boboLspProbe.completionDelayMs = 250;
+    });
+    await page.evaluate(async () => {
+      await window.BOBO.lsp.setClientCacheStrategy('project');
+      await window.BOBO.lsp.restartAnalysis();
+    });
+    await expect.poll(() => page.evaluate(() => window.BOBO.lsp.getStatus().dependency?.revision)).toBe('demand-generation');
+    await page.evaluate(() => {
+      const editor = window.BOBO.state.editor;
+      editor.getModel().setValue('import n');
+      editor.setPosition({ lineNumber: 1, column: 9 });
+      editor.focus();
+      editor.trigger('catalog-test', 'editor.action.triggerSuggest', {});
+    });
+    await expect(page.locator('.suggest-widget.visible')).toContainText('numpy', { timeout: 3000 });
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => {
+      const editor = window.BOBO.state.editor;
+      editor.getModel().setValue('import numpy as np\n');
+      editor.setPosition({ lineNumber: 2, column: 1 });
+      editor.focus();
+      window.completionHistory.clear();
+      window.completionHistory.observeModel(editor.getModel(), { reason: 'open' });
+    });
+    await page.keyboard.type('np.array([1])\nnp.array([2])\n');
+    await page.waitForTimeout(850);
+    await page.keyboard.press('Escape');
+    await page.keyboard.type('np.a');
+    await page.evaluate(() => window.BOBO.state.editor.trigger('learning-test', 'editor.action.triggerSuggest', {}));
+    const selected = page.locator('.suggest-widget.visible .monaco-list-row.focused');
+    await expect(selected).toContainText('array');
+    await page.waitForTimeout(450);
+    await expect(selected).toContainText('array');
+    await page.keyboard.press('Tab');
+    await expect.poll(() => page.evaluate(() => window.BOBO.state.editor.getModel().getValue().split('\n').at(-1))).toBe('np.array');
+
+    // Project prewarming must not retrigger an unrelated active member list,
+    // hide/reopen its widget or steal a selection made with the keyboard.
+    await page.keyboard.press('Escape');
+    await app.evaluate(() => {
+      globalThis.__boboLspProbe.dependencyRevision = 'stable-popup-generation';
+      globalThis.__boboLspProbe.warmup = { requested: 0, delivered: 0, total: 12, releaseThrough: 0, pending: [] };
+    });
+    await page.evaluate(async () => {
+      await window.BOBO.lsp.setClientCachePolicy('off', 33);
+      await window.BOBO.lsp.restartAnalysis();
+    });
+    await expect.poll(() => page.evaluate(() => window.BOBO.lsp.getStatus().dependency?.revision)).toBe('stable-popup-generation');
+    await page.evaluate(() => {
+      const editor = window.BOBO.state.editor;
+      editor.getModel().setValue('import numpy as np\nnp.');
+      editor.setPosition({ lineNumber: 2, column: 4 });
+      editor.focus();
+      editor.trigger('stable-popup-test', 'editor.action.triggerSuggest', {});
+    });
+    await expect(page.locator('.suggest-widget.visible')).toContainText('array');
+    await expect.poll(() => app.evaluate(() => globalThis.__boboLspProbe.warmup.requested)).toBe(1);
+    await expect.poll(() => page.evaluate(() => window.BOBO.platform.services.get('workbench.completion').progress().state)).toBe('loading');
+    const initialSelection = await selected.locator('.monaco-highlighted-label').first().textContent();
+    await observeCompletionWidget(page);
+    await app.evaluate(() => {
+      const warmup = globalThis.__boboLspProbe.warmup;
+      warmup.releaseThrough = 6;
+      warmup.pending.splice(0).forEach(({ index, deliver }) => {
+        if (index < warmup.releaseThrough) deliver(); else warmup.pending.push({ index, deliver });
+      });
+    });
+    await expect.poll(() => app.evaluate(() => globalThis.__boboLspProbe.warmup.requested)).toBe(7);
+    expect(await app.evaluate(() => globalThis.__boboLspProbe.warmup.delivered)).toBe(6);
+    const passiveStability = await collectCompletionWidgetObservation(page);
+    expect(passiveStability.triggered).toBe(0);
+    expect(passiveStability.shown).toBe(0);
+    expect(passiveStability.hidden).toBe(0);
+    expect(passiveStability.focused.every(label => label === initialSelection)).toBe(true);
+    await expect(selected.locator('.monaco-highlighted-label').first()).toHaveText(initialSelection);
+    await page.keyboard.press('ArrowDown');
+    await expect(selected.locator('.monaco-highlighted-label').first()).not.toHaveText(initialSelection);
+    const manualSelection = await selected.locator('.monaco-highlighted-label').first().textContent();
+    await observeCompletionWidget(page);
+    await app.evaluate(() => {
+      const warmup = globalThis.__boboLspProbe.warmup;
+      warmup.releaseThrough = warmup.total;
+      warmup.pending.splice(0).forEach(({ deliver }) => deliver());
+    });
+    await expect.poll(() => app.evaluate(() => globalThis.__boboLspProbe.warmup.delivered)).toBe(12);
+    await expect.poll(() => page.evaluate(() => window.BOBO.platform.services.get('workbench.completion').progress().state)).toBe('complete');
+    const stability = await collectCompletionWidgetObservation(page);
+    const stabilityPath = testInfo.outputPath('completion-warmup-stability.json');
+    await fs.promises.writeFile(stabilityPath, JSON.stringify({ semantic: semanticStability, passive: { initialSelection, ...passiveStability }, manual: { manualSelection, ...stability } }, null, 2));
+    await testInfo.attach('completion-warmup-stability.json', { path: stabilityPath, contentType: 'application/json' });
+    expect(stability.triggered).toBe(0);
+    expect(stability.shown).toBe(0);
+    expect(stability.hidden).toBe(0);
+    expect(stability.focused.every(label => label === manualSelection)).toBe(true);
+    await expect(page.locator('.suggest-widget.visible')).toBeVisible();
+    await expect(selected.locator('.monaco-highlighted-label').first()).toHaveText(manualSelection);
     await page.screenshot({ path: testInfo.outputPath('lsp-settings-ja.png'), fullPage: true });
     expect(pageErrors).toEqual([]);
     expect(consoleIssues).toEqual([]);

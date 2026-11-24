@@ -3,7 +3,8 @@ const path = require('path');
 const aiSettingsSchema = require('../src/ai-settings-schema');
 const {
   normalizeCacheMode: normalizeClientCacheMode,
-  normalizeCacheSizeMiB: normalizeClientCacheSizeMiB
+  normalizeCacheSizeMiB: normalizeClientCacheSizeMiB,
+  normalizeCacheStrategy: normalizeClientCacheStrategy
 } = require('../client-analysis-cache');
 const {
   createBootstrapServerSettings,
@@ -38,8 +39,8 @@ const DEFAULT_SERVER_SETTINGS = Object.freeze({
   setupCompleted: false
 });
 
-function normalizeClientCacheDependencyIndexEnabled(value, mode, sizeMiB) {
-  return value === true && mode === 'active' && Number(sizeMiB) >= 30;
+function normalizeClientCacheDependencyIndexEnabled(value, mode) {
+  return value === true && mode !== 'off';
 }
 
 function defaultDiagnosticsSettings() {
@@ -231,6 +232,7 @@ function createSettingsStore(options) {
         return {
           mode: ['local', 'standard', 'full'].includes(parsed.mode) ? parsed.mode : 'local',
           clientCacheMode,
+          clientCacheStrategy: normalizeClientCacheStrategy(parsed.clientCacheStrategy),
           clientCacheSizeMiB,
           clientCacheDependencyIndexEnabled: normalizeClientCacheDependencyIndexEnabled(
             parsed.clientCacheDependencyIndexEnabled,
@@ -240,7 +242,7 @@ function createSettingsStore(options) {
         };
       }
     } catch (_) {}
-    return { mode: 'local', clientCacheMode: 'lazy', clientCacheSizeMiB: 32, clientCacheDependencyIndexEnabled: false };
+    return { mode: 'local', clientCacheMode: 'lazy', clientCacheStrategy: 'smart', clientCacheSizeMiB: 32, clientCacheDependencyIndexEnabled: true };
   }
 
   function writeLspSettings(settings) {
@@ -252,6 +254,9 @@ function createSettingsStore(options) {
     const clientCacheSizeMiB = normalizeClientCacheSizeMiB(settings && Object.prototype.hasOwnProperty.call(settings, 'clientCacheSizeMiB')
       ? settings.clientCacheSizeMiB
       : current.clientCacheSizeMiB);
+    const clientCacheStrategy = normalizeClientCacheStrategy(settings && Object.prototype.hasOwnProperty.call(settings, 'clientCacheStrategy')
+      ? settings.clientCacheStrategy
+      : current.clientCacheStrategy);
     const clientCacheDependencyIndexEnabled = normalizeClientCacheDependencyIndexEnabled(
       settings && Object.prototype.hasOwnProperty.call(settings, 'clientCacheDependencyIndexEnabled')
         ? settings.clientCacheDependencyIndexEnabled
@@ -259,7 +264,7 @@ function createSettingsStore(options) {
       clientCacheMode,
       clientCacheSizeMiB
     );
-    const next = { mode, clientCacheMode, clientCacheSizeMiB, clientCacheDependencyIndexEnabled };
+    const next = { mode, clientCacheMode, clientCacheStrategy, clientCacheSizeMiB, clientCacheDependencyIndexEnabled };
     writeJsonAtomicSync(paths.lsp, next, { maxBytes: STORAGE_LIMITS.lsp });
     return next;
   }

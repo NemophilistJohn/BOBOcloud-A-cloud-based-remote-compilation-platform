@@ -45,6 +45,7 @@ function createLspController(options) {
     return {
       mode: current.clientCacheMode,
       sizeMiB: current.clientCacheSizeMiB,
+      strategy: current.clientCacheStrategy,
       dependencyIndexEnabled: current.clientCacheDependencyIndexEnabled === true
     };
   }
@@ -250,7 +251,22 @@ function createLspController(options) {
             (maxBytes !== 0 && (maxBytes < 64 * 1024 || maxBytes > 190 * 1024))) {
           throw new Error('Invalid dependency API index control');
         }
-        return ensureTransport().sendControl(payload.type, { requestId, cursor, maxBytes });
+        const control = { requestId, cursor, maxBytes };
+        if (params.queryKind !== undefined) {
+          if (!['catalog', 'module', 'project'].includes(params.queryKind)) throw new Error('Invalid dependency API query kind');
+          control.queryKind = params.queryKind;
+        }
+        for (const [name, limit] of [['module', 256], ['prefix', 128]]) {
+          if (params[name] === undefined) continue;
+          const value = params[name];
+          if (typeof value !== 'string' || value.length > limit || /[\u0000-\u001f\u007f]/.test(value) ||
+              value.includes('\\') || value.startsWith('/') || /^[A-Za-z]:/.test(value) ||
+              value.split('/').some((part) => part === '..' || part === '.')) {
+            throw new Error('Invalid dependency API query');
+          }
+          control[name] = value;
+        }
+        return ensureTransport().sendControl(payload.type, control);
       }
       return ensureTransport().sendControl(payload.type, params);
     });

@@ -64,7 +64,11 @@ type ExpressionTypeCandidate = { index: number; type: string };
   // them are not picked up as symbols.
   function sanitize(content: string, lang: EditorRuleLanguageId): string {
     let s = content;
-    if (lang === 'go') s = s.replace(/`[^`]*`/g, ' `` ');           // Go raw strings
+    if (lang === 'go' || lang === 'javascript' || lang === 'typescript') {
+      s = s.replace(/`(?:\\.|[^`\\])*`/g, function (value: string) {
+        return value.replace(/[^\n]/g, ' ');
+      });
+    }
     if (lang === 'rust') s = s.replace(/r#+"[\s\S]*?"#+/g, function (value: string) {
       return value.replace(/[^\n]/g, ' ');
     });
@@ -293,6 +297,16 @@ type ExpressionTypeCandidate = { index: number; type: string };
     cursorLine: number
   ): SymbolLocal[] {
     let match: EnclosingMatch | null = null;
+    if (lang === 'javascript' || lang === 'typescript') {
+      const regex = /(?:\bfunction\s*([A-Za-z_$][\w$]*)?\s*(?:<[^>{}]*>\s*)?\(([^()]*)\)\s*(?::[^={]+)?|\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\(([^()]*)\)|([A-Za-z_$][\w$]*))\s*(?::[^={]+)?=>)\s*\{/gm as LanguageRegExp;
+      regex.language = lang;
+      match = enclosingBraceMatch(content, cursorLine, regex, 1, 2);
+      if (!match) return [];
+      return splitTopLevel(match.params || match.groups[4] || match.groups[5] || '').map(function (parameter: string) {
+        const name = /^\s*(?:\.\.\.)?([A-Za-z_$][\w$]*)/.exec(parameter)?.[1] || '';
+        return { name, kind: 'variable', detail: 'parameter: ' + name, priority: 0 };
+      });
+    }
     if (lang === 'c' || lang === 'cpp' || lang === 'java') {
       const regex = /\b([A-Za-z_$~][\w$~]*)\s*\(([^()]*)\)\s*(?:const\s*)?(?:noexcept(?:\s*\([^)]*\))?\s*)?(?:override\s*)?(?:final\s*)?(?:throws\s+[\w.,\s]+)?\s*\{/gm as LanguageRegExp;
       regex.language = lang;
@@ -390,6 +404,9 @@ type ExpressionTypeCandidate = { index: number; type: string };
       nameGroup = 2;
     } else if (lang === 'rust') {
       regex = /\bfn\s+([A-Za-z_][\w]*)\s*(?:<[^>{}]*>\s*)?\(([^()]*)\)[^{;]*\{/gm;
+      nameGroup = 1;
+    } else if (lang === 'javascript' || lang === 'typescript') {
+      regex = /(?:\bfunction\s*([A-Za-z_$][\w$]*)?\s*(?:<[^>{}]*>\s*)?\([^()]*\)\s*(?::[^={]+)?|\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*(?::[^={]+)?=>)\s*\{/gm;
       nameGroup = 1;
     } else {
       regex = /\b([A-Za-z_$~][\w$~]*)\s*\(([^()]*)\)\s*(?:const\s*)?(?:noexcept(?:\s*\([^)]*\))?\s*)?(?:override\s*)?(?:final\s*)?(?:throws\s+[\w.,\s]+)?\s*\{/gm;
@@ -624,6 +641,45 @@ type ExpressionTypeCandidate = { index: number; type: string };
   }
 
   // ───────────────────────── Python ─────────────────────────
+  function extractJavaScript(
+    content: string,
+    lang: EditorRuleLanguageId,
+    cursorLine: number = 0
+  ): SymbolList {
+    const symbols: SymbolList = [];
+    const seen = new Set<string>();
+    const visible = createScopeFilter(content, lang, cursorLine);
+    const segments = joinContinuations(sanitize(content, lang).split('\n'));
+    for (const segment of segments) {
+      if (cursorLine && segment.line >= cursorLine) break;
+      if (!visible(segment.line)) continue;
+      const line = segment.text.trim();
+      let match: RegExpExecArray | null;
+      if ((match = /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(function|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/.exec(line))) {
+        const kind: SymbolKind = match[1] === 'function' ? 'function' : match[1] === 'class' ? 'class' : match[1] === 'interface' ? 'interface' : match[1] === 'enum' ? 'enum' : 'typedef';
+        pushUnique(symbols, seen, match[2], kind, match[1] + ' ' + match[2]);
+      } else if ((match = /^(?:export\s+)?(?:declare\s+)?(const|let|var)\s+(.+?)(?:;|$)/.exec(line))) {
+        splitTopLevel(match[2] || '').forEach(function (declaration: string) {
+          const binding = /^\s*([A-Za-z_$][\w$]*)/.exec(declaration);
+          if (binding) pushUnique(symbols, seen, binding[1], match?.[1] === 'const' ? 'constant' : 'variable', 'local declaration');
+        });
+      } else if ((match = /^import\s+(.+?)\s+from\b/.exec(line))) {
+        const bindings = match[1] || '';
+        const defaultBinding = /^([A-Za-z_$][\w$]*)/.exec(bindings);
+        const namespace = /\*\s+as\s+([A-Za-z_$][\w$]*)/.exec(bindings);
+        if (defaultBinding) pushUnique(symbols, seen, defaultBinding[1], 'module', 'import binding');
+        if (namespace) pushUnique(symbols, seen, namespace[1], 'module', 'import binding');
+        const named = /\{([^}]+)\}/.exec(bindings);
+        if (named) splitTopLevel(named[1] || '').forEach(function (binding: string) {
+          const entry = /^\s*([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?/.exec(binding);
+          if (entry) pushUnique(symbols, seen, entry[2] || entry[1], 'module', 'import binding');
+        });
+      }
+    }
+    promoteLocals(symbols, seen, enclosingParameters(content, lang, cursorLine));
+    return symbols;
+  }
+
   function extractPython(
     content: string,
     lang: EditorRuleLanguageId,
@@ -997,6 +1053,8 @@ type ExpressionTypeCandidate = { index: number; type: string };
     c: extractCFamily,
     cpp: extractCFamily,
     java: extractCFamily,
+    javascript: extractJavaScript,
+    typescript: extractJavaScript,
     python: extractPython,
     go: extractGo,
     rust: extractRust

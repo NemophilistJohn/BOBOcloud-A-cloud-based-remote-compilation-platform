@@ -60,17 +60,6 @@ type LexicalState = EditorRuleAnalyzedContextDto['lexicalState'];
 type CompletionSource = 'symbol' | 'static';
 type CompletionItems = readonly EditorRuleCompletionItemDto[];
 
-const COMMON_IMPORTS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  python: ['matplotlib', 'numpy', 'pandas', 'scipy', 'sklearn', 'torch', 'tensorflow', 'requests', 'flask', 'fastapi'],
-  javascript: ['react', 'vue', 'angular', 'express', 'lodash', 'axios', 'vite', 'node:fs', 'node:path'],
-  typescript: ['react', 'vue', 'angular', 'express', 'lodash', 'axios', 'vite', 'node:fs', 'node:path'],
-  go: ['fmt', 'os', 'io', 'net/http', 'encoding/json', 'context', 'strings', 'time'],
-  rust: ['std', 'alloc', 'core', 'serde', 'tokio', 'anyhow', 'clap'],
-  java: ['java', 'javax', 'jakarta', 'org', 'com', 'junit'],
-  c: ['stdio.h', 'stdlib.h', 'string.h', 'stdint.h', 'stdbool.h'],
-  cpp: ['iostream', 'vector', 'string', 'algorithm', 'filesystem', 'memory']
-});
-
 (function initCompletionEngine(globalScope: CompletionEngineGlobal): void {
   'use strict';
 
@@ -295,21 +284,6 @@ const COMMON_IMPORTS: Readonly<Record<string, readonly string[]>> = Object.freez
                 : false;
   }
 
-  function importSuggestions(context: MutableAnalyzedContext): EditorRuleCompletionItemDto[] {
-    const language = String(context.language || '').toLowerCase();
-    if (!isImportContext(context)) return [];
-    const query = String(context.word || '').toLowerCase();
-    return (COMMON_IMPORTS[language] || []).filter((name) => {
-      const normalized = name.toLowerCase();
-      return !query || normalized.startsWith(query) || normalized.split(/[.:/]/).some((part) => part.startsWith(query));
-    }).map((name) => ({
-      label: name,
-      kind: 9,
-      insertText: name,
-      detail: 'import'
-    }));
-  }
-
   function rewriteForMember(
     item: EditorRuleCompletionItemDto,
     context: EditorRuleAnalyzedContextDto
@@ -423,16 +397,21 @@ const COMMON_IMPORTS: Readonly<Record<string, readonly string[]>> = Object.freez
       const normalized = normalizeSuggestion(item, context, monaco, 'symbol', index);
       if (normalized) combined.push(normalized);
     });
-    staticSuggestions = (staticSuggestions || []).concat(importSuggestions(context));
-    staticSuggestions.forEach((item, index) => {
+    (staticSuggestions || []).forEach((item, index) => {
       const normalized = normalizeSuggestion(item, context, monaco, 'static', index);
       if (normalized) combined.push(normalized);
     });
 
-    const suggestions = dedupeSuggestions(combined).slice(0, 120);
+    const candidates = dedupeSuggestions(combined);
     const history = (globalThis as unknown as {
-      completionHistory?: { rememberSuggestions?: (context: unknown, items: unknown[]) => void };
+      completionHistory?: {
+        rememberSuggestions?: (context: unknown, items: unknown[]) => void;
+        rank?: (items: EditorRuleCompletionItemDto[], context: unknown, limit: number) => EditorRuleCompletionItemDto[];
+      };
     }).completionHistory;
+    const suggestions = history && typeof history.rank === 'function'
+      ? history.rank(candidates, context, 120)
+      : candidates.slice(0, 120);
     if (history && typeof history.rememberSuggestions === 'function') history.rememberSuggestions(context, suggestions);
     return { suggestions };
   }
@@ -474,7 +453,7 @@ const COMMON_IMPORTS: Readonly<Record<string, readonly string[]>> = Object.freez
         token?: EditorRuleCancellationToken
       ): EditorRuleCompletionListDto | Promise<EditorRuleCompletionListDto> {
         if (token && token.isCancellationRequested) return { suggestions: [] };
-        const context = analyzeContext(
+        let context = analyzeContext(
           model as EditorRuleTextModelPort,
           position as EditorRulePositionDto,
           language,
@@ -483,13 +462,20 @@ const COMMON_IMPORTS: Readonly<Record<string, readonly string[]>> = Object.freez
         if (context.invalidTrigger || (context.lexicalState !== 'code' && !isImportContext(context))) {
           return { suggestions: [] };
         }
-        const symbols = symbolProvider(
+        const history = (globalThis as unknown as {
+          completionHistory?: { contextFor?: (model: unknown, position: unknown, context: unknown) => Readonly<Record<string, unknown>> };
+        }).completionHistory;
+        if (history && typeof history.contextFor === 'function') {
+          context = { ...context, ...history.contextFor(model, position, context) } as MutableAnalyzedContext;
+        }
+        const importing = isImportContext(context);
+        const symbols = importing ? [] : symbolProvider(
           model as EditorRuleTextModelPort,
           position as EditorRulePositionDto,
           context,
           token
         ) || [];
-        const statics = staticSuggestions(model, position, requestContext || {}, token);
+        const statics = importing ? [] : staticSuggestions(model, position, requestContext || {}, token);
         if (isPromiseLike<CompletionItems>(statics)) {
           return statics.then((resolved) => {
             if (token && token.isCancellationRequested) return { suggestions: [] };

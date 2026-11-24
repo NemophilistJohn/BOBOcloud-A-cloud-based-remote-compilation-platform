@@ -504,10 +504,13 @@ test('an identity change prevents an older sync from marking the workspace curre
 
   const pendingSync = fixture.BOBO.runner.manualSyncWithServer();
   await waitFor(() => syncCalls === 1);
+  assert.equal(fixture.BOBO.runner.isSyncing(), true);
+  assert.equal(fixture.BOBO.runner.isBusy(), false, 'sync activity must not broaden the active-run predicate');
   await fixture.BOBO.runner.invalidateRunIdentity({ skipHttp: true });
   syncResult.resolve({ success: true });
 
   assert.equal(await pendingSync, false);
+  assert.equal(fixture.BOBO.runner.isSyncing(), false);
   assert.equal(fixture.state.lastSyncedVersion, 1);
 });
 

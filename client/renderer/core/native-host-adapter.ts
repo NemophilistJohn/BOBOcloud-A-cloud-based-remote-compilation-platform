@@ -78,6 +78,7 @@ export const DIAGNOSTICS_HOST_SERVICE_ID = 'host.diagnostics';
 export const DOCUMENT_VIEWS_HOST_SERVICE_ID = 'host.documentViews';
 export const ENVIRONMENT_CENTER_HOST_SERVICE_ID = 'host.environmentCenter';
 export const FILE_SEARCH_HOST_SERVICE_ID = 'host.fileSearch';
+export const COMPLETION_INDEX_HOST_SERVICE_ID = 'host.completionIndex';
 export const LANGUAGE_PACKS_HOST_SERVICE_ID = 'host.languagePacks';
 export const PLUGIN_MANAGEMENT_HOST_SERVICE_ID = 'host.pluginManagement';
 export const PLUGIN_EXTENSIONS_HOST_SERVICE_ID = 'host.pluginExtensions';
@@ -145,6 +146,16 @@ function createFileSearchHost(host: NativeHost): Readonly<FileSearchHost> {
   return Object.freeze({
     readTreeChildren: (directoryPath: string) => host.readTreeChildren(directoryPath),
     scanWorkspaceFiles: () => host.scanWorkspaceFiles()
+  });
+}
+
+function createCompletionIndexHost(host: NativeHost): Readonly<Pick<NativeHost,
+  'lspControl' | 'lspClientCacheDependencyIndexGet' | 'lspClientCacheDependencyIndexPut' | 'lspSettingsWrite'>> {
+  return Object.freeze({
+    lspControl: (payload: unknown) => host.lspControl(payload),
+    lspClientCacheDependencyIndexGet: (scope: unknown, key: unknown) => host.lspClientCacheDependencyIndexGet(scope, key),
+    lspClientCacheDependencyIndexPut: (scope: unknown, key: unknown, value: unknown) => host.lspClientCacheDependencyIndexPut(scope, key, value),
+    lspSettingsWrite: (payload: unknown) => host.lspSettingsWrite(payload)
   });
 }
 
@@ -509,6 +520,11 @@ rendererPlatform.lifecycle.add(environmentCenterRegistration);
 rendererPlatform.lifecycle.add(rendererPlatform.services.registerPrivate(
   FILE_SEARCH_HOST_SERVICE_ID,
   createFileSearchHost(nativeHost)
+));
+
+rendererPlatform.lifecycle.add(rendererPlatform.services.registerPrivate(
+  COMPLETION_INDEX_HOST_SERVICE_ID,
+  createCompletionIndexHost(nativeHost)
 ));
 
 const viewsRegistration = rendererPlatform.services.registerPrivate(

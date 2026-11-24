@@ -81,6 +81,7 @@ type Session struct {
 	dependencyIndexClosed bool
 	dependencyIndexMu     sync.Mutex
 	dependencyIndex       *DependencyAPIIndex
+	dependencyQueries     *dependencyQueryState
 	dependencyIndexTasks  atomic.Int32
 	metrics               *metrics.Registry
 }
@@ -502,6 +503,9 @@ func (m *Manager) Start(ctx SessionContext) (*Session, error) {
 	}
 	ownerKind, ownerID := ctx.Owner()
 	cacheContext := CacheContext{OwnerKind: ownerKind, OwnerID: ownerID, UserID: ctx.UserID, ProjectID: ctx.ProjectID, Branch: ctx.Branch, FolderKey: ctx.FolderKey, RuntimeID: ctx.RuntimeID, LanguageID: ctx.LanguageID, Mode: ctx.Mode, ToolchainFingerprint: ToolchainFingerprint(spec, ctx.RuntimeID), LockHash: lockHash}
+	if ctx.RuntimeDependencyRevision != "" {
+		cacheContext.ToolchainFingerprint += ":runtime:" + ctx.RuntimeDependencyRevision
+	}
 	cacheStarted := time.Now()
 	lease, err := m.cache.Prepare(cacheContext)
 	m.observeStage("lsp.session.cache_prepare", cacheStarted)

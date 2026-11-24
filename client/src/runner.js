@@ -1467,6 +1467,7 @@
     invalidateRunIdentity: invalidateRunIdentity,
     isRunContextCurrent: isRunContextCurrent,
     isBusy: function() { return Boolean(activeRunPreparation || S.activeRunSocket || S.activeRunId || S.activeRunContext); },
+    isSyncing: function() { return syncInFlight; },
     refreshControls: refreshRunControls,
     refreshWorkspaceTree: refreshWorkspaceTree
   };

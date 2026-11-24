@@ -688,7 +688,7 @@
             <div class="lsp-section-heading">
               <div>
                 <div class="ss-section-label" id="lsp-client-cache-heading">Local completion cache</div>
-                <p class="lsp-client-cache-description">Store safe completion hints on this device.</p>
+                <p class="lsp-client-cache-description">Choose when dependency summaries are prepared and how much space they may use.</p>
               </div>
               <div class="lsp-client-cache-actions" aria-label="Local completion cache actions">
                 <button id="lsp-client-cache-clear-workspace" class="ss-btn ss-btn-ghost" type="button" disabled>Clear this workspace</button>
@@ -698,7 +698,7 @@
             <div class="lsp-adaptive-completion">
               <div class="lsp-adaptive-completion-copy">
                 <div class="lsp-client-cache-dependency-index-heading">Context-aware completion ranking</div>
-                <p>Use accepted suggestions from this device to adjust ordering for similar code contexts.</p>
+                <p>Learn accepted suggestions and stable code usage for the current module and project.</p>
               </div>
               <div class="lsp-adaptive-completion-actions">
                 <label class="lsp-adaptive-completion-toggle" for="lsp-completion-history-enabled">
@@ -708,19 +708,28 @@
                 <button id="lsp-completion-history-clear" class="ss-btn ss-btn-ghost" type="button">Clear history</button>
               </div>
             </div>
-            <div class="lsp-client-cache-mode-selector" role="radiogroup" aria-label="Local completion cache policy">
+            <div class="lsp-client-cache-mode-selector" role="radiogroup" aria-label="Dependency preparation strategy">
               <label class="lsp-client-cache-mode-option">
-                <input type="radio" name="lsp-client-cache-mode" value="off">
-                <span><strong>Off</strong><small>Do not retain local completion data.</small></span>
+                <input type="radio" name="lsp-client-cache-strategy" value="on-demand">
+                <span><strong>On demand</strong><small>Prepare a module when you import it or request its members.</small></span>
               </label>
               <label class="lsp-client-cache-mode-option">
-                <input type="radio" name="lsp-client-cache-mode" value="lazy" checked>
-                <span><strong>Lazy cache</strong><small>Reuse matching local hints, then refresh them only when needed.</small></span>
+                <input type="radio" name="lsp-client-cache-strategy" value="smart" checked>
+                <span><strong>Smart</strong><small>Preload imports and frequently used modules while you pause.</small></span>
               </label>
               <label class="lsp-client-cache-mode-option">
-                <input type="radio" name="lsp-client-cache-mode" value="active">
-                <span><strong>Active cache</strong><small>Keep a larger local hint set and refresh it in the background.</small></span>
+                <input type="radio" name="lsp-client-cache-strategy" value="project">
+                <span><strong>Project prewarm</strong><small>Use idle time to progressively prepare the project's dependency APIs.</small></span>
               </label>
+            </div>
+            <label class="lsp-cache-persistence-toggle" for="lsp-client-cache-persistence">
+              <input id="lsp-client-cache-persistence" type="checkbox" checked>
+              <span><strong>Keep cache between sessions</strong><small>Save reusable summaries on this device. Memory acceleration stays available while connected.</small></span>
+            </label>
+            <div class="lsp-index-warmup" role="status" aria-live="polite">
+              <span id="lsp-index-warmup-state">Waiting for an analysis environment</span>
+              <progress id="lsp-index-warmup-progress" max="1" value="0" hidden></progress>
+              <span id="lsp-index-warmup-count" hidden></span>
             </div>
             <div class="lsp-client-cache-capacity" aria-labelledby="lsp-client-cache-capacity-label">
               <div class="lsp-client-cache-capacity-heading">
@@ -736,13 +745,13 @@
             <div id="lsp-client-cache-dependency-index" class="lsp-client-cache-dependency-index" aria-labelledby="lsp-client-cache-dependency-index-heading" hidden>
               <div class="lsp-client-cache-dependency-index-copy">
                 <div id="lsp-client-cache-dependency-index-heading" class="lsp-client-cache-dependency-index-heading">Library API cache</div>
-                <p>Keep bounded module and public API names from the active Python dependency view.</p>
+                <p>Save import names and module summaries from the current language environment.</p>
               </div>
               <div class="lsp-client-cache-dependency-index-control">
                 <button id="lsp-client-cache-dependency-index-toggle" class="ss-btn ss-btn-ghost" type="button" aria-pressed="false" aria-describedby="lsp-client-cache-dependency-index-hint" disabled>Enable library API cache</button>
                 <div id="lsp-client-cache-dependency-index-state" class="lsp-client-cache-dependency-index-state" data-state="disabled" role="status" aria-live="polite">Library API cache is disabled</div>
               </div>
-              <p id="lsp-client-cache-dependency-index-hint" class="lsp-client-cache-dependency-index-hint">Session import hints work while connected. Persistent API cache requires Active cache and 30 MB.</p>
+              <p id="lsp-client-cache-dependency-index-hint" class="lsp-client-cache-dependency-index-hint">Small caches retain import names first and load larger module summaries when needed.</p>
             </div>
             <div id="lsp-client-cache-state" class="lsp-client-cache-state" data-state="loading" role="status" aria-live="polite" aria-atomic="true">Loading local cache...</div>
             <div class="lsp-client-cache-metrics" aria-label="Local acceleration cache metrics">

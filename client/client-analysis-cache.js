@@ -25,11 +25,11 @@ const DEFAULT_CACHE_SIZE_MIB = 32;
 const COMPLETION_RECORD_TYPE = 'completion';
 const DEPENDENCY_INDEX_RECORD_TYPE = 'dependency-index';
 const DEPENDENCY_INDEX_SCHEMA = 'dependency-api-index-v1';
-const MIN_DEPENDENCY_INDEX_SIZE_MIB = 30;
+const MIN_DEPENDENCY_INDEX_SIZE_MIB = 1;
 const DEPENDENCY_INDEX_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_DEPENDENCY_INDEX_BYTES = 64 * MEBIBYTE;
 const DEPENDENCY_INDEX_QUOTA_RATIO = 0.75;
-const MAX_DEPENDENCY_INDEX_ROOTS = 64;
+const MAX_DEPENDENCY_INDEX_ROOTS = 4096;
 const MAX_DEPENDENCY_INDEX_MODULES = 2048;
 const MAX_DEPENDENCY_INDEX_MEMBERS = 16384;
 const MAX_DEPENDENCY_INDEX_DEPTH = 8;
@@ -65,6 +65,11 @@ function normalizeCacheSizeMiB(value) {
   const size = Number(value);
   if (!Number.isFinite(size)) return DEFAULT_CACHE_SIZE_MIB;
   return Math.min(MAX_CACHE_SIZE_MIB, Math.max(MIN_CACHE_SIZE_MIB, Math.round(size)));
+}
+
+function normalizeCacheStrategy(value) {
+  const strategy = String(value || '').trim().toLowerCase();
+  return ['on-demand', 'smart', 'project'].includes(strategy) ? strategy : 'smart';
 }
 
 function createCachePolicy(mode, sizeMiB) {
@@ -123,8 +128,7 @@ function createDependencyIndexPolicy(policy) {
     ? raw
     : Object.assign(createCachePolicy(raw.mode || 'off', raw.sizeMiB), raw);
   const quotaBytes = Math.max(0, Number(source.quotaBytes) || 0);
-  const enabled = source.mode === 'active' && source.dependencyIndexEnabled === true &&
-    Number(source.sizeMiB) >= MIN_DEPENDENCY_INDEX_SIZE_MIB && quotaBytes > 0;
+  const enabled = source.mode !== 'off' && source.dependencyIndexEnabled === true && quotaBytes > 0;
   const indexQuotaBytes = enabled
     ? Math.min(MAX_DEPENDENCY_INDEX_BYTES, Math.floor(quotaBytes * DEPENDENCY_INDEX_QUOTA_RATIO))
     : 0;
@@ -336,11 +340,12 @@ function isPathLikeValue(value) {
 function sanitizeDependencyIndexName(value) {
   if (typeof value !== 'string') return null;
   const text = value.trim();
-  if (!text || text.length > MAX_DEPENDENCY_INDEX_NAME_LENGTH || hasControlCharacters(text) || /[\\/]/.test(text)) return null;
+  if (!text || text.length > MAX_DEPENDENCY_INDEX_NAME_LENGTH || hasControlCharacters(text) || /[\\]/.test(text)) return null;
   // Store one public name per node. Its characters vary by language (for
   // example, C++ `operator[]` and C# `~Type`), so reject whitespace and paths
   // rather than imposing a Python-shaped identifier grammar.
-  if (/\s/.test(text)) return null;
+  if (/\s/.test(text) || text.startsWith('/') || /^[A-Za-z]:/.test(text) ||
+      text.split('/').some((part) => !part || part === '.' || part === '..')) return null;
   return text;
 }
 
@@ -356,7 +361,7 @@ function sanitizeDependencyIndexKind(value, fallback) {
   if (value === undefined) return fallback || '';
   if (typeof value !== 'string') return null;
   const kind = value.trim().toLowerCase();
-  return ['module', 'namespace', 'class', 'interface', 'function', 'method', 'property', 'field', 'variable', 'constant', 'type', 'enum', 'alias'].includes(kind)
+  return ['module', 'namespace', 'class', 'interface', 'function', 'method', 'property', 'field', 'variable', 'constant', 'value', 'type', 'enum', 'alias'].includes(kind)
     ? kind
     : null;
 }
@@ -424,9 +429,8 @@ function sanitizeDependencyIndex(rawValue, policy) {
     const root = sanitizeDependencyIndexNode(rawValue.roots[index], counters, 1, true);
     if (!root) return null;
     value.roots.push(root);
-    if (byteLength(value) > indexPolicy.maxRecordBytes) return null;
   }
-  return value;
+  return byteLength(value) <= indexPolicy.maxRecordBytes ? value : null;
 }
 
 function clone(value) {
@@ -1087,6 +1091,7 @@ module.exports = {
   ClientAnalysisCache,
   normalizeCacheMode,
   normalizeCacheSizeMiB,
+  normalizeCacheStrategy,
   createCachePolicy,
   normalizeScope,
   normalizeCacheKey,

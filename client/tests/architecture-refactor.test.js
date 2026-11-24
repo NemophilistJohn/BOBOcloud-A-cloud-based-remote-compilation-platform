@@ -224,6 +224,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/compat/server-capabilities-adapter.ts',
   'src/cloud-feature-policy.ts',
   'renderer/compat/cloud-feature-policy-adapter.ts',
+  'src/completion-coordinator.ts',
+  'renderer/compat/completion-coordinator-adapter.ts',
   'src/lsp-client.js',
   'src/output-panel.ts',
   'renderer/compat/output-panel-adapter.ts',

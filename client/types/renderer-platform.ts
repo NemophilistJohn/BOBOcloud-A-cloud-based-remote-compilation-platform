@@ -13,7 +13,7 @@ import type {
   ServerTransportService
 } from './server-runtime';
 import type { DisposableStore } from './lifecycle';
-import type { RcloneNativeHost } from './native-host';
+import type { NativeHost, RcloneNativeHost } from './native-host';
 import type { FileIconPluginView, FileIconService } from './file-icons';
 import type {
   FileDecorationProvider,
@@ -84,6 +84,7 @@ import type { AiChatPanelHostPort, AiChatPanelService } from './ai-chat-panel';
 import type { AgentWorkbenchHostPort, AgentWorkbenchService } from './agent-workbench';
 import type { ServerCommService } from './server-comm';
 import type { CollaborationHostPort, CollaborationService } from './collaboration';
+import type { CompletionCoordinatorService } from '../src/completion-coordinator';
 
 export interface RendererCommandMap {
   readonly 'bobocloud.tasks.runSelected': ProjectTasksService['runSelected'];
@@ -91,6 +92,9 @@ export interface RendererCommandMap {
 }
 
 export interface RendererServiceMap {
+  readonly 'workbench.completion': CompletionCoordinatorService;
+  readonly 'host.completionIndex': Readonly<Pick<NativeHost,
+    'lspControl' | 'lspClientCacheDependencyIndexGet' | 'lspClientCacheDependencyIndexPut' | 'lspSettingsWrite'>>;
   readonly 'host.diagnostics': Readonly<DiagnosticsHost>;
   readonly 'host.documentViews': Readonly<DocumentViewHost>;
   readonly 'host.environmentCenter': Readonly<EnvironmentCenterNativeHostPort>;

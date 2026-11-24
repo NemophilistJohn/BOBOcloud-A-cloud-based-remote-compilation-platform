@@ -15,6 +15,8 @@
   };
   var status = { state: 'local', mode: 'local', bytesSent: 0, bytesReceived: 0, latencyMs: null, cache: null };
   var clientCacheUi = { state: 'loading', stats: null, error: '', operation: '' };
+  var clientCachePendingPolicy = null;
+  var clientCachePendingStrategy = '';
   var disposables = [];
   var openedDocuments = new Map();
   var changeQueues = new Map();
@@ -53,6 +55,98 @@
   var dependencyApiIndexSequence = 1;
   var verifiedDependencyIndexScope = null;
   var completionSourceHashes = new WeakMap();
+  var demandIndexRequests = new Map();
+  var completionContinuations = new WeakMap();
+  var completionRefreshGate = createCompletionRefreshGate();
+
+  function completionService() {
+    return BOBO.platform && BOBO.platform.services && BOBO.platform.services.get('workbench.completion');
+  }
+
+  function completionIndexHost() {
+    return BOBO.platform && BOBO.platform.services && BOBO.platform.services.get('host.completionIndex');
+  }
+
+  function learningContext(model, position) {
+    var history = global.completionHistory;
+    var workspace = workspaceIdentity();
+    if (history && history.configureContext) history.configureContext({
+      workspaceKey: stableCompletionHash(JSON.stringify(workspace || {})),
+      accountKey: stableCompletionHash(legacyCapabilityCacheKey())
+    });
+    return history && history.contextFor ? history.contextFor(model, position) : {
+      language: model.getLanguageId(), prefix: model.getLineContent(position.lineNumber).slice(0, position.column - 1)
+    };
+  }
+
+  function requestDemandIndex(query) {
+    var host = completionIndexHost();
+    if (!host) return Promise.reject(new Error('index_host_unavailable'));
+    var requestId = 'demand-' + dependencyApiIndexSequence++;
+    var sessionId = status.sessionId;
+    return new Promise(function(resolve, reject) {
+      var timer = setTimeout(function() {
+        demandIndexRequests.delete(requestId);
+        reject(new Error('index_timeout'));
+      }, 15000);
+      demandIndexRequests.set(requestId, { resolve: resolve, reject: reject, timer: timer, sessionId: sessionId });
+      Promise.resolve(host.lspControl({ type: 'lsp.dependency.index.request', params: Object.assign({
+        requestId: requestId, maxBytes: 98304
+      }, query) })).catch(function(error) {
+        var pending = demandIndexRequests.get(requestId);
+        if (!pending) return;
+        clearTimeout(timer); demandIndexRequests.delete(requestId); reject(error);
+      });
+    });
+  }
+
+  function configureDemandCompletion() {
+    var service = completionService();
+    if (!service) return;
+    var host = completionIndexHost();
+    var capability = dependencyApiIndexCapability();
+    var scope = dependencyApiIndexScope(currentModel());
+    var reconnecting = capabilityReconnectCoordinator && capabilityReconnectCoordinator.isActive();
+    if (!host || settings.mode === 'local' || ['disabled', 'unsupported'].indexOf(status.state) >= 0 || status.state === 'local' && !reconnecting) {
+      service.configure(null);
+      return;
+    }
+    if (status.state !== 'ready') {
+      service.pause();
+      return;
+    }
+    if (!scope ||
+        !capability || !Array.isArray(capability.queryKinds) || capability.queryKinds.indexOf('catalog') < 0) {
+      service.configure(null);
+      if (settings.mode !== 'local' && status.state === 'ready' && capability && scope &&
+          !Array.isArray(capability.queryKinds) && clientCacheDependencyIndexEnabled()) ensureDependencyApiIndex(currentModel());
+      return;
+    }
+    if (capability.revision) scope = Object.assign({}, scope, { dependencyRevision: String(capability.revision) });
+    var scopeId = clientCompletionCacheScopeId(scope);
+    service.configure({
+      identity: JSON.stringify([scopeId, lastAnalysisContext]), transportIdentity: String(status.sessionId || ''),
+      language: scope.languageId, runtimeId: scope.runtimeId, revision: scope.dependencyRevision,
+      strategy: clientCacheStrategy(), capacityMiB: clientCacheSizeMiB(), persistent: clientCacheDependencyIndexEnabled()
+    }, {
+      query: requestDemandIndex,
+      hydrate: function(key) { return host.lspClientCacheDependencyIndexGet(scope, stableCompletionHash('demand-v1:' + key)); },
+      persist: function(key, value) { return host.lspClientCacheDependencyIndexPut(scope, stableCompletionHash('demand-v1:' + key), value); },
+      changed: function(progress) {
+        dependencyApiIndexUi = progress;
+        renderClientCacheUi();
+        if (['ready', 'complete', 'partial'].indexOf(progress.state) < 0) return;
+        var model = currentModel(); var position = S.editor && S.editor.getPosition();
+        var snapshot = model && position && status.state === 'ready' ? completionSnapshot(model, position, null) : null;
+        if (snapshot && completionRefreshGate.isWaiting(snapshot)) retriggerCompletion(snapshot, service.suggestions(model, position));
+      },
+      isBusy: function() {
+        return document.hidden || !!(BOBO.runner && BOBO.runner.isBusy && BOBO.runner.isBusy()) ||
+          !!(BOBO.runner && BOBO.runner.isSyncing && BOBO.runner.isSyncing()) ||
+          !!(S.dap && ['connecting', 'initializing', 'running', 'paused'].indexOf(S.dap.phase) >= 0);
+      }
+    });
+  }
 
   // Completion responses are asynchronous. Any identity or analysis-context
   // boundary must invalidate both cache tiers before a late response can be
@@ -64,18 +158,29 @@
       completionHintPrewarmTimer = null;
     }
     completionCoordinator.clear();
+    completionRefreshGate.clear();
+    completionContinuations = new WeakMap();
     completionHintCache.clear();
     if (keepDependencyIndex !== true) {
       dependencyApiIndexCache.clear();
       verifiedDependencyIndexScope = null;
     }
-    cancelDependencyApiIndexBuilds();
+    cancelDependencyApiIndexBuilds(keepDependencyIndex === true);
   }
 
   // A dependency tree is tied to one gateway session. Keep a warm, already
   // verified summary across a reconnect when its revision still matches, but
   // never leave its in-flight page request owned by a closed WebSocket.
-  function cancelDependencyApiIndexBuilds() {
+  function cancelDependencyApiIndexBuilds(keepDemandIndex) {
+    demandIndexRequests.forEach(function(pending) {
+      clearTimeout(pending.timer); pending.reject(new Error('index_cancelled'));
+    });
+    demandIndexRequests.clear();
+    var service = completionService();
+    if (service) {
+      if (keepDemandIndex === true) service.pause();
+      else service.configure(null);
+    }
     dependencyApiIndexBuilds.forEach(function(build) {
       build.cancelled = true;
       if (build.timer) clearTimeout(build.timer);
@@ -607,6 +712,50 @@
     return stableCompletionHash(items.slice(0, 50).map(function(item) {
       return [completionItemLabel(item), item && item.kind, item && item.insertText, item && item.filterText, item && item.sortText].join('\u001f');
     }).join('\u001e'));
+  }
+
+  function createCompletionRefreshGate() {
+    var states = new Map();
+    function stateFor(snapshot) {
+      var state = snapshot && states.get(snapshot.uri);
+      return state && state.key === snapshot.key ? state : null;
+    }
+    function items(value) { return Array.isArray(value) ? value : value && (value.suggestions || value.items) || []; }
+    function itemKey(item) { return completionItemLabel(item) + '\0' + String(item.textEdit && item.textEdit.newText || item.insertText || completionItemLabel(item)); }
+    return {
+      begin: function(snapshot) {
+        if (!snapshot || stateFor(snapshot)) return;
+        states.delete(snapshot.uri);
+        states.set(snapshot.uri, { key: snapshot.key, waiting: true, remoteWaiting: false, names: new Set(), consumed: false, blocked: false });
+        if (states.size > 128) states.delete(states.keys().next().value);
+      },
+      observe: function(snapshot, value) {
+        var state = stateFor(snapshot);
+        if (state) {
+          state.waiting = items(value).length === 0;
+          state.names = new Set(items(value).map(itemKey));
+        }
+      },
+      expectRemote: function(snapshot) { var state = stateFor(snapshot); if (state) state.remoteWaiting = true; },
+      isWaiting: function(snapshot, source) {
+        var state = stateFor(snapshot);
+        return !!(state && (state.waiting || source === 'semantic' && state.remoteWaiting) && !state.consumed && !state.blocked);
+      },
+      consume: function(snapshot, value, source) {
+        if (!this.isWaiting(snapshot, source)) return false;
+        var state = stateFor(snapshot);
+        var query = String(snapshot.prefix || '').match(/[\w$]*$/)[0].toLowerCase();
+        var relevant = items(value).some(function(item) {
+          return !state.names.has(itemKey(item)) && String(item.filterText || completionItemLabel(item)).toLowerCase().indexOf(query) === 0;
+        });
+        if (source === 'semantic') state.remoteWaiting = false;
+        if (!relevant) return false;
+        state.consumed = true; state.waiting = false;
+        return true;
+      },
+      block: function(snapshot) { var state = stateFor(snapshot); if (state) state.blocked = true; },
+      clear: function() { states.clear(); }
+    };
   }
 
   function completionItemLabel(item) {
@@ -1275,6 +1424,7 @@
     activeLanguage = language;
     if (signature === lastConfigSignature) {
       if (status.state === 'ready') openDocument(currentModel());
+      configureDemandCompletion();
       renderStatus();
       return;
     }
@@ -1380,6 +1530,26 @@
   }
 
   function queueChanges(model, event) {
+    var history = global.completionHistory;
+    if (history && history.observeModel) {
+      learningContext(model, { lineNumber: 1, column: 1 });
+      history.observeModel(model, { reason: 'change', changes: event && event.changes });
+    }
+    var service = completionService();
+    if (service && model === currentModel()) service.activity(model);
+    var continuation = completionContinuations.get(model);
+    if (continuation) {
+      var changes = event && event.changes || [];
+      var change = changes.length === 1 && changes[0];
+      if (!change || !/^[A-Za-z0-9_$]*$/.test(change.text) || change.text.length > 16 ||
+          change.range.startLineNumber !== continuation.line || change.range.endLineNumber !== continuation.line ||
+          change.range.startColumn < continuation.start || change.range.endColumn > continuation.end) {
+        completionContinuations.delete(model);
+      } else {
+        continuation.end += change.text.length - (change.range.endColumn - change.range.startColumn);
+        continuation.version = model.getVersionId();
+      }
+    }
     if (!model || status.state !== 'ready' || model.getLanguageId() !== activeLanguage) return;
     var uri = wireUriForModel(model);
     if (!uri) return;
@@ -1434,6 +1604,9 @@
   }
 
   function documentSaved(model) {
+    if (model && global.completionHistory && global.completionHistory.observeModel) {
+      global.completionHistory.observeModel(model, { reason: 'save' });
+    }
     if (!model || status.state !== 'ready' || model.getLanguageId() !== activeLanguage) return;
     var uri = wireUriForModel(model);
     if (uri) ensureDocumentSynchronized(model).then(function(synchronized) {
@@ -1478,6 +1651,16 @@
     return { value: value.value || '' };
   }
 
+  function completionAcceptanceCommand(item, historyContext, history) {
+    if (!history || typeof history.command !== 'function') return undefined;
+    // Analyzer commands use LSP's {command: ...} shape and may perform remote
+    // work. They are metadata only under the gateway's current method policy;
+    // never expose them as Monaco commands or drop the local acceptance hook.
+    var learningItem = Object.assign({}, item);
+    delete learningItem.command;
+    return history.command(historyContext || {}, learningItem);
+  }
+
   function mapCompletion(item, fallbackRange, localHint, historyContext) {
     var textEdit = item.textEdit && item.textEdit.newText !== undefined ? item.textEdit : null;
     var insertText = textEdit ? textEdit.newText : (typeof item.insertText === 'string' ? item.insertText : item.label);
@@ -1505,9 +1688,8 @@
       // completion-item data to resolve after a reconnect.
       _boboLsp: localHint ? null : item
     };
-    if (global.completionHistory && typeof global.completionHistory.command === 'function') {
-      mapped.command = global.completionHistory.command(historyContext || {}, item);
-    }
+    mapped._boboHistoryContext = historyContext;
+    mapped.command = completionAcceptanceCommand(item, historyContext, global.completionHistory);
     if (item.additionalTextEdits) {
       mapped.additionalTextEdits = item.additionalTextEdits.map(function(edit) {
         return { range: fromLspRange(edit.range), text: edit.newText };
@@ -1600,6 +1782,7 @@
       uri: snapshot.uri,
       language: snapshot.model && snapshot.model.getLanguageId ? snapshot.model.getLanguageId() : '',
       source: completionSourceHash(snapshot.model),
+      runtimeRevision: status.gatewayCapabilities && status.gatewayCapabilities.dependencyApiIndex && status.gatewayCapabilities.dependencyApiIndex.runtimeRevision || '',
       trigger: protocolContext || {},
       line: snapshot.lineNumber,
       column: snapshot.column,
@@ -1618,11 +1801,11 @@
     return hash;
   }
   var dependencyApiIdentifier = /^[A-Za-z@_][A-Za-z0-9_@-]*$/;
-  var dependencyApiLanguages = ['python', 'javascript', 'typescript', 'go', 'rust', 'java', 'c', 'cpp'];
+  var dependencyApiLanguages = ['python', 'node', 'go', 'rust', 'java', 'c', 'cpp'];
 
   function clientCacheDependencyIndexEnabled() {
     return settings && settings.clientCacheDependencyIndexEnabled === true &&
-      clientCacheMode() === 'active' && clientCacheSizeMiB() >= 30;
+      clientCacheMode() !== 'off';
   }
 
   function dependencyApiIndexCapability() {
@@ -1641,19 +1824,19 @@
     var dependency = status && status.dependency;
     if (status.state !== 'ready') {
       var verified = verifiedDependencyIndexScope;
-      if (!verified || !workspace || canonicalRuntimeLanguage(language) !== 'python' ||
+      if (!verified || !workspace || canonicalRuntimeLanguage(language) !== canonicalRuntimeLanguage(verified.languageId) ||
           JSON.stringify(workspace) !== JSON.stringify(verified.workspace) ||
           runtimeForLanguage(language, S.selectedRuntime) !== verified.runtimeId) return null;
       return verified;
     }
-    if (!workspace || canonicalRuntimeLanguage(language) !== 'python' ||
-        !dependency || !dependency.revision || canonicalRuntimeLanguage(status.languageId) !== 'python') return null;
+    if (!workspace || dependencyApiLanguages.indexOf(canonicalRuntimeLanguage(language)) < 0 ||
+        !dependency || !dependency.revision || canonicalRuntimeLanguage(status.languageId) !== canonicalRuntimeLanguage(language)) return null;
     if (!dependencyCanBackLocalCache(dependency)) return null;
     var runtimeId = runtimeForLanguage(language, status.runtimeId || S.selectedRuntime);
     if (!runtimeId || runtimeId === 'local') return null;
     return {
       workspace: workspace,
-      languageId: 'python',
+      languageId: canonicalRuntimeLanguage(language),
       runtimeId: runtimeId,
       dependencyRevision: String(dependency.revision)
     };
@@ -1988,10 +2171,10 @@
     // receiver prefix. Reserve a small tail for it so a broad server response
     // cannot crowd out `numpy` or `numpy.array` at the exact moment this
     // acceleration feature is needed.
-    var fallbackReserve = Math.min(24, fallbackItems.length);
-    var primaryLimit = Math.max(0, 100 - fallbackReserve);
-    var items = primaryItems.slice(0, primaryLimit).concat(fallbackItems.slice(0, fallbackReserve));
-    return items.length ? { items: items } : null;
+    // Preserve candidates until the coordinator has applied context and
+    // history ranking. Source order must not discard a frequently used item.
+    var items = primaryItems.concat(fallbackItems).slice(0, 4096);
+    return items.length ? { items: items, isIncomplete: !!(primary && primary.isIncomplete) || !!(fallback && fallback.isIncomplete) } : null;
   }
 
   function dependencyApiIndexCurrentScope(scope, key) {
@@ -2055,7 +2238,7 @@
     var model = currentModel();
     var position = S.editor && S.editor.getPosition ? S.editor.getPosition() : null;
     var snapshot = model && position ? completionSnapshot(model, position, null) : null;
-    if (snapshot && dependencyApiIndexCompletions(value, snapshot)) retriggerCompletion(snapshot);
+    if (snapshot) retriggerCompletion(snapshot, dependencyApiIndexCompletions(value, snapshot));
     return true;
   }
 
@@ -2097,7 +2280,7 @@
           var model = currentModel();
           var position = S.editor && S.editor.getPosition ? S.editor.getPosition() : null;
           var snapshot = model && position ? completionSnapshot(model, position, null) : null;
-          if (snapshot && dependencyApiIndexCompletions(value, snapshot)) retriggerCompletion(snapshot);
+          if (snapshot) retriggerCompletion(snapshot, dependencyApiIndexCompletions(value, snapshot));
           return true;
         }
         startDependencyApiIndexBuild(scope, scopeId, key);
@@ -2117,14 +2300,24 @@
     var value = dependencyApiIndexCache.peekView(scopeId, key);
     if (value && status.state === 'ready') verifiedDependencyIndexScope = scope;
     if (!value) {
-      if (persistent === false) startDependencyApiIndexBuild(scope, scopeId, key);
-      else hydrateDependencyApiIndex(scope, scopeId, key);
+      if (clientCacheDependencyIndexEnabled()) hydrateDependencyApiIndex(scope, scopeId, key);
+      else startDependencyApiIndexBuild(scope, scopeId, key);
     }
     return { scope: scope, scopeId: scopeId, key: key, value: value };
   }
 
   function handleDependencyApiIndexMessage(message) {
     if (!message || message.type !== 'lsp.dependency.index' || !message.requestId) return;
+    var demand = demandIndexRequests.get(String(message.requestId));
+    if (demand) {
+      demandIndexRequests.delete(String(message.requestId)); clearTimeout(demand.timer);
+      if (demand.sessionId !== status.sessionId || message.success !== true || !message.page) {
+        var error = new Error(message.code || 'index_unavailable');
+        if (Number.isFinite(message.retryAfterMs) && message.retryAfterMs > 0) error.retryAfterMs = message.retryAfterMs;
+        demand.reject(error);
+      } else demand.resolve(message.page);
+      return;
+    }
     var build = null;
     dependencyApiIndexBuilds.forEach(function(candidate) {
       if (!build && candidate && candidate.requestId === String(message.requestId)) build = candidate;
@@ -2182,7 +2375,7 @@
     var hydration = Promise.resolve(readDurableCompletionHint(scope, key)).then(function(value) {
       if (!completionHintCache.isCurrent(cacheEpoch) || !value || !completionSnapshotIsValid(snapshot)) return false;
       if (!primeCompletionHint(scopeId, key, value, 'durable')) return false;
-      if (retriggerOnHit !== false) retriggerCompletion(snapshot);
+      if (retriggerOnHit !== false) retriggerCompletion(snapshot, value);
       return true;
     }).catch(function() { return false; });
     completionHintCache.begin(scopeId, key, hydration);
@@ -2242,30 +2435,103 @@
     var range = new monacoRef.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
     var prefix = '';
     try { prefix = model.getLineContent(position.lineNumber).slice(0, Math.max(0, position.column - 1)); } catch (_) {}
-    var historyContext = { language: model.getLanguageId(), prefix: prefix };
+    var historyContext = learningContext(model, position);
+    var history = global.completionHistory;
+    if (history && history.rank) items = history.rank(items, historyContext, 1000);
     if (global.completionHistory && typeof global.completionHistory.rememberSuggestions === 'function') {
       global.completionHistory.rememberSuggestions(historyContext, items);
     }
     return {
-      suggestions: items.slice(0, 100).map(function(item) { return mapCompletion(item, range, localHint, historyContext); }),
+      suggestions: items.slice(0, 1000).map(function(item) { return mapCompletion(item, range, localHint, historyContext); }),
       incomplete: !!(result && result.isIncomplete)
     };
+  }
+
+  function rememberContinuation(value, model, position) {
+    if (!value || value.isIncomplete) return;
+    var safe = normalizeCacheableCompletionResult(value, model, position);
+    if (!safe || !safe.items.length) return;
+    var word = model.getWordUntilPosition(position);
+    completionContinuations.set(model, {
+      items: safe.items, version: model.getVersionId(), generation: completionContextGeneration,
+      line: position.lineNumber, start: word.startColumn, end: word.endColumn, at: Date.now(),
+      receiver: model.getLineContent(position.lineNumber).slice(0, word.startColumn - 1)
+    });
+  }
+
+  function continuationResult(model, position) {
+    var value = completionContinuations.get(model);
+    if (!value || value.generation !== completionContextGeneration || value.version !== model.getVersionId() ||
+        Date.now() - value.at > 15000 || value.line !== position.lineNumber) return null;
+    var word = model.getWordUntilPosition(position);
+    if (word.startColumn !== value.start || model.getLineContent(position.lineNumber).slice(0, word.startColumn - 1) !== value.receiver) return null;
+    var query = String(word.word || '').toLowerCase();
+    return { items: value.items.filter(function(item) { return completionItemLabel(item).toLowerCase().indexOf(query) === 0; }) };
+  }
+
+  function createCompletionRequestGuard(model, token, readIdentity, position) {
+    var version = model.getVersionId();
+    var identity = readIdentity();
+    return function() {
+      if (token && token.isCancellationRequested || model.isDisposed && model.isDisposed() || model.getVersionId() !== version) return false;
+      var current = readIdentity();
+      return current.generation === identity.generation && current.sessionId === identity.sessionId && current.model === model &&
+        (!position || current.position && current.position.lineNumber === position.lineNumber && current.position.column === position.column);
+    };
+  }
+
+  function completeWithLocal(localProvider, model, position, context, token) {
+    var snapshot = completionSnapshot(model, position, token);
+    completionRefreshGate.begin(snapshot);
+    var isCurrent = createCompletionRequestGuard(model, token, function() {
+      return { generation: completionContextGeneration, sessionId: status.sessionId, model: currentModel(), position: S.editor && S.editor.getPosition() };
+    }, position);
+    var local = localProvider && localProvider.provideCompletionItems(model, position, context, token);
+    var remote = provideRemoteCompletion(model, position, context, token);
+    function combine(localList) {
+      if (!isCurrent()) return { suggestions: [], incomplete: false };
+      var candidates = (remote.suggestions || []).concat(localList && localList.suggestions || []);
+      var history = global.completionHistory;
+      var historyContext = learningContext(model, position);
+      if (history && history.rank) candidates = history.rank(candidates, historyContext, 4096);
+      var seen = new Set();
+      var suggestions = candidates.filter(function(item) {
+        var label = completionItemLabel(item);
+        var key = label + '\u0000' + String(item.insertText || label);
+        if (seen.has(key)) return false;
+        seen.add(key); return true;
+      }).slice(0, 120).map(function(item) { return Object.assign({}, item, { preselect: false }); });
+      if (history && history.rememberSuggestions) history.rememberSuggestions(historyContext, suggestions);
+      completionRefreshGate.observe(snapshot, suggestions);
+      return { suggestions: suggestions, incomplete: !!remote.incomplete || !!(localList && localList.incomplete) };
+    }
+    return local && typeof local.then === 'function' ? local.then(combine, function() { return combine(null); }) : combine(local);
   }
 
   function canRetriggerCompletion(snapshot) {
     return completionSnapshotIsValid(snapshot) && !!(S.editor && typeof S.editor.hasTextFocus === 'function' && S.editor.hasTextFocus());
   }
 
-  function retriggerCompletion(snapshot) {
-    if (!canRetriggerCompletion(snapshot) || typeof S.editor.trigger !== 'function') return;
+  function retriggerCompletion(snapshot, value, source) {
+    if (!canRetriggerCompletion(snapshot) || !completionRefreshGate.isWaiting(snapshot, source)) return;
     var controller = typeof S.editor.getContribution === 'function'
       ? S.editor.getContribution('editor.contrib.suggestController')
       : null;
+    var widget = controller && controller.widget && controller.widget.value;
+    if (source !== 'semantic' && widget && typeof widget.getFocusedItem === 'function' && widget.getFocusedItem()) {
+      completionRefreshGate.block(snapshot);
+      return;
+    }
+    if (!completionRefreshGate.consume(snapshot, value, source)) return;
+    if (controller && controller.model && typeof controller.model.trigger === 'function') {
+      controller.model.trigger({ auto: true, retrigger: true });
+      return;
+    }
     if (controller && typeof controller.triggerSuggest === 'function') {
       controller.triggerSuggest(undefined, true, undefined);
       return;
     }
-    S.editor.trigger('remote-lsp', 'editor.action.triggerSuggest', {});
+    if (typeof S.editor.trigger === 'function') S.editor.trigger('remote-lsp', 'editor.action.triggerSuggest', {});
   }
 
   function provideRemoteCompletion(model, position, context, token) {
@@ -2279,6 +2545,12 @@
     // semantic references from a stale analyzer session.
     if (status.state !== 'ready') {
       if (status.retryBlocked) return { suggestions: [] };
+      var pausedService = completionService();
+      var offlineCapability = dependencyApiIndexCapability();
+      if (pausedService && (pausedService.progress().state !== 'disabled' || offlineCapability && Array.isArray(offlineCapability.queryKinds))) {
+        var demandHint = pausedService.suggestions(model, position);
+        return demandHint ? completionList(demandHint, model, position, true) : { suggestions: [] };
+      }
       var offlineIndex = canUseDependencyApiIndex(model) && ensureDependencyApiIndex(model);
       var offlineHint = offlineIndex && offlineIndex.value && dependencyApiIndexCompletions(offlineIndex.value, snapshot);
       return offlineHint ? completionList(offlineHint, model, position, true) : { suggestions: [] };
@@ -2293,10 +2565,13 @@
     // API summaries are only enabled for Active cache. They remain inside this
     // provider rather than registering another Monaco provider, so local
     // module/member names cannot race or duplicate semantic LSP candidates.
-    var dependencyIndex = ensureDependencyApiIndex(model, false);
-    var apiHint = dependencyIndex && dependencyIndex.value
-      ? dependencyApiIndexCompletions(dependencyIndex.value, snapshot)
-      : null;
+    var service = completionService();
+    var capability = dependencyApiIndexCapability();
+    var demandSupported = service && capability && Array.isArray(capability.queryKinds);
+    var dependencyIndex = demandSupported ? null : ensureDependencyApiIndex(model, false);
+    var apiHint = demandSupported ? service.suggestions(model, position) : (dependencyIndex && dependencyIndex.value
+      ? dependencyApiIndexCompletions(dependencyIndex.value, snapshot) : null);
+    var continuation = continuationResult(model, position);
     var requestContextKey = JSON.stringify(protocolContext);
     var sessionHint = completionCoordinator.read(snapshot.uri, snapshot.key, requestContextKey);
     // L1 is exact for this editor position and always wins. L2 lazy mode then
@@ -2304,6 +2579,7 @@
     // mode intentionally falls through to stale-while-revalidate.
     if (sessionHint !== null) return completionList(mergeLocalCompletionResults(sessionHint, apiHint), model, position, false);
     if (localHint && clientCacheMode() === 'lazy') return completionList(mergeLocalCompletionResults(localHint, apiHint), model, position, true);
+    completionRefreshGate.expectRemote(snapshot);
     var cached = completionCoordinator.readOrRefresh({
       uri: snapshot.uri,
       key: snapshot.key,
@@ -2311,20 +2587,15 @@
       isValid: function() { return completionSnapshotIsValid(snapshot); },
       hasFocus: function() { return canRetriggerCompletion(snapshot); },
       hasResults: completionResultHasItems,
-      // A cached local list needs one follow-up render when the server proves
-      // that the authoritative result is empty, otherwise stale suggestions
-      // would linger until the user invokes completion again.
-      retriggerOnEmpty: !!localHint || !!apiHint,
+      retriggerOnEmpty: false,
       shouldRetrigger: function(value) {
-        if (!cacheScope || !completionSnapshotIsValid(snapshot)) return true;
-        if (!completionResultHasItems(value)) return !!localHint || !!apiHint;
-        // The remote analyzer is authoritative. If it differs from a library
-        // summary, request exactly one replacement render even when the normal
-        // completion cache did not change.
-        var hintChanged = persistCompletionHint(cacheScope, cacheScopeId, cacheKey, value, model, position);
-        return !!apiHint || hintChanged;
+        rememberContinuation(value, model, position);
+        if (cacheScope && completionSnapshotIsValid(snapshot) && completionResultHasItems(value)) {
+          persistCompletionHint(cacheScope, cacheScopeId, cacheKey, value, model, position);
+        }
+        return completionRefreshGate.isWaiting(snapshot, 'semantic');
       },
-      retrigger: function() { retriggerCompletion(snapshot); },
+      retrigger: function(value) { retriggerCompletion(snapshot, value, 'semantic'); },
       load: function(requestKey, isCurrentValid) {
         return ensureDocumentSynchronized(model).then(function(synchronized) {
           if (!synchronized || !isCurrentValid()) return undefined;
@@ -2338,7 +2609,7 @@
     // library names from the static summary. A warm remote answer must not
     // make `numpy` or `numpy.array` disappear after the first local render.
     var result = cached === null
-      ? mergeLocalCompletionResults(localHint, apiHint)
+      ? mergeLocalCompletionResults(mergeLocalCompletionResults(localHint, continuation), apiHint)
       : mergeLocalCompletionResults(cached, apiHint);
     return result === null ? { suggestions: [] } : completionList(result, model, position, cached === null && !!result);
   }
@@ -2348,6 +2619,11 @@
     if (!registration || !monacoRef) return;
     var triggers = (triggerCharacters || []).slice();
     var capability = completionProviderCapability(lspProtocolCapabilities);
+    var localProvider = global.editorRuleRegistry && typeof global.editorRuleRegistry.getCompletionProvider === 'function' && global.editorRuleRegistry.getCompletionProvider(language);
+    if (localProvider && completionService()) {
+      localProvider.triggerCharacters = Array.from(new Set((localProvider.triggerCharacters || []).concat(triggers)));
+      return;
+    }
     var resolveEnabled = status.state === 'ready' && language === activeLanguage && !!(capability && capability.resolveProvider === true);
     var providerKey = JSON.stringify({ triggers: triggers, resolveProvider: resolveEnabled });
     if (registration.disposable && registration.providerKey === providerKey) return;
@@ -2357,20 +2633,30 @@
     var completionProvider = {
       triggerCharacters: triggers,
       provideCompletionItems: function(model, position, context, token) {
-        return provideRemoteCompletion(model, position, context, token);
+        var snapshot = completionSnapshot(model, position, token);
+        completionRefreshGate.begin(snapshot);
+        var list = provideRemoteCompletion(model, position, context, token);
+        completionRefreshGate.observe(snapshot, list);
+        return list;
       }
     };
     if (resolveEnabled) {
-      completionProvider.resolveCompletionItem = async function(item, token) {
-        if (!item._boboLsp || status.state !== 'ready') return item;
-        var resolved = await request('completionItem/resolve', item._boboLsp, token, 1800);
-        if (token && token.isCancellationRequested) return item;
-        return resolved ? mapCompletion(resolved, item.range) : item;
-      };
+      completionProvider.resolveCompletionItem = resolveRemoteCompletionItem;
     }
     registration.provider = completionProvider;
     registration.providerKey = providerKey;
     registration.disposable = monacoRef.languages.registerCompletionItemProvider(language, completionProvider);
+  }
+
+  async function resolveRemoteCompletionItem(item, token) {
+    var capability = completionProviderCapability(lspProtocolCapabilities);
+    if (!item._boboLsp || status.state !== 'ready' || !capability || !capability.resolveProvider) return item;
+    var generation = completionContextGeneration;
+    var resolved = await request('completionItem/resolve', item._boboLsp, token, 1800);
+    if (!resolved || generation !== completionContextGeneration || token && token.isCancellationRequested) return item;
+    var mapped = mapCompletion(Object.assign({}, item._boboLsp, resolved), item.range, false, item._boboHistoryContext);
+    mapped.sortText = item.sortText;
+    return mapped;
   }
 
   function registerProviders() {
@@ -2730,6 +3016,7 @@
   function onStatus(next) {
     if (next && next.state !== 'local' && next.state !== 'disconnected' && !activeLspDecision().available) {
       clearRemoteMarkers();
+      cancelDependencyApiIndexBuilds();
       return;
     }
     var previousState = status.state;
@@ -2771,15 +3058,19 @@
     if (previousState === 'ready' && status.state !== 'ready') {
       openedDocuments.clear();
       clearChangeQueues();
-      cancelDependencyApiIndexBuilds();
+      cancelDependencyApiIndexBuilds(settings.mode !== 'local' && (['local', 'disabled', 'unsupported'].indexOf(status.state) < 0 ||
+        status.state === 'local' && capabilityReconnectCoordinator && capabilityReconnectCoordinator.isActive()));
     }
     if (status.state === 'ready' && (previousState !== 'ready' || previousSessionId !== status.sessionId)) {
       clearChangeQueues();
       openedDocuments.clear();
-      if (previousSessionId && previousSessionId !== status.sessionId) cancelDependencyApiIndexBuilds();
+      if (previousSessionId && previousSessionId !== status.sessionId) cancelDependencyApiIndexBuilds(true);
       monacoRef.editor.getModels().forEach(openDocument);
     }
-    if (status.state === 'ready' && clientCacheDependencyIndexEnabled()) ensureDependencyApiIndex(currentModel());
+    configureDemandCompletion();
+    var demandCapability = dependencyApiIndexCapability();
+    if (status.state === 'ready' && clientCacheDependencyIndexEnabled() &&
+        !(demandCapability && Array.isArray(demandCapability.queryKinds))) ensureDependencyApiIndex(currentModel());
     if (status.state === 'ready' || status.state === 'error' || status.state === 'disconnected') finishRestartButton();
     if (BOBO.environmentActivity) {
       if (status.state === 'ready' && (previousState !== 'ready' || previousSessionId !== status.sessionId)) {
@@ -2884,6 +3175,18 @@
     return ['off', 'lazy', 'active'].indexOf(mode) >= 0 ? mode : 'lazy';
   }
 
+  function clientCacheStrategy() {
+    var strategy = String(settings && settings.clientCacheStrategy || 'smart');
+    return ['on-demand', 'smart', 'project'].indexOf(strategy) >= 0 ? strategy : 'smart';
+  }
+
+  function notifyCachePolicyChanged() {
+    if (typeof global.dispatchEvent !== 'function' || typeof global.CustomEvent !== 'function') return;
+    global.dispatchEvent(new global.CustomEvent('bobo:lsp-cache-policy-changed', {
+      detail: { strategy: clientCacheStrategy(), persistent: clientCacheMode() !== 'off', sizeMiB: clientCacheSizeMiB() }
+    }));
+  }
+
   function clientCacheSizeMiB(value) {
     var requested = value === undefined || value === null || value === ''
       ? settings && settings.clientCacheSizeMiB
@@ -2901,7 +3204,7 @@
   }
 
   function dependencyApiIndexEligible() {
-    return clientCacheMode() === 'active' && clientCacheSizeMiB() >= 30;
+    return clientCacheMode() !== 'off';
   }
 
   function dependencyApiIndexSupportedHere() {
@@ -2914,15 +3217,12 @@
     var state = document.getElementById('lsp-client-cache-dependency-index-state');
     var hint = document.getElementById('lsp-client-cache-dependency-index-hint');
     if (!panel || !toggle || !state || !hint) return;
-    var mode = clientCacheMode();
     var eligible = dependencyApiIndexEligible();
     var supported = dependencyApiIndexSupportedHere();
     var configured = clientCacheDependencyIndexEnabled();
     var enabled = configured && supported;
     panel.hidden = false;
-    // Keep the disable action available after switching away from Python, but
-    // never let an unsupported analyzer promise that it can build an index.
-    toggle.disabled = (!configured && !supported) || !!clientCacheUi.operation;
+    toggle.disabled = !eligible || !!clientCacheUi.operation || !!clientCachePendingPolicy || !!clientCachePendingStrategy;
     toggle.setAttribute('aria-pressed', configured ? 'true' : 'false');
     toggle.textContent = configured ? t('Disable library API cache') : t('Enable library API cache');
     var sessionReady = !configured && dependencyApiIndexUi.state === 'session';
@@ -2937,11 +3237,34 @@
       : (!enabled && !supported ? t('Library API cache is unavailable for the current analysis.') : (enabled
       ? (status.state !== 'ready' ? t('Using verified library API cache while reconnecting') : (stateValue === 'loading' ? t('Loading local cache...') : (indexValue && indexValue.truncated ? t('Library API cache is enabled (partial coverage)') : t('Library API cache is enabled'))))
       : t('Library API cache is disabled'))));
-    hint.textContent = mode !== 'active'
-      ? t('Library API cache is available only with active cache.')
-      : (!eligible ? t('Requires active cache and at least 30 MB.') : (!supported
-        ? t('A compatible Python dependency view is required.')
-        : t('Requires active cache and at least 30 MB.')));
+    hint.textContent = !eligible
+      ? t('Enable disk persistence to keep module summaries between sessions.')
+      : (!supported
+        ? t('Module summaries become available when a compatible analysis environment is ready.')
+        : t('Small caches retain import names first and load larger module summaries when needed.'));
+    var warmupState = document.getElementById('lsp-index-warmup-state');
+    var warmupProgress = document.getElementById('lsp-index-warmup-progress');
+    var warmupCount = document.getElementById('lsp-index-warmup-count');
+    var completed = Math.max(0, Number(dependencyApiIndexUi.completedModules) || 0);
+    var total = Math.max(completed, Number(dependencyApiIndexUi.totalModules) || 0);
+    // Preparing in-memory summaries is independent from persisting them.
+    // Keep progress truthful when the user has disabled disk storage.
+    var preparationState = dependencyApiIndexUi.state || 'disabled';
+    var warmupKey = !supported ? 'Waiting for an analysis environment'
+      : (preparationState === 'error' ? 'Dependency preparation needs attention'
+      : (preparationState === 'loading' || preparationState === 'warming' ? 'Preparing dependency summaries'
+      : (preparationState === 'paused' ? 'Preparation pauses while you edit'
+      : (clientCacheStrategy() === 'on-demand' ? 'Modules load when requested' : 'Dependency summaries are ready'))));
+    if (warmupState) warmupState.textContent = t(warmupKey);
+    if (warmupProgress) {
+      warmupProgress.hidden = total === 0;
+      warmupProgress.max = Math.max(1, total);
+      warmupProgress.value = completed;
+    }
+    if (warmupCount) {
+      warmupCount.hidden = total === 0;
+      warmupCount.textContent = t('{completed} of {total} modules prepared', { completed: completed, total: total });
+    }
   }
 
   function clientCacheNumber(stats, names) {
@@ -2969,11 +3292,12 @@
     if (mode === 'off') return t('Local cache is off');
     var entries = clientCacheNumber(stats, ['entryCount', 'entries', 'count', 'items']);
     if (entries === 0) return t('No local cache data');
-    return mode === 'lazy' ? t('Lazy cache is ready') : t('Active cache is ready');
+    return t('Local cache is ready');
   }
 
   function renderClientCacheUi() {
-    var mode = clientCacheMode();
+    var mode = clientCachePendingPolicy ? clientCachePendingPolicy.mode : clientCacheMode();
+    var policyPending = !!clientCachePendingPolicy || !!clientCachePendingStrategy;
     var facade = clientCacheFacade();
     var state = clientCacheUi.state || 'loading';
     var stats = clientCacheUi.stats;
@@ -3006,25 +3330,30 @@
       cleanupEl.textContent = effectiveState === 'loading' ? '--' : clientCacheCleanupLabel(stats, mode);
       cleanupEl.title = cleanupEl.textContent;
     }
-    document.querySelectorAll('input[name="lsp-client-cache-mode"]').forEach(function(input) {
-      input.checked = input.value === mode;
-      input.disabled = !available || !!clientCacheUi.operation;
+    document.querySelectorAll('input[name="lsp-client-cache-strategy"]').forEach(function(input) {
+      input.checked = input.value === (clientCachePendingStrategy || clientCacheStrategy());
+      input.disabled = !available || policyPending || !!clientCacheUi.operation;
     });
+    var persistence = document.getElementById('lsp-client-cache-persistence');
+    if (persistence) {
+      persistence.checked = mode !== 'off';
+      persistence.disabled = !available || policyPending || !!clientCacheUi.operation;
+    }
     var capacity = document.querySelector('.lsp-client-cache-capacity');
     var sizeSlider = document.getElementById('lsp-client-cache-size-mib');
     var sizeOutput = document.getElementById('lsp-client-cache-size-output');
-    var sizeMiB = clientCacheSizeMiB(stats && stats.configuredSizeMiB);
+    var sizeMiB = clientCacheSizeMiB(clientCachePendingPolicy ? clientCachePendingPolicy.sizeMiB : stats && stats.configuredSizeMiB);
     if (capacity) capacity.setAttribute('aria-disabled', mode === 'off' ? 'true' : 'false');
     if (sizeSlider) {
       sizeSlider.value = String(sizeMiB);
-      sizeSlider.disabled = !available || mode === 'off' || !!clientCacheUi.operation;
+      sizeSlider.disabled = !available || mode === 'off' || policyPending || !!clientCacheUi.operation;
       sizeSlider.setAttribute('aria-valuetext', sizeMiB + ' MB');
     }
     if (sizeOutput) sizeOutput.textContent = sizeMiB + ' MB';
     ['lsp-client-cache-clear-workspace', 'lsp-client-cache-clear-all'].forEach(function(id) {
       var button = document.getElementById(id);
       if (!button) return;
-      button.disabled = !available || !!clientCacheUi.operation;
+      button.disabled = !available || policyPending || !!clientCacheUi.operation;
       if (clientCacheUi.operation) button.setAttribute('aria-busy', 'true');
       else button.removeAttribute('aria-busy');
     });
@@ -3070,6 +3399,7 @@
     if (['off', 'lazy', 'active'].indexOf(mode) < 0) return;
     var facade = clientCacheFacade();
     if (!facade) return;
+    clientCachePendingPolicy = { mode: mode, sizeMiB: clientCacheSizeMiB(sizeMiB) };
     clientCacheUi.operation = 'policy';
     renderClientCacheUi();
     try {
@@ -3079,11 +3409,14 @@
         ? result.clientCacheSizeMiB
         : sizeMiB);
       settings.clientCacheDependencyIndexEnabled = result && result.clientCacheDependencyIndexEnabled === true;
+      settings.clientCacheStrategy = result && result.clientCacheStrategy ? result.clientCacheStrategy : clientCacheStrategy();
       if (S.lsp) S.lsp.settings = settings;
       configureCompletionHintCache();
+      clientCachePendingPolicy = null;
       clientCacheUi.operation = '';
       await refreshClientCacheStats();
     } catch (error) {
+      clientCachePendingPolicy = null;
       clientCacheUi.operation = '';
       clientCacheUi.state = 'error';
       clientCacheUi.error = t('Could not update local cache policy: {message}', { message: error && error.message ? error.message : t('Unknown error') });
@@ -3121,25 +3454,46 @@
     var next = await global.api.lspSettingsWrite({
       mode: settings.mode,
       clientCacheMode: nextMode,
+      clientCacheStrategy: clientCacheStrategy(),
       clientCacheSizeMiB: nextSize,
-      clientCacheDependencyIndexEnabled: settings.clientCacheDependencyIndexEnabled === true
+      clientCacheDependencyIndexEnabled: nextMode !== 'off' &&
+        (settings.clientCacheDependencyIndexEnabled === true || clientCacheMode() === 'off')
     });
     settings = Object.assign({}, settings, next || { clientCacheMode: nextMode, clientCacheSizeMiB: nextSize });
     if (S.lsp) S.lsp.settings = settings;
     configureCompletionHintCache();
     invalidateCompletionContext();
+    notifyCachePolicyChanged();
     return settings;
+  }
+
+  async function setClientCacheStrategy(strategy) {
+    if (['on-demand', 'smart', 'project'].indexOf(strategy) < 0) throw new Error(t('Invalid local cache policy'));
+    var host = completionIndexHost();
+    if (!host || typeof host.lspSettingsWrite !== 'function') throw new Error(t('Local cache is unavailable'));
+    clientCachePendingStrategy = strategy;
+    renderClientCacheUi();
+    try {
+      var next = await host.lspSettingsWrite({ clientCacheStrategy: strategy });
+      settings = Object.assign({}, settings, next || { clientCacheStrategy: strategy });
+      if (S.lsp) S.lsp.settings = settings;
+      configureCompletionHintCache();
+      notifyCachePolicyChanged();
+      return settings;
+    } finally {
+      clientCachePendingStrategy = '';
+      renderClientCacheUi();
+    }
   }
 
   async function setClientCacheDependencyIndexEnabled(enabled) {
     var nextEnabled = enabled === true;
-    if (nextEnabled && clientCacheMode() !== 'active') throw new Error(t('Library API cache is available only with active cache.'));
-    if (nextEnabled && clientCacheSizeMiB() < 30) throw new Error(t('Increase cache capacity to at least 30 MB to enable persistent library API caching.'));
-    if (nextEnabled && !dependencyApiIndexSupportedHere()) throw new Error(t('A compatible Python dependency view is required.'));
+    if (nextEnabled && clientCacheMode() === 'off') throw new Error(t('Enable disk persistence to keep module summaries between sessions.'));
     if (!global.api || typeof global.api.lspSettingsWrite !== 'function') throw new Error(t('Local cache is unavailable'));
     var next = await global.api.lspSettingsWrite({
       mode: settings.mode,
       clientCacheMode: clientCacheMode(),
+      clientCacheStrategy: clientCacheStrategy(),
       clientCacheSizeMiB: clientCacheSizeMiB(),
       clientCacheDependencyIndexEnabled: nextEnabled
     });
@@ -3151,7 +3505,9 @@
       try { await global.api.lspClientCacheDependencyIndexClear({ scope: 'all' }); } catch (_) {}
     }
     dependencyApiIndexUi = { state: nextEnabled ? 'loading' : 'disabled', error: '' };
-    if (nextEnabled) ensureDependencyApiIndex(currentModel());
+    var capability = dependencyApiIndexCapability();
+    if (nextEnabled && !(capability && Array.isArray(capability.queryKinds))) ensureDependencyApiIndex(currentModel());
+    notifyCachePolicyChanged();
     renderStatus();
     return settings;
   }
@@ -3283,6 +3639,7 @@
     var next = await global.api.lspSettingsWrite({
       mode: mode,
       clientCacheMode: clientCacheMode(),
+      clientCacheStrategy: clientCacheStrategy(),
       clientCacheSizeMiB: clientCacheSizeMiB(),
       clientCacheDependencyIndexEnabled: settings.clientCacheDependencyIndexEnabled === true
     });
@@ -3314,10 +3671,19 @@
     document.querySelectorAll('input[name="lsp-mode"]').forEach(function(input) {
       input.addEventListener('change', function() { if (input.checked) setMode(input.value); });
     });
-    document.querySelectorAll('input[name="lsp-client-cache-mode"]').forEach(function(input) {
+    document.querySelectorAll('input[name="lsp-client-cache-strategy"]').forEach(function(input) {
       input.addEventListener('change', function() {
-        if (input.checked) setClientCachePolicyFromUi(input.value, clientCacheSizeMiB());
+        if (!input.checked) return;
+        setClientCacheStrategy(input.value).catch(function(error) {
+          renderClientCacheUi();
+          if (BOBO.toast) BOBO.toast.error(error && error.message ? error.message : t('Local cache is unavailable'));
+        });
       });
+    });
+    var persistence = document.getElementById('lsp-client-cache-persistence');
+    if (persistence) persistence.addEventListener('change', function() {
+      var nextMode = persistence.checked ? 'active' : 'off';
+      setClientCachePolicyFromUi(nextMode, clientCacheSizeMiB());
     });
     var clientCacheSize = document.getElementById('lsp-client-cache-size-mib');
     if (clientCacheSize) {
@@ -3392,14 +3758,20 @@
 
   async function init(monacoInstance) {
     monacoRef = monacoInstance;
+    var coordinated = completionService();
+    if (coordinated) {
+      coordinated.setProvider(completeWithLocal);
+      coordinated.setResolver(resolveRemoteCompletionItem);
+    }
     try { settings = await global.api.lspSettingsRead(); } catch (_) { settings = { mode: 'local', clientCacheMode: 'lazy', clientCacheSizeMiB: 32, clientCacheDependencyIndexEnabled: false }; }
     if (!settings || ['local', 'standard', 'full'].indexOf(settings.mode) < 0) settings = { mode: 'local', clientCacheMode: 'lazy', clientCacheSizeMiB: 32, clientCacheDependencyIndexEnabled: false };
     if (settings.clientCacheMode === 'session') settings.clientCacheMode = 'lazy';
     if (settings.clientCacheMode === 'persistent') settings.clientCacheMode = 'active';
     if (['off', 'lazy', 'active'].indexOf(settings.clientCacheMode) < 0) settings.clientCacheMode = 'lazy';
+    settings.clientCacheStrategy = clientCacheStrategy();
     settings.clientCacheSizeMiB = clientCacheSizeMiB(settings.clientCacheSizeMiB);
     settings.clientCacheDependencyIndexEnabled = settings.clientCacheDependencyIndexEnabled === true &&
-      settings.clientCacheMode === 'active' && settings.clientCacheSizeMiB >= 30;
+      settings.clientCacheMode !== 'off';
     configureCompletionHintCache();
     S.lsp = { settings: settings, status: status };
     await refreshCapabilities();
@@ -3461,13 +3833,14 @@
     });
     if (typeof global.api.onLspDependencyIndex === 'function') global.api.onLspDependencyIndex(handleDependencyApiIndexMessage);
     global.addEventListener('bobo:language-changed', renderStatus);
+    global.addEventListener('bobo:lsp-cache-policy-changed', configureDemandCompletion);
     global.addEventListener('bobo:dependencies-changed', dependenciesChanged);
     global.addEventListener('bobo:server-capabilities-changed', function(event) {
       var controlledReconnectRefresh = !!(capabilityReconnectCoordinator && capabilityReconnectCoordinator.isActive() &&
         event && event.detail && event.detail.reason === 'lsp-reconnect');
       configureGeneration += 1;
       lastConfigSignature = '';
-      invalidateCompletionContext();
+      invalidateCompletionContext(controlledReconnectRefresh);
       updateCompletionCapabilities({});
       if (!activeLspDecision().available) {
         var currentDecision = activeLspDecision();
@@ -3477,6 +3850,7 @@
           error: settings.mode === 'local' ? '' : lspUnavailableText(currentDecision, currentDecision.language || activeLanguage)
         });
         clearRemoteMarkers();
+        cancelDependencyApiIndexBuilds();
         if (S.lsp) S.lsp.status = status;
         renderStatus();
       }
@@ -3485,20 +3859,41 @@
       });
     });
     monacoRef.editor.onDidCreateModel(function(model) {
+      if (global.completionHistory && global.completionHistory.observeModel) global.completionHistory.observeModel(model, { reason: 'open' });
       model.onDidChangeContent(function(event) { queueChanges(model, event); });
       model.onWillDispose(function() { closeDocument(model); });
       if (status.state === 'ready') openDocument(model);
     });
     monacoRef.editor.getModels().forEach(function(model) {
+      if (global.completionHistory && global.completionHistory.observeModel) global.completionHistory.observeModel(model, { reason: 'open' });
       model.onDidChangeContent(function(event) { queueChanges(model, event); });
       model.onWillDispose(function() { closeDocument(model); });
     });
     if (S.editor) {
+      if (document.addEventListener) {
+        var stopRefreshForPointer = function(event) {
+          var target = event && event.target;
+          if (!target || typeof target.closest !== 'function' || !target.closest('.suggest-widget')) return;
+          var model = currentModel(); var position = S.editor.getPosition();
+          if (model && position) completionRefreshGate.block(completionSnapshot(model, position, null));
+        };
+        document.addEventListener('pointerdown', stopRefreshForPointer, true);
+        disposables.push({ dispose: function() { document.removeEventListener('pointerdown', stopRefreshForPointer, true); } });
+      }
+      if (S.editor.onKeyDown) {
+        disposables.push(S.editor.onKeyDown(function(event) {
+          var key = event && event.browserEvent && event.browserEvent.key;
+          if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', 'Escape', 'Enter', 'Tab'].indexOf(key) < 0) return;
+          var model = currentModel(); var position = S.editor.getPosition();
+          if (model && position) completionRefreshGate.block(completionSnapshot(model, position, null));
+        }));
+      }
       S.editor.onDidChangeModel(function() {
         // A file switch invalidates position/semantic completions; library
         // names remain valid within the same analysis identity. configure()
         // separately clears them when workspace, language or runtime changes.
         invalidateCompletionContext(true);
+        if (completionService()) completionService().activity(currentModel());
         scheduleConfigure();
       });
       if (S.editor.onDidChangeCursorPosition) {
@@ -3507,6 +3902,7 @@
           var snapshot = model && completionSnapshot(model, event && event.position, null);
           if (snapshot && !completionCoordinator.matches(snapshot.uri, snapshot.key)) completionCoordinator.invalidate(snapshot.uri);
           if (model && event && event.position) scheduleCompletionHintPrewarm(model, event.position);
+          if (completionService()) completionService().activity(model);
         });
       }
     }
@@ -3541,6 +3937,7 @@
     getClientCacheStats: getClientCacheStats,
     setClientCachePolicy: setClientCachePolicy,
     setClientCacheMode: setClientCacheMode,
+    setClientCacheStrategy: setClientCacheStrategy,
     setClientCacheDependencyIndexEnabled: setClientCacheDependencyIndexEnabled,
     clearClientCache: clearClientCache,
     clearAnalysisCache: clearAnalysisCache,
@@ -3587,6 +3984,9 @@
       completionValueFingerprint: completionValueFingerprint,
       clientCompletionCacheKey: clientCompletionCacheKey,
       completionProviderCapability: completionProviderCapability,
+      completionAcceptanceCommand: completionAcceptanceCommand,
+      createCompletionRequestGuard: createCompletionRequestGuard,
+      createCompletionRefreshGate: createCompletionRefreshGate,
       completionTriggerCharacters: completionTriggerCharacters,
       lspCompletionContext: lspCompletionContext,
       formattingOptionsForModel: formattingOptionsForModel

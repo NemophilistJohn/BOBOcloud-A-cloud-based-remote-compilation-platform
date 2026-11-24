@@ -129,11 +129,11 @@ test('suppresses suggestions in comments, strings and invalid structural trigger
   }), true);
 });
 
-test('offers context-specific import roots before the remote analyzer responds', function () {
+test('local rules leave installed import discovery to the environment catalog', function () {
   const python = complete('python', 'import m').suggestions;
-  assert.ok(python.some(function (item) { return item.label === 'matplotlib'; }));
+  assert.ok(!python.some(function (item) { return item.label === 'matplotlib'; }));
   const javascript = complete('javascript', "import { useState } from 'r").suggestions;
-  assert.ok(javascript.some(function (item) { return item.label === 'react'; }));
+  assert.ok(!javascript.some(function (item) { return item.label === 'react'; }));
 });
 
 test('turns legacy plain placeholders into snippets and deduplicates labels', function () {
@@ -213,6 +213,22 @@ test('extracts aliases and multiple declarations', function () {
   ).map(function (symbol) { return symbol.name; });
   assert.ok(go.includes('left'));
   assert.ok(go.includes('right'));
+});
+
+test('JavaScript and TypeScript fallback offers scoped declarations without unrelated member words', function () {
+  for (const language of ['javascript', 'typescript']) {
+    const code = 'import * as utilities from "utility-package";\nconst globalValue = 1;\nfunction first() {\n  const hidden = 2;\n}\nfunction second(parameter) {\n  const visible = 3;\n  vis';
+    const names = global.symbolExtractor.extract(code, language, 8).map(item => item.name);
+    assert.ok(names.includes('utilities'), language + ' import');
+    assert.ok(names.includes('globalValue'), language + ' global');
+    assert.ok(names.includes('visible'), language + ' local');
+    assert.ok(names.includes('parameter'), language + ' parameter');
+    assert.ok(!names.includes('hidden'), language + ' sibling function');
+    assert.ok(complete(language, code).suggestions.some(item => item.label === 'visible'));
+    assert.ok(complete(language, 'const sameLineValue = 1; sameL').suggestions.some(item => item.label === 'sameLineValue'));
+    assert.equal(complete(language, code + '\n  unknownReceiver.vis').suggestions.length, 0);
+    assert.equal(complete(language, code + '\n  import n').suggestions.length, 0);
+  }
 });
 
 test('offers inferred C, C++ and Rust members without duplicating the receiver', function () {

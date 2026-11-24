@@ -837,6 +837,24 @@ func TestLSPWebSocketDependencyAPIIndexControl(t *testing.T) {
 	if page["schema"] != lsp.DependencyAPIIndexSchema || len(entries) == 0 || strings.Contains(fmt.Sprint(response), filepath.ToSlash(packages)) {
 		t.Fatalf("unsafe or incomplete dependency index page: %+v", response)
 	}
+	for _, query := range []map[string]any{
+		{"queryKind": "catalog", "prefix": "n"},
+		{"queryKind": "module", "module": "numpy"},
+		{"queryKind": "project"},
+	} {
+		query["type"], query["requestId"] = "lsp.dependency.index.request", "query_"+query["queryKind"].(string)
+		if err := conn.WriteJSON(query); err != nil {
+			t.Fatal(err)
+		}
+		response = readWSJSON(t, conn)
+		page, _ = response["page"].(map[string]any)
+		if response["success"] != true || page["queryKind"] != query["queryKind"] || page["coverage"] != "direct" || strings.Contains(fmt.Sprint(response), filepath.ToSlash(packages)) {
+			t.Fatalf("new dependency query control failed: %+v", response)
+		}
+		if query["queryKind"] == "module" && !strings.Contains(fmt.Sprint(page["entries"]), "array") {
+			t.Fatalf("module query dropped direct exports: %+v", response)
+		}
+	}
 	if err := conn.WriteJSON(map[string]any{"type": "lsp.dependency.index.request", "requestId": "bad request", "maxBytes": lsp.DependencyAPIIndexPageMinBytes}); err != nil {
 		t.Fatal(err)
 	}
@@ -853,6 +871,13 @@ func TestLSPWebSocketDependencyAPIIndexControl(t *testing.T) {
 		t.Fatalf("invalid request id was echoed: %+v", invalid)
 	}
 	_ = conn.WriteJSON(map[string]any{"type": "lsp.stop"})
+}
+
+func TestDependencyIndexTransientErrorCode(t *testing.T) {
+	code, message := dependencyIndexError(lsp.ErrDependencyDiscoveryBusy)
+	if code != "runtime_discovery_busy" || message == "" {
+		t.Fatalf("discovery pressure is not retryable: %q %q", code, message)
+	}
 }
 
 func TestDependencyIndexRequestGateBoundsCachedRequestFlood(t *testing.T) {

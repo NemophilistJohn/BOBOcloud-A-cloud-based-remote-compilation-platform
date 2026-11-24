@@ -311,8 +311,8 @@ test('sanitizes a bounded static dependency API tree and rejects source-like dat
   assert.deepEqual(sanitizeDependencyIndex(dependencyIndex(), active), dependencyIndex());
   assert.deepEqual(sanitizeDependencyIndex({ ...dependencyIndex(), truncated: true }, active), { ...dependencyIndex(), truncated: true });
   assert.equal(sanitizeDependencyIndex({ ...dependencyIndex(), truncated: 'false' }, active), null);
-  assert.equal(sanitizeDependencyIndex(dependencyIndex(), { mode: 'lazy', sizeMiB: 1024, dependencyIndexEnabled: true }), null);
-  assert.equal(sanitizeDependencyIndex(dependencyIndex(), { mode: 'active', sizeMiB: MIN_DEPENDENCY_INDEX_SIZE_MIB - 1, dependencyIndexEnabled: true }), null);
+  assert.deepEqual(sanitizeDependencyIndex(dependencyIndex(), { mode: 'lazy', sizeMiB: 1, dependencyIndexEnabled: true }), dependencyIndex());
+  assert.equal(sanitizeDependencyIndex(dependencyIndex(), { mode: 'off', sizeMiB: 1, dependencyIndexEnabled: true }), null);
   assert.equal(sanitizeDependencyIndex(dependencyIndex(), { mode: 'active', sizeMiB: MIN_DEPENDENCY_INDEX_SIZE_MIB }), null);
   assert.equal(sanitizeDependencyIndex(Object.assign(dependencyIndex(), { source: 'import numpy' }), active), null);
   assert.equal(sanitizeDependencyIndex({
@@ -325,20 +325,18 @@ test('sanitizes a bounded static dependency API tree and rejects source-like dat
   }, active), null);
 });
 
-test('dependency indexes require active mode and a 30 MiB capacity', async (t) => {
+test('dependency indexes persist under either disk policy within a 1 MiB capacity', async (t) => {
   const { root, cache } = makeTempCache();
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const scope = personalScope();
-  assert.deepEqual(await cache.putDependencyIndex(scope, 'api:numpy', dependencyIndex(), { mode: 'lazy', sizeMiB: 1024, dependencyIndexEnabled: true }), {
-    stored: false, reason: 'disabled'
-  });
-  assert.deepEqual(await cache.putDependencyIndex(scope, 'api:numpy', dependencyIndex(), { mode: 'active', sizeMiB: 29, dependencyIndexEnabled: true }), {
-    stored: false, reason: 'disabled'
-  });
-  assert.equal(await cache.getDependencyIndex(scope, 'api:numpy', { mode: 'active', sizeMiB: 29, dependencyIndexEnabled: true }), null);
-  const stored = await cache.putDependencyIndex(scope, 'api:numpy', dependencyIndex(), { mode: 'active', sizeMiB: 30, dependencyIndexEnabled: true });
+  const policy = { mode: 'lazy', sizeMiB: 1, dependencyIndexEnabled: true };
+  const stored = await cache.putDependencyIndex(scope, 'api:numpy', dependencyIndex(), policy);
   assert.equal(stored.stored, true);
-  assert.deepEqual(await cache.getDependencyIndex(scope, 'api:numpy', { mode: 'active', sizeMiB: 30, dependencyIndexEnabled: true }), dependencyIndex());
+  assert.deepEqual(await cache.getDependencyIndex(scope, 'api:numpy', policy), dependencyIndex());
+  const values = { schema: DEPENDENCY_INDEX_SCHEMA, roots: [{ name: 'numpy', kind: 'module', members: [{ name: 'pi', kind: 'value' }] }] };
+  assert.equal((await cache.putDependencyIndex(scope, 'api:values', values, policy)).stored, true);
+  assert.deepEqual(await cache.getDependencyIndex(scope, 'api:values', policy), values);
+  await cache.clear({ scope: 'all' });
   assert.equal((await cache.putDependencyIndex(scope, 'api:numpy', { ...dependencyIndex(), truncated: true }, { mode: 'active', sizeMiB: 30, dependencyIndexEnabled: true })).stored, true);
   assert.deepEqual(await cache.getDependencyIndex(scope, 'api:numpy', { mode: 'active', sizeMiB: 30, dependencyIndexEnabled: true }), { ...dependencyIndex(), truncated: true });
   const stats = await cache.stats(scope, { mode: 'active', sizeMiB: 30, dependencyIndexEnabled: true });
@@ -346,6 +344,18 @@ test('dependency indexes require active mode and a 30 MiB capacity', async (t) =
   assert.equal(stats.dependencyIndexEntries, 1);
   assert.ok(stats.dependencyIndexBytes > 0);
   assert.equal(stats.policy.dependencyIndex.enabled, true);
+});
+
+test('dependency catalogs retain bounded multilingual import names beyond 64 roots', () => {
+  const roots = ['@scope/package', 'net/http', 'stdio.h', 'package-name'].concat(
+    Array.from({ length: 256 }, (_, index) => 'module' + index)
+  ).map((name) => ({ name, kind: 'module' }));
+  const catalog = { schema: DEPENDENCY_INDEX_SCHEMA, roots };
+  const policy = { mode: 'lazy', sizeMiB: 1, dependencyIndexEnabled: true };
+  assert.deepEqual(sanitizeDependencyIndex(catalog, policy), catalog);
+  for (const name of ['/absolute/package', 'C:/host/package', '../escape', '@scope/../escape', 'a\\b']) {
+    assert.equal(sanitizeDependencyIndex({ schema: DEPENDENCY_INDEX_SCHEMA, roots: [{ name, kind: 'module' }] }, policy), null);
+  }
 });
 
 test('dependency indexes share quota but are evicted before completion hints', async (t) => {
