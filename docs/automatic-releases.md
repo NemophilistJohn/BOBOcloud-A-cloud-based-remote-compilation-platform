@@ -19,6 +19,7 @@ is generated from `config.Default()`, not copied from a working machine.
 The workflow checks the current main commit and baseline again before creating
 a draft and before publishing it. Failed or superseded runs cannot create a
 public partial release; an incomplete draft may remain for investigation. A
+verified Git tag may also remain if publication fails after tag creation. A
 scheduled retry recovers from overlapping CI completions. GitHub Actions may
 replace an older pending concurrency run, but each run evaluates the newest
 main commit. If main has advanced without a successful push CI run, publishing

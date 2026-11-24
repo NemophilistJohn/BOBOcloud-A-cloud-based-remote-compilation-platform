@@ -30,7 +30,8 @@ function digest(file) {
 function gh(...args) {
   return execFileSync('gh', args, { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 8 * 1024 * 1024 });
 }
-function main() {
+function main(options = {}) {
+  const invoke = options.gh || gh;
   const head = process.env.RELEASE_HEAD || '';
   const baseline = process.env.RELEASE_BASELINE || '';
   const version = process.env.RELEASE_VERSION || '';
@@ -48,7 +49,7 @@ function main() {
   const hashes = names.map((name) => digest(path.join(dir, name)) + '  ' + name).join('\n') + '\n';
   fs.writeFileSync(path.join(dir, 'SHA256SUMS.txt'), hashes);
   const assets = [...names, 'SHA256SUMS.txt'];
-  const changes = execFileSync('git', ['log', '--no-merges', '--max-count=100', '--format=- %s (%h)', baseline + '..' + head], { encoding: 'utf8', maxBuffer: 1024 * 1024 }).trim();
+  const changes = options.log ? options.log(baseline, head) : execFileSync('git', ['log', '--no-merges', '--max-count=100', '--format=- %s (%h)', baseline + '..' + head], { encoding: 'utf8', maxBuffer: 1024 * 1024 }).trim();
   const notes = [
     `Automated BOBOCloud build from commit ${head}.`,
     `Previous release baseline: ${baseline}.`,
@@ -67,23 +68,29 @@ function main() {
   ].join('\n');
   const notePath = path.join(process.env.RUNNER_TEMP || dir, 'bobocloud-release-notes.md');
   fs.writeFileSync(notePath, notes);
-  const check = () => execFileSync(process.execPath, ['scripts/auto-release/plan.cjs', '--verify', head, baseline], { stdio: 'inherit' });
+  const check = options.check || (() => execFileSync(process.execPath, ['scripts/auto-release/plan.cjs', '--verify', head, baseline], { stdio: 'inherit' }));
   check();
-  gh('release', 'create', tag, '--target', head, '--draft', '--prerelease', '--title', 'BOBOCloud ' + version, '--notes-file', notePath, ...assets.map((name) => path.join(dir, name)));
-  const reference = JSON.parse(gh('api', 'repos/' + process.env.GITHUB_REPOSITORY + '/git/ref/tags/' + tag));
-  if (reference.object.type !== 'commit' || reference.object.sha !== head) throw new Error('Release tag does not point to the verified source commit');
-  const release = JSON.parse(gh('release', 'view', tag, '--json', 'isDraft,assets'));
-  if (!release.isDraft || release.assets.length !== assets.length) throw new Error('Draft release has an incomplete set of assets');
+  invoke('release', 'create', tag, '--target', head, '--draft', '--prerelease', '--title', 'BOBOCloud ' + version, '--notes-file', notePath, ...assets.map((name) => path.join(dir, name)));
+  // GitHub draft releases do not create their Git ref yet. Verify the draft's
+  // target and assets first, then create and verify the immutable ref explicitly.
+  const release = JSON.parse(invoke('release', 'view', tag, '--json', 'tagName,targetCommitish,isDraft,assets'));
+  if (!release.isDraft || release.tagName !== tag || release.targetCommitish !== head || release.assets.length !== assets.length) throw new Error('Draft release identity or asset set is invalid');
   for (const name of assets) {
     const asset = release.assets.find((item) => item.name === name);
     const file = path.join(dir, name);
     if (!asset || asset.size !== fs.statSync(file).size || asset.digest !== 'sha256:' + digest(file)) throw new Error('Uploaded release asset failed verification: ' + name);
   }
   check();
-  gh('release', 'edit', tag, '--draft=false');
+  invoke('api', '--method', 'POST', 'repos/' + process.env.GITHUB_REPOSITORY + '/git/refs', '-f', 'ref=refs/tags/' + tag, '-f', 'sha=' + head);
+  const reference = JSON.parse(invoke('api', 'repos/' + process.env.GITHUB_REPOSITORY + '/git/ref/tags/' + tag));
+  if (reference.object.type !== 'commit' || reference.object.sha !== head) throw new Error('Release tag does not point to the verified source commit');
+  check();
+  invoke('release', 'edit', tag, '--draft=false');
+  const published = JSON.parse(invoke('release', 'view', tag, '--json', 'isDraft,tagName'));
+  if (published.isDraft || published.tagName !== tag) throw new Error('Release publication could not be verified');
   console.log('Published complete prerelease ' + tag);
 }
 if (require.main === module) {
   try { main(); } catch (error) { console.error('[release-publish]', error.message); process.exitCode = 1; }
 }
-module.exports = { expectedAssets, digest };
+module.exports = { expectedAssets, digest, main };
