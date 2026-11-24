@@ -98,6 +98,8 @@ test('all SCM Git operations normalize to immutable, operation-specific DTOs', (
     clone: { url: 'https://github.com/example/repository.git', branch: 'main' },
     init: Object.create(null),
     setRemote: { repositoryId, name: null, url: 'git@github.com:example/repository.git' },
+    configureRemote: { repositoryId, name: 'origin', create: false, label: 'Personal', selected: true },
+    removeRemote: { repositoryId, name: 'origin' },
     stage: { repositoryId, paths: ['src/main.ts', 'README.md'] },
     stageAll: { repositoryId },
     unstage: { repositoryId, paths: ['src/main.ts'] },

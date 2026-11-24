@@ -2497,5 +2497,6 @@
   "Preparation pauses while you edit": "Preparation pauses while you edit",
   "Modules load when requested": "Modules load when requested",
   "Dependency summaries are ready": "Dependency summaries are ready",
-  "{completed} of {total} modules prepared": "{completed} of {total} modules prepared"
+  "{completed} of {total} modules prepared": "{completed} of {total} modules prepared",
+  "Please complete the required fields.": "Please complete the required fields."
 }

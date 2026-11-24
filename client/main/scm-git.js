@@ -41,6 +41,8 @@ const SCM_GIT_METHODS = Object.freeze({
   'scm.git.clone': 'scm.git.write',
   'scm.git.init': 'scm.git.write',
   'scm.git.setRemote': 'scm.git.write',
+  'scm.git.configureRemote': 'scm.git.write',
+  'scm.git.removeRemote': 'scm.git.write',
   'scm.git.stage': 'scm.git.write',
   'scm.git.stageAll': 'scm.git.write',
   'scm.git.unstage': 'scm.git.write',
@@ -99,6 +101,13 @@ function normalizeRemoteName(value, fallback = 'origin') {
     throw scmError('SCM_GIT_INVALID_ARGUMENT', 'Remote name is invalid.');
   }
   return name;
+}
+
+function normalizeRemoteMetadata(value, label, maxLength) {
+  if (typeof value !== 'string' || !value.trim() || value.length > maxLength || /[\x00-\x1f\x7f]/.test(value)) {
+    throw scmError('SCM_GIT_INVALID_ARGUMENT', label + ' is invalid.');
+  }
+  return value.trim();
 }
 
 function normalizeBranchName(value) {
@@ -441,7 +450,7 @@ function createScmGitBroker(options = {}) {
         delete env[key];
       }
     }
-    return { ...env, ...SAFE_GIT_ENVIRONMENT };
+    return { ...env, LC_ALL: 'C', LANG: 'C', ...SAFE_GIT_ENVIRONMENT };
   }
 
   async function execGit(cwd, args, options = {}) {
@@ -724,6 +733,33 @@ function createScmGitBroker(options = {}) {
     return normalizeBranchName(branch);
   }
 
+  async function readPushBranchMapping(scope, repository, branch) {
+    if (!branch) return { remote: '', branch: '', valid: true };
+    const config = await runGit(scope, repository.root, ['config', '--null', '--list']);
+    let remote = '';
+    let merge = '';
+    for (const entry of config.stdout.split('\0')) {
+      const separator = entry.indexOf('\n');
+      if (separator < 0) continue;
+      const key = entry.slice(0, separator);
+      const value = entry.slice(separator + 1).trim();
+      if (key === 'branch.' + branch + '.remote') remote = value;
+      if (key === 'branch.' + branch + '.merge') merge = value;
+    }
+    if (!merge) return { remote, branch: '', valid: true };
+    if (!merge.startsWith('refs/heads/')) return { remote, branch: '', valid: false };
+    try { return { remote, branch: normalizeBranchName(merge.slice('refs/heads/'.length)), valid: true }; }
+    catch (_) { return { remote, branch: '', valid: false }; }
+  }
+
+  function pushDestination(remote, localBranch, mapping) {
+    return mapping.remote === remote && mapping.branch ? mapping.branch : localBranch;
+  }
+
+  function fingerprintPushTarget(url, localBranch, destination) {
+    return crypto.createHash('sha256').update(JSON.stringify([normalizeRemoteUrl(url), localBranch, destination])).digest('hex');
+  }
+
   async function assertRemote(scope, repository, remoteName) {
     let result;
     try {
@@ -824,16 +860,18 @@ function createScmGitBroker(options = {}) {
       return readStatus(scope, repository, payload);
     }
     if (method === 'scm.git.history') {
-      if (Object.keys(payload).some((key) => !['repositoryId', 'offset', 'limit', 'ref'].includes(key))) throw scmError('SCM_GIT_INVALID_ARGUMENT', 'scm.git.history has an unsupported field.');
+      if (Object.keys(payload).some((key) => !['repositoryId', 'offset', 'limit', 'ref', 'remote'].includes(key))) throw scmError('SCM_GIT_INVALID_ARGUMENT', 'scm.git.history has an unsupported field.');
+      if (payload.remote && payload.ref) throw scmError('SCM_GIT_INVALID_ARGUMENT', 'History accepts a remote or a ref, not both.');
       const offset = normalizeOffset(payload.offset);
       const limit = normalizeLimit(payload.limit);
       const ref = normalizeRef(payload.ref);
+      const remote = payload.remote ? normalizeRemoteName(payload.remote) : '';
       // An initialized repository with no first commit is a valid and very
       // common state. `git log` exits non-zero for its unborn branch, which
       // must not make the whole SCM view look like a broken repository.
       const branchState = await runGit(scope, repository.root, ['status', '--porcelain=v2', '-z', '--branch']);
       await assertCurrentScope(scope, repository);
-      if (parseStatus(branchState.stdout).branch.oid === '(initial)') {
+      if (!remote && parseStatus(branchState.stdout).branch.oid === '(initial)') {
         return immutable({
           repositoryId: repository.id,
           commits: [],
@@ -845,7 +883,7 @@ function createScmGitBroker(options = {}) {
       }
       const result = await runGit(scope, repository.root, [
         'log', '--date=iso-strict', '--skip=' + offset, '--max-count=' + (limit + 1),
-        '--pretty=format:%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1e', ref
+        '--topo-order', '--pretty=format:%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1e', remote ? '--remotes=' + remote : ref
       ]);
       await assertCurrentScope(scope, repository);
       const records = parseHistory(result.stdout);
@@ -880,24 +918,56 @@ function createScmGitBroker(options = {}) {
     if (method === 'scm.git.remotes') {
       if (Object.keys(payload).some((key) => key !== 'repositoryId')) throw scmError('SCM_GIT_INVALID_ARGUMENT', 'scm.git.remotes has an unsupported field.');
       const namesResult = await runGit(scope, repository.root, ['remote']);
+      const verboseResult = await runGit(scope, repository.root, ['remote', '-v']);
+      const activeBranch = await readCurrentBranch(scope, repository).catch(() => '');
+      const pushMapping = await readPushBranchMapping(scope, repository, activeBranch);
+      const remoteUrls = new Map();
+      for (const line of verboseResult.stdout.split(/\r?\n/)) {
+        const match = line.match(/^([^\t]+)\t(.*) \((fetch|push)\)$/);
+        if (!match) continue;
+        const record = remoteUrls.get(match[1]) || { fetch: [], push: [] };
+        record[match[3]].push(match[2]);
+        remoteUrls.set(match[1], record);
+      }
+      const metaResult = await runGit(scope, repository.root, ['config', '--local', '--null', '--get-regexp', '^remote\\..*\\.bobocloud(label|platform|selected)$']).catch((error) => {
+        if (error && error.code === 'SCM_GIT_OPERATION_FAILED') return { stdout: '' };
+        throw error;
+      });
+      const metadata = new Map();
+      for (const entry of metaResult.stdout.split('\0')) {
+        const split = entry.indexOf('\n');
+        if (split < 0) continue;
+        const match = entry.slice(0, split).match(/^remote\.(.+)\.bobocloud(label|platform|selected)$/i);
+        if (!match) continue;
+        const record = metadata.get(match[1]) || {};
+        record[match[2].toLowerCase()] = entry.slice(split + 1);
+        metadata.set(match[1], record);
+      }
       const remotes = [];
       for (const rawName of namesResult.stdout.split(/\r?\n/)) {
         if (!rawName) continue;
         const name = normalizeRemoteName(rawName, '');
-        const fetchResult = await runGit(scope, repository.root, ['remote', 'get-url', '--all', name]);
-        const pushResult = await runGit(scope, repository.root, ['remote', 'get-url', '--push', '--all', name]);
+        const urls = remoteUrls.get(name) || { fetch: [], push: [] };
         let hasUnsupportedUrls = false;
-        const safeUrls = (result) => result.stdout.split(/\r?\n/).filter(Boolean).flatMap((url) => {
+        const safeUrls = (values) => values.flatMap((url) => {
           const safeUrl = sanitizeRemoteUrl(url, scope.root);
           if (!safeUrl) hasUnsupportedUrls = true;
           return safeUrl ? [safeUrl] : [];
         });
-        const fetchUrls = safeUrls(fetchResult);
-        const pushUrls = safeUrls(pushResult);
+        const fetchUrls = safeUrls(urls.fetch);
+        const pushUrls = safeUrls(urls.push);
         // `urls` remains the compatibility alias for fetch URLs. Push URLs
         // are exposed separately so a local UI can accurately summarize a
         // split fetch/push configuration without inspecting repository files.
-        remotes.push({ name, urls: fetchUrls, fetchUrls, pushUrls, hasUnsupportedUrls });
+        const meta = metadata.get(name) || {};
+        const safeMeta = (value, max) => typeof value === 'string' && value.trim() && value.length <= max && !/[\x00-\x1f\x7f]/.test(value) ? value.trim() : '';
+        const rawPushUrls = urls.push;
+        let pushFingerprint = '';
+        if (rawPushUrls.length === 1 && activeBranch && pushMapping.valid) {
+          try { pushFingerprint = fingerprintPushTarget(rawPushUrls[0], activeBranch, pushDestination(name, activeBranch, pushMapping)); } catch (_) {}
+        }
+        remotes.push({ name, urls: fetchUrls, fetchUrls, pushUrls, hasUnsupportedUrls,
+          label: safeMeta(meta.label, 96), platform: safeMeta(meta.platform, 64), selected: meta.selected === 'true', pushFingerprint });
       }
       await assertCurrentScope(scope, repository);
       return immutable({ repositoryId: repository.id, remotes });
@@ -911,6 +981,37 @@ function createScmGitBroker(options = {}) {
         const exists = names.stdout.split(/\r?\n/).includes(name);
         await runGit(scope, repository.root, exists ? ['remote', 'set-url', name, url] : ['remote', 'add', name, url], { timeoutMs: GIT_MUTATION_TIMEOUT_MS });
         return immutable({ repositoryId: repository.id, name, url: redactText(url, scope.root) });
+      });
+    }
+    if (method === 'scm.git.configureRemote') {
+      if (Object.keys(payload).some((key) => !['repositoryId', 'name', 'create', 'url', 'label', 'platform', 'selected'].includes(key))) throw scmError('SCM_GIT_INVALID_ARGUMENT', 'scm.git.configureRemote has an unsupported field.');
+      const name = normalizeRemoteName(payload.name, '');
+      if (typeof payload.create !== 'boolean') throw scmError('SCM_GIT_INVALID_ARGUMENT', 'Remote create must be a boolean.');
+      const url = payload.url === undefined || payload.url === '' ? '' : normalizeRemoteUrl(payload.url);
+      if (payload.create && !url) throw scmError('SCM_GIT_INVALID_ARGUMENT', 'A new remote requires an address.');
+      const label = payload.label === undefined ? undefined : normalizeRemoteMetadata(payload.label, 'Remote label', 96);
+      const platform = payload.platform === undefined ? undefined : normalizeRemoteMetadata(payload.platform, 'Remote platform', 64);
+      if (payload.selected !== undefined && typeof payload.selected !== 'boolean') throw scmError('SCM_GIT_INVALID_ARGUMENT', 'Remote selected must be a boolean.');
+      return queueMutation(scope, repository, async () => {
+        const names = (await runGit(scope, repository.root, ['remote'])).stdout.split(/\r?\n/);
+        const exists = names.includes(name);
+        if (payload.create === exists) throw scmError('SCM_GIT_REMOTE_CONFLICT', exists ? 'Remote already exists.' : 'Remote no longer exists.');
+        if (payload.create) await runGit(scope, repository.root, ['remote', 'add', name, url], { timeoutMs: GIT_MUTATION_TIMEOUT_MS });
+        else if (url) await runGit(scope, repository.root, ['remote', 'set-url', name, url], { timeoutMs: GIT_MUTATION_TIMEOUT_MS });
+        for (const [key, value] of [['bobocloudLabel', label], ['bobocloudPlatform', platform], ['bobocloudSelected', payload.selected === undefined ? undefined : String(payload.selected)]]) {
+          if (value !== undefined) await runGit(scope, repository.root, ['config', '--local', '--replace-all', '--', 'remote.' + name + '.' + key, value], { timeoutMs: GIT_MUTATION_TIMEOUT_MS });
+        }
+        return immutable({ repositoryId: repository.id, name });
+      });
+    }
+    if (method === 'scm.git.removeRemote') {
+      if (Object.keys(payload).some((key) => !['repositoryId', 'name'].includes(key))) throw scmError('SCM_GIT_INVALID_ARGUMENT', 'scm.git.removeRemote has an unsupported field.');
+      const name = normalizeRemoteName(payload.name, '');
+      return queueMutation(scope, repository, async () => {
+        const names = (await runGit(scope, repository.root, ['remote'])).stdout.split(/\r?\n/);
+        if (!names.includes(name)) throw scmError('SCM_GIT_REMOTE_CONFLICT', 'Remote no longer exists.');
+        await runGit(scope, repository.root, ['remote', 'remove', name], { timeoutMs: GIT_MUTATION_TIMEOUT_MS });
+        return immutable({ repositoryId: repository.id, name, removed: true });
       });
     }
     if (method === 'scm.git.stageAll') {
@@ -937,12 +1038,26 @@ function createScmGitBroker(options = {}) {
       });
     }
     if (method === 'scm.git.commit') {
-      if (Object.keys(payload).some((key) => !['repositoryId', 'message'].includes(key))) throw scmError('SCM_GIT_INVALID_ARGUMENT', 'scm.git.commit has an unsupported field.');
+      if (Object.keys(payload).some((key) => !['repositoryId', 'message', 'expectedHead', 'expectedBranch'].includes(key))) throw scmError('SCM_GIT_INVALID_ARGUMENT', 'scm.git.commit has an unsupported field.');
       const message = normalizeCommitMessage(payload.message);
+      const expectedBranch = payload.expectedBranch === undefined ? '' : normalizeBranchName(payload.expectedBranch);
+      if (payload.expectedHead !== undefined && (typeof payload.expectedHead !== 'string' || !/^(?:\(initial\)|[a-f0-9]{40}(?:[a-f0-9]{24})?)$/i.test(payload.expectedHead))) throw scmError('SCM_GIT_INVALID_ARGUMENT', 'Expected commit id is invalid.');
       return queueMutation(scope, repository, async () => {
+        if (expectedBranch || payload.expectedHead !== undefined) {
+          const state = parseStatus((await runGit(scope, repository.root, ['status', '--porcelain=v2', '-z', '--branch'])).stdout).branch;
+          if ((expectedBranch && state.head !== expectedBranch) || (payload.expectedHead !== undefined && state.oid.toLowerCase() !== payload.expectedHead.toLowerCase())) {
+            throw scmError('SCM_GIT_HEAD_CHANGED', 'The current branch or commit changed. Refresh before committing.');
+          }
+        }
         await runGit(scope, repository.root, ['commit', '--no-verify', '--no-gpg-sign', '-m', message], { timeoutMs: GIT_MUTATION_TIMEOUT_MS });
-        const hash = (await runGit(scope, repository.root, ['rev-parse', 'HEAD'])).stdout.trim();
-        return immutable({ repositoryId: repository.id, commit: /^[a-f0-9]{40,64}$/i.test(hash) ? hash : '' });
+        try {
+          if (expectedBranch && await readCurrentBranch(scope, repository) !== expectedBranch) throw new Error('Branch changed');
+          const hash = (await runGit(scope, repository.root, ['rev-parse', 'HEAD'])).stdout.trim();
+          if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i.test(hash)) throw new Error('Invalid commit');
+          return immutable({ repositoryId: repository.id, commit: hash });
+        } catch (_) {
+          throw scmError('SCM_GIT_OUTCOME_UNKNOWN', 'The commit outcome could not be verified. Verify the repository before retrying.');
+        }
       });
     }
     if (method === 'scm.git.checkout') {
@@ -999,10 +1114,14 @@ function createScmGitBroker(options = {}) {
         ? ['repositoryId', 'remote']
         : method === 'scm.git.pull'
           ? ['repositoryId', 'remote', 'branch']
-          : ['repositoryId', 'remote', 'branch', 'force', 'setUpstream'];
+          : ['repositoryId', 'remote', 'branch', 'force', 'setUpstream', 'expectedHead', 'expectedBranch', 'expectedTarget'];
       if (Object.keys(payload).some((key) => !allowed.includes(key))) throw scmError('SCM_GIT_INVALID_ARGUMENT', method + ' has an unsupported field.');
       if (payload.force !== undefined && typeof payload.force !== 'boolean') throw scmError('SCM_GIT_INVALID_ARGUMENT', 'force must be a boolean.');
       if (payload.setUpstream !== undefined && typeof payload.setUpstream !== 'boolean') throw scmError('SCM_GIT_INVALID_ARGUMENT', 'setUpstream must be a boolean.');
+      if (payload.expectedHead !== undefined && (typeof payload.expectedHead !== 'string' || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i.test(payload.expectedHead))) throw scmError('SCM_GIT_INVALID_ARGUMENT', 'Expected commit id is invalid.');
+      const expectedBranch = payload.expectedBranch === undefined ? '' : normalizeBranchName(payload.expectedBranch);
+      if (payload.expectedHead !== undefined && payload.setUpstream === true) throw scmError('SCM_GIT_INVALID_ARGUMENT', 'A pinned commit cannot change upstream configuration.');
+      if (payload.expectedTarget !== undefined && (typeof payload.expectedTarget !== 'string' || !/^[a-f0-9]{64}$/i.test(payload.expectedTarget))) throw scmError('SCM_GIT_INVALID_ARGUMENT', 'Expected push target is invalid.');
       const remote = normalizeRemoteName(payload.remote);
       const branch = payload.branch === undefined || payload.branch === null || payload.branch === '' ? '' : normalizeBranchName(payload.branch);
       return queueMutation(scope, repository, async () => {
@@ -1014,24 +1133,47 @@ function createScmGitBroker(options = {}) {
           args = ['pull', '--no-rebase', '--no-edit', '--no-recurse-submodules', remote];
           if (branch) args.push(branch);
         } else {
-          const targetBranch = branch || await readCurrentBranch(scope, repository);
+          const pushUrls = (await runGit(scope, repository.root, ['remote', 'get-url', '--push', '--all', remote])).stdout.split(/\r?\n/).filter(Boolean);
+          if (!pushUrls.length) throw scmError('SCM_GIT_REMOTE_DENIED', 'No supported push target is configured.');
+          for (const pushUrl of pushUrls) normalizeRemoteUrl(pushUrl);
+          const currentBranch = !branch || expectedBranch || payload.expectedTarget !== undefined ? await readCurrentBranch(scope, repository) : '';
+          if (expectedBranch && currentBranch !== expectedBranch) throw scmError('SCM_GIT_HEAD_CHANGED', 'The current branch changed. Refresh before retrying.');
+          if (payload.expectedHead !== undefined && (await runGit(scope, repository.root, ['rev-parse', 'HEAD'])).stdout.trim().toLowerCase() !== payload.expectedHead.toLowerCase()) {
+            throw scmError('SCM_GIT_HEAD_CHANGED', 'The current commit changed. Refresh before retrying.');
+          }
+          const targetBranch = branch || currentBranch;
           let refspec = targetBranch;
+          let destination = targetBranch;
           if (!branch) {
             // Respect a configured upstream whose remote branch has a different
             // name. A bare `git push remote local-name` would silently create
             // or update another branch instead of the branch being tracked.
-            const configuredRemote = await runGit(scope, repository.root, ['config', '--get', 'branch.' + targetBranch + '.remote']).catch(() => ({ stdout: '' }));
-            const configuredMerge = await runGit(scope, repository.root, ['config', '--get', 'branch.' + targetBranch + '.merge']).catch(() => ({ stdout: '' }));
-            const tracked = configuredMerge.stdout.trim();
-            if (configuredRemote.stdout.trim() === remote && tracked.startsWith('refs/heads/')) {
-              refspec = 'HEAD:refs/heads/' + normalizeBranchName(tracked.slice('refs/heads/'.length));
-            }
+            const mapping = await readPushBranchMapping(scope, repository, targetBranch);
+            if (!mapping.valid) throw scmError('SCM_GIT_REMOTE_CHANGED', 'The configured destination branch is invalid. Refresh and review the remote.');
+            destination = pushDestination(remote, targetBranch, mapping);
+            if (mapping.remote === remote && mapping.branch) refspec = 'HEAD:refs/heads/' + destination;
+          }
+          if (payload.expectedTarget !== undefined && (pushUrls.length !== 1 || fingerprintPushTarget(pushUrls[0], currentBranch, destination) !== payload.expectedTarget)) {
+            throw scmError('SCM_GIT_REMOTE_CHANGED', 'The push destination changed. Refresh and review the remote before retrying.');
+          }
+          if (payload.expectedHead !== undefined) {
+            refspec = payload.expectedHead + ':refs/heads/' + destination;
           }
           args = ['push', '--porcelain', '--no-verify', remote, refspec];
           if (payload.force === true) args.splice(1, 0, '--force-with-lease');
           if (payload.setUpstream === true) args.splice(1, 0, '--set-upstream');
         }
-        const result = await runGit(scope, repository.root, args, { timeoutMs: GIT_MUTATION_TIMEOUT_MS });
+        let result;
+        try {
+          result = await runGit(scope, repository.root, args, { timeoutMs: GIT_MUTATION_TIMEOUT_MS });
+        } catch (error) {
+          const definitelyFailed = ['SCM_GIT_AUTH_REQUIRED', 'SCM_GIT_UNAVAILABLE', 'SCM_GIT_STALE_REPOSITORY'].includes(error && error.code) ||
+            (error && error.code === 'SCM_GIT_OPERATION_FAILED' && error.message.startsWith('The remote rejected the Git update.'));
+          if (method === 'scm.git.push' && !definitelyFailed) {
+            throw scmError('SCM_GIT_OUTCOME_UNKNOWN', 'The push outcome could not be confirmed. Verify the remote before retrying.');
+          }
+          throw error;
+        }
         return immutable({ repositoryId: repository.id, remote, branch: branch || '', output: redactText(result.stdout + result.stderr, scope.root) });
       });
     }

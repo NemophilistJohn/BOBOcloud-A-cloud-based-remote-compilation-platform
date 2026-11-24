@@ -1,6 +1,6 @@
-# BOBOCloud Plugin API 1.11.0
+# BOBOCloud Plugin API 1.12.0
 
-Status: public package and isolated extension-host contract. BOBOCloud desktop `2.8.1` implements Plugin API `1.11.0`. API `1.6.0` introduced truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism; later API 1.x releases extend that contract.
+Status: public package and isolated extension-host contract. BOBOCloud desktop `2.8.1` implements Plugin API `1.12.0`. API `1.6.0` introduced truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism; later API 1.x releases extend that contract.
 
 The reference guide, package checklist, and complete example are in [Plugin Development Guide](./plugin-development.md).
 
@@ -282,6 +282,28 @@ draft can be cleared. Keep it absent on failures. Providers supporting older
 hosts must check `context.apiVersion` before sending these 1.11 fields.
 An action with `placement: 'inline'` and a form is shown by default; opening
 another form temporarily replaces it while retaining the inline draft.
+
+API 1.12 adds an optional `dashboard` to a source-control state: a bounded,
+host-rendered card group (up to 64 cards) and page tabs. Card and tab commands
+must belong to the provider; the host sends their scoped IDs in the ordinary
+source-control command envelope. Card actions and the add action can supply
+forms, which the host renders in a modal. Cards use `single` or `multiple`
+selection and cannot supply markup, styling or executable callbacks. An inline
+form may supply one `secondarySubmit` command using the same validated fields.
+Section items may contain bounded numeric graph lanes for a vertical history
+view; the host owns the rendering.
+
+The structured SCM broker also exposes `configureRemote` and `removeRemote`,
+plus remote-scoped `history`. Card labels, platform and selection are stored
+as local Git configuration attached to the corresponding remote. Removing a
+remote also removes its local remote-tracking references. For multi-target
+pushes, a caller can provide the expected HEAD, current branch and opaque push
+fingerprint (binding the URL and resolved destination branch). The broker checks
+them before running Git, rejects changed or ambiguous targets and pins the
+pushed object to the expected commit. A guarded
+commit can also require the expected branch and HEAD (`(initial)` for an unborn
+branch). These operations require the existing `scm.git.write`
+permission and do not expose shell or arbitrary filesystem access.
 
 ### Registration and state
 

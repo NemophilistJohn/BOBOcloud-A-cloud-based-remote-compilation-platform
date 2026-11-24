@@ -2,7 +2,7 @@
 
 [简体中文](plugin-quickstart.zh-CN.md) · [README](../README.md) · [Full API](plugin-api.md)
 
-The current host is desktop **2.8.1**, Plugin API **1.11.0**. The supported public contract is [the SDK declaration](../client/plugin-sdk/bobocloud-plugin.d.ts), not `window.BOBO`, Electron IPC, internal renderer services, or a VS Code extension API.
+The current host is desktop **2.8.1**, Plugin API **1.12.0**. The supported public contract is [the SDK declaration](../client/plugin-sdk/bobocloud-plugin.d.ts), not `window.BOBO`, Electron IPC, internal renderer services, or a VS Code extension API.
 
 ## 1. Choose the right surface
 

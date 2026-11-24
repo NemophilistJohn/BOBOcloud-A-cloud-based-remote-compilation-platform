@@ -2497,5 +2497,6 @@
   "Preparation pauses while you edit": "编辑期间暂停后台预热",
   "Modules load when requested": "请求模块时按需加载",
   "Dependency summaries are ready": "依赖摘要已就绪",
-  "{completed} of {total} modules prepared": "已准备 {completed} / {total} 个模块"
+  "{completed} of {total} modules prepared": "已准备 {completed} / {total} 个模块",
+  "Please complete the required fields.": "请填写所有必填项。"
 }

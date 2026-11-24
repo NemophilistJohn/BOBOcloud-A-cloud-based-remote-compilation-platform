@@ -58,6 +58,8 @@ export type ScmGitOperationDto =
   | 'clone'
   | 'init'
   | 'setRemote'
+  | 'configureRemote'
+  | 'removeRemote'
   | 'stage'
   | 'stageAll'
   | 'unstage'
@@ -92,7 +94,7 @@ interface ScmGitPagedArguments extends ScmGitRepositoryArguments {
 export interface ScmGitArgumentsRegistrationMap {
   readonly detect: { readonly includeNested?: boolean };
   readonly status: ScmGitPagedArguments;
-  readonly history: ScmGitPagedArguments & { readonly ref?: string | null };
+  readonly history: ScmGitPagedArguments & { readonly ref?: string | null; readonly remote?: string | null };
   readonly diff: ScmGitRepositoryArguments & {
     readonly path?: string | null;
     readonly ref?: string | null;
@@ -103,10 +105,12 @@ export interface ScmGitArgumentsRegistrationMap {
   readonly clone: { readonly url: string; readonly branch?: string | null };
   readonly init: Readonly<Record<string, never>>;
   readonly setRemote: ScmGitRepositoryArguments & { readonly name?: string | null; readonly url: string };
+  readonly configureRemote: ScmGitRepositoryArguments & { readonly name: string; readonly create: boolean; readonly url?: string; readonly label?: string; readonly platform?: string; readonly selected?: boolean };
+  readonly removeRemote: ScmGitRepositoryArguments & { readonly name: string };
   readonly stage: ScmGitRepositoryArguments & { readonly paths: readonly string[] };
   readonly stageAll: ScmGitRepositoryArguments;
   readonly unstage: ScmGitRepositoryArguments & { readonly paths: readonly string[] };
-  readonly commit: ScmGitRepositoryArguments & { readonly message: string };
+  readonly commit: ScmGitRepositoryArguments & { readonly message: string; readonly expectedHead?: string; readonly expectedBranch?: string };
   readonly checkout: ScmGitRepositoryArguments & { readonly branch: string; readonly force?: boolean };
   readonly createBranch: ScmGitRepositoryArguments & { readonly name: string; readonly checkout?: boolean };
   readonly deleteBranch: ScmGitRepositoryArguments & { readonly name: string; readonly force?: boolean };
@@ -120,6 +124,9 @@ export interface ScmGitArgumentsRegistrationMap {
     readonly branch?: string | null;
     readonly force?: boolean;
     readonly setUpstream?: boolean;
+    readonly expectedHead?: string;
+    readonly expectedBranch?: string;
+    readonly expectedTarget?: string;
   };
 }
 
@@ -130,6 +137,7 @@ export interface ScmGitArgumentsMap {
     readonly offset?: number;
     readonly limit?: number;
     readonly ref?: string;
+    readonly remote?: string;
   };
   readonly diff: ScmGitRepositoryArguments & {
     readonly path?: string;
@@ -141,10 +149,12 @@ export interface ScmGitArgumentsMap {
   readonly clone: { readonly url: string; readonly branch?: string };
   readonly init: Readonly<Record<string, never>>;
   readonly setRemote: ScmGitRepositoryArguments & { readonly name: string; readonly url: string };
+  readonly configureRemote: ScmGitRepositoryArguments & { readonly name: string; readonly create: boolean; readonly url?: string; readonly label?: string; readonly platform?: string; readonly selected?: boolean };
+  readonly removeRemote: ScmGitRepositoryArguments & { readonly name: string };
   readonly stage: ScmGitRepositoryArguments & { readonly paths: readonly string[] };
   readonly stageAll: ScmGitRepositoryArguments;
   readonly unstage: ScmGitRepositoryArguments & { readonly paths: readonly string[] };
-  readonly commit: ScmGitRepositoryArguments & { readonly message: string };
+  readonly commit: ScmGitRepositoryArguments & { readonly message: string; readonly expectedHead?: string; readonly expectedBranch?: string };
   readonly checkout: ScmGitRepositoryArguments & { readonly branch: string; readonly force?: boolean };
   readonly createBranch: ScmGitRepositoryArguments & { readonly name: string; readonly checkout?: boolean };
   readonly deleteBranch: ScmGitRepositoryArguments & { readonly name: string; readonly force?: boolean };
@@ -155,6 +165,9 @@ export interface ScmGitArgumentsMap {
     readonly branch?: string;
     readonly force?: boolean;
     readonly setUpstream?: boolean;
+    readonly expectedHead?: string;
+    readonly expectedBranch?: string;
+    readonly expectedTarget?: string;
   };
 }
 

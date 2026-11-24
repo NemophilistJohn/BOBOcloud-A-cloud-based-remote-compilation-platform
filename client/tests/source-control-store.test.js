@@ -287,7 +287,7 @@ test('store copies and deeply freezes accepted DTOs without freezing caller-owne
   assert.equal(Object.isFrozen(snapshot.state.summary.items), true);
   assert.equal(Object.isFrozen(snapshot.state.sections[0].items[0]), true);
   assert.deepEqual(Object.keys(snapshot.state.sections[0].items[0]), [
-    'id', 'title', 'description', 'meta', 'badge', 'command', 'disabled', 'secondaryAction'
+    'id', 'title', 'description', 'meta', 'badge', 'command', 'disabled', 'secondaryAction', 'graph'
   ]);
   assert.deepEqual(Object.keys(snapshot.state.actions[0]), [
     'id', 'title', 'description', 'command', 'kind', 'placement', 'icon', 'disabled', 'form'

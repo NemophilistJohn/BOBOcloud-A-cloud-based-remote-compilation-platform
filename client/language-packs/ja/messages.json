@@ -2497,5 +2497,6 @@
   "Preparation pauses while you edit": "編集中はバックグラウンド準備を一時停止",
   "Modules load when requested": "要求されたモジュールを読み込みます",
   "Dependency summaries are ready": "依存関係の要約を利用できます",
-  "{completed} of {total} modules prepared": "{total} モジュール中 {completed} 個を準備済み"
+  "{completed} of {total} modules prepared": "{total} モジュール中 {completed} 個を準備済み",
+  "Please complete the required fields.": "必須項目を入力してください。"
 }

@@ -588,6 +588,8 @@ function extensionWorkerBootstrapSource(): string {
           clone: (args) => scmRequest('clone', args),
           init: (args) => scmRequest('init', args),
           setRemote: (args) => scmRequest('setRemote', args),
+          configureRemote: (args) => scmRequest('configureRemote', args),
+          removeRemote: (args) => scmRequest('removeRemote', args),
           stage: (args) => scmRequest('stage', args),
           stageAll: (args) => scmRequest('stageAll', args),
           unstage: (args) => scmRequest('unstage', args),
