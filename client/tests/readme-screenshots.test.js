@@ -18,6 +18,8 @@ const DAP_SMOKE = fs.readFileSync(path.join(REPOSITORY_ROOT, 'server', 'deploy',
 const DAP_NODE_SMOKE = fs.readFileSync(path.join(REPOSITORY_ROOT, 'server', 'deploy', 'dap-toolkit', 'node-dap-smoke.py'), 'utf8');
 const DAP_NODE_DOCKERFILE = fs.readFileSync(path.join(REPOSITORY_ROOT, 'server', 'deploy', 'dap-toolkit', 'Dockerfile.node'), 'utf8');
 const DAP_DOCS = fs.readFileSync(path.join(REPOSITORY_ROOT, 'docs', 'dap-server.md'), 'utf8');
+const PLUGIN_API_VERSION = fs.readFileSync(path.join(CLIENT_ROOT, 'main/plugins.js'), 'utf8')
+  .match(/const PLUGIN_API_VERSION = '([^']+)'/)[1];
 const README_SCREENSHOTS = [
   { name: 'workbench.png', readme: README, other: README_ZH },
   { name: 'project-dependencies.png', readme: README, other: README_ZH },
@@ -64,7 +66,7 @@ test('README documents current client/server contracts, language navigation, and
   assert.match(README, /`npm-shrinkwrap\.json`[\s\S]*not managed/);
   assert.match(README, /current server advertises `resize: false`/);
   assert.match(README, /trusted application renderer currently reads some configured credentials/);
-  assert.match(README, /Plugin API 1\.5 Agent surface/);
+  assert.ok(README.includes('Plugin API **' + PLUGIN_API_VERSION + '**'));
   assert.match(README, /docs\/ai-agent-plugin-architecture\.md/);
   assert.match(README, /adds no Go service endpoint/);
   assert.match(README, /BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-/);
@@ -87,7 +89,7 @@ test('Chinese README mirrors the three audience paths and links back to English'
   assert.match(README_ZH, /Node\.js 软件包：npm 与 pnpm/);
   assert.match(README_ZH, /当前服务端公布 `resize: false`/);
   assert.match(README_ZH, /可信应用 Renderer 当前会读取部分已配置凭据/);
-  assert.match(README_ZH, /Plugin API 1\.5 Agent 界面/);
+  assert.ok(README_ZH.includes('Plugin API **' + PLUGIN_API_VERSION + '**'));
   assert.match(README_ZH, /docs\/ai-agent-plugin-architecture\.md/);
   assert.match(README_ZH, /不新增任何 Go 服务端接口/);
   assert.match(README_ZH, /cross-toolkit/);
@@ -109,15 +111,46 @@ test('DAP release artifacts advertise only smoke-verified Python, Go, and Node a
 });
 
 test('each README references only its locale screenshots and every image is presentation-sized', () => {
-  for (const entry of README_SCREENSHOTS) {
-    const name = entry.name;
-    const relative = 'docs/screenshots/' + name;
-    const reference = new RegExp('!\\[[^\\]]+\\]\\(' + relative.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\)');
-    assert.match(entry.readme, reference);
-    assert.doesNotMatch(entry.other, reference);
-    const metadata = pngMetadata(path.join(REPOSITORY_ROOT, relative));
-    assert.deepEqual({ width: metadata.width, height: metadata.height }, { width: 1440, height: 900 });
-    assert.ok(metadata.bytes >= 10000, name + ' must contain non-trivial rendered content');
+  for (const [readme, other] of [[README, README_ZH], [README_ZH, README]]) {
+    const images = [...readme.matchAll(/!\[[^\]]+\]\((docs\/[^)]+)\)/g)].map(match => match[1]);
+    assert.ok(images.some(name => name.startsWith('docs/media/live-workbench-')));
+    assert.ok(images.some(name => name.endsWith('.gif')));
+    for (const relative of images) {
+      assert.equal(other.includes('](' + relative + ')'), false, relative + ' must match its README locale');
+      const file = path.join(REPOSITORY_ROOT, relative);
+      if (relative.endsWith('.png')) {
+        const metadata = pngMetadata(file);
+        assert.ok(metadata.width >= 1280 && metadata.height >= 720, relative + ' must be readable');
+        assert.ok(metadata.bytes >= 10000, relative + ' must contain non-trivial rendered content');
+      } else if (relative.endsWith('.gif')) {
+        const buffer = fs.readFileSync(file);
+        assert.match(buffer.subarray(0, 6).toString('ascii'), /^GIF8[79]a$/);
+        assert.ok(buffer.readUInt16LE(6) >= 960 && buffer.readUInt16LE(8) >= 600);
+        assert.ok(buffer.length < 5 * 1024 * 1024, relative + ' must stay practical for GitHub');
+      }
+    }
+  }
+});
+
+test('audience guides have bilingual counterparts and their relative file links resolve', () => {
+  const { marked } = require('marked');
+  const files = ['README.md', 'README.zh-CN.md', 'CONTRIBUTING.md', 'CONTRIBUTING.zh-CN.md',
+    'docs/media/README.md', 'examples/cloud-tour/README.md'];
+  for (const topic of ['getting-started', 'performance-and-architecture', 'plugin-quickstart']) {
+    for (const locale of ['en', 'zh-CN']) files.push('docs/' + topic + '.' + locale + '.md');
+  }
+  for (const file of files) {
+    const source = fs.readFileSync(path.join(REPOSITORY_ROOT, file), 'utf8');
+    assert.doesNotMatch(source, /\uFFFD/, file + ' has invalid replacement characters');
+    const links = [];
+    marked.walkTokens(marked.lexer(source), token => {
+      if (token.type === 'link' || token.type === 'image') links.push(token.href);
+    });
+    for (const link of links) {
+      if (/^(?:[a-z]+:|\/\/|#)/i.test(link)) continue;
+      const target = decodeURIComponent(link.split('#')[0]);
+      if (target) assert.ok(fs.existsSync(path.resolve(REPOSITORY_ROOT, path.dirname(file), target)), file + ': ' + link);
+    }
   }
 });
 

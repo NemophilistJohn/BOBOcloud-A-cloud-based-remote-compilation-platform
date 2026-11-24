@@ -4,6 +4,10 @@
 
 BOBOCLOUD is a self-hosted cloud development workbench: an Electron desktop editor keeps the project on the developer's computer, while a Go service provides Linux execution, Docker runtimes, dependency environments, tasks, terminals, language intelligence, debugging, collaboration, and resource governance. The current source identifies the client as **2.8.1** and the server as **2.5.0**.
 
+**Keep your source locally. Bring the toolchain to the cloud.** Open a normal project folder, choose a server runtime, and run, inspect, debug, or extend it from one desktop workbench. You can use the local editor without a cloud account; a connected service supplies the remote capabilities.
+
+Documentation refreshed against the current source on **2026-11-24**. The English and [Chinese](README.zh-CN.md) editions follow the same structure. Plugin API: **1.10.0**. Available images, adapters, quotas, and optional plugins depend on your deployment.
+
 The editor is useful before a server is connected. You can open a folder, edit with Monaco, search, inspect Problems, and configure the workbench locally. Run, Debug, cloud terminals, project dependencies, teams, and server storage become available only after a compatible BOBOCLOUD service is selected.
 
 | I want to... | Read this first |
@@ -14,7 +18,35 @@ The editor is useful before a server is connected. You can open a folder, edit w
 | Build a plugin | [For plugin developers](#for-plugin-developers) |
 | Change BOBOCLOUD itself | [For contributors](#for-contributors) |
 
-![BOBOCLOUD workbench](docs/screenshots/workbench.png)
+![Real BOBOCLOUD workbench, Cloud Forge theme](docs/media/live-workbench-en.png)
+
+### See a real project
+
+![Cloud execution and completion tour](docs/media/cloud-tour-en.gif)
+
+This edited recording uses a new, isolated demonstration project and a real authenticated service, in **Cloud Forge**. It shows module completion and a cloud run; pauses are shortened, so the GIF is not a latency benchmark. [Reproduce the project](examples/cloud-tour/README.md) · [Media provenance](docs/media/README.md).
+
+| Read next | Who it helps |
+| --- | --- |
+| [Beginner walkthrough](docs/getting-started.en.md) | First launch, connecting, first run, dependencies, debugging, and common mistakes. |
+| [Performance and architecture](docs/performance-and-architecture.en.md) | What is cached, why it helps, isolation boundaries, evidence, and limitations. |
+| [Plugin quick start](docs/plugin-quickstart.en.md) | Package a real example, understand permissions, choose the right extension surface. |
+| [Contributing](CONTRIBUTING.md) | Find an owning module, select useful tests, submit a focused change. |
+
+## Why BOBOCLOUD
+
+| Everyday problem | Implemented behavior | What you gain |
+| --- | --- | --- |
+| Every computer needs the same compiler and packages | Server-selected Docker runtimes; local source stays in an ordinary folder | A lightweight client workflow across different development computers. |
+| Installing packages fixes execution but leaves intelligence behind | Run, LSP, and DAP can independently read the same immutable dependency generation | A consistent dependency identity across execution, analysis, and debugging. |
+| Remote completion feels cold or keeps moving | A unified completion path, import catalogs, module summaries, learned ranking, and idle warmup | Early name suggestions and stable selection while semantic analysis catches up. |
+| Opening a large folder freezes the editor | Lazy directory expansion, bounded background file indexing, input throttling, and stale-result rejection | Work starts before a full workspace scan finishes. |
+| The same project compiles repeatedly | Project-scoped incremental state and eligible build-artifact reuse | Less repeated compiler work; the program still executes on every run. |
+| One busy account blocks a shared host | Resource leases and a bounded fair queue across workload, owner, and project | Predictable admission, cancellation, cleanup, and observable resource pressure. |
+| A successful run is hard to reproduce | Run IDs, runtime and argument metadata, final state, and retained output | A record you can inspect and compare instead of relying on a disappearing console. |
+| Useful extensions need too much privilege | Verified packages, isolated Workers/views, narrow host brokers | Git, document previews, notebooks, and Agents without giving a plugin arbitrary Electron access. |
+
+These are implementation properties, not a claim that every remote operation is faster than a local IDE. Network latency, cold images, language-server startup, project size, and host contention still matter. The [performance guide](docs/performance-and-architecture.en.md) links each claim to source and explains how to measure it.
 
 ## The mental model
 
@@ -74,7 +106,7 @@ The first-launch guide opens Server settings. Supply:
 
 Choosing **Use local editor only** dismisses the guide without creating a fake connection. You can return to Server settings later.
 
-Server and authentication settings live in Electron's user-data directory for the current OS account. The present implementation stores them as local JSON rather than encrypting them at rest. Protect that OS account and never put the profile directory in a repository or support bundle.
+Server, authentication, and AI settings live in Electron's user-data directory for the current OS account. When Electron `safeStorage` is available, they are stored in an encrypted envelope and readable legacy profiles are migrated. If OS-backed encryption is unavailable, the codec falls back to ordinary JSON: this is not an unconditional encryption guarantee. Protect the OS account and never publish the profile directory. Plugin-local storage is not a credential vault.
 
 ### A first successful run
 
@@ -117,7 +149,7 @@ C/C++ and Rust cross targets use versioned `cross-toolkit` images; Go uses its s
 
 ## Project Dependency Center
 
-![Project Dependency Center](docs/screenshots/project-dependencies.png)
+![Project Dependency Center](docs/media/live-dependencies-en.png)
 
 The Environment activity contains two related views:
 
@@ -178,7 +210,7 @@ Read-only package-manager commands continue to the real tool. Complex flags, scr
 
 ### Environment status
 
-![Environment Center](docs/screenshots/environment-center.png)
+![Environment Center](docs/media/live-environment-en.png)
 
 Environment status merges four different kinds of evidence without pretending they are equivalent:
 
@@ -214,11 +246,50 @@ Cloud tasks require Docker. They do not fall back to the server-host `Local` run
 
 `.vscode/settings.json` is parsed as JSONC by Electron main. It must remain inside the active workspace, cannot be a symlink, and is limited to 256 KiB. Supported settings include tab size/spacing, wrapping, rulers, whitespace, minimap, bracket-pair colorization, language-specific overrides, safe file associations, and boolean `files.exclude` globs. Unsupported settings are ignored and reported; conditional exclude objects are not interpreted.
 
+### Large workspaces and Quick Open
+
+Opening a workspace reads its immediate directory entries; expanding a folder requests a bounded child page instead of recursively constructing the whole tree. Watcher and scan budgets are explicit. This is useful for projects containing generated folders or thousands of source files, while also making partial coverage visible rather than claiming a complete scan.
+
+**Quick Open** builds a file index asynchronously, yields between renderer batches, and waits **80 ms** after input before filtering. Existing tree entries remain usable while indexing continues. Root/identity/generation checks reject results from a project you have already left. The 80 ms value is an implementation throttle, not an end-to-end search-time guarantee.
+
 ### LSP
 
-Language intelligence is a separate service from debugging. The preferred route is WebSocket `:3100/lsp`; WebSocket `:3101/lsp` remains a compatibility path. The catalog covers Rust, Go, C/C++, Java, Python, JavaScript/TypeScript, HTML, CSS/SCSS/Less, JSON/JSONC, YAML, and shell files when their configured toolkit entries are available.
+Language intelligence is a separate service from debugging. The desktop defaults to the dedicated WebSocket listener at `:3101/lsp`; the service also mounts `/lsp` on the HTTP listener for deployments that route it there. Configure the actual listener/reverse proxy and its TLS policy; an HTTP port is not automatically a working WebSocket endpoint. The catalog covers Rust, Go, C/C++, Java, Python, JavaScript/TypeScript, HTML, CSS/SCSS/Less, JSON/JSONC, YAML, and shell files when their configured toolkit entries are available.
 
 Language servers run with a read-only workspace projection, a writable private analysis cache, bounded messages, session limits, CPU/memory limits, and no network by default. Client-visible `bobocloud-lsp` URIs hide server paths. LSP may acquire a read lease on the project's published dependencies, but its analysis cache is never shared with DAP.
+
+**Choose analysis depth and cache behavior separately.** Local, Standard, and Full select the analysis service/policy. The three modes below control client dependency summaries and background work:
+
+| Completion cache strategy | What happens | Choose it when |
+| --- | --- | --- |
+| **On demand** | Discover importable names, then request public API names only for modules you use. | You prefer minimal background traffic or are on a constrained server. |
+| **Smart** (default) | Add idle prewarming for imports in the active document. | You want the normal balance of early suggestions and background cost. |
+| **Project** | Progressively warm dependency/module summaries during idle periods, including discoverable child modules. | A larger project benefits from more work before you reach a new API. |
+
+Disk persistence is an independent switch. Session summaries still work without it. Small configured disk budgets are allowed; the old 30 MiB gate is gone. Records and memory have separate size/count limits, eviction, identity validation, and coverage flags. Project mode is aggressive **within those bounds**, not an unlimited scan of all source or all packages.
+
+```mermaid
+flowchart LR
+  Input["Cursor + document + imports"] --> Merge["One completion coordinator"]
+  Local["Local rules / current symbols"] --> Merge
+  Catalog["Import catalog / module summaries"] --> Merge
+  Semantic["Remote LSP semantic results"] --> Merge
+  History["Accepted choices + stable manual usage"] --> Rank["Context-aware ranking"]
+  Merge --> Rank --> Popup["Stable suggestion list"]
+  Idle["Idle: Smart / Project warmup"] --> Catalog
+```
+
+- **Import discovery:** a name such as `numpy` comes from verified dependency mounts or the selected runtime image, rather than a hard-coded “popular packages” list. A package must exist in that environment; installing it on the desktop alone does not install it remotely.
+- **Learning:** explicit acceptance is a strong signal; repeated, stable manual use is a weaker signal. `import numpy as np` normalizes the receiver, so writing `np.array(...)` can influence later `np.a` ranking. Preferences are scoped by account/workspace/language/receiver, decay with time, and can be disabled or cleared. Raw source is not saved in learning records.
+- **Selection stability:** background summary pages do not repeatedly reopen a populated popup. A first semantic result can merge new matching choices before user interaction; navigation, dismissal, confirmation, or pointer selection protects the current choice. New input naturally uses updated data.
+- **Yielding:** idle prewarming pauses around typing, runs, debugging, synchronization, and workspace transitions. Resource pressure backs off instead of persisting a temporary empty catalog. File switches and temporary disconnections retain summaries only for the same verified identity; opaque unfinished cursors restart after a new transport session.
+- **Different language adapters:** Python static exports/re-exports; Node/TypeScript package declarations and exports; Go public declarations; Rust public crate declarations; Java package/class names; C/C++ include names and simple prototypes. These are deliberately different levels of coverage. Binary/dynamic APIs, advanced C++ types, macros, Java methods, and semantic references remain language-server work.
+
+![Three completion strategies in the real application](docs/media/live-lsp-settings-en.png)
+
+![Real NumPy completion after environment and analyzer warmup](docs/media/live-numpy-completion-en.png)
+
+There is no “all libraries are fully indexed” promise. Cold or dynamically generated APIs may still need the analyzer. See [LSP behavior and regression baseline](docs/lsp-functional-baseline.md) and [performance details](docs/performance-and-architecture.en.md).
 
 ### DAP
 
@@ -237,6 +308,10 @@ Attach, compound configurations, debuggee stdin, launch-time inputs, and dynamic
 ### Output and Problems
 
 Run output remains live over the WebSocket. The server retains only a configurable tail ring (`run_output_retained_bytes`) for results/history and inserts an explicit omission marker when old retained bytes are evicted; the limit does not intentionally truncate the live stream. Problems map compiler/task diagnostics back to source files and coexist with LSP diagnostics without treating every analyzer message as an installed-package fact.
+
+The title-bar **Run history** action lets you select a recorded run and inspect its run ID, target, runtime, language, workspace, optional branch/arguments, start/end times, exit status, and retained output; the output can be copied. It is an execution record, not a complete source snapshot or a promise that a past dependency environment can be reconstructed forever. History is retention-limited, and omitted output is labeled.
+
+![A real demonstration run record; unrelated account history is excluded](docs/media/live-history-en.png)
 
 ## Terminal, accounts, and teams
 
@@ -258,6 +333,8 @@ The official local SCM plugin described below is a different feature: it serves 
 
 ## Cache model
 
+“Cache” is not one shared bag of files. Each layer has its own identity, retention policy, and correctness boundary. Changing a source file, dependency generation, runtime image, or account invalidates the layers that depend on it.
+
 BOBOCLOUD uses one cataloged cache-v2 layout, but keeps cache domains separate because they have different correctness rules.
 
 | Domain | Identity and purpose | Reuse rule |
@@ -271,13 +348,28 @@ BOBOCLOUD uses one cataloged cache-v2 layout, but keeps cache domains separate b
 
 Personal storage enforces real byte and file accounting, pre-reservation before mutation, maximum generations, protected/current readers and writers, and LRU eviction of eligible records. Deleting a cache invalidates idle containers that still reference it and removes filesystem plus metadata transactionally. The retired user-level dependency layout is not silently imported or displayed.
 
+### Performance mechanisms you can verify
+
+| Mechanism | Actual scope | Check it yourself |
+| --- | --- | --- |
+| Incremental build state | Reuses compiler state for an exact project/runtime/dependency/target identity. | Run a compiled example twice and inspect cache and compile phases. |
+| Build-result reuse | Eligible source/plan-identical builds may reuse artifacts. Execution and side effects still happen. | Add observable runtime output; it must appear on every run even when compilation is reused. |
+| Container reuse | Reuses an eligible, verified-reset container; cold starts and image pulls remain possible. | Expand infrastructure details and distinguish reuse, create, and pull stages. |
+| Shared dependency readers | Run/LSP/DAP lease one published read-only generation. | Install through Package Center, then inspect environment inventory and refreshed analysis. |
+| Completion summaries | Catalog first, module on demand, idle prewarm, bounded hot/durable records. | Compare first and later access to the same module and watch coverage/progress. |
+| Bounded UI work | Lazy folders, background indexing, chunked processing, and cancellation. | Open a generated tree and type in Quick Open before indexing completes. |
+
+For the completion-popup regression, a real Electron test observes **zero retriggers, zero hides, and zero shows** across six background pages without interaction and another six after manual selection; the first useful semantic response merges once without hiding/showing the widget. This verifies interaction stability in a controlled test, not performance under all network conditions. See [measurement and source references](docs/performance-and-architecture.en.md).
+
 ## AI assistance
 
 ![AI Control Center](docs/screenshots/ai-control-center.png)
 
-Built-in Chat and inline completion are optional, independent workflows. Schema 3 keeps separate Chat and completion connection lists, selections, prompts, sampling parameters, and context budgets. OpenAI-compatible and Anthropic-style transports support streaming, cancellation, Chat/Completions/FIM routing, response limits, and explicit connection tests. Network requests execute in Electron main, but the current built-in settings contract reads AI profiles, including API keys, into the trusted application renderer and stores the profile JSON without at-rest encryption. Downloaded plugins do not receive those keys; the official Agent uses opaque model references.
+This AI settings image is a local UI fixture with illustrative connection data, not a live model call or performance measurement. The cloud run, completion, dependency, and history images above are real-service captures.
 
-BOBOCLOUD 2.8 also implements a Plugin API 1.5 Agent surface. The official AI Agent plugin opens an editor-sized tab with persistent sessions, Chat/Goal modes, five reasoning levels, selected local `SKILL.md` files, context compaction, safe Markdown, and structured workspace/process tools. Request approval, assisted approval, and unrestricted access modes change approval behavior but never remove permissions, workspace confinement, path/hash checks, process allowlists, quotas, or cancellation.
+Built-in Chat and inline completion are optional, independent workflows. Schema 4 keeps separate connections, selections, prompts, sampling parameters, and context budgets; connection metadata and model capabilities guide provider routing. OpenAI-compatible and Anthropic-style transports support streaming, cancellation, Chat/Completions/FIM routing, response limits, and explicit connection tests. Requests execute in Electron main. AI settings use the same OS-backed secret codec described above; some settings still reach the trusted workbench renderer, which is not a security boundary. Downloaded plugins do not receive raw keys: the official Agent uses opaque model references.
+
+BOBOCLOUD 2.8.1 implements Plugin API **1.10.0**. The official AI Agent plugin opens an editor-sized tab with persistent sessions, Chat/Goal modes, provider-dependent reasoning choices, selected local `SKILL.md` files, context compaction, safe Markdown, streaming model calls, and structured workspace/process tools. Request approval, assisted approval, and unrestricted access modes change approval behavior but never remove permissions, workspace confinement, path/hash checks, process allowlists, quotas, or cancellation. Requested and provider-effective reasoning are distinct; a selector is not proof a provider supports every level.
 
 The Agent is a desktop capability and adds no Go service endpoint. Downloaded orchestration runs in the isolated plugin Worker; credentials, canonical approvals, workspace-root and absolute-path resolution, writes, and `shell: false` processes stay in trusted Electron main. Generic MCP execution is not implemented. See [Local AI Agent plugin architecture](docs/ai-agent-plugin-architecture.md).
 
@@ -285,13 +377,14 @@ The Agent is a desktop capability and adds no Go service endpoint. Downloaded or
 
 Extensions are installed from the verified marketplace or imported as `.boboplugin` ZIP archives. The host validates package shape, engine ranges, exact bytes, declared resources, and a complete per-file SHA-256 map before promotion. Activation code runs as one bundled ESM entry in an isolated Worker without DOM, Node.js, Electron, shell, environment variables, raw credentials, arbitrary filesystem access, or general networking.
 
-The official catalog currently registers three separately maintained plugins:
+The official ecosystem includes these separately maintained packages. Consult Marketplace for the versions currently published to your catalog; the compiler and plugin repositories release independently.
 
 | Plugin | Repository | What it does and does not do |
 | --- | --- | --- |
-| `bobocloud.local-scm` (catalog `1.2.1`) | [BOBOCLOUD Compiler Git Integration Plugin](https://github.com/NemophilistJohn/BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-) | Local-workspace Git status, initialization/clone, staging, commit, fetch/pull/push, branches, bounded history, and file decorations through the host Git broker. No cloud-workspace access, arbitrary shell, or hosted pull-request API. |
-| `bobocloud.document-preview` (`1.1.0`) | [BOBOCloud Document Preview](https://github.com/NemophilistJohn/bobocloud-document-preview) | Read-only Markdown, CSV/TSV, XLSX-family, PDF, Word OOXML, image, notebook, and ZIP-derived package previews in opaque-origin document views. It does not execute formulas, macros, notebook code, widgets, or embedded scripts. |
-| `bobocloud.ai-agent` (`1.3.0`) | [BOBOCLOUD AI Agent](https://github.com/NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical) | Goal/chat orchestration, Skills, compaction, model calls, and approval-gated structured local tools. It never receives raw keys, absolute paths, shell access, or approval authority. |
+| `bobocloud.local-scm` | [BOBOCLOUD Compiler Git Integration Plugin](https://github.com/NemophilistJohn/BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-) | Local-workspace Git status, initialization/clone, staging, commit, fetch/pull/push, branches, bounded history, and file decorations through the host Git broker. No cloud-workspace access, arbitrary shell, or hosted pull-request API. |
+| `bobocloud.document-preview` | [BOBOCloud Document Preview](https://github.com/NemophilistJohn/bobocloud-document-preview) | Read-only Markdown, CSV/TSV, XLSX-family, PDF, Word OOXML, image, notebook, and ZIP-derived package previews in opaque-origin document views. It does not execute formulas, macros, notebook code, widgets, or embedded scripts. |
+| `bobocloud.ai-agent` | [BOBOCLOUD AI Agent](https://github.com/NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical) | Goal/chat orchestration, Skills, compaction, model calls, and approval-gated structured local tools. It never receives raw keys, absolute paths, shell access, or approval authority. |
+| `bobocloud.notebook-preview` | [BOBOCloud Jupyter support](https://github.com/NemophilistJohn/BOBOCloud-Jupter-support) | A separate Python notebook editor/viewer with scoped save, analysis, and execution through host APIs. Requires a compatible API/runtime; the general preview plugin remains read-only. |
 
 [BOBOCloud Marketplace Registry](https://github.com/NemophilistJohn/BOBOCloud-Marketplace-Registry) is the catalog, not an executable plugin bundle. Its chain is root registry -> official shard -> package index -> immutable version descriptor. Each layer pins the next by SHA-256; artifacts are limited to approved HTTPS hosts and are independently hashed before installation. Historical version descriptors are immutable, so a correction is published as a new semantic version.
 
@@ -311,9 +404,9 @@ flowchart LR
     API["HTTP actions"] --> Identity["Auth, workspace and lifecycle identity"]
     Identity --> Admission["Resource governance and fair queue"]
     Admission --> Runtime["Docker pool or Local runner"]
-    Identity --> Dependencies["Transactional project dependencies"]
-    Identity --> LSP["LSP sessions and analysis cache"]
-    Identity --> DAP["DAP sessions and adapter cache"]
+    Admission --> Dependencies["Transactional project dependencies"]
+    Admission --> LSP["LSP sessions and analysis cache"]
+    Admission --> DAP["DAP sessions and adapter cache"]
     Identity --> Team["Teams, Git and locks"]
     Identity --> Data["BoltDB and managed files"]
   end
@@ -407,12 +500,12 @@ The central queue covers run, task, terminal, package, LSP, DAP, and maintenance
 | HTTP(S) `:3100` | `POST /` | JSON action API for `serverInfo`, auth, runs, tasks, projects, environments, packages, administration, and teams. |
 | HTTP(S) `:3100` | `GET /healthz` | Process liveness. |
 | HTTP(S) `:3100` | `GET /readyz` | Dependency and service readiness. |
-| WebSocket `:3100/lsp` | `/lsp` | Preferred LSP transport. |
-| WebSocket `:3100/dap` | `/dap` | Preferred DAP transport. |
+| WebSocket `:3100/lsp` | `/lsp` | Additional service route for configured proxies. |
+| WebSocket `:3100/dap` | `/dap` | Additional service route for configured proxies. |
 | WebSocket `:3101/ws` | `/ws` | Run attach, streaming output/input, artifacts, and cancellation. |
 | WebSocket `:3101/terminal` | `/terminal` | Interactive terminal; `/term` is the compatibility alias. |
-| WebSocket `:3101/lsp` | `/lsp` | LSP compatibility route. |
-| WebSocket `:3101/dap` | `/dap` | DAP compatibility route. |
+| WebSocket `:3101/lsp` | `/lsp` | Default desktop LSP listener. |
+| WebSocket `:3101/dap` | `/dap` | Default desktop DAP listener. |
 | WebSocket `:3102/dap-child` | `/dap-child` | Authenticated one-use Node debug child-session broker. |
 
 Put these listeners behind an appropriate firewall/reverse proxy policy. The desktop must reach the advertised HTTP and WebSocket ports; rclone/SFTP also needs SSH. Internal Docker adapter ports must never be published as public APIs.
@@ -500,7 +593,7 @@ Generated renderer bundles under `client/renderer-dist/` must be rebuilt, never 
 
 ## For plugin developers
 
-BOBOCLOUD desktop 2.8 implements [Plugin API](docs/plugin-api.md) `1.5.0` while retaining compatible API 1.x packages. A `.boboplugin` is a ZIP with `manifest.json` at its root:
+BOBOCLOUD desktop 2.8 implements [Plugin API](docs/plugin-api.md) `1.10.0` while retaining compatible API 1.x packages. A `.boboplugin` is a ZIP with `manifest.json` at its root:
 
 - schema 1 contains one bundled ESM activation entry;
 - schema 2 additionally allows only explicitly declared document-view entries/resources;
@@ -509,7 +602,7 @@ BOBOCLOUD desktop 2.8 implements [Plugin API](docs/plugin-api.md) `1.5.0` while 
 - permissions form a hard capability ceiling and can be revoked individually;
 - activation, command calls, models/tools/documents/Git/storage brokers, and deactivation are bounded and lifecycle-owned.
 
-Use [plugin development](docs/plugin-development.md), the [Plugin API](docs/plugin-api.md), and the [TypeScript SDK](client/plugin-sdk/bobocloud-plugin.d.ts) as the contract. The three official repositories above are focused examples of source-control, document-view, and Agent integrations. Marketplace publication must update the immutable version descriptor, package index, official shard, and root registry hash chain in that order.
+Start with the bilingual [plugin quick start](docs/plugin-quickstart.en.md), then use [plugin development](docs/plugin-development.md), the [Plugin API](docs/plugin-api.md), and the [TypeScript SDK](client/plugin-sdk/bobocloud-plugin.d.ts) as the contract. The official repositories above are focused examples of source-control, document-view, and Agent integrations. Marketplace publication must update the immutable version descriptor, package index, official shard, and root registry hash chain in that order.
 
 Visible plugin text should ship English, Simplified Chinese, and Japanese catalogs. Test activation, disable/enable, permission revocation, resource disposal, package integrity, a clean install, and the real Electron surface the plugin contributes.
 
@@ -573,7 +666,7 @@ UI tests build the renderer and drive the real Electron application with isolate
 npm run docs:screenshots
 ```
 
-The command builds the current renderer, launches fresh local Electron fixtures in English and Simplified Chinese, verifies there are no page/console errors or viewport overflow, checks every PNG is a non-trivial 1440x900 image, and atomically promotes the complete set. It never contacts a real service or reads a real AI key.
+This command refreshes the legacy **fixture** images under `docs/screenshots/`; it does not produce the live-service evidence in this README. Current live recordings and privacy rules are documented in [media provenance](docs/media/README.md). Do not replace real service results with fixture output or label fixture timings as benchmarks.
 
 ## Current boundaries
 
@@ -584,7 +677,7 @@ The command builds the current renderer, launches fresh local Electron fixtures 
 - DAP supports launch for Python, Go, and Node.js, not attach, compounds, or debuggee stdin.
 - Tasks, settings, launch files, and the Plugin API implement the documented subset rather than arbitrary VS Code extension behavior.
 - Generic MCP runtime execution is not part of this release.
-- User credentials/settings are not encrypted at rest in the Electron profile.
+- At-rest encryption depends on OS-backed Electron safeStorage availability; plaintext fallback exists. Never publish a profile.
 - Runtime/toolkit availability is deployment-specific; a catalog entry is not proof that its image exists on a host.
 
 ## License

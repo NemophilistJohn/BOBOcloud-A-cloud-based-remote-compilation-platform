@@ -1,6 +1,6 @@
 # BOBOCloud Local AI Agent Plugin Architecture
 
-Status: API 1.6 implementation contract and Agent 1.4 construction guide. The minimum API 1.6 desktop host is BOBOCloud 2.8.1.
+Status: host Agent architecture reference. Desktop 2.8.1 currently implements Plugin API 1.10.0. API 1.6 established the streaming/state/approval baseline described here; the rollout checklist is historical context, while the current SDK, package manifest, and implemented brokers define compatibility. See the paired [English](performance-and-architecture.en.md) / [中文](performance-and-architecture.zh-CN.md) product architecture guides and [Plugin API](plugin-api.md).
 
 ## Scope and product boundary
 
@@ -104,7 +104,7 @@ This requires a frontend API, but it is a data API rather than a webview API: `a
 
 1. The workbench invokes the plugin's `send` command with one bounded payload.
 2. The plugin appends the user message, marks the session running, creates a unique request id, starts a tracked asynchronous turn, publishes a versioned patch, and returns from the command without waiting for the full turn.
-3. The plugin calls `models.generateStream()` using an opaque model ref and bounded tool schemas. A feature-detected `generate()` fallback preserves API 1.5 compatibility for the official package.
+3. The plugin calls `models.generateStream()` using an opaque model ref and bounded tool schemas. A feature-detected `generate()` fallback handles the non-streaming path; supported hosts are still determined by the published manifest and required capabilities, not by that fallback alone.
 4. The main broker resolves the secret host profile, translates only declared reasoning controls, and emits normalized request-scoped events. Provider SSE framing and credentials never cross into the Worker.
 5. The plugin incrementally upserts the assistant message and timeline, then either finalizes the assistant result or validates and dispatches named tools.
 6. Independent host descriptors marked both `readOnly` and `parallelSafe` may execute in a bounded parallel batch. Unknown or mutating tools remain serial.
@@ -158,7 +158,7 @@ The Worker context has no approval, rejection, decision, or process-cancel metho
 | Resource exhaustion | Entry, RPC, model input, file, output, state-list, session, message, timeline, Skill, storage, timeout, and result counts are bounded. |
 | Deleted session or disabled plugin leaves authority | Session deletion clears its access context; deactivation disposes handles and clears plugin-owned access, pending approvals, searches, model requests, and processes. |
 
-Plugin-local storage should still be treated as ordinary local application data, not a credential vault. The current application AI settings also need a separate at-rest secret-storage migration; the Agent boundary prevents new exposure to plugins but does not by itself encrypt existing host settings.
+Plugin-local storage is ordinary local application data, not a credential vault. Current server/auth/AI settings use the host secret codec: Electron `safeStorage` encrypts when available and readable legacy profiles migrate; without OS-backed encryption the codec falls back to ordinary JSON. This conditional at-rest protection is separate from the Agent boundary, which keeps raw credentials out of downloaded plugin code.
 
 ## Cross-platform contract
 

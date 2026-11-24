@@ -482,7 +482,7 @@ export function createCompletionCoordinator(dependencies: CompletionCoordinatorD
       records.delete(key); records.set(key, record);
       const entries = context.imports
         ? record.roots.map(node => ({ name: node.name, kind: 'module' }))
-        : record.roots.flatMap(node => node.name === context.module ? node.members.concat(node.modules.map(child => ({ name: child.name, kind: 'module' })))
+        : record.roots.flatMap(node => node.name === context.module ? (node.members || []).concat((node.modules || []).map(child => ({ name: child.name, kind: 'module' })))
           : node.name.startsWith(context.module + '.') || node.name.startsWith(context.module + '::')
             ? [{ name: node.name.slice(context.module.length).replace(/^(\.|::)/, '').split(/\.|::/)[0] || '', kind: 'module' }] : []);
       const unique = new Map(entries.map(item => [item.name, item]));

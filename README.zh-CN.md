@@ -4,6 +4,10 @@
 
 BOBOCLOUD 是一套可自行部署的云端开发工作台：Electron 桌面端负责保存和编辑开发者电脑上的项目，Go 服务端负责 Linux 执行、Docker 运行时、项目依赖环境、任务、终端、语言智能、调试、团队协作与资源治理。当前源码中的客户端版本为 **2.8.1**，服务端版本为 **2.5.0**。
 
+**源码留在本地，工具链放到云端。** 打开普通项目文件夹，选择服务器运行时，就能在同一桌面工作台里运行、查看结果、调试和扩展。只编辑文件时不需要云账号；连接服务后再使用远程能力。
+
+本文于 **2026-11-24** 按当前源码更新，中文与 [English](README.md) 使用相同章节结构。当前 Plugin API 为 **1.10.0**。实际可用的镜像、调试器、配额及可选插件取决于你的部署。
+
 没有服务器时，桌面端仍然可以打开文件夹、使用 Monaco 编辑器、搜索、查看 Problems 并调整工作台。运行、调试、云终端、项目依赖、团队和服务器存储则需要先连接兼容的 BOBOCLOUD 服务。
 
 | 我想做什么 | 建议先读 |
@@ -14,7 +18,35 @@ BOBOCLOUD 是一套可自行部署的云端开发工作台：Electron 桌面端�
 | 编写一个插件 | [插件开发者](#插件开发者) |
 | 修改 BOBOCLOUD 本体 | [贡献者](#贡献者) |
 
-![BOBOCLOUD 中文工作台](docs/screenshots/workbench.zh-CN.png)
+![真实 BOBOCLOUD 工作台，Cloud Forge 主题](docs/media/live-workbench-zh-CN.png)
+
+### 先看一个真实项目
+
+![云端运行与补全演示](docs/media/cloud-tour-zh-CN.gif)
+
+这段节选使用新建的独立演示项目、真实账号与真实服务，统一采用 **Cloud Forge**。演示包含模块补全和云端运行；等待片段经过缩短，因此 GIF 不是延迟测试。[复现同一项目](examples/cloud-tour/README.md) · [素材来源说明](docs/media/README.md)。
+
+| 下一步阅读 | 适合谁 |
+| --- | --- |
+| [小白上手教程](docs/getting-started.zh-CN.md) | 首次启动、连接、第一次运行、安装依赖、调试和常见问题。 |
+| [性能与架构说明](docs/performance-and-architecture.zh-CN.md) | 缓存了什么、为什么有效、隔离边界、事实依据和当前限制。 |
+| [插件快速入门](docs/plugin-quickstart.zh-CN.md) | 打包真实示例、理解权限、选择合适的扩展入口。 |
+| [参与贡献](CONTRIBUTING.zh-CN.md) | 找到功能所属模块、选择有效测试、提交聚焦的改动。 |
+
+## 为什么选择 BOBOCLOUD
+
+| 日常问题 | 已实现的处理方式 | 对使用者的价值 |
+| --- | --- | --- |
+| 每台电脑都要重复配置编译器和依赖 | 服务端选择 Docker 运行时，本地源码仍是普通文件夹 | 不同电脑可以使用相同的远端工具链。 |
+| 安装库后能运行，但代码智能还不认识它 | 运行、LSP、DAP 独立读取同一不可变项目依赖代 | 执行、分析和调试围绕同一依赖身份工作。 |
+| 远程补全冷启动慢、候选不停跳 | 统一补全入口、导入目录、模块摘要、学习排序及空闲预热 | 名称提示可以先出现，语义分析随后补齐，同时保留用户选择。 |
+| 打开大项目就先卡住 | 文件夹按需展开，文件索引在后台有界生成，输入节流并拒绝过时结果 | 不必等整个工作区扫描结束才开始操作。 |
+| 同一项目每次重复编译 | 项目隔离的增量编译状态与满足条件的构建产物复用 | 减少重复编译；每次运行仍真正执行程序。 |
+| 一个忙碌账号拖住整台共享服务器 | 按工作类型、账号、项目组织的公平队列和资源租约 | 排队、取消、回收与资源压力都有明确管理。 |
+| 跑过一次，却难以追溯当时条件 | 运行 ID、运行时和参数、最终状态及保留输出 | 可以回看和比较记录，不只依赖当时的控制台。 |
+| 插件为了一个功能就要获取全部权限 | 校验安装包，隔离 Worker/视图，通过窄宿主接口执行 | Git、文档、Notebook 与 Agent 可扩展，但插件不会获得任意 Electron 权限。 |
+
+这些是实现机制，不代表所有远程操作都比本地 IDE 快。网络延迟、冷镜像、语言服务启动、项目体积和主机负载仍然影响体验。[性能说明](docs/performance-and-architecture.zh-CN.md)逐项提供代码依据和测量方法。
 
 ## 先理解它怎样工作
 
@@ -74,7 +106,7 @@ npm start
 
 选择**只使用本地编辑器**只会关闭向导，不会伪造一台服务器，之后仍可回到服务器设置。
 
-服务器与认证设置保存在当前操作系统账号的 Electron user-data 目录。现阶段它们使用本地 JSON，尚未做静态加密。请保护操作系统账号，不要把该目录提交到 Git 或附进公开排障包。
+服务器、认证与 AI 设置保存在当前操作系统账号的 Electron user-data 目录。Electron `safeStorage` 可用时，会以加密封套保存，并迁移可读取的旧配置；系统加密不可用时，codec 会回退普通 JSON，因此不能无条件承诺所有平台都已加密。请保护操作系统账号，不要公开该目录。插件本地存储不是密钥保险箱。
 
 ### 完成第一次运行
 
@@ -117,7 +149,7 @@ C/C++ 与 Rust 交叉目标使用版本化 `cross-toolkit` 镜像，Go 使用受
 
 ## 项目依赖中心
 
-![中文项目依赖中心](docs/screenshots/project-dependencies.zh-CN.png)
+![中文项目依赖中心](docs/media/live-dependencies-zh-CN.png)
 
 环境中心包含两个互相关联但职责不同的页面：
 
@@ -178,7 +210,7 @@ pnpm 项目声明的版本必须符合服务器 `package_node_pnpm_version` 策�
 
 ### 环境状态
 
-![中文环境状态](docs/screenshots/environment-center.zh-CN.png)
+![中文环境状态](docs/media/live-environment-zh-CN.png)
 
 环境状态同时使用四类证据，但不会把它们混为一谈：
 
@@ -214,11 +246,50 @@ BOBOCLOUD 按以下顺序读取 JSONC，后出现的同名 `label` 覆盖之前�
 
 Electron 主进程以 JSONC 读取 `.vscode/settings.json`。文件必须位于当前工作区、不能是符号链接，且最大 256 KiB。当前支持 tab/空格、换行、ruler、空白符、minimap、括号配色、语言 override、安全文件关联和布尔 `files.exclude` glob。不支持的设置会被忽略并报告，带 `when` 条件的 exclude 对象不会执行。
 
+### 大工作区与 Quick Open
+
+打开工作区时先读取当前层的目录项；展开文件夹时才请求有界子项分页，不先递归构造整棵树。扫描与监听器都有明确预算，适合含生成目录或数千源文件的项目；达到上限时会表达部分覆盖，不把有界扫描声称为完整扫描。
+
+**Quick Open** 在后台异步生成文件索引，Renderer 分批处理并主动让出事件循环，输入后等待 **80 ms** 再过滤。索引未完成时，已有文件树条目仍可使用。根目录、身份和代次检查会拒绝来自旧项目的结果。80 ms 是实现中的输入节流值，不是完整搜索耗时承诺。
+
 ### LSP
 
-语言智能与调试是两个独立服务。首选路由为 WebSocket `:3100/lsp`，WebSocket `:3101/lsp` 是兼容路径。配置的 toolkit 可覆盖 Rust、Go、C/C++、Java、Python、JavaScript/TypeScript、HTML、CSS/SCSS/Less、JSON/JSONC、YAML 与 shell。
+语言智能与调试是两个独立服务。桌面端默认使用专用 WebSocket listener 的 `:3101/lsp`；服务端也在 HTTP listener 挂载 `/lsp`，供相应部署和反向代理使用。请按真实 listener/代理配置端口与 TLS，不要把 HTTP 端口直接当作已可用的 WebSocket 地址。配置的 toolkit 可覆盖 Rust、Go、C/C++、Java、Python、JavaScript/TypeScript、HTML、CSS/SCSS/Less、JSON/JSONC、YAML 与 shell。
 
 语言服务器使用只读工作区投影、私有可写分析缓存、有界消息和会话数、CPU/内存限制，默认无网络。客户端只看到 `bobocloud-lsp` URI，不会获得服务器路径。LSP 可以读取当前项目依赖代，但分析缓存严禁与 DAP 共用。
+
+**分析深度与缓存策略分开选择。** 本地、标准、完整模式决定分析服务及协议策略；下面三种模式决定客户端依赖摘要和后台工作：
+
+| 补全缓存策略 | 实际行为 | 适合场景 |
+| --- | --- | --- |
+| **按需** | 先发现可导入名称，需要哪个模块时再读取它的公开 API 名称。 | 希望减少后台流量，或服务端资源紧张。 |
+| **智能**（默认） | 在按需基础上，空闲时预热当前文档已导入的模块。 | 大多数日常开发。 |
+| **项目** | 空闲时渐进预热依赖与模块摘要，并继续发现可扫描的子模块。 | 较大项目，希望首次访问新 API 前尽量做好准备。 |
+
+磁盘持久化是独立开关，关闭后当前会话仍可使用摘要。小容量也能使用磁盘缓存，旧的 30 MiB 硬门槛已移除。内存与磁盘记录都有容量、数量、淘汰、身份校验和覆盖标记。项目模式在这些边界内积极预热，不等于无上限扫描所有源码和依赖。
+
+```mermaid
+flowchart LR
+  Input["光标、文档、导入上下文"] --> Merge["统一补全协调层"]
+  Local["本地规则与当前符号"] --> Merge
+  Catalog["导入目录与模块摘要"] --> Merge
+  Semantic["远端 LSP 语义结果"] --> Merge
+  History["明确接受 + 稳定手写使用"] --> Rank["按上下文排序"]
+  Merge --> Rank --> Popup["稳定的候选列表"]
+  Idle["空闲：智能 / 项目预热"] --> Catalog
+```
+
+- **导入发现：** `numpy` 等名称来自已验证依赖挂载或所选运行时镜像，不使用写死的“热门库”列表。库必须存在于这个环境；只在桌面电脑上安装并不等于云端已安装。
+- **使用学习：** 明确接受候选是强信号，停顿后稳定出现的重复手写是较弱信号。`import numpy as np` 会归一化接收者，因此手写 `np.array(...)` 可以影响后续 `np.a` 的排序。偏好按账号、工作区、语言、接收者隔离，随时间衰减，也能关闭或清除；学习记录不保存原始源码。
+- **候选稳定：** 后台摘要分页不会反复重开已有内容的补全框。首次语义结果可以在用户尚未交互时合并新候选；导航、取消、确认或鼠标选择后保护当前选择，下一次输入自然采用新数据。
+- **主动让路：** 空闲预热会在输入、运行、调试、同步和工作区切换时暂停。资源压力触发退避，不会把暂时失败保存为空目录。同一已验证身份内，文件切换和短暂断线保留摘要；新传输会话会重启未完成的私有分页游标。
+- **分语言适配：** Python 静态导出与重导出、Node/TypeScript 包声明与 exports、Go 公开声明、Rust crate 公开声明、Java 包和类名、C/C++ 头文件与简单函数原型。各语言覆盖程度不同；二进制或动态 API、复杂 C++ 类型、宏、Java 方法及语义引用仍由语言服务器处理。
+
+![真实界面中的三种补全策略](docs/media/live-lsp-settings-zh-CN.png)
+
+![环境和分析器预热后的真实 NumPy 补全](docs/media/live-numpy-completion-zh-CN.png)
+
+这里不承诺“所有库都已完整索引”。冷启动或动态生成的 API 仍可能等待分析器。详见 [LSP 行为与回归基线](docs/lsp-functional-baseline.md)和[性能说明](docs/performance-and-architecture.zh-CN.md)。
 
 ### DAP
 
@@ -237,6 +308,10 @@ Electron 主进程以 JSONC 读取 `.vscode/settings.json`。文件必须位于�
 ### 输出与问题
 
 运行输出通过 WebSocket 实时传输。服务端仅对结果和历史保留可配置尾部 ring buffer（`run_output_retained_bytes`）；淘汰旧字节时会插入明确省略标记，该上限不会故意截断实时流。Problems 会把编译器和任务诊断映射回源码，并与 LSP 诊断共存，但不会把每条分析器错误当作“未安装”的事实。
+
+标题栏的**运行历史**可以选择一条记录，查看运行 ID、目标、运行时、语言、工作区、可选分支/参数、开始结束时间、退出状态及保留输出，也能复制输出。它是执行记录，不是完整源码快照，更不保证永久重建过去的依赖环境。历史有保留期限和数量上限，省略的输出会明确标记。
+
+![真实演示项目的运行记录，已排除账号中的其它项目历史](docs/media/live-history-zh-CN.png)
 
 ## 终端、账号与团队
 
@@ -258,6 +333,8 @@ Electron 主进程以 JSONC 读取 `.vscode/settings.json`。文件必须位于�
 
 ## 缓存模型
 
+“缓存”不是所有功能共用的一袋文件。每层都有自己的身份、保留策略与正确性边界；源码、依赖代、运行时镜像或账号变化时，需要失效的缓存层各不相同。
+
 BOBOCLOUD 使用统一的 cache-v2 目录和目录表，但不同缓存域必须分开，因为它们的正确性条件完全不同。
 
 | 缓存域 | 身份与用途 | 复用规则 |
@@ -271,13 +348,28 @@ BOBOCLOUD 使用统一的 cache-v2 目录和目录表，但不同缓存域必须
 
 个人存储实施真实字节与文件计数、写前预留、最大依赖代、当前/读者/写者保护和仅对可淘汰项执行的 LRU。删除缓存会使仍引用它的空闲容器失效，并事务化删除文件与元数据。已经退役的用户级依赖布局不会被静默导入或继续展示。
 
+### 可以自行验证的性能机制
+
+| 机制 | 实际作用范围 | 怎样验证 |
+| --- | --- | --- |
+| 增量编译状态 | 按精确项目、运行时、依赖和目标身份复用编译器状态。 | 对同一编译型示例运行两次，查看缓存与编译阶段。 |
+| 构建结果复用 | 满足源码和计划一致等条件时可复用产物，运行与副作用仍会执行。 | 加入可观察的运行输出，即使命中编译缓存也应每次出现。 |
+| 容器复用 | 复用符合条件且通过重置验证的容器；仍可能冷启动和拉镜像。 | 展开基础设施详情，区分复用、创建、拉取阶段。 |
+| 共享依赖读取 | 运行、LSP、DAP 分别持有同一已发布只读依赖代的租约。 | 从依赖中心安装，随后查看环境清单和分析刷新。 |
+| 补全摘要 | 先目录、后按需模块、空闲预热，内存与持久记录均有界。 | 比较同模块首次与后续访问，观察覆盖和进度。 |
+| 有界界面工作 | 懒展开、后台索引、分块处理和取消。 | 打开生成的目录树，在索引完成前输入 Quick Open。 |
+
+真实 Electron 补全框回归中，无操作连续返回 6 页后台结果、手动选择后再返回 6 页，均观测到 **0 次重触发、0 次隐藏、0 次重新显示**；首个有用语义响应合并一次，也不隐藏或重开列表。这证明受控场景下的交互稳定性，不代表所有网络条件下的性能。详见[测量方法与代码依据](docs/performance-and-architecture.zh-CN.md)。
+
 ## AI 辅助
 
 ![中文 AI 控制中心](docs/screenshots/ai-control-center.zh-CN.png)
 
-内置聊天和行内补全是两条可选且独立的工作流。Schema 3 分离两类连接列表、当前选择、提示词、采样参数与上下文预算。OpenAI-compatible 与 Anthropic-style 传输支持流式响应、取消、Chat/Completions/FIM 路由、响应上限和显式连接测试。网络请求由 Electron 主进程发出，但当前内置设置契约会把包含 API Key 的 AI profile 读入可信应用 Renderer，profile JSON 也没有静态加密。下载插件拿不到这些 Key；官方 Agent 只使用不透明模型引用。
+这张 AI 设置图来自本地 UI fixture，连接信息是示例，不是真实模型调用或性能测量。前面的云端运行、补全、依赖与历史图片均为真实服务采集。
 
-BOBOCLOUD 2.8 还提供 Plugin API 1.5 Agent 界面。官方 AI Agent 插件以编辑器同级大标签展示持久会话、Chat/Goal 模式、五档思考强度、显式选择的本地 `SKILL.md`、上下文压缩、安全 Markdown 和结构化工作区/进程工具。请求批准、协助批准和不受限访问只改变批准行为，绝不会移除插件权限、工作区边界、路径/hash 校验、进程白名单、配额或取消机制。
+内置聊天和行内补全是两条可选且独立的工作流。Schema 4 分离连接、当前选择、提示词、采样参数与上下文预算，并通过连接元数据和模型能力处理不同提供商。OpenAI-compatible 与 Anthropic-style 传输支持流式响应、取消、Chat/Completions/FIM 路由、响应上限和显式连接测试。请求由 Electron 主进程发出，AI 配置使用上文所述的系统密钥 codec；部分设置仍会进入可信工作台 Renderer，后者不是安全边界。下载插件拿不到原始 Key，官方 Agent 使用不透明模型引用。
+
+BOBOCLOUD 2.8.1 实现 Plugin API **1.10.0**。官方 AI Agent 插件以编辑器同级大标签展示持久会话、Chat/Goal 模式、随提供商能力变化的思考选项、显式选择的本地 `SKILL.md`、上下文压缩、安全 Markdown、流式模型调用和结构化工作区/进程工具。请求批准、协助批准和不受限访问只改变批准行为，绝不会移除插件权限、工作区边界、路径/hash 校验、进程白名单、配额或取消机制。请求强度与提供商实际生效强度分别记录，界面存在选项不代表提供商支持所有档位。
 
 Agent 是纯桌面能力，不新增任何 Go 服务端接口。下载的编排逻辑运行在隔离插件 Worker 中，密钥、规范化审批、工作区根与绝对路径解析、写操作和 `shell: false` 进程仍由可信 Electron 主进程负责。当前没有通用 MCP 执行运行时。详见[本地 AI Agent 插件架构](docs/ai-agent-plugin-architecture.md)。
 
@@ -285,13 +377,14 @@ Agent 是纯桌面能力，不新增任何 Go 服务端接口。下载的编排�
 
 扩展可从经过验证的市场安装，也可导入 `.boboplugin` ZIP。宿主在提升为已安装插件前，会验证包结构、engine 范围、精确字节、声明资源和覆盖每个文件的 SHA-256。激活代码作为一个打包 ESM 入口运行在隔离 Worker，没有 DOM、Node.js、Electron、shell、环境变量、原始凭据、任意文件系统或通用网络访问。
 
-官方目录当前注册三个独立维护的插件：
+官方生态包含下列独立维护的包。当前已发布版本以所连接的市场目录为准，编译器和插件仓库独立发布。
 
 | 插件 | 仓库 | 功能与边界 |
 | --- | --- | --- |
-| `bobocloud.local-scm`（目录版本 `1.2.1`） | [BOBOCLOUD Compiler Git Integration Plugin](https://github.com/NemophilistJohn/BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-) | 通过宿主 Git broker 提供本地工作区状态、初始化/clone、stage、commit、fetch/pull/push、分支、有界历史和文件装饰。不访问云工作区、任意 shell 或托管 PR API。 |
-| `bobocloud.document-preview`（`1.1.0`） | [BOBOCloud Document Preview](https://github.com/NemophilistJohn/bobocloud-document-preview) | 在不透明源 document view 中只读预览 Markdown、CSV/TSV、XLSX 系列、PDF、Word OOXML、图片、Notebook 与 ZIP 衍生包。不执行公式、宏、Notebook 代码、widget 或嵌入脚本。 |
-| `bobocloud.ai-agent`（`1.3.0`） | [BOBOCLOUD AI Agent](https://github.com/NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical) | Goal/Chat 编排、Skills、压缩、模型调用和需批准的结构化本地工具。插件永远拿不到原始 Key、绝对路径、shell 或自批权限。 |
+| `bobocloud.local-scm` | [BOBOCLOUD Compiler Git Integration Plugin](https://github.com/NemophilistJohn/BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-) | 通过宿主 Git broker 提供本地工作区状态、初始化/clone、stage、commit、fetch/pull/push、分支、有界历史和文件装饰。不访问云工作区、任意 shell 或托管 PR API。 |
+| `bobocloud.document-preview` | [BOBOCloud Document Preview](https://github.com/NemophilistJohn/bobocloud-document-preview) | 在不透明源 document view 中只读预览 Markdown、CSV/TSV、XLSX 系列、PDF、Word OOXML、图片、Notebook 与 ZIP 衍生包。不执行公式、宏、Notebook 代码、widget 或嵌入脚本。 |
+| `bobocloud.ai-agent` | [BOBOCLOUD AI Agent](https://github.com/NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical) | Goal/Chat 编排、Skills、压缩、模型调用和需批准的结构化本地工具。插件永远拿不到原始 Key、绝对路径、shell 或自批权限。 |
+| `bobocloud.notebook-preview` | [BOBOCloud Jupyter support](https://github.com/NemophilistJohn/BOBOCloud-Jupter-support) | 独立的 Python Notebook 编辑与查看插件，通过宿主接口进行范围受限的保存、分析和执行；需要兼容 API/运行时，通用文档预览插件仍为只读。 |
 
 [BOBOCloud Marketplace Registry](https://github.com/NemophilistJohn/BOBOCloud-Marketplace-Registry) 是目录，不是可执行插件集合。哈希链为“根 registry -> official 分片 -> package index -> 不可变 version descriptor”，每层都用 SHA-256 固定下一层；安装包只能来自批准的 HTTPS 主机并在安装前独立校验。历史版本描述不可修改，修复必须发布新的语义版本。
 
@@ -311,9 +404,9 @@ flowchart LR
     API["HTTP actions"] --> Identity["认证、工作区与生命周期身份"]
     Identity --> Admission["资源治理与公平队列"]
     Admission --> Runtime["Docker 池或 Local runner"]
-    Identity --> Dependencies["事务化项目依赖"]
-    Identity --> LSP["LSP 会话与分析缓存"]
-    Identity --> DAP["DAP 会话与 adapter 缓存"]
+    Admission --> Dependencies["事务化项目依赖"]
+    Admission --> LSP["LSP 会话与分析缓存"]
+    Admission --> DAP["DAP 会话与 adapter 缓存"]
     Identity --> Team["团队、Git 与锁"]
     Identity --> Data["BoltDB 与受管文件"]
   end
@@ -403,12 +496,12 @@ go build -trimpath -o bobocloud-server ./cmd/bobocloud
 | HTTP(S) `:3100` | `POST /` | `serverInfo`、认证、运行、任务、项目、环境、软件包、管理和团队 action API。 |
 | HTTP(S) `:3100` | `GET /healthz` | 进程存活。 |
 | HTTP(S) `:3100` | `GET /readyz` | 依赖与服务就绪。 |
-| WebSocket `:3100/lsp` | `/lsp` | 首选 LSP。 |
-| WebSocket `:3100/dap` | `/dap` | 首选 DAP。 |
+| WebSocket `:3100/lsp` | `/lsp` | 供相应代理使用的额外服务路由。 |
+| WebSocket `:3100/dap` | `/dap` | 供相应代理使用的额外服务路由。 |
 | WebSocket `:3101/ws` | `/ws` | 运行 attach、流式输出/输入、产物与取消。 |
 | WebSocket `:3101/terminal` | `/terminal` | 交互终端；`/term` 是兼容别名。 |
-| WebSocket `:3101/lsp` | `/lsp` | LSP 兼容路由。 |
-| WebSocket `:3101/dap` | `/dap` | DAP 兼容路由。 |
+| WebSocket `:3101/lsp` | `/lsp` | 桌面端默认 LSP listener。 |
+| WebSocket `:3101/dap` | `/dap` | 桌面端默认 DAP listener。 |
 | WebSocket `:3102/dap-child` | `/dap-child` | Node 调试的一次性认证 child-session broker。 |
 
 应通过防火墙或反向代理策略保护 listener。桌面端需要访问公布的 HTTP/WS 端口，rclone/SFTP 还需要 SSH；Docker adapter 内部端口绝不能变成公网 API。
@@ -495,7 +588,7 @@ Set-Location server/deploy
 
 ## 插件开发者
 
-BOBOCLOUD 2.8 实现 [Plugin API](docs/plugin-api.md) `1.5.0`，同时兼容匹配的 API 1.x 包。`.boboplugin` 是根目录含 `manifest.json` 的 ZIP：
+BOBOCLOUD 2.8 实现 [Plugin API](docs/plugin-api.md) `1.10.0`，同时兼容匹配的 API 1.x 包。`.boboplugin` 是根目录含 `manifest.json` 的 ZIP：
 
 - schema 1 只包含一个打包 ESM 激活入口；
 - schema 2 额外允许 manifest 明确声明的 document-view 入口与资源；
@@ -504,7 +597,7 @@ BOBOCLOUD 2.8 实现 [Plugin API](docs/plugin-api.md) `1.5.0`，同时兼容匹�
 - permissions 是硬能力上限，用户可以逐项撤销；
 - 激活、命令、model/tool/document/Git/storage broker 与停用都有限时和生命周期所有者。
 
-以[插件开发指南](docs/plugin-development.md)、[Plugin API](docs/plugin-api.md) 与 [TypeScript SDK](client/plugin-sdk/bobocloud-plugin.d.ts) 为准。上文三个官方仓库分别展示 SCM、document view 与 Agent 的完整实现。发布到市场时，必须按顺序更新不可变 version descriptor、package index、official 分片和根 registry hash。
+先读双语[插件快速入门](docs/plugin-quickstart.zh-CN.md)，再以[插件开发指南](docs/plugin-development.md)、[Plugin API](docs/plugin-api.md) 与 [TypeScript SDK](client/plugin-sdk/bobocloud-plugin.d.ts) 为准。上文官方仓库分别展示 SCM、document view 与 Agent 的完整实现。发布到市场时，必须按顺序更新不可变 version descriptor、package index、official 分片和根 registry hash。
 
 插件的可见文本也应提供英文、简体中文和日文。至少测试激活、禁用/重启、权限撤销、资源释放、包完整性、全新安装和插件真实贡献的 Electron 页面。
 
@@ -568,7 +661,7 @@ UI 测试会构建 Renderer，用全新 user-data 启动真实 Electron。依赖
 npm run docs:screenshots
 ```
 
-命令先构建当前 Renderer，再用全新本地 fixture 分别启动英文与简体中文 Electron；它会校验 page/console 错误、viewport 溢出、非空 1440x900 PNG，并在全部成功后原子替换整个截图集。脚本不连接真实服务，也不读取真实 AI Key。
+此命令刷新 `docs/screenshots/` 中的旧版 **fixture** 图片，不生成本文的真实服务证据。当前实录与隐私处理见[素材说明](docs/media/README.md)。不要用 fixture 输出替代真实服务结果，也不要把示例耗时称为基准测试。
 
 ## 当前明确边界
 
@@ -579,7 +672,7 @@ npm run docs:screenshots
 - DAP 只对 Python、Go、Node.js 支持 launch，不支持 attach、compound 或 debuggee stdin。
 - Tasks、settings、launch 与 Plugin API 实现文档中的子集，不会执行任意 VS Code 扩展行为。
 - 当前没有通用 MCP 执行运行时。
-- Electron profile 中的用户凭据和设置尚未静态加密。
+- 静态加密取决于系统支持的 Electron safeStorage，存在明文回退；不要公开 profile。
 - 运行时与 toolkit 可用性取决于部署；目录条目不能证明某台服务器已经有镜像。
 
 ## 许可证

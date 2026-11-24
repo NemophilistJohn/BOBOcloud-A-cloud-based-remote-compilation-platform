@@ -12,6 +12,7 @@ const compiled = esbuild.buildSync({
 const moduleScope = { exports: {} };
 vm.runInNewContext(compiled, { module: moduleScope, exports: moduleScope.exports, Map, Set, Date, Promise });
 const { createCompletionCoordinator, completionImportContext, mergeCompletionCandidates } = moduleScope.exports;
+const { sanitizeDependencyIndex } = require('../client-analysis-cache');
 
 function model(source, language = 'python') {
   return {
@@ -55,6 +56,28 @@ function fixture(strategy = 'on-demand') {
   }
   return { service, context, ports, calls, writes, changes, advance };
 }
+
+test('durable summaries with omitted empty arrays remain usable after the real cache sanitizer', async () => {
+  const f = fixture();
+  const policy = { mode: 'lazy', sizeMiB: 32, dependencyIndexEnabled: true };
+  const record = sanitizeDependencyIndex({ schema: 'dependency-api-index-v1', roots: [
+    { name: 'statistics', kind: 'module', members: [{ name: 'mean', kind: 'function' }], modules: [] },
+    { name: 'statistics.empty', kind: 'module', members: [], modules: [] }
+  ] }, policy);
+  assert.equal(record.roots[0].modules, undefined);
+  assert.equal(record.roots[1].members, undefined);
+  f.ports.hydrate = async key => key === 'catalog' ? null : record;
+  f.service.configure(f.context, f.ports); await f.advance();
+  const source = model('import statistics as stats\nstats.m');
+  const position = { lineNumber: 2, column: 8 };
+  f.service.suggestions(source, position); await f.advance();
+  assert.deepEqual(Array.from(f.service.suggestions(source, position).items, item => item.label), ['mean']);
+  const empty = model('import statistics.empty as empty\nempty.');
+  const emptyPosition = { lineNumber: 2, column: 7 };
+  f.service.suggestions(empty, emptyPosition); await f.advance();
+  assert.deepEqual(Array.from(f.service.suggestions(empty, emptyPosition).items), []);
+  f.service.dispose();
+});
 
 test('catalog discovery precedes module parsing and missing imports are never invented', async () => {
   const f = fixture(); f.service.configure(f.context, f.ports); await f.advance();
