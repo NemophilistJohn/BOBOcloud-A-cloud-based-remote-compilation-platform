@@ -31,7 +31,10 @@ emergency when only one component changed. This still requires a successful
 push CI run for the exact current main commit, a new commit since the last
 release, and the complete artifact matrix. No signing credentials are required.
 The automatic versions use the client package's numeric version plus the
-GitHub run ID and attempt (for example `2.8.1-ci.12345.1`). These are GitHub
+GitHub run ID and attempt (for example `2.8.1-ci.12345.1`). The installed
+application retains the stable numeric version from `client/package.json`
+(such as `2.8.1`) so existing plugin engine ranges continue to match. Identify
+the exact build using the release tag and recorded commit. These are GitHub
 prereleases and do not replace the stable `Latest` release.
 
 The x64 packages target 64-bit x86 (`amd64`); 32-bit x86 and ARMv7 are not

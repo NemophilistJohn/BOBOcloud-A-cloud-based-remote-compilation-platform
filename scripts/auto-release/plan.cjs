@@ -93,7 +93,7 @@ function main() {
   const attempt = process.env.GITHUB_RUN_ATTEMPT || '';
   if (!/^\d+$/.test(run) || !/^\d+$/.test(attempt)) throw new Error('Invalid workflow run identity');
   const version = base + '-ci.' + run + '.' + attempt;
-  const values = { ...result, version, tag: 'auto-v' + version };
+  const values = { ...result, appVersion: base, version, tag: 'auto-v' + version };
   console.log(JSON.stringify(values));
   if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(values).map(([key, value]) => key + '=' + String(value)).join('\n') + '\n');
 }
