@@ -529,12 +529,12 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
       .filter({ hasText: 'selected workspace skill' })).toHaveCount(1);
     await expect(workbench.locator('.agent-timeline-row[data-kind="skill"]')).toContainText('UI Review Checklist');
     await expect(workbench.locator('.agent-goal')).toBeVisible();
-    await expect(workbench.locator('.agent-goal-progress')).toHaveText('4 / 4');
+    await expect(workbench.locator('.agent-goal-progress')).toHaveText('3 / 3');
     await expect(sidebar.locator('.agent-session-row')).toContainText('Workspace inspection complete');
 
-    // Official plugin v1.3.1 injects selected skills before its bounded turn.
-    // CI pins that same release so this contract is reproducible locally.
-    expect(requests).toHaveLength(2);
+    // The pinned Agent progressively loads the selected skill and records
+    // the model's explicit three-step goal before reporting completion.
+    expect(requests).toHaveLength(4);
     const primaryRequest = requests.find((request) => Array.isArray(request.body.tools) &&
       request.body.tools.some((tool) => tool.function && tool.function.name === 'workspace_read'));
     expect(primaryRequest).toBeDefined();
@@ -542,7 +542,7 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
     expect(primaryRequest.authorization).toBe('Bearer agent-ui-key');
     expect(primaryRequest.body).toMatchObject({
       model: 'agent-ui-model',
-      stream: false,
+      stream: true,
       reasoning_effort: 'xhigh',
       tool_choice: 'auto'
     });
@@ -552,7 +552,15 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
       'workspace_write',
       'process_run'
     ]));
-    expect(primaryRequest.body.messages[0].content).toContain('AGENT_UI_SKILL_MARKER');
+    expect(primaryRequest.body.messages[0].content).toContain('UI Review Checklist');
+    expect(primaryRequest.body.messages[0].content).not.toContain('AGENT_UI_SKILL_MARKER');
+    const skillRequest = requests.find((request) => request.body.messages.some((message) =>
+      message.role === 'tool' && message.name === 'skill_load' && message.content.includes('AGENT_UI_SKILL_MARKER')));
+    expect(skillRequest).toBeDefined();
+    expect(skillRequest.body.messages.filter((message) => message.role === 'tool' && message.name === 'goal_update')).toHaveLength(1);
+    const completedGoalRequest = requests.find((request) =>
+      request.body.messages.filter((message) => message.role === 'tool' && message.name === 'goal_update').length === 2);
+    expect(completedGoalRequest).toBeDefined();
     expect(primaryRequest.body.messages.some((message) => message.role === 'user' && message.content === prompt)).toBe(true);
     expect(primaryRequest.body.messages.some((message) => message.role === 'user' && message.content.startsWith('/goal'))).toBe(false);
     const titleRequest = requests.find((request) => request.body.max_tokens === 64 && !request.body.tools);
