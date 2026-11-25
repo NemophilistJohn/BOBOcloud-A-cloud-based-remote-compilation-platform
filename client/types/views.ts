@@ -20,6 +20,11 @@ export interface ViewsCodeEditorPort {
   getOption(option: unknown): string | null | undefined;
   getPosition(): unknown;
   updateOptions(options: Readonly<Record<string, unknown>>): void;
+  focus?(): void;
+  saveViewState?(): unknown;
+  restoreViewState?(state: unknown): void;
+  onDidFocusEditorWidget?(listener: () => void): Disposable;
+  onDidChangeCursorPosition?(listener: (event: { readonly position: unknown }) => void): Disposable;
   dispose?(): void;
 }
 
@@ -97,6 +102,7 @@ export interface ViewsHost {
 
 export interface ViewsCollaborationPort {
   isActiveFileReadOnly?(): boolean;
+  isFileReadOnly?(filePath: string): boolean;
 }
 
 export interface ViewsWorkspaceSettingsPort {
@@ -105,6 +111,7 @@ export interface ViewsWorkspaceSettingsPort {
 
 export interface ViewsEditorCorePort {
   updateStatusBar(model: ViewsTextModelPort | null, position: unknown): unknown;
+  refreshDiagnosticsForModel?(model: ViewsTextModelPort | null): unknown;
 }
 
 export interface ViewsThemePort {
@@ -127,14 +134,25 @@ export interface ViewsDependencies {
   readonly getSettings: () => ViewsSettingsPort | null | undefined;
   readonly detectLanguage: (name: string, content: string) => string;
   readonly updateRunOutput: (message: string) => void;
+  readonly activateFile?: (filePath: string) => void;
+  readonly saveActiveFile?: () => unknown;
+  readonly runActiveFile?: () => unknown;
+  readonly debugActiveFile?: () => unknown;
+  readonly translate?: (source: string) => string;
+  readonly notifyVisibleEditorsChanged?: () => void;
   readonly setTimer: (callback: () => void, delayMs: number) => number;
   readonly clearTimer: (timer: number) => void;
 }
 
 export interface ViewsFacade {
   init(): void;
-  openSplit(): void;
+  openSplit(filePath?: string): void;
   closeSplit(): void;
+  getActiveEditor(): ViewsCodeEditorPort | null;
+  getVisibleEditors(): readonly ViewsCodeEditorPort[];
+  activateTab(filePath: string): boolean;
+  onTabClosed(filePath: string): void;
+  refreshReadOnly(): void;
   openDiff(originalPath?: string | null, modifiedPath?: string | null): void;
   closeDiff(): void;
   showImagePreview(filePath: string, name: string): void;

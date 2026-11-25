@@ -122,6 +122,14 @@ export interface NativeHost {
   respondWorkspaceLeave(requestId: unknown, allowed: boolean): void;
   chooseWorkspaceLeave: Invoke<'workspace-leave-choice'>;
   getWorkspaceIdentity: Invoke<'workspace-identity'>;
+  realtimeConnect: Invoke<'realtime:connect'>;
+  realtimePrepareTransition: Invoke<'realtime:prepare-transition'>;
+  realtimeSend: Invoke<'realtime:send'>;
+  realtimeClose: Invoke<'realtime:close'>;
+  realtimeMaterialize: Invoke<'realtime:materialize'>;
+  realtimeRecover: Invoke<'realtime:recover'>;
+  realtimeDrafts: Invoke<'realtime:drafts'>;
+  onRealtimeMessage: Subscribe<'realtime:message'>;
   readWorkspaceSettings: Invoke<'workspace-settings-read'>;
   onWorkspaceSettingsChanged: Subscribe<'workspace-settings-changed'>;
   workspaceSwitchApplied: Invoke<'workspace-switch-applied'>;

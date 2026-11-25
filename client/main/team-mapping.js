@@ -25,6 +25,7 @@ function readTeamMapping(directory, options = {}) {
       branch: boundedText(stored.branch, 512),
       localPath: boundedText(stored.localPath, 32 * 1024)
     };
+    if (typeof stored.realtimeEpoch === 'string' && stored.realtimeEpoch.length <= 256) mapping.realtimeEpoch = stored.realtimeEpoch;
     if (!mapping.teamId || !mapping.projectId || !mapping.branch) return null;
     if (options.requireLocalPath === true &&
         (!mapping.localPath || path.resolve(mapping.localPath) !== path.resolve(directory))) return null;

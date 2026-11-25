@@ -392,6 +392,11 @@
     record.cancelRequested = true;
     cancelTaskInputPrompt();
     var cancelReason = String(reason || 'cancelled');
+    if (record.sharedCancel) {
+      await record.sharedCancel();
+      settleTaskExecution(record, { cancelled: true, code: cancelReason });
+      return true;
+    }
     var context = record.runContext;
     if (context && activeRunPreparation === context) {
       finishRunOutput({ success: false, cancelled: true }, context);
@@ -415,6 +420,10 @@
   async function prepareWorkspaceLeave(options) {
     cancelTaskInputPrompt();
     lastProjectTask = null;
+    if (activeTaskExecution && activeTaskExecution.sharedCancel) {
+      // A shared process belongs to the room and survives this window leaving.
+      settleTaskExecution(activeTaskExecution, { cancelled: true, code: 'workspace-change' });
+    }
     var preparingContext = activeRunPreparation;
     var preparingTask = preparingContext && preparingContext.taskExecutionHandle;
     finishRunOutput({ success: false, cancelled: true }, preparingContext);
@@ -713,6 +722,7 @@
 
   // Public sync function (wraps doSyncWithServer with mutex)
   function syncWithServer() {
+    if (BOBO.realtime && BOBO.realtime.isActive()) return BOBO.realtime.syncPersonal();
     return doSyncWithServer();
   }
 
@@ -732,6 +742,7 @@
     }
     if (intervalMs > 0) {
       S.autoSyncInterval = setInterval(function() {
+        if (BOBO.realtime && BOBO.realtime.isActive()) return;
         if (syncInFlight) return; // Previous sync still running — skip this round
         if (!S.workspaceRoot) return; // No folder open — skip silently
         if (S.lastSyncedVersion === S.workspaceChangeVersion) return; // No local changes
@@ -753,6 +764,7 @@
 
   // 中止当前运行：通过 WebSocket 发送 cancel 消息，服务端取消运行上下文
   async function stopActiveRun() {
+    if (BOBO.realtime && BOBO.realtime.isActive()) return BOBO.realtime.stop();
     var preparingContext = activeRunPreparation;
     var hadPreparation = !!preparingContext;
     var preparingTask = preparingContext && preparingContext.taskExecutionHandle;
@@ -774,6 +786,7 @@
   }
 
   async function runCodeOnServer(filePath) {
+    if (BOBO.realtime && BOBO.realtime.isActive()) return BOBO.realtime.run(filePath).catch(function(error) { BOBO.toast.error(error.message); return false; });
     return runOnServer({ filePath: filePath, taskExecution: null });
   }
 
@@ -1029,6 +1042,35 @@
 
     if (taskExecution && BOBO.taskProblemMatcher && BOBO.taskProblemMatcher.begin) {
       taskProblemSession = BOBO.taskProblemMatcher.begin(taskExecution);
+    }
+
+    if (taskExecution && BOBO.realtime && BOBO.realtime.isActive()) {
+      try {
+        if (executionHandle) {
+          executionHandle.sharedCancel = function() { return BOBO.realtime.stop(); };
+          executionHandle.state = 'running';
+        }
+        var sharedStarted = await BOBO.realtime.runTask(cloudTaskExecution(taskExecution), function(payload) {
+          if (executionHandle && executionHandle.settled) return;
+          if (payload.runId && executionHandle) executionHandle.runId = payload.runId;
+          if (payload.type === 'stdout' || payload.type === 'stderr') consumeTaskProblemOutput(taskProblemSession, taskProblemFragments, payload);
+          if (payload.type === 'result' || payload.type === 'error') {
+            finishRunPreparation(runContext);
+            finishTaskProblemOutput(taskProblemSession, taskProblemFragments);
+            settleTaskExecution(executionHandle, { success: payload.type === 'result' && payload.success === true,
+              returnCode: Number(payload.returncode), code: payload.code, message: payload.message, runId: payload.runId });
+          }
+        });
+        finishRunPreparation(runContext);
+        return sharedStarted;
+      } catch (error) {
+        finishRunPreparation(runContext);
+        finishRunOutput({ success: false, message: error.message }, runContext);
+        finishTaskProblemOutput(taskProblemSession, taskProblemFragments);
+        settleTaskExecution(executionHandle, { success: false, code: 'shared-run-failed', message: error.message });
+        BOBO.updateRunOutput('Error: ' + error.message);
+        return false;
+      }
     }
 
     try {

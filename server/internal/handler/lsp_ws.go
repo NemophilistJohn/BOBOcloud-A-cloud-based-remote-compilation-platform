@@ -477,7 +477,7 @@ func (h *WSHandler) resolveLSPWorkspace(ctx context.Context, user *auth.User, re
 		if h.Collaboration == nil || request.TeamID == "" || request.ProjectID == "" {
 			return "", "", "", "", "", fmt.Errorf("teamId and projectId are required")
 		}
-		root, err = h.Collaboration.ResolveWorktree(ctx, user.ID, request.TeamID, request.ProjectID, request.Branch)
+		root, err = h.Collaboration.ResolveAnalysisWorktree(ctx, user.ID, request.TeamID, request.ProjectID, request.Branch, "lsp")
 		if err != nil {
 			return "", "", "", "", "", err
 		}

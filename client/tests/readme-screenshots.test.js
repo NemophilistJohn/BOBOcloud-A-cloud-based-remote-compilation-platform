@@ -10,6 +10,8 @@ const REPOSITORY_ROOT = path.resolve(CLIENT_ROOT, '..');
 const README = fs.readFileSync(path.join(REPOSITORY_ROOT, 'README.md'), 'utf8');
 const README_ZH = fs.readFileSync(path.join(REPOSITORY_ROOT, 'README.zh-CN.md'), 'utf8');
 const PACKAGE = JSON.parse(fs.readFileSync(path.join(CLIENT_ROOT, 'package.json'), 'utf8'));
+const SERVER_VERSION = fs.readFileSync(path.join(REPOSITORY_ROOT, 'server/cmd/bobocloud/main.go'), 'utf8')
+  .match(/const ServerVersion = "([^"]+)"/)[1];
 const CAPTURE_SCRIPT = fs.readFileSync(path.join(CLIENT_ROOT, 'scripts', 'capture-readme-screenshots.js'), 'utf8');
 const DAP_MANIFEST = JSON.parse(fs.readFileSync(path.join(REPOSITORY_ROOT, 'server', 'dap_adapters.json'), 'utf8'));
 const DAP_BUILD = fs.readFileSync(path.join(REPOSITORY_ROOT, 'server', 'deploy', 'dap-toolkit', 'build.sh'), 'utf8');
@@ -39,7 +41,7 @@ function pngMetadata(filePath) {
 }
 
 test('README documents current client/server contracts, language navigation, and deployment assets', () => {
-  assert.match(README, /client as \*\*2\.8\.1\*\* and the server as \*\*2\.5\.0\*\*/);
+  assert.ok(README.includes('client as **' + PACKAGE.version + '** and the server as **' + SERVER_VERSION + '**'));
   assert.match(README, /README\.zh-CN\.md/);
   assert.match(README, /For desktop users/);
   assert.match(README, /For server operators/);
@@ -81,7 +83,7 @@ test('README documents current client/server contracts, language navigation, and
 
 test('Chinese README mirrors the three audience paths and links back to English', () => {
   assert.match(README_ZH, /README\.md/);
-  assert.match(README_ZH, /客户端版本为 \*\*2\.8\.1\*\*，服务端版本为 \*\*2\.5\.0\*\*/);
+  assert.ok(README_ZH.includes('客户端版本为 **' + PACKAGE.version + '**，服务端版本为 **' + SERVER_VERSION + '**'));
   assert.match(README_ZH, /用户端使用者/);
   assert.match(README_ZH, /服务器运维者/);
   assert.match(README_ZH, /贡献者/);

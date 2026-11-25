@@ -151,7 +151,7 @@ func (h *HTTPHandler) resolveProjectEnvironment(r *http.Request, req *model.Requ
 		if branch == "" {
 			branch = project.DefaultBranch
 		}
-		root, err := h.Collaboration.ResolveWorktree(r.Context(), userID, req.TeamID, req.ProjectID, branch)
+		root, err := h.Collaboration.ResolveAnalysisWorktree(r.Context(), userID, req.TeamID, req.ProjectID, branch, "environment")
 		if err != nil {
 			return environmentResolved{}, err
 		}

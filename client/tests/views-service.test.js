@@ -53,7 +53,8 @@ function createNode(id) {
     classList: {
       add(value) { classes.add(value); },
       remove(value) { classes.delete(value); },
-      contains(value) { return classes.has(value); }
+      contains(value) { return classes.has(value); },
+      toggle(value, force) { if (force) classes.add(value); else classes.delete(value); }
     },
     addEventListener(type, listener) {
       if (!listeners.has(type)) listeners.set(type, new Set());
@@ -71,7 +72,8 @@ function createHarness() {
     'diff-editor', 'diff-original-label', 'diff-modified-label', 'image-preview',
     'image-preview-title', 'preview-image', 'close-image-preview', 'rotate-left',
     'rotate-right', 'zoom-out', 'zoom-in', 'zoom-reset', 'close-diff',
-    'theme-modal', 'theme-select', 'theme-apply', 'theme-cancel'
+    'theme-modal', 'theme-select', 'theme-apply', 'theme-cancel',
+    'split-left-pane', 'split-right-pane', 'split-left-label', 'split-right-label', 'close-split'
   ].map((id) => [id, createNode(id)]));
   const output = [];
   const reads = new Map();
@@ -119,15 +121,21 @@ function createHarness() {
     editor: {
       EditorOption: { theme: 'theme' },
       create(element, options) {
+        const focusListeners = new Set();
+        const cursorListeners = new Set();
         const editor = {
           model: options.model || null,
+          options: { ...options },
+          focus() { for (const listener of focusListeners) listener(); },
+          onDidFocusEditorWidget(listener) { focusListeners.add(listener); return { dispose: () => focusListeners.delete(listener) }; },
+          onDidChangeCursorPosition(listener) { cursorListeners.add(listener); return { dispose: () => cursorListeners.delete(listener) }; },
           rightEditor: undefined,
           disposed: false,
           getModel() { return this.model; },
           setModel(next) { this.model = next; },
           getOption() { return 'vs-dark'; },
           getPosition() { return { lineNumber: 1, column: 1 }; },
-          updateOptions() {},
+          updateOptions(next) { Object.assign(this.options, next); },
           dispose() { this.disposed = true; }
         };
         editors.push(editor);
@@ -203,6 +211,7 @@ function createHarness() {
     timerClears,
     models,
     editors,
+    model,
     get diffEditor() { return diffEditor; },
     resolveRead(filePath, value) {
       const item = reads.get(filePath);
@@ -248,25 +257,100 @@ test('stale diff reads cannot replace a newer view and diff models are released'
   assert.equal(harness.nodes.get('close-diff').listeners.get('click').size, 0);
 });
 
-test('split synchronization is debounced and owned resources disappear on disposal', async (t) => {
+test('split panes edit file-owned models independently and focus determines tab assignment', async (t) => {
+  const { createViewsService } = await loadService(t);
+  const harness = createHarness();
+  let visibleChanges = 0;
+  harness.dependencies.notifyVisibleEditorsChanged = () => { visibleChanges += 1; };
+  const service = createViewsService(harness.dependencies);
+  harness.dependencies.activateFile = (path) => {
+    harness.state.activeTabPath = path;
+    service.activateTab(path);
+  };
+  const first = harness.state.tabs[0].model;
+  const second = harness.model('second', 'python', 'second.py');
+  const third = harness.model('third', 'typescript', 'third.ts');
+  harness.state.tabs.push({ path: 'second.py', model: second }, { path: 'third.ts', model: third });
+  service.init();
+  service.openSplit();
+  const [left, right] = service.getVisibleEditors();
+  assert.equal(left.getModel(), first);
+  assert.equal(right.getModel(), first, 'same-file panes must share the original model and undo history');
+  assert.equal(harness.models.length, 3, 'splitting must never create a cloned model');
+  assert.equal(left.options.readOnly, false);
+  assert.equal(right.options.readOnly, false);
+  harness.state.activeTabPath = 'second.py';
+  assert.equal(service.activateTab('second.py'), true);
+  assert.equal(left.getModel(), first, 'opening a file in the right pane preserves the left pane');
+  assert.equal(right.getModel(), second);
+  right.getModel().setValue('changed second');
+  assert.equal(first.getValue(), 'active');
+  assert.equal(harness.timers.size, 0, 'independent documents must never mirror after a timer');
+  left.focus();
+  assert.equal(service.getActiveEditor(), left);
+  assert.equal(harness.state.activeTabPath, 'active.ts');
+  assert.equal(harness.state.editor.getModel(), first, 'legacy run/save model follows focus');
+  harness.state.activeTabPath = 'third.ts';
+  service.activateTab('third.ts');
+  assert.equal(left.getModel(), third);
+  assert.equal(right.getModel(), second);
+  assert.equal(harness.nodes.get('split-left-label').textContent, 'third.ts');
+  assert.ok(visibleChanges >= 4);
+  service.closeSplit();
+  assert.equal(harness.state.editor.getModel(), third);
+  assert.equal(left.getModel(), null);
+  assert.equal(right.getModel(), null);
+  service.dispose();
+  assert.equal(first.disposed, false);
+  assert.equal(second.disposed, false);
+  assert.equal(third.disposed, false, 'view teardown never disposes workspace-owned documents');
+  assert.equal(left.disposed, true);
+  assert.equal(right.disposed, true);
+});
+
+test('closing a file detaches both panes before disposal and split respects workspace locks', async (t) => {
   const { createViewsService } = await loadService(t);
   const harness = createHarness();
   const service = createViewsService(harness.dependencies);
-  service.init();
+  const first = harness.state.tabs[0].model;
+  const replacement = harness.model('next', 'python', 'next.py');
+  harness.state.tabs.push({ path: 'next.py', model: replacement });
   service.openSplit();
-
-  const splitEditor = harness.state.splitEditor;
-  const rightModel = splitEditor.rightEditor.getModel();
-  rightModel.setValue('edited');
-  rightModel.trigger();
-  assert.equal(harness.timers.size, 1);
-  harness.flushTimers();
-  assert.equal(harness.state.editor.getModel().getValue(), 'edited');
-
+  const [left, right] = service.getVisibleEditors();
+  harness.state.workspaceTransitionLocked = true;
+  service.refreshReadOnly();
+  assert.equal(left.options.readOnly, true);
+  assert.equal(right.options.readOnly, true);
+  harness.state.workspaceTransitionLocked = false;
+  service.refreshReadOnly();
+  assert.equal(left.options.readOnly, false);
+  assert.equal(right.options.readOnly, false);
+  service.onTabClosed('active.ts');
+  assert.equal(left.getModel(), replacement);
+  assert.equal(right.getModel(), replacement);
+  first.dispose();
+  assert.equal(replacement.disposed, false);
   service.dispose();
-  assert.equal(harness.state.splitEditor, null);
-  assert.equal(rightModel.disposed, true);
-  assert.equal(splitEditor.disposed, true);
-  assert.equal(harness.timerClears.length, 0);
-  assert.equal(service.disposed, true);
+});
+
+test('split-right tab action preserves the left file when the left editor is focused', async (t) => {
+  const { createViewsService } = await loadService(t);
+  const harness = createHarness();
+  const service = createViewsService(harness.dependencies);
+  harness.dependencies.activateFile = (path) => {
+    harness.state.activeTabPath = path;
+    service.activateTab(path);
+  };
+  const first = harness.state.tabs[0].model;
+  const second = harness.model('second', 'python', 'second.py');
+  harness.state.tabs.push({ path: 'second.py', model: second });
+  service.openSplit();
+  const [left, right] = service.getVisibleEditors();
+  left.focus();
+  service.openSplit('second.py');
+  assert.equal(left.getModel(), first);
+  assert.equal(right.getModel(), second);
+  assert.equal(service.getActiveEditor(), right);
+  assert.equal(harness.state.activeTabPath, 'second.py');
+  service.dispose();
 });

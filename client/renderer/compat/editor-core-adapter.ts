@@ -6,6 +6,7 @@ import type {
   EditorCoreAiInlinePort,
   EditorCoreCommandsPort,
   EditorCoreDapPort,
+  EditorCoreEditorPort,
   EditorCoreDiagnosticsSettingsPort,
   EditorCoreFacade,
   EditorCoreGlobalEventPort,
@@ -49,6 +50,7 @@ interface LegacyEditorCoreBobo {
   langDisplayName?: (languageId: string) => string;
   switchToPanel?: (panelName: string) => unknown;
   editorCore?: EditorCoreFacade;
+  views?: { getActiveEditor?(): unknown };
 }
 
 type LegacyEditorCoreWindow = Window & {
@@ -106,6 +108,7 @@ const editorCore: EditorCoreService = createEditorCoreService({
   document,
   eventTarget: legacyWindow as EditorCoreGlobalEventPort,
   state: state as unknown as EditorCoreRendererState,
+  getActiveEditor: () => BOBO.views?.getActiveEditor?.() as EditorCoreEditorPort | null | undefined,
   getI18n: () => BOBO.i18n as EditorCoreI18nPort | undefined,
   getTheme: () => legacyWindow.themeManager,
   getWorkspace: () => BOBO.workspace,

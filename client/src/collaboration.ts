@@ -95,6 +95,7 @@ export function createCollaborationService(
   var BOBO = {};
   Object.defineProperties(BOBO, {
     state: { enumerable: true, get: function() { return S; } },
+    realtime: { enumerable: true, get: function() { return dependencies.getRealtime && dependencies.getRealtime(); } },
     i18n: { enumerable: true, get: function() { return dependencies.getI18n(); } },
     toast: { enumerable: true, get: function() { return dependencies.getToast(); } },
     auth: { enumerable: true, get: function() { return dependencies.getAuth(); } },
@@ -214,6 +215,11 @@ export function createCollaborationService(
   function heldLockKey(filePath) {
     return String(filePath || '').replace(/\\/g, '/').toLowerCase();
   }
+  function dispatchWorkbenchEvent(type) {
+    if (typeof global.dispatchEvent === 'function' && typeof global.Event === 'function') {
+      global.dispatchEvent(new global.Event(type));
+    }
+  }
   function clientIsForeground() {
     if (document.hidden === true) return false;
     return typeof document.hasFocus !== 'function' || document.hasFocus();
@@ -221,10 +227,20 @@ export function createCollaborationService(
   function setCollaborationReadOnly(readOnly) {
     var locked = readOnly === true || S.workspaceTransitionLocked === true;
     if (S.editor && typeof S.editor.updateOptions === 'function') S.editor.updateOptions({ readOnly: locked });
-    if (S.splitEditor && typeof S.splitEditor.updateOptions === 'function') S.splitEditor.updateOptions({ readOnly: true });
-    if (S.splitEditor && S.splitEditor.rightEditor && typeof S.splitEditor.rightEditor.updateOptions === 'function') {
-      S.splitEditor.rightEditor.updateOptions({ readOnly: locked });
+    refreshSplitReadOnly(locked);
+  }
+  function refreshSplitReadOnly(fallback) {
+    var views = dependencies.getViews && dependencies.getViews();
+    if (views && typeof views.refreshReadOnly === 'function') {
+      views.refreshReadOnly();
+      return;
     }
+    [S.splitEditor, S.splitEditor && S.splitEditor.rightEditor].forEach(function(editor) {
+      if (!editor || typeof editor.updateOptions !== 'function') return;
+      var model = editor.getModel && editor.getModel();
+      var tab = model && asArray(S.tabs).find(function(candidate) { return candidate.model === model; });
+      editor.updateOptions({ readOnly: S.workspaceTransitionLocked === true || (tab ? isFileReadOnly(tab.path) : fallback === true) });
+    });
   }
   function renderActiveLockStatus() {
     if (disposed) return;
@@ -797,10 +813,11 @@ export function createCollaborationService(
       var usage = cacheByProject[project.id] || 0;
       var namespaces = projectCacheNamespaces(selectedCacheInfo, project.id);
       var remove = isAdmin ? '<button class="icon-command collab-delete-project" data-project-id="' + esc(project.id) + '" title="' + esc(t('Delete project')) + '" aria-label="' + esc(t('Delete project')) + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>' : '';
+      var realtimeButton = isAdmin ? '<button class="team-tool-btn" data-realtime-project="' + esc(project.id) + '" data-team="' + esc(teamId) + '" data-branch="' + esc(project.default_branch || 'main') + '" title="' + esc(t('Collaboration mode')) + '">' + esc(t('Collaboration mode')) + '</button>' : '';
       var details = namespaces.length ? '<details class="team-project-cache-details"><summary data-i18n="Cache breakdown">' + esc(t('Cache breakdown')) + '</summary>' + namespaces.map(function(ns) {
         return '<div class="team-project-cache-row"><span>' + esc(ns.cache_kind + ' · ' + ns.branch + ' · ' + ns.runtime + ' · ' + ns.language) + '</span><span>' + formatBytes(ns.size_bytes) + '</span>' + (isAdmin && ns.clearable && !ns.active ? '<button type="button" class="team-tool-btn cache-clear-namespace" data-namespace="' + esc(ns.key) + '" data-i18n="Clear">' + esc(t('Clear')) + '</button>' : '') + '</div>';
       }).join('') + '</details>' : '';
-      return '<article class="team-project-card" style="--project-accent:' + color + '"><h4 dir="auto">' + esc(project.name) + '</h4><p>' + esc(project.description || t('No description')) + '</p><div class="team-project-card-meta"><span>' + esc(t('default: {branch}', { branch: project.default_branch })) + '</span><span class="team-project-card-cache">' + formatBytes(usage) + '</span></div>' + details + '<div class="team-project-card-actions">' + remove + '<button class="ss-btn ss-btn-primary collab-open-project" data-project-id="' + esc(project.id) + '" data-i18n="Open">' + esc(t('Open')) + '</button></div></article>';
+      return '<article class="team-project-card" style="--project-accent:' + color + '"><h4 dir="auto">' + esc(project.name) + '</h4><p>' + esc(project.description || t('No description')) + '</p><div class="team-project-card-meta"><span>' + esc(t('default: {branch}', { branch: project.default_branch })) + '</span><span class="team-project-card-cache">' + formatBytes(usage) + '</span></div>' + details + '<div class="team-project-card-actions">' + remove + realtimeButton + '<button class="ss-btn ss-btn-primary collab-open-project" data-project-id="' + esc(project.id) + '" data-i18n="Open">' + esc(t('Open')) + '</button></div></article>';
     });
     if (isAdmin) cards.push('<button type="button" class="team-project-add" id="team-create-project" title="' + esc(t('Create cloud project')) + '" aria-label="' + esc(t('Create cloud project')) + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>');
     $('collab-project-list').innerHTML = cards.join('') || '<div class="collab-empty" data-i18n="No team projects">' + esc(t('No team projects')) + '</div>';
@@ -1152,7 +1169,9 @@ export function createCollaborationService(
     var revision = actionRevision;
     $('collab-action-confirm').disabled = true;
     var branches;
+    var realtimeInfo;
     try {
+      if (BOBO.realtime) realtimeInfo = await api('getRealtimeState', { teamId: project.team_id, projectId: project.id });
       branches = await api('listTeamBranches', { teamId: project.team_id, projectId: project.id });
     } catch (err) {
       if (!isCurrent(epoch) || revision !== actionRevision || identity !== getSidebarIdentity()) return false;
@@ -1172,7 +1191,7 @@ export function createCollaborationService(
       setActionStatusKey('This project has no cloud branches', null, true);
       return false;
     }
-    var branch = preferredBranch || project.default_branch || names[0];
+    var branch = realtimeInfo && realtimeInfo.enabled ? realtimeInfo.branch : preferredBranch || project.default_branch || names[0];
     if (names.indexOf(branch) < 0) branch = names[0];
     var existing = readMapping(project.team_id, project.id, branch);
     var body = selectField('action-open-branch', 'Cloud branch', names, branch) +
@@ -1190,7 +1209,7 @@ export function createCollaborationService(
       if (!pathInfo.exists || !pathInfo.directory) throw new Error(t('Local mapping directory is unavailable'));
 	  if (!pathInfo.grantId) throw new Error(t('Choose the local mapping directory again to authorize synchronization'));
 	  var isFirst = !storedPath || storedPath !== localPath;
-      if (isFirst && !pathInfo.empty) throw new Error(t('The first mapping must use an empty directory'));
+      if (isFirst && !pathInfo.empty && !(realtimeInfo && realtimeInfo.enabled)) throw new Error(t('The first mapping must use an empty directory'));
 	  var mode = isFirst ? 'pull' : $('action-open-mode').value;
       var replacesCurrentWorkspace = (isFirst || mode === 'pull') && S.workspaceRoot === localPath;
       var leaveApproved = false;
@@ -1202,7 +1221,9 @@ export function createCollaborationService(
       if (!isCurrent(epoch)) return false;
       try {
         var prepared;
-        if (isFirst || mode === 'pull') {
+        if (realtimeInfo && realtimeInfo.enabled) {
+          // The canonical snapshot is fetched after the approved local mapping is open.
+        } else if (isFirst || mode === 'pull') {
           setActionStatusKey('Pulling cloud branch...', null, false);
           prepared = await BOBO.rclone.prepareTeamPull({
             teamId: project.team_id,
@@ -1232,6 +1253,7 @@ export function createCollaborationService(
 	      if (!isCurrent(epoch)) return false;
 	    writeMapping(project.team_id, project.id, selectedBranch, localPath);
         S.collaboration.current = nextCurrent;
+        if (realtimeInfo && realtimeInfo.enabled && BOBO.realtime) await BOBO.realtime.openProject(project, nextCurrent);
         updateTeamChrome();
         BOBO.switchToPanel?.('team');
         BOBO.workbench?.setPrimaryView?.('explorer');
@@ -1266,7 +1288,7 @@ export function createCollaborationService(
       if (!chosen) return;
       var selected = $('action-open-branch').value;
       var first = !readMapping(project.team_id, project.id, selected);
-      if (first && !chosen.empty) { setActionStatusKey('Choose an empty directory for the initial pull', null, true); return; }
+      if (first && !chosen.empty && !(realtimeInfo && realtimeInfo.enabled)) { setActionStatusKey('Choose an empty directory for the initial pull', null, true); return; }
       setRawText($('action-mapping-path'), chosen.path);
       $('action-mapping-path').setAttribute('data-path', chosen.path);
 	  $('action-mapping-path').setAttribute('data-grant', chosen.grantId || '');
@@ -1277,6 +1299,7 @@ export function createCollaborationService(
 
   function updateTeamChrome() {
     if (disposed) return;
+    dispatchWorkbenchEvent('bobo:team-workspace-changed');
     var current = S.collaboration && S.collaboration.current;
     if (conflictSession && (!current || conflictSession.teamId !== current.teamId || conflictSession.projectId !== current.projectId || conflictSession.branch !== current.branch)) {
       closeConflictSession();
@@ -1321,7 +1344,7 @@ export function createCollaborationService(
 	  S.collaboration.current = {
 		teamId: mapping.teamId, teamName: mapping.teamName || 'Team', projectId: mapping.projectId,
 		projectName: mapping.projectName || 'Cloud project', branch: mapping.branch,
-		localPath: localPath || mapping.localPath || ''
+		localPath: localPath || mapping.localPath || '', realtimeEpoch: mapping.realtimeEpoch || undefined
 	  };
 	  updateTeamChrome();
 	}
@@ -1329,6 +1352,7 @@ export function createCollaborationService(
   // ─── Team workbench ────────────────────────────────────────
   async function refreshWorkbench() {
     if (disposed) return;
+    if (BOBO.realtime && BOBO.realtime.isActive()) return;
     var current = S.collaboration.current;
     if (!current) return;
     var epoch = lifecycleEpoch;
@@ -1804,6 +1828,7 @@ export function createCollaborationService(
     return candidate.substring(root.length + 1);
   }
   async function onFileOpened(filePath, options) {
+    if (BOBO.realtime && BOBO.realtime.isActive()) { dispatchWorkbenchEvent('bobo:visible-editors-changed'); return; }
     if (disposed) return null;
     options = options || {};
     var c=S.collaboration.current;if(!c)return;var rel=relativeCurrentPath(filePath);if(!rel)return;
@@ -1826,12 +1851,14 @@ export function createCollaborationService(
         }
         heldFileLocks[key] = { filePath: filePath, teamId: c.teamId, projectId: c.projectId, branch: c.branch, path: rel, leaseId: returnedLeaseID, expires_at: lock && (lock.expires_at || lock.expiresAt) || '' };
         delete blockedFileLocks[key];
+        refreshSplitReadOnly();
         if (heldLockKey(S.activeTabPath) === key) renderActiveLockStatus();
         return lock;
       } catch(err) {
         if (ownsRequest()) {
           delete heldFileLocks[key];
           if (!request.cancelled) blockedFileLocks[key] = { filePath: filePath, teamId: c.teamId, projectId: c.projectId, branch: c.branch, path: rel, leaseId: sameContext ? previous.leaseId : '', lock: err && err.details && err.details.lock || null, errorCode: err && err.code || '' };
+          refreshSplitReadOnly();
           if (heldLockKey(S.activeTabPath) === key) renderActiveLockStatus();
           if(!request.cancelled && !options.silent)notify(collaborationErrorMessage(err),'info');
         }
@@ -1862,8 +1889,11 @@ export function createCollaborationService(
   }
   function openTeamFilePaths() {
     var activeKey = heldLockKey(S.activeTabPath);
+    var views = dependencies.getViews && dependencies.getViews();
+    var visibleModels = views && typeof views.getVisibleEditors === 'function'
+      ? views.getVisibleEditors().map(function(editor) { return editor.getModel(); }).filter(Boolean) : [];
     return asArray(S.tabs).filter(function(tab) {
-      return tab && tab.path && (heldLockKey(tab.path) === activeKey || tab.dirty === true);
+      return tab && tab.path && (heldLockKey(tab.path) === activeKey || tab.dirty === true || visibleModels.indexOf(tab.model) >= 0);
     }).map(function(tab) { return tab.path; }).filter(function(filePath) {
       return !!relativeCurrentPath(filePath);
     });
@@ -1878,10 +1908,11 @@ export function createCollaborationService(
       delete heldFileLocks[key];
       blockedFileLocks[key] = { filePath: held.filePath, teamId: held.teamId, projectId: held.projectId, branch: held.branch, path: held.path, lock: null, errorCode: 'lease_expired' };
     });
+    refreshSplitReadOnly();
     renderActiveLockStatus();
   }
   async function renewOpenFileLocks() {
-    if (disposed) return;
+    if (disposed || (BOBO.realtime && BOBO.realtime.isActive())) return;
     var epoch = lifecycleEpoch;
     expireLocalLeases();
     if (lockRefreshInFlight || !S.collaboration.current || !clientIsForeground()) return;
@@ -1927,14 +1958,16 @@ export function createCollaborationService(
     await Promise.all(pending.concat(requests));
   }
   function onFileActivated(filePath) {
+    if (BOBO.realtime && BOBO.realtime.isActive()) { setCollaborationReadOnly(false); dispatchWorkbenchEvent('bobo:visible-editors-changed'); return; }
     if (disposed) return;
     if (!S.collaboration.current || !relativeCurrentPath(filePath)) {
       setCollaborationReadOnly(false);
       return;
     }
-    var activeKey = heldLockKey(filePath);
+    var paths = openTeamFilePaths();
+    var wanted = new Set(paths.map(heldLockKey));
     Object.keys(heldFileLocks).forEach(function(key) {
-      if (key === activeKey) return;
+      if (wanted.has(key)) return;
       var held = heldFileLocks[key];
       var tab = asArray(S.tabs).find(function(candidate) { return candidate && heldLockKey(candidate.path) === key; });
       if (tab && tab.dirty === true) return;
@@ -1943,16 +1976,22 @@ export function createCollaborationService(
       api('releaseTeamFileLock', { teamId: held.teamId, projectId: held.projectId, branch: held.branch, filePath: held.path, lockLeaseId: held.leaseId || undefined }).catch(function() {});
     });
     Object.keys(fileLockRequests).forEach(function(key) {
-      if (key === activeKey) return;
+      if (wanted.has(key)) return;
       var tab = asArray(S.tabs).find(function(candidate) { return candidate && heldLockKey(candidate.path) === key; });
       if (!tab || tab.dirty !== true) fileLockRequests[key].cancelled = true;
     });
+    refreshSplitReadOnly();
     renderActiveLockStatus();
-    if (clientIsForeground()) onFileOpened(filePath, { silent: true });
+    if (clientIsForeground()) paths.forEach(function(path) { void onFileOpened(path, { silent: true }); });
+  }
+  function isFileReadOnly(filePath) {
+    if (BOBO.realtime && BOBO.realtime.isActive()) return false;
+    if (disposed || !S.collaboration.current || !relativeCurrentPath(filePath)) return false;
+    var key = heldLockKey(filePath);
+    return !!blockedFileLocks[key] || !heldFileLocks[key];
   }
   function isActiveFileReadOnly() {
-    if (disposed) return false;
-    return !!blockedFileLocks[heldLockKey(S.activeTabPath)];
+    return isFileReadOnly(S.activeTabPath);
   }
   function startLockRefresh() {
     if (disposed) return;
@@ -2027,6 +2066,10 @@ export function createCollaborationService(
     }
     lifecycleEpoch++;
     initialized = true;
+    listen(global, 'bobo:realtime-mode-changed', function() { updateTeamChrome(); });
+    listen(global, 'bobo:visible-editors-changed', function() {
+      if (!(BOBO.realtime && BOBO.realtime.isActive())) onFileActivated(S.activeTabPath);
+    });
     if (BOBO.workspace?.registerWorkbenchTabProvider) lifecycle.add(BOBO.workspace.registerWorkbenchTabProvider('team-pages', {
       getTabs: teamProviderTabs,
       activate: activateTeamPage,
@@ -2139,6 +2182,7 @@ export function createCollaborationService(
     onFileClosed: onFileClosed,
     onFileActivated: onFileActivated,
     isActiveFileReadOnly: isActiveFileReadOnly,
+    isFileReadOnly: isFileReadOnly,
     releaseForLogout: releaseForLogout
   };
 

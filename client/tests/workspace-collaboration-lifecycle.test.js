@@ -233,7 +233,7 @@ test('failed Save choice unlocks and preserves the dirty model', async () => {
   assert.equal(fixture.state.workspaceTransitionLocked, false);
   assert.equal(fixture.state.workspaceTransitionToken, null);
   assert.equal(fixture.editor.readOnly, false);
-  assert.equal(fixture.splitEditor.readOnly, true);
+  assert.equal(fixture.splitEditor.readOnly, false, 'both split panes become editable after the transition is aborted');
   assert.equal(fixture.splitRightEditor.readOnly, false);
   assert.equal(fixture.state.tabs.length, 1);
   assert.equal(fixture.state.tabs[0].model, originalModel);

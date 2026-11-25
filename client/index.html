@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="./styles/cache-center.css">
   <link rel="stylesheet" href="./styles/collaboration.css">
   <link rel="stylesheet" href="./styles/social.css">
+  <link rel="stylesheet" href="./styles/realtime.css">
   <link rel="stylesheet" href="./styles/workbench.css">
   <link rel="stylesheet" href="./styles/environment-center.css">
   <link rel="stylesheet" href="./styles/language-packs.css">
@@ -411,8 +412,14 @@
 
       <!-- Split view -->
       <div id="split-container">
-        <div class="split-pane" id="split-left"></div>
-        <div class="split-pane" id="split-right"></div>
+        <section class="split-pane" id="split-left-pane" aria-label="Left editor">
+          <div class="split-pane-header"><span id="split-left-label"></span></div>
+          <div class="split-pane-editor" id="split-left"></div>
+        </section>
+        <section class="split-pane" id="split-right-pane" aria-label="Right editor">
+          <div class="split-pane-header"><span id="split-right-label"></span><button id="close-split" type="button" title="Close Split Editor" aria-label="Close Split Editor"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button></div>
+          <div class="split-pane-editor" id="split-right"></div>
+        </section>
       </div>
 
       <!-- Diff view -->

@@ -53,6 +53,39 @@ func (h *HTTPHandler) handleCollaboration(w http.ResponseWriter, r *http.Request
 	success := func(data any) { writeJSON(w, http.StatusOK, model.Response{Success: true, Data: data}) }
 
 	switch req.Action {
+	case "snapshotRealtimePersonal", "createRealtimeVersion":
+		var result any
+		var err error
+		if req.Action == "snapshotRealtimePersonal" {
+			result, err = h.snapshotRealtimePersonal(ctx, user, req)
+		} else {
+			result, err = h.checkpointRealtime(ctx, user, req)
+		}
+		if err != nil {
+			collabError(w, err)
+			return
+		}
+		success(result)
+	case "getRealtimeState", "getRealtimeSnapshot":
+		var state collab.RealtimeState
+		var err error
+		if req.Action == "getRealtimeSnapshot" {
+			state, err = h.getRealtimeSnapshot(ctx, user, req)
+		} else {
+			state, err = h.Collaboration.GetRealtimeState(user.ID, req.TeamID, req.ProjectID)
+		}
+		if err != nil {
+			collabError(w, err)
+			return
+		}
+		success(state)
+	case "setRealtimeMode":
+		state, err := h.setRealtimeMode(ctx, user, req)
+		if err != nil {
+			collabError(w, err)
+			return
+		}
+		success(state)
 	case "createTeam":
 		quota := req.CacheQuotaMB
 		if quota <= 0 && h.Config != nil {

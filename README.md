@@ -2,11 +2,11 @@
 
 <p align="right"><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a></p>
 
-BOBOCLOUD is a self-hosted cloud development workbench: an Electron desktop editor keeps the project on the developer's computer, while a Go service provides Linux execution, Docker runtimes, dependency environments, tasks, terminals, language intelligence, debugging, collaboration, and resource governance. The current source identifies the client as **2.8.1** and the server as **2.5.0**.
+BOBOCLOUD is a self-hosted cloud development workbench: an Electron desktop editor keeps the project on the developer's computer, while a Go service provides Linux execution, Docker runtimes, dependency environments, tasks, terminals, language intelligence, debugging, collaboration, and resource governance. The current source identifies the client as **2.9.0** and the server as **2.6.0**.
 
 **Keep your source locally. Bring the toolchain to the cloud.** Open a normal project folder, choose a server runtime, and run, inspect, debug, or extend it from one desktop workbench. You can use the local editor without a cloud account; a connected service supplies the remote capabilities.
 
-Documentation refreshed against the current source on **2026-11-24**. The English and [Chinese](README.zh-CN.md) editions follow the same structure. Plugin API: **1.12.0**. Available images, adapters, quotas, and optional plugins depend on your deployment.
+Documentation refreshed against the current source on **2026-11-25**. The English and [Chinese](README.zh-CN.md) editions follow the same structure. Plugin API: **1.12.0**. Available images, adapters, quotas, and optional plugins depend on your deployment.
 
 The editor is useful before a server is connected. You can open a folder, edit with Monaco, search, inspect Problems, and configure the workbench locally. Run, Debug, cloud terminals, project dependencies, teams, and server storage become available only after a compatible BOBOCLOUD service is selected.
 
@@ -329,6 +329,10 @@ The service supports single-user and multi-user modes. Multi-user mode adds invi
 ### Team projects
 
 Team projects are server-side Git worktrees. The current workflow includes invitations and membership, branch creation/history, commit and push, comparison, merge preparation, conflict resolution, and merge completion. Short renewable advisory file locks coordinate edits but do not replace Git conflict handling. Branch-changing operations are serialized and lifecycle-bound.
+
+Desktop 2.9.0 / server 2.6.0 add an optional **Live collaboration** mode. An administrator switches a clean, published branch from the project card. Members edit shared text without file locks, see named/avatar cursors, use selective undo, and share execution output, stdin and Stop. Switching away retains editor presence for ten seconds; disconnected sessions expire after sixty seconds. Deletion requests collect current editors' consent and expire after three minutes. Explicit Git checkpoints and quota-checked personal snapshots remain available; automatic personal backup pauses until normal mode resumes. Disabling exports the canonical snapshot to Git before changing mode.
+
+Use the split toolbar/tab action or `Ctrl+\` for two editable file panes; focus selects the save, run and completion target. In live mode Notebook files use JSON editing, and cloud terminals/legacy Git writes are unavailable. See [realtime collaboration and its limits](docs/realtime-collaboration.en.md) and the [server protocol](server/REALTIME.md).
 
 The official local SCM plugin described below is a different feature: it serves Git repositories in a local desktop workspace through a bounded Electron broker. It does not read or synchronize a team cloud worktree.
 

@@ -203,6 +203,7 @@ export interface EditorCoreDependencies {
   readonly document: Document;
   readonly eventTarget: EditorCoreGlobalEventPort;
   readonly state: EditorCoreRendererState;
+  readonly getActiveEditor?: () => EditorCoreEditorPort | null | undefined;
   readonly getI18n: () => EditorCoreI18nPort | null | undefined;
   readonly getTheme: () => EditorCoreThemePort | null | undefined;
   readonly getWorkspace: () => EditorCoreWorkspacePort | null | undefined;

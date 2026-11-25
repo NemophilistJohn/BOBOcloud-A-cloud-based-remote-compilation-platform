@@ -51,28 +51,28 @@ var wsUpgrader = websocket.Upgrader{
 
 // WSHandler 处理 WebSocket 连接
 type WSHandler struct {
-	Config          *config.Config
-	Sessions        storage.SessionStore
-	Channels        *session.ChannelManager
-	DockerPool      *docker.Pool
-	Plugins         *runner.PluginRegistry // 语言插件注册表（编译/运行计划由插件生成）
-	Security        security.Policy
-	AuthEnabled     bool
-	RunHistory      storage.RunHistoryStore // BoltDB 运行历史（nil 时不保存）
-	Authenticator   auth.Authenticator      // 终端 WebSocket 认证（可为 nil）
-	UserStore       auth.UserStore          // 终端 WebSocket 用户查找（可为 nil）
-	AuthSessions    auth.AuthSessionStore   // 终端 WebSocket 会话验证（可为 nil）
-	Collaboration   *collab.Manager
-	BuildCache      *buildcache.Manager
-	LSP             *lsp.Manager
-	DependencyViews *lsp.DependencyRegistry
-	Lifecycle       *lifecycle.Manager
-	PersonalCache   *personalcache.Manager
-	RuntimeMetadata RuntimeMetadataProvider
-	Metrics         *metrics.Registry
-	Resources       *resourcecontrol.Controller
-	Accepting       func() bool
-	AcquireWork     func(string) (func(), error)
+	Config             *config.Config
+	Sessions           storage.SessionStore
+	Channels           *session.ChannelManager
+	DockerPool         *docker.Pool
+	Plugins            *runner.PluginRegistry // 语言插件注册表（编译/运行计划由插件生成）
+	Security           security.Policy
+	AuthEnabled        bool
+	RunHistory         storage.RunHistoryStore // BoltDB 运行历史（nil 时不保存）
+	Authenticator      auth.Authenticator      // 终端 WebSocket 认证（可为 nil）
+	UserStore          auth.UserStore          // 终端 WebSocket 用户查找（可为 nil）
+	AuthSessions       auth.AuthSessionStore   // 终端 WebSocket 会话验证（可为 nil）
+	Collaboration      *collab.Manager
+	BuildCache         *buildcache.Manager
+	LSP                *lsp.Manager
+	DependencyViews    *lsp.DependencyRegistry
+	Lifecycle          *lifecycle.Manager
+	PersonalCache      *personalcache.Manager
+	RuntimeMetadata    RuntimeMetadataProvider
+	Metrics            *metrics.Registry
+	Resources          *resourcecontrol.Controller
+	Accepting          func() bool
+	AcquireWork        func(string) (func(), error)
 	notebookContainers atomic.Int32
 }
 
@@ -1191,6 +1191,9 @@ func (h *WSHandler) resolveWorkspace(ctx context.Context, sess *model.RunSession
 	if sess.TeamID != "" || sess.ProjectID != "" {
 		if h.Collaboration == nil || sess.TeamID == "" || sess.ProjectID == "" {
 			return "", fmt.Errorf("invalid team project context")
+		}
+		if sess.RealtimeEpoch != "" {
+			return h.Collaboration.MaterializeRealtimeRun(sess.UserID, sess.TeamID, sess.ProjectID, sess.RealtimeEpoch, sess.RunID)
 		}
 		root, err := h.Collaboration.ResolveWorktree(ctx, sess.UserID, sess.TeamID, sess.ProjectID, sess.Branch)
 		if err != nil {

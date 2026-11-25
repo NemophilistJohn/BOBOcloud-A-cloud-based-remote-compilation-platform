@@ -65,6 +65,8 @@ type Request struct {
 
 	// ── 团队协作字段 ──
 	TeamID             string `json:"teamId,omitempty"`
+	Epoch              string `json:"epoch,omitempty"`
+	Enabled            bool   `json:"enabled,omitempty"`
 	ProjectID          string `json:"projectId,omitempty"`
 	Branch             string `json:"branch,omitempty"`
 	SourceBranch       string `json:"sourceBranch,omitempty"`
@@ -251,6 +253,7 @@ type WSMessage struct {
 // RunSession 存储一次代码运行请求的元数据
 type RunSession struct {
 	RunID         string         `json:"run_id"`
+	RealtimeEpoch string         `json:"realtime_epoch,omitempty"`
 	Token         string         `json:"token"`
 	FolderName    string         `json:"folder_name"`
 	FolderKey     string         `json:"folder_key,omitempty"` // 路径哈希，避免同名项目冲突

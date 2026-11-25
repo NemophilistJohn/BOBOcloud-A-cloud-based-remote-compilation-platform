@@ -13,6 +13,7 @@ const MAIN_DIRECTORY = path.join(ROOT, 'main');
 const RENDERER_OUTPUT = path.join(ROOT, 'renderer-dist');
 
 const EXPECTED_IPC = new Map([
+  ...['realtime:prepare-transition','realtime:connect','realtime:send','realtime:close','realtime:materialize','realtime:drafts','realtime:recover'].map(channel => [channel, 'handle']),
   ['workspace-leave-response', 'on'],
   ['workspace-leave-choice', 'handle'],
   ['workspace-identity', 'handle'],

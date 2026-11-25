@@ -8,6 +8,13 @@
 // preload bridge.
 const IPC_CHANNEL_POLICY = Object.freeze({
   invoke: Object.freeze([
+    'realtime:connect',
+    'realtime:prepare-transition',
+    'realtime:send',
+    'realtime:close',
+    'realtime:materialize',
+    'realtime:recover',
+    'realtime:drafts',
     'ai-cancel-stream',
     'ai-chat-request',
     'ai-inline-cancel',
@@ -147,6 +154,7 @@ const IPC_CHANNEL_POLICY = Object.freeze({
   // workspace-closed entry is retained for the legacy close notification even
   // though current renderer code no longer subscribes to it.
   event: Object.freeze([
+    'realtime:message',
     'ai-chunk',
     'ai-stream-end',
     'ai-stream-error',

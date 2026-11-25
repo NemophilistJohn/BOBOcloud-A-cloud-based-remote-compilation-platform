@@ -41,15 +41,16 @@ type serverTransportEndpoint struct {
 }
 
 type serverFeatureCapabilities struct {
-	Run                bool                    `json:"run"`
-	Tasks              bool                    `json:"tasks"`
-	Terminal           bool                    `json:"terminal"`
-	ProjectEnvironment bool                    `json:"projectEnvironment"`
-	PackageCenter      bool                    `json:"packageCenter"`
-	CacheV2            bool                    `json:"cacheV2"`
-	Collaboration      bool                    `json:"collaboration"`
-	LSP                serverServiceCapability `json:"lsp"`
-	DAP                serverServiceCapability `json:"dap"`
+	Run                   bool                    `json:"run"`
+	Tasks                 bool                    `json:"tasks"`
+	Terminal              bool                    `json:"terminal"`
+	ProjectEnvironment    bool                    `json:"projectEnvironment"`
+	PackageCenter         bool                    `json:"packageCenter"`
+	CacheV2               bool                    `json:"cacheV2"`
+	Collaboration         bool                    `json:"collaboration"`
+	RealtimeCollaboration bool                    `json:"realtimeCollaboration"`
+	LSP                   serverServiceCapability `json:"lsp"`
+	DAP                   serverServiceCapability `json:"dap"`
 }
 
 type serverServiceCapability struct {
@@ -128,6 +129,10 @@ func (h *HTTPHandler) serverCapabilities() serverCapabilityDescriptor {
 	descriptor.Capabilities.PackageCenter = cfg.PackageCenterEnabled && h.PackageCatalog != nil && h.PersonalCache != nil && h.EnvironmentSetup != nil
 	descriptor.Capabilities.CacheV2 = h.PersonalCache != nil
 	descriptor.Capabilities.Collaboration = h.Collaboration != nil
+	descriptor.Capabilities.RealtimeCollaboration = h.Collaboration != nil
+	if h.Collaboration != nil {
+		descriptor.Transport.WebSocket.Paths = append(descriptor.Transport.WebSocket.Paths, "/collaboration")
+	}
 	descriptor.Limits.RunMaxConcurrent = cfg.DockerMaxContainers
 	descriptor.Limits.ExecutionMaxSessionSeconds = cfg.ExecutionMaxSessionSeconds
 	descriptor.Limits.PackageOperationTimeoutSeconds = cfg.PackageOperationTimeoutSeconds

@@ -382,6 +382,15 @@ func (h *HTTPHandler) authenticate(r *http.Request) (*auth.User, string, error) 
 // routeRequest 根据 action 分发请求（已认证）
 func (h *HTTPHandler) routeRequest(w http.ResponseWriter, r *http.Request, req *model.Request) {
 	userID := auth.UserIDFromContext(r.Context())
+	if h.Collaboration != nil && req.TeamID != "" && req.ProjectID != "" {
+		switch req.Action {
+		case "prepareTeamProject", "createTeamBranch", "commitTeamChanges", "mergeTeamBranch", "resolveTeamConflict", "completeTeamMerge", "acquireTeamFileLock", "checkFolder", "runCode", "runTask", "deleteFile", "terminal", "applyProjectEnvironmentAction", "planProjectPackageChanges", "applyProjectPackageChanges":
+			if err := h.Collaboration.GuardLegacyProject(userID, req.TeamID, req.ProjectID, req.Epoch); err != nil {
+				writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error(), ErrorCode: "realtime_mode_guard"})
+				return
+			}
+		}
+	}
 	slog.Info("Request",
 		"action", req.Action,
 		"user_id", userID,
@@ -473,6 +482,7 @@ func (h *HTTPHandler) routeRequest(w http.ResponseWriter, r *http.Request, req *
 	// ── 团队协作、Git 与团队编译缓存 ──
 	case "createTeam", "listTeams", "getTeam", "updateTeam", "deleteTeam",
 		"leaveTeam", "removeTeamMember",
+		"getRealtimeState", "getRealtimeSnapshot", "setRealtimeMode", "snapshotRealtimePersonal", "createRealtimeVersion",
 		"createTeamProject", "listTeamProjects", "deleteTeamProject", "prepareTeamProject", "listTeamBranches", "createTeamBranch",
 		"teamProjectHistory", "teamActivity", "commitTeamChanges", "compareTeamBranches", "mergeTeamBranch",
 		"listTeamConflicts", "resolveTeamConflict", "completeTeamMerge",

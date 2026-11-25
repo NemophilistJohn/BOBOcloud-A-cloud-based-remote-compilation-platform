@@ -21,6 +21,11 @@ interface LegacyViewsNamespace {
   detectLanguage?: (name: string, content: string) => string;
   updateRunOutput?: (message: string) => void;
   views?: ViewsFacade;
+  workspace?: { activateTab(filePath: string): unknown; saveActiveTab(): unknown };
+  i18n?: { t(source: string): string };
+  projectTasks?: { runSelected(): unknown };
+  runner?: { runActive(): unknown };
+  dap?: { isPaused(): boolean; isActive(): boolean; execute(command: string): unknown; start(): unknown };
 }
 
 type LegacyViewsWindow = Window & {
@@ -56,6 +61,15 @@ const views = createViewsService({
     }
     BOBO.updateRunOutput.call(BOBO, message);
   },
+  activateFile: (filePath) => { BOBO.workspace?.activateTab(filePath); },
+  saveActiveFile: () => BOBO.workspace?.saveActiveTab(),
+  runActiveFile: () => BOBO.projectTasks ? BOBO.projectTasks.runSelected() : BOBO.runner?.runActive(),
+  debugActiveFile: () => {
+    if (BOBO.dap?.isPaused()) BOBO.dap.execute('continue');
+    else if (BOBO.dap && !BOBO.dap.isActive()) BOBO.dap.start();
+  },
+  translate: (source) => BOBO.i18n?.t(source) || source,
+  notifyVisibleEditorsChanged: () => legacyWindow.dispatchEvent(new CustomEvent('bobo:visible-editors-changed')),
   setTimer: (callback, delayMs) => legacyWindow.setTimeout(callback, delayMs),
   clearTimer: (timer) => legacyWindow.clearTimeout(timer)
 });
@@ -71,6 +85,11 @@ BOBO.views = {
   init: views.init,
   openSplit: views.openSplit,
   closeSplit: views.closeSplit,
+  getActiveEditor: views.getActiveEditor,
+  getVisibleEditors: views.getVisibleEditors,
+  activateTab: views.activateTab,
+  onTabClosed: views.onTabClosed,
+  refreshReadOnly: views.refreshReadOnly,
   openDiff: views.openDiff,
   closeDiff: views.closeDiff,
   showImagePreview: views.showImagePreview,

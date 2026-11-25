@@ -1,7 +1,6 @@
 // Split, diff, image-preview, and theme-picker presentation service.
 // Native file reads and legacy collaborators are injected by the compatibility adapter.
 import { DisposableStore, toDisposable } from '../renderer/core/disposable.js';
-import type { Disposable } from '../types/lifecycle';
 import type {
   ViewsCodeEditorPort,
   ViewsDependencies,
@@ -43,10 +42,10 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
   let initialized = false;
   let disposed = false;
   let diffRequestEpoch = 0;
-  let splitSyncTimer: number | null = null;
-  let splitModelSubscription: Disposable | null = null;
+  const splitListeners = new DisposableStore();
+  let activePane: 'left' | 'right' = 'right';
+  const paneStates = { left: new Map<string, unknown>(), right: new Map<string, unknown>() };
   let ownedSplitEditor: ViewsSplitEditorPort | null = null;
-  let ownedSplitModel: ViewsTextModelPort | null = null;
   let ownedDiffEditor: ViewsDiffEditorPort | null = null;
 
   function requiredElement<ElementType extends HTMLElement>(id: string): ElementType {
@@ -65,143 +64,200 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     return value;
   }
 
-  function primaryEditor(): ViewsCodeEditorPort {
-    if (!state.editor) throw new Error('The primary editor is unavailable.');
-    return state.editor;
-  }
-
   function editorTheme(): string {
     const editor = state.editor;
     if (!editor) return 'vs-dark';
     return editor.getOption(monaco().editor.EditorOption.theme) || 'vs-dark';
   }
 
-  function splitReadOnly(): boolean {
-    return state.workspaceTransitionLocked === true || Boolean(
-      dependencies.getCollaboration()?.isActiveFileReadOnly?.()
-    );
+  function translate(source: string): string {
+    return dependencies.translate?.(source) || source;
+  }
+
+  function getVisibleEditors(): readonly ViewsCodeEditorPort[] {
+    if (disposed || state.currentViewMode === 'diff' || state.currentImagePath) return [];
+    if (state.currentViewMode === 'split' && state.splitEditor) {
+      return [state.splitEditor, state.splitEditor.rightEditor];
+    }
+    return state.editor ? [state.editor] : [];
+  }
+
+  function getActiveEditor(): ViewsCodeEditorPort | null {
+    if (state.currentViewMode === 'split' && state.splitEditor) {
+      return activePane === 'left' ? state.splitEditor : state.splitEditor.rightEditor;
+    }
+    return state.editor;
+  }
+
+  function tabForEditor(editor: ViewsCodeEditorPort): ViewsTabDto | null {
+    return state.tabs.find((tab) => tab.model === editor.getModel()) || null;
   }
 
   function updateStatus(tab: ViewsTabDto | null): void {
-    const editorCore = dependencies.getEditorCore();
-    if (!editorCore) return;
-    editorCore.updateStatusBar(
-      tab?.model || null,
-      state.editor ? state.editor.getPosition() : null
-    );
+    dependencies.getEditorCore()?.updateStatusBar(tab?.model || null, getActiveEditor()?.getPosition());
+    dependencies.getEditorCore()?.refreshDiagnosticsForModel?.(tab?.model || null);
   }
 
-  function clearSplitSyncTimer(): void {
-    if (splitSyncTimer === null) return;
-    dependencies.clearTimer(splitSyncTimer);
-    splitSyncTimer = null;
+  function publishEditors(): void {
+    for (const pane of ['left', 'right'] as const) {
+      const container = document.getElementById('split-' + pane + '-pane');
+      const editor = pane === 'left' ? state.splitEditor : state.splitEditor?.rightEditor;
+      const tab = editor ? tabForEditor(editor) : null;
+      const label = document.getElementById('split-' + pane + '-label');
+      if (label) {
+        label.textContent = tab ? baseName(tab.path, '') : '';
+        label.title = tab?.path || '';
+      }
+      if (container) container.classList.toggle('focused', activePane === pane);
+    }
+    dependencies.notifyVisibleEditorsChanged?.();
   }
 
-  function bindSplitModel(rightModel: ViewsTextModelPort): void {
-    disposeSilently(splitModelSubscription);
-    splitModelSubscription = rightModel.onDidChangeContent(() => {
-      clearSplitSyncTimer();
-      splitSyncTimer = dependencies.setTimer(() => {
-        splitSyncTimer = null;
-        const splitEditor = state.splitEditor;
-        if (disposed || !splitEditor || splitEditor !== ownedSplitEditor) return;
-        const leftModel = splitEditor.getModel();
-        if (leftModel) leftModel.setValue(rightModel.getValue());
-      }, 150);
-    });
+  function refreshReadOnly(): void {
+    const collaboration = dependencies.getCollaboration();
+    for (const editor of getVisibleEditors()) {
+      const tab = tabForEditor(editor);
+      const locked = collaboration?.isFileReadOnly
+        ? Boolean(tab && collaboration.isFileReadOnly(tab.path))
+        : Boolean(tab?.path === state.activeTabPath && collaboration?.isActiveFileReadOnly?.());
+      editor.updateOptions({ readOnly: state.workspaceTransitionLocked === true || locked });
+    }
+  }
+
+  function activateTab(filePath: string): boolean {
+    if (disposed || state.currentViewMode !== 'split' || !state.splitEditor) return false;
+    const tab = state.tabs.find((candidate) => candidate.path === filePath);
+    const editor = getActiveEditor();
+    if (!tab?.model || !editor) return false;
+    const previous = tabForEditor(editor);
+    if (previous && previous.path !== filePath) paneStates[activePane].set(previous.path, editor.saveViewState?.());
+    if (editor.getModel() !== tab.model) {
+      editor.setModel(tab.model);
+      const saved = paneStates[activePane].get(filePath);
+      if (saved) editor.restoreViewState?.(saved);
+    }
+    // The primary editor remains the legacy active-model bridge for run/LSP.
+    state.editor?.setModel(tab.model);
+    refreshReadOnly();
+    updateStatus(tab);
+    publishEditors();
+    return true;
+  }
+
+  function focusPane(pane: 'left' | 'right'): void {
+    if (state.currentViewMode !== 'split' || !state.splitEditor) return;
+    activePane = pane;
+    const editor = getActiveEditor();
+    const tab = editor && tabForEditor(editor);
+    if (tab) {
+      if (state.activeTabPath !== tab.path) dependencies.activateFile?.(tab.path);
+      state.activeTabPath = tab.path;
+      state.editor?.setModel(tab.model || null);
+      refreshReadOnly();
+      updateStatus(tab);
+    }
+    publishEditors();
   }
 
   function createSplitEditor(tab: ViewsTabDto & { readonly model: ViewsTextModelPort }): void {
     const editorApi = monaco().editor;
-    const editor = primaryEditor();
     let leftEditor: ViewsCodeEditorPort | null = null;
     let rightEditor: ViewsCodeEditorPort | null = null;
-    let rightModel: ViewsTextModelPort | null = null;
     try {
-      leftEditor = editorApi.create(requiredElement('split-left'), {
-        model: tab.model,
-        theme: editor.getOption(editorApi.EditorOption.theme) || 'vs-dark',
-        automaticLayout: true,
-        readOnly: true
-      });
-      rightModel = editorApi.createModel(
-        tab.model.getValue(),
-        tab.model.getLanguageId(),
-        monaco().Uri.parse(tab.model.uri.toString() + '-split')
-      );
-      rightEditor = editorApi.create(requiredElement('split-right'), {
-        model: rightModel,
-        theme: editor.getOption(editorApi.EditorOption.theme) || 'vs-dark',
-        automaticLayout: true,
-        readOnly: splitReadOnly()
-      });
+      const options = { model: tab.model, theme: editorTheme(), automaticLayout: true, readOnly: false };
+      leftEditor = editorApi.create(requiredElement('split-left'), options);
+      rightEditor = editorApi.create(requiredElement('split-right'), options);
       const splitEditor = leftEditor as ViewsSplitEditorPort;
       splitEditor.rightEditor = rightEditor;
       state.splitEditor = splitEditor;
       ownedSplitEditor = splitEditor;
-      ownedSplitModel = rightModel;
-      const workspaceSettings = dependencies.getWorkspaceSettings();
-      workspaceSettings?.attachEditor?.(splitEditor);
-      workspaceSettings?.attachEditor?.(rightEditor);
-      bindSplitModel(rightModel);
+      for (const [pane, editor] of [['left', leftEditor], ['right', rightEditor]] as const) {
+        dependencies.getWorkspaceSettings()?.attachEditor?.(editor);
+        const focus = editor.onDidFocusEditorWidget?.(() => focusPane(pane));
+        if (focus) splitListeners.add(focus);
+        const cursor = editor.onDidChangeCursorPosition?.(() => {
+          if (getActiveEditor() === editor && state.currentViewMode === 'split') updateStatus(tabForEditor(editor));
+        });
+        if (cursor) splitListeners.add(cursor);
+      }
     } catch (error) {
+      splitListeners.clear();
       if (state.splitEditor === leftEditor) state.splitEditor = null;
       ownedSplitEditor = null;
-      ownedSplitModel = null;
-      disposeSilently(splitModelSubscription);
-      splitModelSubscription = null;
       disposeSilently(rightEditor);
-      disposeSilently(rightModel);
       disposeSilently(leftEditor);
       throw error;
     }
   }
 
-  function openSplit(): void {
-    if (disposed) return;
+  function openSplit(filePath?: string): void {
+    if (disposed || state.workspaceTransitionLocked) return;
     if (state.currentViewMode === 'diff') closeDiff();
-
-    const tab = activeTab();
+    const tab = filePath ? state.tabs.find((candidate) => candidate.path === filePath) : activeTab();
     if (!tab?.model) {
-      dependencies.updateRunOutput('No active file to split');
+      dependencies.updateRunOutput(translate('No active file to split'));
       return;
     }
     if (state.currentViewMode === 'split') {
-      closeSplit();
+      activePane = 'right';
+      dependencies.activateFile?.(tab.path);
+      activateTab(tab.path);
+      getActiveEditor()?.focus?.();
       return;
     }
-
+    if (state.activeTabPath !== tab.path) dependencies.activateFile?.(tab.path);
+    const initialViewState = state.editor?.saveViewState?.();
+    if (!state.splitEditor) createSplitEditor(tab as ViewsTabDto & { readonly model: ViewsTextModelPort });
+    else {
+      state.splitEditor.setModel(tab.model);
+      state.splitEditor.rightEditor.setModel(tab.model);
+    }
     requiredElement('container').style.display = 'none';
     requiredElement('split-container').classList.add('active');
-
-    if (!state.splitEditor) {
-      createSplitEditor(tab as ViewsTabDto & { readonly model: ViewsTextModelPort });
-    } else {
-      state.splitEditor.setModel(tab.model);
-      const rightModel = state.splitEditor.rightEditor.getModel();
-      if (!rightModel) throw new Error('The split editor model is unavailable.');
-      rightModel.setValue(tab.model.getValue());
-      monaco().editor.setModelLanguage(rightModel, tab.model.getLanguageId());
-    }
-
-    const splitEditor = state.splitEditor;
-    if (!splitEditor) throw new Error('The split editor is unavailable.');
-    splitEditor.updateOptions({ readOnly: true });
-    splitEditor.rightEditor.updateOptions({ readOnly: splitReadOnly() });
     state.currentViewMode = 'split';
+    activePane = 'right';
+    if (initialViewState) {
+      state.splitEditor?.restoreViewState?.(initialViewState);
+      state.splitEditor?.rightEditor.restoreViewState?.(initialViewState);
+    }
+    refreshReadOnly();
     updateStatus(tab);
-    dependencies.updateRunOutput('[Split view opened — left: read-only, right: editable]');
+    publishEditors();
+    getActiveEditor()?.focus?.();
   }
 
   function closeSplit(): void {
     if (disposed) return;
+    const editor = getActiveEditor();
+    const viewState = editor?.saveViewState?.();
+    const model = editor?.getModel() || activeTab()?.model || null;
     requiredElement('split-container').classList.remove('active');
     requiredElement('container').style.display = '';
     state.currentViewMode = 'single';
+    state.editor?.setModel(model);
+    if (viewState) state.editor?.restoreViewState?.(viewState);
+    // Split panes never own the file models. Detach them before tab disposal.
+    state.splitEditor?.setModel(null);
+    state.splitEditor?.rightEditor.setModel(null);
+    paneStates.left.clear();
+    paneStates.right.clear();
+    refreshReadOnly();
+    updateStatus(activeTab());
+    publishEditors();
+    state.editor?.focus?.();
+  }
 
-    const tab = activeTab();
-    if (tab?.model && state.editor) state.editor.setModel(tab.model);
-    updateStatus(tab);
+  function onTabClosed(filePath: string): void {
+    paneStates.left.delete(filePath);
+    paneStates.right.delete(filePath);
+    const closed = state.tabs.find((tab) => tab.path === filePath);
+    if (!closed?.model || !state.splitEditor) return;
+    const replacement = state.tabs.find((tab) => tab.path !== filePath && tab.model)?.model || null;
+    for (const editor of [state.splitEditor, state.splitEditor.rightEditor]) {
+      if (editor.getModel() === closed.model) editor.setModel(replacement);
+    }
+    if (state.editor?.getModel() === closed.model) state.editor.setModel(replacement);
+    publishEditors();
   }
 
   function detachDiffModels(editor: ViewsDiffEditorPort): ViewsDiffModelDto | null {
@@ -263,6 +319,7 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     }
 
     state.currentViewMode = 'diff';
+    publishEditors();
     dependencies.updateRunOutput('[Diff: ' + originalName + ' ↔ ' + modifiedName + ']');
   }
 
@@ -330,6 +387,7 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     const tab = activeTab();
     if (tab?.model && state.editor) state.editor.setModel(tab.model);
     updateStatus(tab);
+    publishEditors();
   }
 
   function updateImageTransform(): void {
@@ -364,6 +422,7 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     image.style.transform = '';
     requiredElement('image-preview').classList.remove('hidden');
     requiredElement('container').style.display = 'none';
+    publishEditors();
   }
 
   function closeImagePreview(): void {
@@ -372,10 +431,11 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     state.imageRotation = 0;
     state.imageScale = 1;
     requiredElement('image-preview').classList.add('hidden');
-    requiredElement('container').style.display = 'block';
+    requiredElement('container').style.display = state.currentViewMode === 'single' ? 'block' : 'none';
     const image = requiredElement<HTMLImageElement>('preview-image');
     image.src = '';
     image.style.transform = '';
+    publishEditors();
   }
 
   function openThemePicker(): void {
@@ -406,6 +466,31 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
       listen(zoomIn, 'click', () => zoomImage(1.25));
       listen(zoomReset, 'click', resetImageTransform);
       listen(closeDiffButton, 'click', closeDiff);
+      const closeSplitButton = document.getElementById('close-split');
+      if (closeSplitButton) listen(closeSplitButton, 'click', closeSplit);
+      if (typeof document.addEventListener === 'function') {
+        const onKeyDown = (event: KeyboardEvent): void => {
+          if (state.currentViewMode === 'split' && event.key === 'F5' && !event.shiftKey && !event.altKey) {
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.ctrlKey || event.metaKey) dependencies.runActiveFile?.();
+            else dependencies.debugActiveFile?.();
+            return;
+          }
+          if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+          if (event.key === '\\') {
+            event.preventDefault();
+            event.stopPropagation();
+            openSplit();
+          } else if (state.currentViewMode === 'split' && event.key.toLowerCase() === 's' && !event.shiftKey) {
+            event.preventDefault();
+            event.stopPropagation();
+            dependencies.saveActiveFile?.();
+          }
+        };
+        document.addEventListener('keydown', onKeyDown, true);
+        listeners.add(toDisposable(() => document.removeEventListener('keydown', onKeyDown, true)));
+      }
 
       const modal = document.getElementById('theme-modal');
       const select = document.getElementById('theme-select') as HTMLSelectElement | null;
@@ -436,9 +521,7 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     disposed = true;
     initialized = false;
     diffRequestEpoch += 1;
-    clearSplitSyncTimer();
-    disposeSilently(splitModelSubscription);
-    splitModelSubscription = null;
+    splitListeners.dispose();
     listeners.dispose();
 
     const diffEditor = state.diffEditor;
@@ -458,9 +541,7 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     if (state.splitEditor === ownedSplitEditor) state.splitEditor = null;
     disposeSilently(ownedSplitEditor?.rightEditor);
     disposeSilently(ownedSplitEditor);
-    disposeSilently(ownedSplitModel);
     ownedSplitEditor = null;
-    ownedSplitModel = null;
 
     document.getElementById('split-container')?.classList.remove('active');
     document.getElementById('diff-container')?.classList.remove('active');
@@ -495,6 +576,11 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     init,
     openSplit,
     closeSplit,
+    getActiveEditor,
+    getVisibleEditors,
+    activateTab,
+    onTabClosed,
+    refreshReadOnly,
     openDiff,
     closeDiff,
     showImagePreview,

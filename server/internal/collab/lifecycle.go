@@ -70,6 +70,10 @@ func (m *Manager) AcquireProjectActivity(userID, teamID, projectID string) (*Pro
 		m.resourceMu.Unlock()
 		return nil, fmt.Errorf("team project deletion is in progress")
 	}
+	if m.realtimeChanging[key] {
+		m.resourceMu.Unlock()
+		return nil, fmt.Errorf("project mode transition is in progress")
+	}
 	if m.memberRevoking[memberKey] {
 		m.resourceMu.Unlock()
 		return nil, fmt.Errorf("team membership revocation is in progress")

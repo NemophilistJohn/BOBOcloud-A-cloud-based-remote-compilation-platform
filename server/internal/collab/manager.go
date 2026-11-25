@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	pathpkg "path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +34,9 @@ type Manager struct {
 	memberRevoking   map[string]bool
 	memberActive     map[string]int
 	branchOperations keyedMutex
+	realtimeMu       sync.Mutex
+	realtimeRooms    map[string]*realtimeRoom
+	realtimeChanging map[string]bool
 }
 
 func NewManager(store Store, users auth.UserStore, root string) *Manager {
@@ -40,6 +44,8 @@ func NewManager(store Store, users auth.UserStore, root string) *Manager {
 		store: store, users: users, root: filepath.Clean(root),
 		teamDeleting: make(map[string]bool), projectDeleting: make(map[string]bool), projectActive: make(map[string]int),
 		memberRevoking: make(map[string]bool), memberActive: make(map[string]int),
+		realtimeRooms:    make(map[string]*realtimeRoom),
+		realtimeChanging: make(map[string]bool),
 	}
 }
 
@@ -501,7 +507,11 @@ func (m *Manager) PrepareUserDeletion(userID string) error {
 }
 
 func gitRun(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	commandArgs := args
+	if runtime.GOOS == "windows" {
+		commandArgs = append([]string{"-c", "core.longpaths=true"}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "git", commandArgs...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -542,7 +552,11 @@ func (m *Manager) repoPath(teamID, projectID string) string {
 	return filepath.Join(m.repoRoot(teamID, projectID), "repository.git")
 }
 func (m *Manager) worktreePath(teamID, projectID, userID, branch string) string {
-	return filepath.Join(m.repoRoot(teamID, projectID), "worktrees", safeFSName(userID), safeFSName(branch))
+	base := filepath.Join(m.repoRoot(teamID, projectID), "worktrees", safeFSName(userID))
+	if project, err := m.store.GetProject(projectID); err == nil && project.TeamID == teamID && project.WorktreeGeneration != "" {
+		base = filepath.Join(base, "generation-"+safeFSName(project.WorktreeGeneration))
+	}
+	return filepath.Join(base, safeFSName(branch))
 }
 
 func safeFSName(value string) string {
@@ -663,6 +677,13 @@ func (m *Manager) EnsureWorktree(ctx context.Context, userID, teamID, projectID,
 // ensureWorktree runs with the project activity lease and branch operation lock
 // already held by its caller.
 func (m *Manager) ensureWorktree(ctx context.Context, project *Project, userID, branch string, pull bool) (*WorktreeInfo, error) {
+	if err := m.GuardLegacyProject(userID, project.TeamID, project.ID, "*"); err != nil {
+		return nil, err
+	}
+	return m.ensureWorktreeUnchecked(ctx, project, userID, branch, pull)
+}
+
+func (m *Manager) ensureWorktreeUnchecked(ctx context.Context, project *Project, userID, branch string, pull bool) (*WorktreeInfo, error) {
 	teamID, projectID := project.TeamID, project.ID
 	repo := m.repoPath(teamID, projectID)
 	if _, err := gitRun(ctx, "", "--git-dir", repo, "show-ref", "--verify", "refs/heads/"+branch); err != nil {
@@ -745,6 +766,9 @@ func (m *Manager) ResetWorktree(ctx context.Context, userID, teamID, projectID, 
 }
 
 func (m *Manager) CreateBranch(ctx context.Context, userID, teamID, projectID, name, from string) error {
+	if err := m.GuardLegacyProject(userID, teamID, projectID, "*"); err != nil {
+		return err
+	}
 	project, err := m.projectForMember(userID, teamID, projectID)
 	if err != nil {
 		return err

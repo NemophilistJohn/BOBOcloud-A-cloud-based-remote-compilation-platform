@@ -499,6 +499,18 @@ if (!nativeHost || typeof nativeHost !== 'object') {
   throw new Error('The BOBOCLOUD native host bridge is unavailable.');
 }
 
+rendererPlatform.lifecycle.add(rendererPlatform.services.registerPrivate('host.realtime', Object.freeze({
+  readTextFile: nativeHost.readFile,
+  connect: nativeHost.realtimeConnect,
+  prepareTransition: nativeHost.realtimePrepareTransition,
+  send: nativeHost.realtimeSend,
+  close: nativeHost.realtimeClose,
+  materialize: nativeHost.realtimeMaterialize,
+  recover: nativeHost.realtimeRecover,
+  drafts: nativeHost.realtimeDrafts,
+  onMessage: nativeHost.onRealtimeMessage
+})));
+
 const diagnosticsRegistration = rendererPlatform.services.registerPrivate(
   DIAGNOSTICS_HOST_SERVICE_ID,
   createDiagnosticsHost(nativeHost)

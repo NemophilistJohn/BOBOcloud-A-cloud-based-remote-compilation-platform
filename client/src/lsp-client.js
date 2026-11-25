@@ -6,6 +6,9 @@
   var BOBO = global.BOBO || {};
   global.BOBO = BOBO;
   var S = BOBO.state;
+  function activeEditor() {
+    return BOBO.views && BOBO.views.getActiveEditor ? BOBO.views.getActiveEditor() : S.editor;
+  }
   var monacoRef = null;
   var settings = {
     mode: 'local',
@@ -136,7 +139,7 @@
         dependencyApiIndexUi = progress;
         renderClientCacheUi();
         if (['ready', 'complete', 'partial'].indexOf(progress.state) < 0) return;
-        var model = currentModel(); var position = S.editor && S.editor.getPosition();
+        var model = currentModel(); var position = activeEditor() && activeEditor().getPosition();
         var snapshot = model && position && status.state === 'ready' ? completionSnapshot(model, position, null) : null;
         if (snapshot && completionRefreshGate.isWaiting(snapshot)) retriggerCompletion(snapshot, service.suggestions(model, position));
       },
@@ -1125,7 +1128,7 @@
 
   function currentModel() {
     if (activeVirtualDocument) return activeVirtualDocument.model;
-    return S.editor && S.editor.getModel ? S.editor.getModel() : null;
+    return activeEditor() && activeEditor().getModel ? activeEditor().getModel() : null;
   }
 
   function closeVirtualDocument(path) {
@@ -2236,7 +2239,7 @@
     dependencyApiIndexUi = { state: clientCacheDependencyIndexEnabled() ? 'enabled' : 'session', error: '' };
     renderClientCacheUi();
     var model = currentModel();
-    var position = S.editor && S.editor.getPosition ? S.editor.getPosition() : null;
+    var position = activeEditor() && activeEditor().getPosition ? activeEditor().getPosition() : null;
     var snapshot = model && position ? completionSnapshot(model, position, null) : null;
     if (snapshot) retriggerCompletion(snapshot, dependencyApiIndexCompletions(value, snapshot));
     return true;
@@ -2252,7 +2255,7 @@
       roots: Object.create(null), modules: Object.create(null), truncated: false, preferredRootPrefixes: []
     };
     var model = currentModel();
-    var position = S.editor && S.editor.getPosition ? S.editor.getPosition() : null;
+    var position = activeEditor() && activeEditor().getPosition ? activeEditor().getPosition() : null;
     dependencyApiIndexRefreshPreferredRoots(build, model && position ? completionSnapshot(model, position, null) : null);
     dependencyApiIndexBuilds.set(id, build);
     dependencyApiIndexUi = { state: 'loading', error: '' };
@@ -2278,7 +2281,7 @@
           dependencyApiIndexUi = { state: clientCacheDependencyIndexEnabled() ? 'enabled' : 'session', error: '' };
           renderClientCacheUi();
           var model = currentModel();
-          var position = S.editor && S.editor.getPosition ? S.editor.getPosition() : null;
+          var position = activeEditor() && activeEditor().getPosition ? activeEditor().getPosition() : null;
           var snapshot = model && position ? completionSnapshot(model, position, null) : null;
           if (snapshot) retriggerCompletion(snapshot, dependencyApiIndexCompletions(value, snapshot));
           return true;
@@ -2334,7 +2337,7 @@
     }
     var page = message.page;
     var model = currentModel();
-    var position = S.editor && S.editor.getPosition ? S.editor.getPosition() : null;
+    var position = activeEditor() && activeEditor().getPosition ? activeEditor().getPosition() : null;
     dependencyApiIndexRefreshPreferredRoots(build, model && position ? completionSnapshot(model, position, null) : null);
     if (page.schema !== dependencyApiIndexSchema || page.languageId !== 'python' ||
         String(page.runtimeId || '') !== String(build.scope.runtimeId) || String(page.revision || '') !== String(build.scope.dependencyRevision) ||
@@ -2418,7 +2421,7 @@
     if (String(status.sessionId || '') !== snapshot.sessionId || snapshot.model.getLanguageId() !== activeLanguage) return false;
     if (typeof snapshot.model.isDisposed === 'function' && snapshot.model.isDisposed()) return false;
     if (snapshot.model.getVersionId() !== snapshot.version || currentModel() !== snapshot.model) return false;
-    var editorPosition = S.editor && S.editor.getPosition ? S.editor.getPosition() : null;
+    var editorPosition = activeEditor() && activeEditor().getPosition ? activeEditor().getPosition() : null;
     if (!editorPosition || editorPosition.lineNumber !== snapshot.lineNumber || editorPosition.column !== snapshot.column) return false;
     var current = completionSnapshot(snapshot.model, editorPosition, snapshot.token);
     return !!current && current.key === snapshot.key;
@@ -2484,7 +2487,7 @@
     var snapshot = completionSnapshot(model, position, token);
     completionRefreshGate.begin(snapshot);
     var isCurrent = createCompletionRequestGuard(model, token, function() {
-      return { generation: completionContextGeneration, sessionId: status.sessionId, model: currentModel(), position: S.editor && S.editor.getPosition() };
+      return { generation: completionContextGeneration, sessionId: status.sessionId, model: currentModel(), position: activeEditor() && activeEditor().getPosition() };
     }, position);
     var local = localProvider && localProvider.provideCompletionItems(model, position, context, token);
     var remote = provideRemoteCompletion(model, position, context, token);
@@ -2509,13 +2512,13 @@
   }
 
   function canRetriggerCompletion(snapshot) {
-    return completionSnapshotIsValid(snapshot) && !!(S.editor && typeof S.editor.hasTextFocus === 'function' && S.editor.hasTextFocus());
+    return completionSnapshotIsValid(snapshot) && !!(activeEditor() && typeof activeEditor().hasTextFocus === 'function' && activeEditor().hasTextFocus());
   }
 
   function retriggerCompletion(snapshot, value, source) {
     if (!canRetriggerCompletion(snapshot) || !completionRefreshGate.isWaiting(snapshot, source)) return;
-    var controller = typeof S.editor.getContribution === 'function'
-      ? S.editor.getContribution('editor.contrib.suggestController')
+    var controller = typeof activeEditor().getContribution === 'function'
+      ? activeEditor().getContribution('editor.contrib.suggestController')
       : null;
     var widget = controller && controller.widget && controller.widget.value;
     if (source !== 'semantic' && widget && typeof widget.getFocusedItem === 'function' && widget.getFocusedItem()) {
@@ -2531,7 +2534,7 @@
       controller.triggerSuggest(undefined, true, undefined);
       return;
     }
-    if (typeof S.editor.trigger === 'function') S.editor.trigger('remote-lsp', 'editor.action.triggerSuggest', {});
+    if (typeof activeEditor().trigger === 'function') activeEditor().trigger('remote-lsp', 'editor.action.triggerSuggest', {});
   }
 
   function provideRemoteCompletion(model, position, context, token) {
@@ -2793,7 +2796,7 @@
     if (!name) return false;
     try {
       await BOBO.workspace.openFile(resource.fsPath, name);
-      var editor = S.editor;
+      var editor = activeEditor();
       if (!editor) return false;
       if (selectionOrPosition) {
         if (typeof selectionOrPosition.endLineNumber === 'number') {
@@ -2963,7 +2966,7 @@
       return { edits: [], rejectReason: t('Could not prepare files for rename: {message}', { message: error.message }) };
     } finally {
       if (originalActivePath && BOBO.workspace && BOBO.workspace.activateTab) BOBO.workspace.activateTab(originalActivePath);
-      if (S.editor && S.editor.focus) S.editor.focus();
+      if (activeEditor() && activeEditor().focus) activeEditor().focus();
     }
     return { edits: result };
   }
@@ -3869,43 +3872,57 @@
       model.onDidChangeContent(function(event) { queueChanges(model, event); });
       model.onWillDispose(function() { closeDocument(model); });
     });
-    if (S.editor) {
-      if (document.addEventListener) {
-        var stopRefreshForPointer = function(event) {
-          var target = event && event.target;
-          if (!target || typeof target.closest !== 'function' || !target.closest('.suggest-widget')) return;
-          var model = currentModel(); var position = S.editor.getPosition();
-          if (model && position) completionRefreshGate.block(completionSnapshot(model, position, null));
-        };
-        document.addEventListener('pointerdown', stopRefreshForPointer, true);
-        disposables.push({ dispose: function() { document.removeEventListener('pointerdown', stopRefreshForPointer, true); } });
-      }
-      if (S.editor.onKeyDown) {
-        disposables.push(S.editor.onKeyDown(function(event) {
+    if (document.addEventListener) {
+      var stopRefreshForPointer = function(event) {
+        var target = event && event.target;
+        if (!target || typeof target.closest !== 'function' || !target.closest('.suggest-widget')) return;
+        var model = currentModel(); var editor = activeEditor(); var position = editor && editor.getPosition();
+        if (model && position) completionRefreshGate.block(completionSnapshot(model, position, null));
+      };
+      document.addEventListener('pointerdown', stopRefreshForPointer, true);
+      disposables.push({ dispose: function() { document.removeEventListener('pointerdown', stopRefreshForPointer, true); } });
+    }
+    var boundEditor = null;
+    var editorSubscriptions = [];
+    function bindActiveEditor() {
+      var editor = activeEditor();
+      if (editor === boundEditor) return;
+      editorSubscriptions.forEach(function(subscription) { if (subscription && subscription.dispose) subscription.dispose(); });
+      editorSubscriptions = [];
+      boundEditor = editor;
+      invalidateCompletionContext(true);
+      if (completionService()) completionService().activity(currentModel());
+      scheduleConfigure();
+      if (!editor) return;
+      if (editor.onKeyDown) {
+        editorSubscriptions.push(editor.onKeyDown(function(event) {
           var key = event && event.browserEvent && event.browserEvent.key;
           if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', 'Escape', 'Enter', 'Tab'].indexOf(key) < 0) return;
-          var model = currentModel(); var position = S.editor.getPosition();
+          var model = currentModel(); var position = editor.getPosition();
           if (model && position) completionRefreshGate.block(completionSnapshot(model, position, null));
         }));
       }
-      S.editor.onDidChangeModel(function() {
-        // A file switch invalidates position/semantic completions; library
-        // names remain valid within the same analysis identity. configure()
-        // separately clears them when workspace, language or runtime changes.
+      editorSubscriptions.push(editor.onDidChangeModel(function() {
         invalidateCompletionContext(true);
         if (completionService()) completionService().activity(currentModel());
         scheduleConfigure();
-      });
-      if (S.editor.onDidChangeCursorPosition) {
-        S.editor.onDidChangeCursorPosition(function(event) {
+      }));
+      if (editor.onDidChangeCursorPosition) {
+        editorSubscriptions.push(editor.onDidChangeCursorPosition(function(event) {
           var model = currentModel();
           var snapshot = model && completionSnapshot(model, event && event.position, null);
           if (snapshot && !completionCoordinator.matches(snapshot.uri, snapshot.key)) completionCoordinator.invalidate(snapshot.uri);
           if (model && event && event.position) scheduleCompletionHintPrewarm(model, event.position);
           if (completionService()) completionService().activity(model);
-        });
+        }));
       }
     }
+    global.addEventListener('bobo:visible-editors-changed', bindActiveEditor);
+    disposables.push({ dispose: function() {
+      global.removeEventListener('bobo:visible-editors-changed', bindActiveEditor);
+      editorSubscriptions.forEach(function(subscription) { if (subscription && subscription.dispose) subscription.dispose(); });
+    } });
+    bindActiveEditor();
     renderStatus();
     scheduleConfigure();
     // BOBO.lsp publishes its cache facade immediately after init returns. Defer

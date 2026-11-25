@@ -220,8 +220,21 @@ html, body {
 /* ---- split editor ---- */
 #split-container { position: absolute; inset: 0; display: none; }
 #split-container.active { display: flex; }
-#split-container .split-pane { flex: 1; position: relative; overflow: hidden; }
+#split-container .split-pane { flex: 1 1 0; min-width: 0; min-height: 0; position: relative; overflow: hidden; display: flex; flex-direction: column; }
 #split-container .split-pane:first-child { border-right: 1px solid var(--border-default); }
+#split-container .split-pane-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; min-height: 30px; padding: 0 10px; font-size: 12px; color: var(--text-secondary); background: var(--bg-secondary); border-bottom: 1px solid var(--border-default); }
+#split-container .split-pane.focused .split-pane-header { box-shadow: inset 0 -2px var(--accent, #60a5fa); color: var(--text-primary); }
+#split-container .split-pane-header span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#split-container .split-pane-header button { border: 0; padding: 3px; border-radius: 3px; background: transparent; color: inherit; cursor: pointer; display: flex; }
+#split-container .split-pane-header button:hover { background: var(--bg-hover); }
+#split-container .split-pane-header button:focus-visible { outline: 1px solid var(--accent, #60a5fa); }
+#split-container .split-pane-editor { flex: 1; min-height: 0; overflow: hidden; }
+#tabbar .tab-split { display: flex; align-items: center; border: 0; background: transparent; color: inherit; padding: 2px; cursor: pointer; opacity: .65; }
+#tabbar .tab-split:hover, #tabbar .tab-split:focus-visible { opacity: 1; }
+@media (max-width: 760px) {
+  #split-container.active { flex-direction: column; }
+  #split-container .split-pane:first-child { border-right: 0; border-bottom: 1px solid var(--border-default); }
+}
 
 /* ---- bottom panel (Output + Terminal tabs) ---- */
 #output-resizer {

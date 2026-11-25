@@ -148,6 +148,51 @@ function loadRunner(overrides) {
   };
 }
 
+test('shared project tasks use canonical room runs without personal sync and settle real results', async () => {
+  let listener;
+  let submitted;
+  let cancelled = 0;
+  const fixture = loadRunner({ BOBO: {
+    sendToServer() { throw new Error('Shared tasks must not use legacy upload/run'); },
+    rclone: { sync() { throw new Error('Shared tasks must not upload personal copies'); } },
+    realtime: {
+      isActive: () => true,
+      async runTask(task, onEvent) { submitted = task; listener = onEvent; return true; },
+      async stop() { cancelled++; }
+    }
+  } });
+  const task = { schemaVersion: 1, label: 'Shared build', kind: 'build',
+    steps: [{ id: 'build', label: 'Build', kind: 'build', type: 'process', argv: ['build'], cwd: '', env: {}, dependsOn: [] }] };
+  const handle = fixture.BOBO.runner.startProjectTaskExecution(task);
+  await waitFor(() => Boolean(listener));
+  assert.equal(submitted.label, task.label);
+  listener({ type: 'result', success: true, returncode: 0, runId: 'shared-run' });
+  const result = await handle.completion;
+  assert.equal(result.success, true);
+  assert.equal(result.runId, 'shared-run');
+  assert.equal(fixture.webSocketConstructions(), 0);
+  const second = fixture.BOBO.runner.startProjectTaskExecution(task);
+  await waitFor(() => second.getState().state === 'running');
+  await second.cancel();
+  assert.equal(cancelled, 1);
+  assert.equal((await second.completion).cancelled, true);
+});
+
+test('leaving a shared task settles its local handle without stopping the room process', async () => {
+  let started = false;
+  let stopped = false;
+  const fixture = loadRunner({ BOBO: { realtime: {
+    isActive: () => true,
+    async runTask() { started = true; return true; },
+    async stop() { stopped = true; }
+  } } });
+  const handle = fixture.BOBO.runner.startProjectTaskExecution({ label: 'Shared', steps: [] });
+  await waitFor(() => started);
+  await fixture.BOBO.runner.prepareWorkspaceLeave();
+  assert.equal((await handle.completion).cancelled, true);
+  assert.equal(stopped, false);
+});
+
 test('a sync from the previous workspace cannot swallow the new workspace sync', async () => {
   const firstSync = deferred();
   const secondSync = deferred();

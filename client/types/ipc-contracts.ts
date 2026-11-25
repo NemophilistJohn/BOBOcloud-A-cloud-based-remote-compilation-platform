@@ -7,6 +7,7 @@
  */
 
 import type { Dispose } from './lifecycle';
+import type { RealtimeHost, SharedState } from './realtime';
 import type { DiagnosticsSettingsDto, DiagnosticsSettingsWriteDto } from './diagnostics';
 import type {
   ProjectTaskConfigurationDto,
@@ -88,6 +89,13 @@ export interface IpcEventContract<Args extends unknown[] = []> {
 }
 
 export interface IpcInvokeContracts {
+  'realtime:connect': IpcInvokeContract<[request: Parameters<RealtimeHost['connect']>[0]], SharedState>;
+  'realtime:send': IpcInvokeContract<[message: Record<string, unknown>], void>;
+  'realtime:close': IpcInvokeContract<[], void>;
+  'realtime:prepare-transition': IpcInvokeContract<[], void>;
+  'realtime:materialize': IpcInvokeContract<Parameters<RealtimeHost['materialize']>, void>;
+  'realtime:recover': IpcInvokeContract<[fileId: string], boolean>;
+  'realtime:drafts': IpcInvokeContract<[request?: Parameters<RealtimeHost['drafts']>[0]], Awaited<ReturnType<RealtimeHost['drafts']>>>;
   'pick-workspace': IpcInvokeContract<
     [dirPath?: WorkspaceLaunchRequest],
     WorkspaceLaunchOpenedWorkspaceDto | null
@@ -266,6 +274,7 @@ export interface IpcSendContracts {
 }
 
 export interface IpcEventContracts {
+  'realtime:message': IpcEventContract<[message: Record<string, unknown>]>;
   'workspace-opened': IpcEventContract<[payload: ProjectTasksWorkspaceOpenedEvent]>;
   'workspace-refresh': IpcEventContract<[payload: unknown]>;
   'workspace-leave-request': IpcEventContract<[payload: unknown]>;

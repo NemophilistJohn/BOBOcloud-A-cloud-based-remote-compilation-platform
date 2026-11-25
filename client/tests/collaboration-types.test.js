@@ -19,7 +19,7 @@ test('collaboration keeps its typed host boundary, DTO action map, and private d
     '    : false;',
     'type AssertTrue<Value extends true> = Value;',
     'type AssertFalse<Value extends false> = Value;',
-    "type FacadeKeys = 'init' | 'openHub' | 'openProfile' | 'clearCurrent' | 'restoreMapping' | 'updateTeamChrome' | 'refreshWorkbench' | 'uploadCurrent' | 'onFileOpened' | 'onFileClosed' | 'onFileActivated' | 'isActiveFileReadOnly' | 'releaseForLogout';",
+    "type FacadeKeys = 'init' | 'openHub' | 'openProfile' | 'clearCurrent' | 'restoreMapping' | 'updateTeamChrome' | 'refreshWorkbench' | 'uploadCurrent' | 'onFileOpened' | 'onFileClosed' | 'onFileActivated' | 'isActiveFileReadOnly' | 'isFileReadOnly' | 'releaseForLogout';",
     "type FacadeIsExact = AssertTrue<Equal<keyof CollaborationFacade, FacadeKeys>>;",
     "type ServiceIsExact = AssertTrue<Equal<keyof CollaborationService, FacadeKeys | 'dispose' | 'disposed'>>;",
     'type ServiceIsDisposable = AssertTrue<CollaborationService extends Disposable ? true : false>;',

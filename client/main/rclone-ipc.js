@@ -44,6 +44,7 @@ function workspaceProjectKey(workspaceRoot) {
 function mainOwnedPreparationRequest(kind, request, localPath) {
   const supplied = request && typeof request === 'object' ? request : {};
   const mapping = readMappingMarker(localPath);
+  if (mapping?.realtimeEpoch) throw new Error('Reconcile the shared workspace before normal synchronization');
   if (kind === 'workspace') {
     return {
       folderName: mapping && mapping.projectName ? String(mapping.projectName) : path.basename(localPath),
@@ -232,6 +233,7 @@ function registerRcloneIpc(options) {
       const remoteGrantId = String(payload.remoteGrantId || '');
       if (!remoteGrantId || remoteGrantId.length > 200) throw new Error('A remote synchronization grant is required');
       const local = localScope(event, payload, kind);
+      if (readMappingMarker(local.localPath)?.realtimeEpoch) throw new Error('Reconcile the shared workspace before normal synchronization');
       const targetWindow = BrowserWindow.fromWebContents(event.sender);
       return service[kind]({
         senderId: event.sender.id,

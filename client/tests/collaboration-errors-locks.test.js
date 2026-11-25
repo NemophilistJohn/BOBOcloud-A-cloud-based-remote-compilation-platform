@@ -45,6 +45,7 @@ function loadCollaboration(options) {
   const calls = [];
   const BOBO = {
     state,
+    views: options.views,
     sendToServer(action, data, requestOptions) {
       calls.push({ action, data: clone(data), options: clone(requestOptions) });
       if (options.sendToServer) return options.sendToServer(action, data, requestOptions);
@@ -96,6 +97,7 @@ function loadCollaboration(options) {
     getAuth: () => BOBO.auth,
     getAccountProfile: () => BOBO.accountProfile,
     getWorkspace: () => BOBO.workspace,
+    getViews: () => BOBO.views,
     getRclone: () => BOBO.rclone,
     getRunner: () => BOBO.runner,
     getWorkbench: () => BOBO.workbench,
@@ -263,6 +265,62 @@ test('activating another tab releases a clean background lock but retains a dirt
   assert.equal(loaded.internals.heldFileLocks['c:/workspace/src/clean.js'], undefined);
 });
 
+test('both visible split files retain renewable leases and independent read-only states across focus changes', async () => {
+  const leftPath = 'C:\\workspace\\left.js', rightPath = 'C:\\workspace\\right.js';
+  const leftModel = {}, rightModel = {};
+  const left = { readOnly: false, getModel: () => leftModel, updateOptions(options) { this.readOnly = options.readOnly; } };
+  const right = { readOnly: false, getModel: () => rightModel, updateOptions(options) { this.readOnly = options.readOnly; } };
+  let visible = [left, right], denyRight = false, loaded;
+  const views = {
+    getVisibleEditors: () => visible,
+    refreshReadOnly() {
+      if (!loaded) return;
+      left.updateOptions({ readOnly: loaded.BOBO.collaboration.isFileReadOnly(leftPath) });
+      right.updateOptions({ readOnly: loaded.BOBO.collaboration.isFileReadOnly(rightPath) });
+    }
+  };
+  loaded = loadCollaboration({
+    views,
+    state: {
+      activeTabPath: leftPath,
+      tabs: [{ path: leftPath, model: leftModel, dirty: false }, { path: rightPath, model: rightModel, dirty: false }],
+      collaboration: { current: { teamId: 'team-1', projectId: 'project-1', branch: 'main' } }
+    },
+    sendToServer(action, data) {
+      if (action === 'acquireTeamFileLock') {
+        if (denyRight && data.filePath === 'right.js') return Promise.resolve({ success: false, error: 'being edited by a teammate', errorCode: 'lock_held' });
+        return Promise.resolve({ success: true, data: { lease_id: 'lease-' + data.filePath, expires_at: new Date(Date.now() + 120000).toISOString() } });
+      }
+      return Promise.resolve({ success: true, data: {} });
+    }
+  });
+  await loaded.internals.renewOpenFileLocks();
+  assert.deepEqual(loaded.calls.filter(call => call.action === 'acquireTeamFileLock').map(call => call.data.filePath).sort(), ['left.js', 'right.js']);
+  assert.equal(left.readOnly, false);
+  assert.equal(right.readOnly, false);
+  loaded.state.activeTabPath = rightPath;
+  loaded.BOBO.collaboration.onFileActivated(rightPath);
+  await loaded.internals.renewOpenFileLocks();
+  assert.equal(loaded.calls.some(call => call.action === 'releaseTeamFileLock'), false, 'focus must never release an inactive visible file');
+  assert.equal(left.readOnly, false);
+  assert.equal(right.readOnly, false);
+  denyRight = true;
+  await loaded.internals.renewOpenFileLocks();
+  assert.equal(left.readOnly, false, 'the other pane stays editable when this pane loses its lease');
+  assert.equal(right.readOnly, true);
+  assert.equal(loaded.BOBO.collaboration.isActiveFileReadOnly(), true);
+  loaded.state.activeTabPath = leftPath;
+  loaded.BOBO.collaboration.onFileActivated(leftPath);
+  await loaded.internals.renewOpenFileLocks();
+  assert.equal(left.readOnly, false);
+  assert.equal(right.readOnly, true, 'an inactive blocked file must remain read-only');
+  visible = [right];
+  loaded.state.activeTabPath = rightPath;
+  loaded.BOBO.collaboration.onFileActivated(rightPath);
+  await loaded.internals.renewOpenFileLocks();
+  assert.deepEqual(loaded.calls.filter(call => call.action === 'releaseTeamFileLock').map(call => call.data.filePath), ['left.js']);
+});
+
 test('held locks release only for their recorded project and original context', async () => {
   const projectA = { teamId: 'team-a', projectId: 'project-a', branch: 'main' };
   const projectB = { teamId: 'team-b', projectId: 'project-b', branch: 'feature' };
@@ -361,7 +419,7 @@ test('failed lock renewal clears ownership and records a read-only retry state',
   assert.deepEqual(Object.keys(loaded.internals.blockedFileLocks), ['c:/workspace/src/leased.js']);
 });
 
-test('collaboration read-only applies to the main editor and editable split pane', () => {
+test('collaboration read-only applies to and unlocks both editable split panes', () => {
   function editor() {
     return { readOnly: false, updateOptions(options) { this.readOnly = options.readOnly === true; } };
   }
@@ -378,7 +436,7 @@ test('collaboration read-only applies to the main editor and editable split pane
 
   loaded.internals.setCollaborationReadOnly(false);
   assert.equal(main.readOnly, false);
-  assert.equal(splitLeft.readOnly, true);
+  assert.equal(splitLeft.readOnly, false);
   assert.equal(splitRight.readOnly, false);
 });
 

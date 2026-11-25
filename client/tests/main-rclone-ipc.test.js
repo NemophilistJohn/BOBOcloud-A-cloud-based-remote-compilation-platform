@@ -86,6 +86,23 @@ function workspaceScope(value) {
   };
 }
 
+test('persisted live collaboration markers block legacy preparation and previously issued transfer grants', async t => {
+  const value = fixture(t);
+  const root = value.workspaceIdentity.rootPath;
+  fs.writeFileSync(path.join(root, '.bobocloud-team.json'), JSON.stringify({
+    teamId: 'team-test', projectId: 'project-test', branch: 'main', localPath: root, realtimeEpoch: 'pending-shared-epoch'
+  }));
+  await assert.rejects(value.handlers.get('rclone:prepare-remote')(value.event, {
+    operationId: 'blocked-live', kind: 'workspace', localScope: workspaceScope(value), request: {}
+  }), /Reconcile the shared workspace/);
+  for (const kind of ['sync', 'pull']) await assert.rejects(value.handlers.get('rclone:' + kind)(value.event, {
+    operationId: 'blocked-' + kind, remoteGrantId: 'previous-grant', localScope: workspaceScope(value)
+  }), /Reconcile the shared workspace/);
+  assert.equal(value.calls.prepare.length, 0);
+  assert.equal(value.calls.sync.length, 0);
+  assert.equal(value.calls.pull.length, 0);
+});
+
 test('mapping emptiness ignores only the marker and stops on the first project entry', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-rclone-empty-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

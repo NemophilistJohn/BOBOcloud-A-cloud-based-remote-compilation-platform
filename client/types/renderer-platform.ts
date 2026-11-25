@@ -13,6 +13,7 @@ import type {
   ServerTransportService
 } from './server-runtime';
 import type { DisposableStore } from './lifecycle';
+import type { RealtimeHost } from './realtime';
 import type { NativeHost, RcloneNativeHost } from './native-host';
 import type { FileIconPluginView, FileIconService } from './file-icons';
 import type {
@@ -113,6 +114,7 @@ export interface RendererServiceMap {
   readonly 'host.aiChatPanel': Readonly<AiChatPanelHostPort>;
   readonly 'host.agentWorkbench': Readonly<AgentWorkbenchHostPort>;
   readonly 'host.collaboration': Readonly<CollaborationHostPort>;
+  readonly 'host.realtime': RealtimeHost;
   readonly 'host.social': Readonly<{
     download(messageId: string, name: string): Promise<Readonly<{ archived: boolean }> | null>;
   }>;

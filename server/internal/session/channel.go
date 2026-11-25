@@ -16,18 +16,27 @@ import (
 
 // RunChannel 封装了一个 WebSocket 连接通道，用于向客户端流式发送消息。
 type RunChannel struct {
-	RunID  string
-	conn   *websocket.Conn
-	closed bool
-	mu     sync.Mutex
-	cond   *sync.Cond
-	sendMu sync.Mutex
+	RunID     string
+	conn      *websocket.Conn
+	closed    bool
+	mu        sync.Mutex
+	cond      *sync.Cond
+	sendMu    sync.Mutex
+	broadcast func(any) bool
 }
 
 // NewRunChannel 创建新的 RunChannel（尚未关联 WebSocket 连接）
 func NewRunChannel(runID string) *RunChannel {
 	rc := &RunChannel{RunID: runID}
 	rc.cond = sync.NewCond(&rc.mu)
+	return rc
+}
+
+// NewBroadcastRunChannel uses the ordinary execution writer with a room-owned
+// output transport. Closing it ends execution output without closing members.
+func NewBroadcastRunChannel(runID string, send func(any) bool) *RunChannel {
+	rc := NewRunChannel(runID)
+	rc.broadcast = send
 	return rc
 }
 
@@ -56,7 +65,13 @@ func (rc *RunChannel) SendJSON(msg interface{}) bool {
 	rc.mu.Lock()
 	isClosed := rc.closed
 	conn := rc.conn
+	broadcast := rc.broadcast
 	rc.mu.Unlock()
+	if !isClosed && broadcast != nil {
+		ok := broadcast(msg)
+		rc.sendMu.Unlock()
+		return ok
+	}
 
 	if isClosed || conn == nil {
 		rc.sendMu.Unlock()

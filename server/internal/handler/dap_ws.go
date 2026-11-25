@@ -181,7 +181,7 @@ func (h *DAPHandler) resolveWorkspace(ctx context.Context, user *auth.User, requ
 		if h.Collaboration == nil || strings.TrimSpace(request.TeamID) == "" || strings.TrimSpace(request.ProjectID) == "" {
 			return "", "", "", "", "", fmt.Errorf("teamId and projectId are required")
 		}
-		root, err = h.Collaboration.ResolveWorktree(ctx, user.ID, request.TeamID, request.ProjectID, request.Branch)
+		root, err = h.Collaboration.ResolveAnalysisWorktree(ctx, user.ID, request.TeamID, request.ProjectID, request.Branch, "dap")
 		if err != nil {
 			return "", "", "", "", "", err
 		}

@@ -1,0 +1,36 @@
+.realtime-panel { height:100%; min-height:0; overflow:auto; color:var(--text-primary); background:var(--bg-surface); }
+.realtime-panel[hidden], #team-workbench[hidden] { display:none; }
+.realtime-panel.realtime-recovery-only:not([hidden]) { height:auto; padding:5px 12px; position:sticky; bottom:0; display:flex; flex-wrap:wrap; gap:6px; border-top:1px solid var(--border-default); }
+.realtime-panel > header { display:flex; align-items:center; gap:12px; padding:10px 14px; border-bottom:1px solid var(--border-default); }
+.realtime-panel > header strong { color:var(--brand); font-size:12px; }
+.realtime-panel > header span { color:var(--text-secondary); font-size:11px; }
+.realtime-panel-grid { display:grid; grid-template-columns:minmax(180px,1fr) minmax(240px,1.4fr); height:calc(100% - 38px); }
+.realtime-panel-grid > section { padding:10px 14px; overflow:auto; min-width:0; }
+.realtime-panel-grid > section + section { border-left:1px solid var(--border-default); }
+.realtime-panel h4 { margin:0 0 10px; font-size:11px; color:var(--text-secondary); font-weight:600; }
+.realtime-person { display:grid; grid-template-columns:24px minmax(0,1fr); align-items:center; gap:3px 8px; margin:6px 0; }
+.realtime-person > img, .realtime-person > span { grid-row:span 2; width:24px; height:24px; display:grid; place-items:center; border-radius:50%; object-fit:cover; }
+.realtime-person strong, .realtime-person small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; }
+.realtime-person small { color:var(--text-secondary); }
+.realtime-delete, .realtime-run { display:flex; flex-wrap:wrap; align-items:center; gap:7px; padding:9px; margin:8px 0; background:var(--bg-elevated); border:1px solid var(--brand-border); border-radius:var(--radius-md); font-size:11px; }
+.realtime-delete time { color:var(--text-secondary); }
+.realtime-panel button { padding:4px 7px; border:1px solid var(--border-default); border-radius:var(--radius-sm); background:var(--bg-hover); color:var(--text-primary); cursor:pointer; font:inherit; }
+.realtime-panel button:hover { border-color:var(--brand); }
+.realtime-tree-people { display:inline-flex; align-items:center; justify-content:flex-end; box-sizing:border-box; width:56px; flex:0 0 56px; padding-inline:4px; }
+.realtime-tree-people i { display:block; width:17px; height:17px; margin-inline-start:-4px; border:1px solid var(--bg-surface); border-radius:50%; overflow:hidden; }
+.realtime-tree-people i span, .realtime-tree-people img { display:grid; place-items:center; width:100%; height:100%; object-fit:cover; font:9px var(--font-ui); color:white; }
+.realtime-tree-people small { font-size:9px; margin-inline-start:3px; }
+.realtime-cursor { font:600 10px var(--font-ui); border-radius:3px; padding-inline:2px; background:var(--bg-elevated); }
+.realtime-cursor-label { display:flex; align-items:center; gap:4px; max-width:180px; padding:2px 5px; border:1px solid; border-radius:4px; background:var(--bg-elevated); font:600 10px var(--font-ui); pointer-events:none; box-shadow:var(--shadow-sm); }
+.realtime-cursor-label > img, .realtime-cursor-label > span:first-child { width:16px; height:16px; border-radius:50%; object-fit:cover; display:grid; place-items:center; }
+.realtime-cursor-label > span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.realtime-stdin { display:flex; gap:6px; margin:7px 0; }
+.realtime-stdin input { flex:1; min-width:0; border:1px solid var(--border-strong); border-radius:4px; color:var(--text-primary); background:var(--bg-deep); padding:5px; font:12px var(--font-mono); }
+.realtime-color-0 { color:var(--brand); border-color:var(--brand); }
+.realtime-color-1 { color:var(--green); border-color:var(--green); }
+.realtime-color-2 { color:var(--purple); border-color:var(--purple); }
+.realtime-color-3 { color:var(--orange); border-color:var(--orange); }
+.realtime-color-4 { color:var(--blue); border-color:var(--blue); }
+.realtime-color-5 { color:var(--red); border-color:var(--red); }
+.realtime-selection { background:color-mix(in srgb,currentColor 13%,transparent); border-bottom:1px solid; }
+@media(max-width:700px) { .realtime-panel-grid { grid-template-columns:1fr; height:auto; } }

@@ -97,6 +97,10 @@ export function createEditorCoreService(
     eventTarget.removeEventListener('unhandledrejection', unhandledRejectionListener);
   }));
 
+  function activeEditor(): EditorCoreEditorPort | null {
+    return dependencies.getActiveEditor?.() || state.editor;
+  }
+
   function element(id: string): HTMLElement | null {
     return document.getElementById(id);
   }
@@ -178,7 +182,7 @@ export function createEditorCoreService(
 
   function refreshDiagnosticsForModel(model: EditorCoreModelPort | null): void {
     if (disposed || !monacoRef || !model) return;
-    if (state.editor && state.editor.getModel() === model) {
+    if (activeEditor()?.getModel() === model) {
       const markers = monacoRef.editor.getModelMarkers({ resource: model.uri }) || [];
       let errors = 0;
       let warnings = 0;
@@ -200,12 +204,12 @@ export function createEditorCoreService(
 
   function showFindWidget(): void {
     if (disposed) return;
-    state.editor?.trigger('keyboard', 'actions.find');
+    activeEditor()?.trigger('keyboard', 'actions.find');
   }
 
   function showReplaceWidget(): void {
     if (disposed) return;
-    state.editor?.trigger('keyboard', 'editor.action.startFindReplaceAction');
+    activeEditor()?.trigger('keyboard', 'editor.action.startFindReplaceAction');
   }
 
   function diagnosticsDebounceMs(): number {
@@ -267,7 +271,7 @@ export function createEditorCoreService(
 
   function checkActiveOnSave(): void {
     if (disposed) return;
-    const model = state.editor?.getModel() || null;
+    const model = activeEditor()?.getModel() || null;
     if (model) performSyntaxCheck(model);
   }
 
@@ -344,7 +348,7 @@ export function createEditorCoreService(
       completionHistory?: { install?: (api: unknown, getEditor: () => unknown) => unknown };
     }).completionHistory;
     if (completionHistory && typeof completionHistory.install === 'function') {
-      const historyDisposable = completionHistory.install(monacoRef.editor, () => editor);
+      const historyDisposable = completionHistory.install(monacoRef.editor, () => activeEditor());
       if (historyDisposable && typeof (historyDisposable as { dispose?: () => void }).dispose === 'function') {
         addDisposable(lifecycle, historyDisposable as { dispose(): void });
       }
@@ -440,7 +444,7 @@ export function createEditorCoreService(
     const lineColumn = element('status-linecol');
     if (lineColumn) {
       lineColumn.classList.add('clickable');
-      const onClick = (): void => state.editor?.trigger('keyboard', 'editor.action.gotoLine');
+      const onClick = (): void => activeEditor()?.trigger('keyboard', 'editor.action.gotoLine');
       lineColumn.addEventListener('click', onClick);
       lifecycle.add(toDisposable(() => lineColumn.removeEventListener('click', onClick)));
     }
@@ -448,7 +452,7 @@ export function createEditorCoreService(
     const language = element('status-language');
     if (language) {
       language.classList.add('clickable');
-      const onClick = (): void => state.editor?.trigger('keyboard', 'editor.action.changeLanguageMode');
+      const onClick = (): void => activeEditor()?.trigger('keyboard', 'editor.action.changeLanguageMode');
       language.addEventListener('click', onClick);
       lifecycle.add(toDisposable(() => language.removeEventListener('click', onClick)));
     }
@@ -457,12 +461,12 @@ export function createEditorCoreService(
     if (indent) {
       indent.classList.add('clickable');
       const onClick = (): void => {
-        const currentModel = state.editor?.getModel();
+        const currentModel = activeEditor()?.getModel();
         if (!currentModel) return;
         const options = currentModel.getOptions();
         if (options.insertSpaces) currentModel.updateOptions?.({ insertSpaces: false });
         else currentModel.updateOptions?.({ insertSpaces: true, tabSize: 4 });
-        updateStatusBar(currentModel, state.editor?.getPosition());
+        updateStatusBar(currentModel, activeEditor()?.getPosition());
       };
       indent.addEventListener('click', onClick);
       lifecycle.add(toDisposable(() => indent.removeEventListener('click', onClick)));
@@ -477,7 +481,7 @@ export function createEditorCoreService(
           return;
         }
         showFindWidget();
-        state.editor?.trigger('keyboard', 'editor.action.marker.next');
+        activeEditor()?.trigger('keyboard', 'editor.action.marker.next');
       };
       errors.addEventListener('click', onClick);
       lifecycle.add(toDisposable(() => errors.removeEventListener('click', onClick)));

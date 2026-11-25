@@ -23,7 +23,7 @@ test('editor core keeps its eight-method facade and private disposable service c
     'type ServiceIsDisposable = AssertTrue<EditorCoreService extends Disposable ? true : false>;',
     "type ServiceMapIsExact = AssertTrue<Equal<RendererServiceMap['workbench.editorCore'], EditorCoreService>>;",
     "type PluginServiceAbsent = AssertFalse<'workbench.editorCore' extends keyof RendererPluginServiceMap ? true : false>;",
-    "type DependencyKeys = 'document' | 'eventTarget' | 'state' | 'getI18n' | 'getTheme' | 'getWorkspace' | 'getDap' | 'getProjectTasks' | 'getRunner' | 'getCommands' | 'getSettings' | 'getAiInline' | 'getTaskProblemMatcher' | 'getDiagnosticsSettings' | 'getWorkspaceSettings' | 'getRuleRegistry' | 'getLanguageDisplayName' | 'switchToPanel' | 'registerCompletionProviders' | 'setTimer' | 'clearTimer';",
+    "type DependencyKeys = 'document' | 'eventTarget' | 'state' | 'getActiveEditor' | 'getI18n' | 'getTheme' | 'getWorkspace' | 'getDap' | 'getProjectTasks' | 'getRunner' | 'getCommands' | 'getSettings' | 'getAiInline' | 'getTaskProblemMatcher' | 'getDiagnosticsSettings' | 'getWorkspaceSettings' | 'getRuleRegistry' | 'getLanguageDisplayName' | 'switchToPanel' | 'registerCompletionProviders' | 'setTimer' | 'clearTimer';",
     'type DependenciesAreExact = AssertTrue<Equal<keyof EditorCoreDependencies, DependencyKeys>>;',
     'type FactoryReturnIsTyped = AssertFalse<IsAny<ReturnType<typeof createEditorCoreService>>>;',
     "const serviceId: 'workbench.editorCore' = EDITOR_CORE_SERVICE_ID;",

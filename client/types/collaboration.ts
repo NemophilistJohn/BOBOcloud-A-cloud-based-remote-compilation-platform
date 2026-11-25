@@ -1,3 +1,4 @@
+import type { RealtimeFacade } from './realtime';
 import type { ConfirmFacade } from './confirm-dialog';
 import type { Disposable, Dispose } from './lifecycle';
 
@@ -250,6 +251,7 @@ export interface CollaborationCacheInfoDto {
 }
 
 export interface CollaborationTeamMappingDto {
+  readonly realtimeEpoch?: string;
   readonly version: number;
   readonly teamId: string;
   readonly teamName: string;
@@ -563,6 +565,14 @@ export interface CollaborationTextModelPort {
 
 export interface CollaborationEditorPort {
   updateOptions(options: Readonly<{ readOnly: boolean }>): void;
+  getModel?(): CollaborationTextModelPort | null;
+}
+
+export interface CollaborationViewsPort {
+  openSplit?(): void;
+  openDiff?(original?: string, modified?: string): void;
+  refreshReadOnly?(): void;
+  getVisibleEditors?(): readonly { getModel(): CollaborationTextModelPort | null }[];
 }
 
 export interface CollaborationSplitEditorPort extends CollaborationEditorPort {
@@ -733,6 +743,7 @@ export interface CollaborationLogger {
 }
 
 export interface CollaborationDependencies {
+  readonly getRealtime?: () => RealtimeFacade | undefined;
   readonly document: Document;
   readonly eventTarget: Pick<Window, 'addEventListener' | 'removeEventListener'>;
   readonly state: CollaborationRendererState;
@@ -744,7 +755,7 @@ export interface CollaborationDependencies {
   readonly getAccountProfile: () => CollaborationAccountProfilePort | null | undefined;
   readonly getWorkspace: () => CollaborationWorkspacePort | null | undefined;
   readonly getDocumentViews?: () => { hideAll(options: { restoreEditor: false }): void } | null | undefined;
-  readonly getViews?: () => { openSplit?(): void; openDiff?(original?: string, modified?: string): void } | null | undefined;
+  readonly getViews?: () => CollaborationViewsPort | null | undefined;
   readonly getMonaco?: () => CollaborationMonacoPort | null | undefined;
   readonly getRclone: () => CollaborationRclonePort | null | undefined;
   readonly getRunner: () => CollaborationRunnerPort | null | undefined;
@@ -781,6 +792,7 @@ export interface CollaborationFacade {
   onFileClosed(filePath: string): Promise<void>;
   onFileActivated(filePath: string): void;
   isActiveFileReadOnly(): boolean;
+  isFileReadOnly(filePath: string): boolean;
   releaseForLogout(): Promise<void>;
 }
 

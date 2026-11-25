@@ -25,14 +25,15 @@ type Member struct {
 }
 
 type Project struct {
-	ID            string    `json:"id"`
-	TeamID        string    `json:"team_id"`
-	Name          string    `json:"name"`
-	Description   string    `json:"description,omitempty"`
-	DefaultBranch string    `json:"default_branch"`
-	CreatedBy     string    `json:"created_by"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID                 string    `json:"id"`
+	TeamID             string    `json:"team_id"`
+	Name               string    `json:"name"`
+	Description        string    `json:"description,omitempty"`
+	DefaultBranch      string    `json:"default_branch"`
+	WorktreeGeneration string    `json:"worktree_generation,omitempty"`
+	CreatedBy          string    `json:"created_by"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 type FileLock struct {

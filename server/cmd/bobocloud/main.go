@@ -50,7 +50,7 @@ import (
 )
 
 // ServerVersion 服务端版本号（serverInfo/whoami 返回，客户端用于兼容性判断）
-const ServerVersion = "2.5.0"
+const ServerVersion = "2.6.0"
 
 type dependencyRecoverySteps struct {
 	cleanupManagedContainers func(context.Context) error
@@ -644,6 +644,11 @@ func main() {
 		slog.Info("Remote DAP initialized", "manifest", manifestPath, "catalog_version", catalog.Version(), "max_sessions", cfg.DAPMaxSessions, "max_per_user", cfg.DAPMaxSessionsPerUser)
 	}
 	collaborationManager := collab.NewManager(collaborationStore, userStore, filepath.Join(cfg.DataDir, "teams"))
+	if err := collaborationManager.RecoverRealtimeState(serverRuntime.Context()); err != nil {
+		slog.Error("Cannot safely recover realtime collaboration state", "error", err)
+		shutdownStartupAndExit(err)
+		return
+	}
 	if lspManager != nil || dapManager != nil {
 		collaborationManager.SetMemberRevokedHook(func(teamID, userID string) error {
 			var stopErrors []error
@@ -970,6 +975,7 @@ func main() {
 	startManaged("team-cache-cleanup", func(ctx context.Context) {
 		teamCacheCleanupLoop(ctx, teamCache, collaborationStore, time.Duration(cfg.TeamCacheCleanupIntervalMin)*time.Minute, resourceController)
 	})
+	startManaged("realtime-collaboration-maintenance", collaborationManager.RunRealtimeMaintenance)
 	startManaged("personal-cache-cleanup", func(ctx context.Context) {
 		periodicLoop(ctx, time.Duration(cfg.PersonalPersistCleanupIntervalMin)*time.Minute, func() {
 			runMaintenance(resourceController, "personal-cache-cleanup", func() {
@@ -1028,6 +1034,7 @@ func main() {
 	// WebSocket 服务（端口 3101）
 	wsMux := http.NewServeMux()
 	wsMux.HandleFunc("/ws", wsHandler.HandleWebSocket)
+	wsMux.HandleFunc("/collaboration", wsHandler.HandleCollaborationWebSocket)
 	wsMux.HandleFunc("/terminal", wsHandler.HandleTerminalWebSocket)
 	// Compatibility alias for pre-streaming internal clients. New clients use
 	// /terminal and the terminal.* protocol exclusively.
@@ -1043,6 +1050,7 @@ func main() {
 	addr := fmt.Sprintf(":%d", cfg.HTTPPort)
 	httpMux := http.NewServeMux()
 	httpMux.HandleFunc("/lsp", wsHandler.HandleLSPWebSocket)
+	httpMux.HandleFunc("/collaboration", wsHandler.HandleCollaborationWebSocket)
 	httpMux.HandleFunc("/dap", dapHandler.HandleWebSocket)
 	httpMux.HandleFunc("/notebook", wsHandler.HandleNotebookWebSocket)
 	httpMux.Handle("/", httpHandler)

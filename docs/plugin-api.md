@@ -1,6 +1,6 @@
 # BOBOCloud Plugin API 1.12.0
 
-Status: public package and isolated extension-host contract. BOBOCloud desktop `2.8.1` implements Plugin API `1.12.0`. API `1.6.0` introduced truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism; later API 1.x releases extend that contract.
+Status: public package and isolated extension-host contract. BOBOCloud desktop `2.9.0` implements Plugin API `1.12.0`. API `1.6.0` introduced truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism; later API 1.x releases extend that contract.
 
 The reference guide, package checklist, and complete example are in [Plugin Development Guide](./plugin-development.md).
 

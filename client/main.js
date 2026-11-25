@@ -22,6 +22,7 @@ const { createSecureTransportGuard } = require('./main/secure-transport');
 const { createNavigationSecurity } = require('./main/navigation-security');
 const { createPluginController } = require('./main/plugins');
 const { createNotebookKernels } = require('./main/notebook-kernels');
+const { createRealtimeController } = require('./main/realtime');
 const { createMarketplaceController } = require('./main/marketplace');
 const { createPackageCenterController } = require('./main/package-center');
 const { createLifecycleCoordinator } = require('./main/lifecycle-coordinator');
@@ -43,10 +44,11 @@ const lifecycle = createLifecycleCoordinator({
 });
 const navigationSecurity = createNavigationSecurity({ shell, trustedRendererPath: path.join(__dirname, 'index.html') });
 const lsp = createLspController({ ipcMain, getWindow, settings, sendToRenderer: rendererEvents.send });
-let dap = null, terminal = null, workspaceSettings = null, packageCenter = null, agentBroker = null, notebookKernels = null;
-const disposeRemoteEditorServices = async (reason) => {
+let dap = null, terminal = null, workspaceSettings = null, packageCenter = null, agentBroker = null, notebookKernels = null, realtime = null;
+const disposeRemoteEditorServices = async (reason, preserveRealtime = false) => {
   lsp.dispose();
   notebookKernels?.closeAll();
+  if (!preserveRealtime) realtime?.close(reason);
   await Promise.allSettled([
     dap ? dap.dispose(reason) : Promise.resolve(),
     terminal ? terminal.dispose(reason) : Promise.resolve()
@@ -90,6 +92,9 @@ agentBroker = createAgentPlatformBroker({ app, settings, getWorkspaceIdentity: w
     rendererEvents.send('plugins:agent-model-event', payload);
   } });
 notebookKernels = createNotebookKernels({ settings, getWorkspaceIdentity: workspace.getIdentity });
+realtime = createRealtimeController({ ipcMain, settings, dialog, getWindow, getWorkspaceIdentity: workspace.getIdentity,
+  runMutation: workspace.runMutation, notifyWorkspaceFiles: workspace.notifyExternalFileChanges, prepareTransition: () => disposeRemoteEditorServices('collaboration-mode', true),
+  sendToRenderer: rendererEvents.send, userDataPath: app.getPath('userData') });
 const plugins = createPluginController({ app, ipcMain, dialog, shell, getWindow, t: languagePacks.t,
   sendToRenderer: rendererEvents.send,
   getWorkspaceIdentity: workspace.getIdentity,
@@ -110,7 +115,7 @@ const auth = createAuthController({ ipcMain, settings, disposeLsp: disposeRemote
     secureTransport.update(value);
     await rcloneService.reconfigure(value, 'server-settings-changed');
   },
-  onCredentialChanged: () => { inboxDownload?.cancel(); notebookKernels.closeAll(); return rcloneService.cancelAll('credential-changed'); }
+  onCredentialChanged: () => { inboxDownload?.cancel(); notebookKernels.closeAll(); realtime.close(); return rcloneService.cancelAll('credential-changed'); }
 });
 menu = createMenuController({ Menu, dialog, getWindow, sendToRenderer: rendererEvents.send, languagePacks, getAuthState: auth.getState,
   pickAndOpenWorkspace: workspace.pickAndOpenWorkspace });
@@ -192,5 +197,4 @@ app.on('will-quit', () => {
   languagePacks.dispose();
   workspace.clearWatchers();
 });
-
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

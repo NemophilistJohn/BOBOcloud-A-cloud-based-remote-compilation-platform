@@ -332,10 +332,10 @@
     S.workspaceTransitionToken = locked ? leaveToken || null : null;
     var collaborationReadOnly = BOBO.collaboration && BOBO.collaboration.isActiveFileReadOnly && BOBO.collaboration.isActiveFileReadOnly();
     if (S.editor && typeof S.editor.updateOptions === 'function') S.editor.updateOptions({ readOnly: locked === true || collaborationReadOnly === true });
-    if (S.splitEditor && typeof S.splitEditor.updateOptions === 'function') S.splitEditor.updateOptions({ readOnly: true });
-    if (S.splitEditor && S.splitEditor.rightEditor && typeof S.splitEditor.rightEditor.updateOptions === 'function') {
-      S.splitEditor.rightEditor.updateOptions({ readOnly: locked === true || collaborationReadOnly === true });
-    }
+    if (BOBO.views && BOBO.views.refreshReadOnly) BOBO.views.refreshReadOnly();
+    else [S.splitEditor, S.splitEditor && S.splitEditor.rightEditor].forEach(function(editor) {
+      if (editor && typeof editor.updateOptions === 'function') editor.updateOptions({ readOnly: locked === true || collaborationReadOnly === true });
+    });
   }
 
   function workspaceEditorStatesMatch(states) {
@@ -356,6 +356,9 @@
   }
 
   async function canLeaveWorkspace(options) {
+    if (BOBO.realtime && BOBO.realtime.isActive()) {
+      try { await BOBO.realtime.save(); } catch (_) { /* Existing dirty-choice dialog protects unsent changes. */ }
+    }
     options = options || {};
     if (S.workspaceTransitionLocked) return false;
     var dirtyTabs = S.tabs.filter(function(tab) { return tab.dirty && (tab.model || tab.documentView); });
@@ -451,6 +454,7 @@
       await BOBO.terminal.beforeWorkspaceLeave();
     }
     // Close all tabs from the previous project before switching.
+    if (S.currentViewMode === 'split' && BOBO.views && BOBO.views.closeSplit) BOBO.views.closeSplit();
     // Dispose Monaco models (skip image tabs which have no model).
     for (var i = 0; i < S.tabs.length; i++) {
       var tab = S.tabs[i];
@@ -534,6 +538,7 @@
     closeContextMenu({ restoreFocus: false });
     cancelInlineEditor();
     if (BOBO.runConfig && BOBO.runConfig.close) BOBO.runConfig.close();
+    if (S.currentViewMode === 'split' && BOBO.views && BOBO.views.closeSplit) BOBO.views.closeSplit();
     // Dispose all Monaco models (skip image tabs which have no model)
     for (var i = 0; i < S.tabs.length; i++) {
       var t = S.tabs[i];
@@ -564,7 +569,7 @@
 
     // Clear editors
     if (S.editor) S.editor.setModel(null);
-    if (S.splitEditor) S.splitEditor.setModel(null);
+    if (S.splitEditor) { S.splitEditor.setModel(null); S.splitEditor.rightEditor.setModel(null); }
     if (S.currentDiagnostics) {
       S.currentDiagnostics = { errors: 0, warnings: 0, infos: 0 };
       if (BOBO.editorCore && BOBO.editorCore.updateDiagnosticsStatus) BOBO.editorCore.updateDiagnosticsStatus();
@@ -1245,6 +1250,12 @@
       editor.control.classList.add('submitting');
       try {
         var result;
+        if (BOBO.realtime && BOBO.realtime.isActive()) {
+          result = await BOBO.realtime.fileOperation(type === 'file' ? 'create' : 'mkdir', parentDir.replace(/[\\\/]$/, '') + '/' + name);
+          cleanup();
+          if (type === 'file') await openFile(result.path, name);
+          return;
+        }
         if (type === 'file') {
           result = await window.api.createFile({ parentDir: parentDir, name: name });
           cleanup();
@@ -1328,7 +1339,9 @@
       editor.input.disabled = true;
       editor.control.classList.add('submitting');
       try {
-        var result = await window.api.renameEntry({ oldPath: oldPath, newName: newName });
+        var result = BOBO.realtime && BOBO.realtime.isActive()
+          ? await BOBO.realtime.fileOperation('rename', oldPath, oldPath.replace(/[\\\/][^\\\/]+$/, '/') + newName)
+          : await window.api.renameEntry({ oldPath: oldPath, newName: newName });
         if (result && result.path) {
           if (BOBO.dap && BOBO.dap.renameBreakpoints) BOBO.dap.renameBreakpoints(oldPath, result.path);
           for (var i = 0; i < S.tabs.length; i++) {
@@ -1386,6 +1399,10 @@
     if (!ok) return;
 
     try {
+      if (BOBO.realtime && BOBO.realtime.isActive()) {
+        await BOBO.realtime.fileOperation('delete', entryPath);
+        return;
+      }
       var deleted = await window.api.deleteEntry({ entryPath: entryPath });
       if (!deleted) throw new Error('The entry no longer exists');
       if (BOBO.dap && BOBO.dap.removeBreakpoints) BOBO.dap.removeBreakpoints(entryPath);
@@ -1408,6 +1425,9 @@
     var documentRegistration = BOBO.documentViews && BOBO.documentViews.find
       ? BOBO.documentViews.find(name)
       : null;
+    // Live collaboration owns text models; document plugins have their own
+    // write/execution pipeline and must not bypass the shared document.
+    if (BOBO.realtime && BOBO.realtime.isActive()) documentRegistration = null;
     if (BOBO.isImageFile(name) && !documentRegistration) {
       if (BOBO.views && BOBO.views.showImagePreview) {
         BOBO.views.showImagePreview(filePath, name);
@@ -1464,6 +1484,7 @@
       }
     }
 
+    if (BOBO.realtime && BOBO.realtime.isActive()) await BOBO.realtime.prepareFile(filePath);
     var content = await window.api.readFile(filePath);
     var detectedLanguage = BOBO.detectLanguage(name, content);
     var language = BOBO.workspaceSettings && BOBO.workspaceSettings.languageForFile
@@ -1488,6 +1509,52 @@
 	if (BOBO.collaboration && BOBO.collaboration.onFileOpened) BOBO.collaboration.onFileOpened(filePath);
   }
 
+  function renameSharedFile(oldPath, newPath) {
+    var normalizedOld = oldPath.replace(/\\/g, '/');
+    var tab = S.tabs.find(function(item) { return item.path.replace(/\\/g, '/') === normalizedOld; });
+    if (!tab) return;
+    var previous = tab.model;
+    var active = S.activeTabPath === tab.path;
+    tab.path = newPath;
+    tab.name = newPath.replace(/\\/g, '/').split('/').pop();
+    if (previous) {
+      var next = monaco.editor.getModel(monaco.Uri.file(newPath)) || monaco.editor.createModel(previous.getValue(), tab.language, monaco.Uri.file(newPath));
+      tab.model = next;
+      var editors = BOBO.views && BOBO.views.getVisibleEditors ? BOBO.views.getVisibleEditors() : [S.editor];
+      editors.concat([S.editor]).forEach(function(editor) { if (editor && editor.getModel() === previous) editor.setModel(next); });
+      previous.dispose();
+    }
+    var orderIndex = workbenchTabOrder.indexOf(oldPath);
+    if (orderIndex >= 0) workbenchTabOrder[orderIndex] = newPath;
+    if (active) S.activeTabPath = newPath;
+    updateTabbar(); updateTitlebar();
+    global.dispatchEvent(new Event('bobo:visible-editors-changed'));
+  }
+
+  async function prepareSharedViews(readTextFile) {
+    var drafts = [];
+    for (var tab of S.tabs.slice()) {
+      if (!tab.documentView) continue;
+      if (tab.dirty) {
+        if (!await tab.documentView.sandbox.save()) throw new Error(t('Save document preview edits before joining live collaboration'));
+        drafts.push({ path: tab.path, text: await readTextFile(tab.path) });
+      }
+      await closeTab(tab.path, { force: true });
+    }
+    return drafts;
+  }
+
+  async function applySharedSnapshot(files) {
+    for (var tab of S.tabs.slice()) {
+      var relative = tab.path.replace(/\\/g, '/').slice(S.workspaceRoot.replace(/\\/g, '/').replace(/\/$/, '').length + 1);
+      var file = files.find(function(item) { return item.path === relative && !item.directory; });
+      if (!file) { await closeTab(tab.path, { force: true }); continue; }
+      if (tab.model && typeof file.content === 'string' && tab.model.getValue() !== file.content) tab.model.setValue(file.content);
+      tab.dirty = false;
+    }
+    updateTabbar(); updateTitlebar();
+  }
+
   function activateTab(filePath) {
     if (activateWorkbenchTab(filePath)) {
       revealActiveTab();
@@ -1503,9 +1570,11 @@
     if (BOBO.runConfig && BOBO.runConfig.refreshForActiveFile) BOBO.runConfig.refreshForActiveFile();
 
     if (tab.language === 'document-view') {
+      if (S.currentViewMode === 'split' && BOBO.views) BOBO.views.closeSplit();
       if (S.editor) S.editor.setModel(null);
       if (BOBO.documentViews) BOBO.documentViews.show(tab);
     } else if (tab.language === 'image') {
+      if (S.currentViewMode === 'split' && BOBO.views) BOBO.views.closeSplit();
       if (BOBO.documentViews) BOBO.documentViews.hideAll();
       if (BOBO.views && BOBO.views.showImagePreview) {
         BOBO.views.showImagePreview(tab.path, tab.name);
@@ -1514,11 +1583,8 @@
       if (BOBO.documentViews) BOBO.documentViews.hideAll();
       if (BOBO.views) BOBO.views.closeImagePreview();
 
-      if (S.currentViewMode === 'split' && S.splitEditor) {
-        S.splitEditor.setModel(tab.model);
-        var rightModel = S.splitEditor.rightEditor.getModel();
-        rightModel.setValue(tab.model.getValue());
-        monaco.editor.setModelLanguage(rightModel, tab.model.getLanguageId());
+      if (S.currentViewMode === 'split' && BOBO.views && BOBO.views.activateTab) {
+        BOBO.views.activateTab(filePath);
       } else if (S.currentViewMode === 'diff') {
         if (BOBO.views && BOBO.views.closeDiff) BOBO.views.closeDiff();
         S.editor.setModel(tab.model);
@@ -1531,7 +1597,8 @@
     refreshTabBarActive();
     updateTitlebar();
     updateEmptyState();
-    BOBO.editorCore.updateStatusBar(tab.model, tab.model ? S.editor.getPosition() : null);
+    var activeEditor = BOBO.views && BOBO.views.getActiveEditor ? BOBO.views.getActiveEditor() : S.editor;
+    BOBO.editorCore.updateStatusBar(tab.model, tab.model && activeEditor ? activeEditor.getPosition() : null);
     if (BOBO.environmentActivity) BOBO.environmentActivity.contextChanged('language');
     if (BOBO.collaboration && BOBO.collaboration.onFileActivated) BOBO.collaboration.onFileActivated(filePath);
     revealActiveTab();
@@ -1582,6 +1649,8 @@
       if (!ok) return false;
     }
 
+    // Detach every visible reference before disposing the one file-owned model.
+    if (BOBO.views && BOBO.views.onTabClosed) BOBO.views.onTabClosed(filePath);
     // Dispose Monaco model to prevent memory leak (skip for images)
     if (tab.model && tab.language !== 'image') {
       try { tab.model.dispose(); } catch(e) { /* ignore */ }
@@ -1616,6 +1685,7 @@
 
   async function saveActiveTab() {
     if (S.workspaceTransitionLocked) return false;
+    if (BOBO.realtime && BOBO.realtime.isActive()) return BOBO.realtime.save(S.activeTabPath);
     var tab = S.tabs.find(function(t) { return t.path === S.activeTabPath; });
     if (tab && tab.documentView) return await tab.documentView.sandbox.save();
     if (!tab || !tab.model) return false;
@@ -1652,6 +1722,7 @@
   }
 
   async function saveAllTabs(options) {
+    if (BOBO.realtime && BOBO.realtime.isActive()) return BOBO.realtime.save();
     options = options || {};
     if (S.workspaceTransitionLocked && !options.allowDuringTransition) return false;
     var dirtyTabs = S.tabs.filter(function(tab) { return tab.dirty && (tab.model || tab.documentView); });
@@ -1839,6 +1910,20 @@
         e.stopPropagation();
       });
       barTab.appendChild(close);
+    }
+
+    if (!providerId && tab.model && BOBO.views && BOBO.views.openSplit) {
+      var split = document.createElement('button');
+      split.className = 'tab-split';
+      split.type = 'button';
+      split.title = t('Split Editor Right');
+      split.setAttribute('aria-label', t('Split Editor Right'));
+      split.innerHTML = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1" stroke="currentColor"/><path d="M8 3v10" stroke="currentColor"/></svg>';
+      split.onclick = function(event) {
+        event.stopPropagation();
+        BOBO.views.openSplit(key);
+      };
+      barTab.appendChild(split);
     }
 
     barTab.onclick = (function(tabKey) { return function() { activateTab(tabKey); }; })(key);
@@ -2091,6 +2176,9 @@
 
     openFile: openFile,
     activateTab: activateTab,
+    renameSharedFile: renameSharedFile,
+    prepareSharedViews: prepareSharedViews,
+    applySharedSnapshot: applySharedSnapshot,
     closeTab: closeTab,
     saveActiveTab: saveActiveTab,
     documentViewDirty: function(path, dirty) {

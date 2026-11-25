@@ -1,3 +1,4 @@
+import type { RealtimeFacade } from '../../types/realtime';
 import {
   COLLABORATION_SERVICE_ID,
   createCollaborationService
@@ -43,7 +44,7 @@ interface LegacyCollaborationBobo {
   accountProfile?: CollaborationAccountProfilePort;
   workspace?: CollaborationWorkspacePort;
   documentViews?: { hideAll(options: { restoreEditor: false }): void };
-  views?: { openSplit?(): void; openDiff?(original?: string, modified?: string): void };
+  views?: import('../../types/collaboration').CollaborationViewsPort;
   rclone?: RcloneClient;
   runner?: CollaborationRunnerPort;
   workbench?: WorkbenchLayoutFacade;
@@ -51,6 +52,7 @@ interface LegacyCollaborationBobo {
   switchToPanel?: CollaborationPanelPort;
   sendToServer?: (...args: any[]) => Promise<any>;
   collaboration?: CollaborationFacade;
+  realtime?: RealtimeFacade;
 }
 
 type LegacyCollaborationWindow = Window & {
@@ -96,6 +98,7 @@ const collaboration: CollaborationService = createCollaborationService({
   getWorkspace: () => BOBO.workspace,
   getDocumentViews: () => BOBO.documentViews,
   getViews: () => BOBO.views,
+  getRealtime: () => BOBO.realtime,
   getMonaco: () => legacyWindow.monaco,
   getRclone: () => BOBO.rclone as unknown as CollaborationRclonePort | undefined,
   getRunner: () => BOBO.runner,
@@ -136,6 +139,7 @@ BOBO.collaboration = {
   onFileClosed: collaboration.onFileClosed,
   onFileActivated: collaboration.onFileActivated,
   isActiveFileReadOnly: collaboration.isActiveFileReadOnly,
+  isFileReadOnly: collaboration.isFileReadOnly,
   releaseForLogout: collaboration.releaseForLogout
 };
 
