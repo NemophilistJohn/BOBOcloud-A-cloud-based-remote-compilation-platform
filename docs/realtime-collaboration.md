@@ -33,6 +33,7 @@
 ## 验证与维护
 
 - `client/tests/realtime-document.test.js`：Unicode、并发收敛、个人撤销、锚点。
+- `client/tests/realtime-service.test.js`：故意阻塞已确认编辑的本地落盘，验证这期间输入的后续修改无需额外按键或保存即可继续发送，防止慢磁盘导致队列停滞。
 - `client/tests/realtime-main.test.js`：真实文件系统、身份边界、路径限制、草稿隔离、替换失败回退。
 - `client/tests/realtime-ui.spec.js`：两个真实 Electron 客户端编辑/光标/撤销、双区改名、离线合并、删除交互、共享输出。
 - `client/tests/split-editors-ui.spec.js`：双文件编辑、焦点、保存/运行目标和 model 生命周期。

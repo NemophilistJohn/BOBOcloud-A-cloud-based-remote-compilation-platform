@@ -138,13 +138,18 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
     item.sending = true;
     const turn = generation;
     try {
-      while (item.pending.length && online && turn === generation) {
-        const operation = item.pending[0]!;
-        await request({ type: 'edit', fileId: item.file.id, ...operation });
-        if (turn !== generation) return;
-        item.pending.shift(); saved(item); scheduleDrafts();
-      }
-      if (online && turn === generation && !item.pending.length) await host.materialize([{ ...item.file, content: item.doc.text() }], { epoch: shared.epoch, workspaceIdentity: local.workspaceIdentity });
+      do {
+        while (item.pending.length && online && turn === generation) {
+          const operation = item.pending[0]!;
+          await request({ type: 'edit', fileId: item.file.id, ...operation });
+          if (turn !== generation) return;
+          item.pending.shift(); saved(item); scheduleDrafts();
+        }
+        if (!online || turn !== generation) return;
+        await host.materialize([{ ...item.file, content: item.doc.text() }], { epoch: shared.epoch, workspaceIdentity: local.workspaceIdentity });
+        // Typing can enqueue more edits during the filesystem await. Keep the
+        // same sender until those edits are acknowledged and materialized too.
+      } while (item.pending.length && online && turn === generation);
     } catch (error) { if (turn === generation) d.notify(errorMessage(error), true); }
     finally { item.sending = false; }
   }
