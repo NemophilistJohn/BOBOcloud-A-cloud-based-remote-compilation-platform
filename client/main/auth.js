@@ -22,9 +22,16 @@ function createAuthController(options) {
   const disposeLsp = options.disposeLsp || (() => {});
   let currentState = { loggedIn: false, role: '' };
   let settingsRollbackSnapshot = null;
+  let settingsTail = Promise.resolve();
 
-  async function applyServerSettings(nextSettings, reason, captureRollback) {
+  function applyServerSettings(nextSettings, reason, captureRollback, expectedKey) {
+    const operation = settingsTail.then(() => applyServerSettingsNow(nextSettings, reason, captureRollback, expectedKey));
+    settingsTail = operation.catch(() => {});
+    return operation;
+  }
+  async function applyServerSettingsNow(nextSettings, reason, captureRollback, expectedKey) {
     const previous = await settings.readServerSettings();
+    if (expectedKey && authStorageKey(previous) !== expectedKey) throw new Error('enrollment.error.serverChanged');
     const requested = Object.assign({}, nextSettings || {});
     if (!requested.pass && requested.passConfigured === true) requested.pass = previous.pass;
     delete requested.passConfigured;

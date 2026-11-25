@@ -50,7 +50,7 @@ import (
 )
 
 // ServerVersion 服务端版本号（serverInfo/whoami 返回，客户端用于兼容性判断）
-const ServerVersion = "2.6.2"
+const ServerVersion = "3.0.0"
 
 type dependencyRecoverySteps struct {
 	cleanupManagedContainers func(context.Context) error
@@ -243,6 +243,15 @@ func main() {
 			cfg.ServerRoot = abs
 		}
 	}
+	if cfg.AuthMode == "single" {
+		fmt.Fprintln(os.Stderr, "BOBOCLOUD 3 requires multi-user authentication; migrate auth_mode=single before upgrading")
+		os.Exit(1)
+	}
+	cfg.AuthMode = "multi"
+	if err := prepareEnrollmentTLS(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "TLS bootstrap failed:", err)
+		os.Exit(1)
+	}
 	if cfg.TLSEnabled {
 		if !filepath.IsAbs(cfg.TLSCertFile) {
 			cfg.TLSCertFile = filepath.Join(execDir, cfg.TLSCertFile)
@@ -273,7 +282,7 @@ func main() {
 		}
 		os.Exit(1)
 	}
-	slog.Info("BOBOCLOUD Server v2 starting",
+	slog.Info("BOBOCLOUD Server v3 starting",
 		"http_port", cfg.HTTPPort,
 		"ws_port", cfg.WSPort,
 		"dap_child_ws_port", cfg.DAPChildWSPort,
@@ -743,6 +752,12 @@ func main() {
 	httpHandler.DAP = dapManager
 	httpHandler.DependencyViews = dependencyViews
 	httpHandler.Lifecycle = resourceLifecycle
+	syncServer, enrollmentErr := configureEnrollment(cfg, httpHandler, userStore, authSessions, serverRuntime, execDir)
+	if enrollmentErr != nil {
+		slog.Error("Failed to initialize enrollment and restricted synchronization", "error", enrollmentErr)
+		shutdownStartupAndExit(enrollmentErr)
+		return
+	}
 	httpHandler.PersonalCache = personalCache
 	httpHandler.RuntimeMetadata = runtimeMetadata
 	httpHandler.Resources = resourceController
@@ -1066,7 +1081,20 @@ func main() {
 		}
 	}
 
-	listenerErrors := make(chan error, 3)
+	listenerErrors := make(chan error, 4)
+	syncListener, syncErr := net.Listen("tcp", fmt.Sprintf(":%d", cfg.SyncSFTPPort))
+	if syncErr != nil {
+		shutdownStartupAndExit(syncErr)
+		return
+	}
+	startManaged("listener-sync-sftp", func(context.Context) {
+		if err := syncServer.Serve(syncListener); err != nil {
+			select {
+			case listenerErrors <- err:
+			default:
+			}
+		}
+	})
 	startListener := func(name string, listener *http.Server) {
 		startManaged("listener-"+name, func(context.Context) {
 			if err := serveBOBOHTTP(listener, cfg); err != nil && !errors.Is(err, http.ErrServerClosed) {

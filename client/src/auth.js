@@ -66,6 +66,8 @@
 
   // ──── 登录/注册弹窗 ────
   var currentTab = 'login';
+  // Only an opaque main-owned preview id reaches the renderer.
+  var pendingEnrollment = null;
 
   function switchTab(tab) {
     currentTab = tab;
@@ -73,7 +75,7 @@
     $('auth-tab-register').classList.toggle('active', tab === 'register');
     $('auth-form-login').style.display = tab === 'login' ? '' : 'none';
     $('auth-form-register').style.display = tab === 'register' ? '' : 'none';
-    $('auth-submit').textContent = tab === 'login' ? 'Login' : 'Register & login';
+    $('auth-submit').textContent = t(tab === 'login' ? 'enrollment.auth.login' : 'enrollment.auth.register');
     clearMessages();
     var first = tab === 'login' ? $('auth-login-identity') : $('auth-reg-username');
     setTimeout(function() { first.focus(); }, 60);
@@ -90,7 +92,6 @@
     $('auth-reg-email').value = '';
     $('auth-reg-password').value = '';
     $('auth-reg-password2').value = '';
-    $('auth-reg-invite').value = '';
   }
   function showError(msg) {
     hide($('auth-notice'));
@@ -124,30 +125,60 @@
   function closeAuthModal() {
     S.auth.modalOpen = false;
     $('auth-overlay').classList.remove('open');
+    pendingEnrollment = null;
+  }
+
+  function openEnrollment(kind, id) {
+    if (!id || ['root', 'register', 'device'].indexOf(kind) < 0) throw new Error('Invalid enrollment');
+    bindUI();
+    if (S.auth.modalOpen) closeAuthModal();
+    closeAdmin();
+    closeMenu();
+    closeDeviceModal();
+    dropCredential();
+    S.auth.mode = 'unknown';
+    S.auth.serverVersion = '';
+    if (BOBO.serverCapabilities && typeof BOBO.serverCapabilities.clear === 'function') {
+      BOBO.serverCapabilities.clear('enrollment-server-change');
+    } else {
+      S.serverCapabilities = null;
+    }
+    renderChip();
+    pendingEnrollment = { kind: kind, id: id };
+    S.auth.modalOpen = true;
+    $('auth-overlay').classList.add('open');
+    $('auth-server-hint').textContent = S.serverSettings.ip ? t('enrollment.auth.server') + ': ' + S.serverSettings.ip : '';
+    clearRegisterForm();
+    switchTab(kind === 'register' ? 'register' : 'login');
+    showNotice(t(kind === 'register' ? 'enrollment.auth.registerNotice' : kind === 'root' ? 'enrollment.auth.rootNotice' : 'enrollment.auth.deviceNotice'));
   }
 
   function setSubmitting(submitting) {
     var btn = $('auth-submit');
     btn.disabled = submitting;
     if (submitting) {
-      btn.innerHTML = '<span class="auth-spinner"></span>Please wait…';
+      btn.innerHTML = '<span class="auth-spinner"></span>' + esc(t('enrollment.auth.pleaseWait'));
     } else {
-      btn.textContent = currentTab === 'login' ? 'Login' : 'Register & login';
+      btn.textContent = t(currentTab === 'login' ? 'enrollment.auth.login' : 'enrollment.auth.register');
     }
   }
 
   async function submitLogin() {
     var identity = $('auth-login-identity').value.trim();
     var password = $('auth-login-password').value;
-    if (!identity || !password) { showError('Please enter username/email and password'); return; }
+    if (!identity || !password) { showError(t('enrollment.auth.loginRequired')); return; }
     setSubmitting(true);
     try {
-      var res = await BOBO.sendToServer('login', { identity: identity, password: password }, { quiet: true });
+      var res = pendingEnrollment
+        ? await BOBO.enrollmentHost.enrollmentAuthenticate({ id: pendingEnrollment.id, identity: identity, password: password })
+        : await BOBO.enrollmentHost.enrollmentLogin({ identity: identity, password: password });
       if (!res || !res.success) {
-        showError((res && res.error) || 'Login failed, please check network');
+        showError((res && res.error) || t('enrollment.auth.loginFailed'));
         return;
       }
       await onAuthSuccess(res);
+    } catch (error) {
+      showError(t('enrollment.auth.loginFailed') + ' ' + t(error && error.message || ''));
     } finally {
       setSubmitting(false);
     }
@@ -158,19 +189,19 @@
     var email = $('auth-reg-email').value.trim();
     var password = $('auth-reg-password').value;
     var password2 = $('auth-reg-password2').value;
-    var invite = $('auth-reg-invite').value.trim().toUpperCase();
-    if (!username || !email || !password || !invite) { showError('Username, email, password and invite code are all required'); return; }
-    if (password !== password2) { showError('Passwords do not match'); return; }
+    if (!pendingEnrollment || pendingEnrollment.kind !== 'register') { showError(t('enrollment.auth.linkRequired')); return; }
+    if (!username || !email || !password) { showError(t('enrollment.auth.registerRequired')); return; }
+    if (password !== password2) { showError(t('enrollment.auth.passwordMismatch')); return; }
     setSubmitting(true);
     try {
-      var res = await BOBO.sendToServer('register', {
-        username: username, email: email, password: password, inviteCode: invite
-      }, { quiet: true });
+      var res = await BOBO.enrollmentHost.enrollmentAuthenticate({ id: pendingEnrollment.id, username: username, email: email, password: password });
       if (!res || !res.success) {
-        showError((res && res.error) || 'Registration failed, please check network');
+        showError((res && res.error) || t('enrollment.auth.registerFailed'));
         return;
       }
       await onAuthSuccess(res);
+    } catch (error) {
+      showError(t('enrollment.auth.registerFailed') + ' ' + t(error && error.message || ''));
     } finally {
       setSubmitting(false);
     }
@@ -181,17 +212,27 @@
     if (BOBO.runner && typeof BOBO.runner.invalidateRunIdentity === 'function') {
       await BOBO.runner.invalidateRunIdentity();
     }
+    S.serverSettings = await BOBO.enrollmentHost.readServerSettings();
+    S.auth.mode = 'multi';
     var expiresAt = res.expiresAt ? new Date(res.expiresAt).getTime() : (Date.now() + 30 * 24 * 3600 * 1000);
     applyCredential({ token: res.token, expiresAt: expiresAt, user: res.user });
     await saveCredential(res.token, expiresAt, res.user);
     closeAuthModal();
     renderChip();
+    // Resolve the new server's capabilities and refresh the main-owned sync
+    // credential before advertising the account as ready to other services.
+    var serverState = await detectModeAndAuth();
+    if (!serverState || !serverState.success) {
+      BOBO.updateRunOutput((serverState && serverState.error) || t('enrollment.auth.syncRefreshFailed'));
+      return;
+    }
     if (BOBO.serverCapabilities && typeof BOBO.serverCapabilities.notify === 'function') {
       BOBO.serverCapabilities.notify('auth-success');
     }
     if (BOBO.lsp && BOBO.lsp.credentialsChanged) BOBO.lsp.credentialsChanged();
     BOBO.updateRunOutput('Logged in as ' + (res.user.username || res.user.id) +
       ' (role: ' + (res.user.role || 'member') + ')');
+    if (res.syncReady === false) BOBO.updateRunOutput(t('enrollment.auth.syncRefreshFailed'));
     // 登录后补齐运行时列表（此前 401 拿不到）
     if (BOBO.runtime && BOBO.runtime.fetchRuntimes) BOBO.runtime.fetchRuntimes();
   }
@@ -297,6 +338,7 @@
   async function doLogout() {
     closeMenu();
     closeAdmin();
+    closeDeviceModal();
     if (BOBO.workspace && BOBO.workspace.canLeaveWorkspace) {
       var allowed = await BOBO.workspace.canLeaveWorkspace({ reason: 'logout' });
       if (!allowed) return false;
@@ -361,6 +403,11 @@
     // root 才能发管理员邀请
     $('invite-role-admin').style.display =
       (S.auth.user && S.auth.user.role === 'root') ? '' : 'none';
+    $('invite-sync-root').hidden = !(S.auth.user && S.auth.user.role === 'root');
+    if ($('invite-sync-root').hidden) {
+      $('invite-sync-mode').value = 'restricted';
+      $('invite-role').value = 'member';
+    }
   }
   function closeAdmin() {
     adminUsersLoadVersion += 1;
@@ -770,59 +817,89 @@
 
   async function loadInvites() {
     var list = $('invite-list');
-    list.innerHTML = '<div class="admin-loading">Loading…</div>';
-    var res = await BOBO.sendToServer('listInvites', {}, { quiet: true });
+    var identity = adminAuthIdentity();
+    list.innerHTML = '<div class="admin-loading">' + esc(t('Loading...')) + '</div>';
+    var res = await BOBO.sendToServer('listEnrollments', {}, { quiet: true });
+    if (identity !== adminAuthIdentity() || !$('admin-modal').classList.contains('open')) return;
     if (!res || !res.success) {
-      list.innerHTML = '<div class="admin-empty">' + esc((res && res.error) || 'Load failed') + '</div>';
+      list.innerHTML = '<div class="admin-empty">' + esc((res && res.error) || t('Load failed')) + '</div>';
       return;
     }
-    var invites = res.invites || [];
+    var invites = res.data && res.data.enrollments || [];
     if (invites.length === 0) {
-      list.innerHTML = '<div class="admin-empty">暂无邀请码 — 使用上方表单生成</div>';
+      list.innerHTML = '<div class="admin-empty">' + esc(t('enrollment.auth.noLinks')) + '</div>';
       return;
     }
-    invites.sort(function(a, b) { return new Date(b.created_at) - new Date(a.created_at); });
+    invites.sort(function(a, b) { return new Date(b.createdAt) - new Date(a.createdAt); });
     var html = '<table class="admin-table"><thead><tr>' +
-      '<th>邀请码</th><th>角色</th><th>使用</th><th>过期时间</th><th>创建者</th><th style="text-align:right">操作</th>' +
+      '<th>' + esc(t('enrollment.auth.type')) + '</th><th>' + esc(t('enrollment.auth.access')) + '</th><th>' + esc(t('enrollment.auth.status')) + '</th><th>' + esc(t('enrollment.auth.expires')) + '</th><th>' + esc(t('Actions')) + '</th>' +
       '</tr></thead><tbody>';
     invites.forEach(function(inv) {
-      var expired = new Date(inv.expires_at) < new Date();
-      var usedUp = inv.max_uses > 0 && inv.used_count >= inv.max_uses;
-      var status = expired ? '<span class="admin-disabled-tag">已过期</span>'
-        : usedUp ? '<span class="admin-disabled-tag">已用完</span>' : '';
+      var status = new Date(inv.expiresAt) < new Date() && inv.state === 'available' ? 'expired' : inv.state;
+      if (['available', 'expired', 'used', 'reserved', 'revoked'].indexOf(status) < 0) status = 'unknown';
+      var kind = ['root', 'device', 'register'].indexOf(inv.kind) >= 0 ? inv.kind : 'unknown';
+      var kindKeys = { root: 'enrollment.auth.kind.root', device: 'enrollment.auth.kind.device', register: 'enrollment.auth.kind.register', unknown: 'enrollment.auth.kind.unknown' };
+      var stateKeys = { available: 'enrollment.auth.state.available', expired: 'enrollment.auth.state.expired', used: 'enrollment.auth.state.used', reserved: 'enrollment.auth.state.reserved', revoked: 'enrollment.auth.state.revoked', unknown: 'enrollment.auth.state.unknown' };
       html += '<tr>' +
-        '<td><code style="font-family:monospace;color:var(--green)">' + esc(inv.code) + '</code> ' + status + '</td>' +
-        '<td><span class="admin-role-badge admin-role-' + esc(inv.role) + '">' + esc(inv.role) + '</span></td>' +
-        '<td style="color:var(--text-dim)">' + (inv.used_count || 0) + ' / ' + (inv.max_uses || 1) + '</td>' +
-        '<td style="color:var(--text-dim)">' + new Date(inv.expires_at).toLocaleString() + '</td>' +
-        '<td style="color:var(--text-dim)">' + esc(inv.created_by || '-') + '</td>' +
-        '<td><div class="admin-row-actions"><button class="admin-mini-btn danger" data-code="' + esc(inv.code) + '">撤销</button></div></td>' +
+        '<td>' + esc(t(kindKeys[kind])) + '</td>' +
+        '<td>' + esc(t(inv.syncMode === 'root' ? 'enrollment.auth.rootAccess' : 'enrollment.auth.restricted')) + '</td>' +
+        '<td>' + esc(t(stateKeys[status])) + '</td>' +
+        '<td>' + esc(new Date(inv.expiresAt).toLocaleString()) + '</td>' +
+        '<td><button class="admin-mini-btn danger" data-enrollment-id="' + esc(inv.id) + '">' + esc(t('enrollment.auth.revoke')) + '</button></td>' +
       '</tr>';
     });
     html += '</tbody></table>';
     list.innerHTML = html;
-    list.querySelectorAll('button[data-code]').forEach(function(btn) {
+    list.querySelectorAll('button[data-enrollment-id]').forEach(function(btn) {
       btn.addEventListener('click', async function() {
         btn.disabled = true;
-        await BOBO.sendToServer('revokeInvite', { inviteCode: btn.dataset.code }, { quiet: true });
-        loadInvites();
+        var result = await BOBO.sendToServer('revokeEnrollment', { enrollmentId: btn.dataset.enrollmentId }, { quiet: true });
+        if (!result || !result.success) global.alert((result && result.error) || t('enrollment.auth.operationFailed'));
+        await loadInvites();
       });
     });
   }
 
   async function createInvite() {
     var role = $('invite-role').value;
-    var maxUses = parseInt($('invite-maxuses').value) || 1;
-    var hours = parseInt($('invite-hours').value) || 168;
-    var res = await BOBO.sendToServer('createInvite', {
-      role: role, maxUses: maxUses, expiresInHours: hours
+    var mode = $('invite-sync-mode').value;
+    if (mode === 'root') {
+      var approved = await BOBO.confirm({ title: t('enrollment.auth.rootConfirmTitle'), message: t('enrollment.auth.rootConfirmMessage'), confirmLabel: t('enrollment.auth.rootConfirmButton'), danger: true });
+      if (!approved) return;
+    }
+    var hours = Math.min(24, Math.max(1, parseInt($('invite-hours').value, 10) || 1));
+    var res = await BOBO.sendToServer('createEnrollment', {
+      role: role, syncMode: mode, expiresInHours: hours
     }, { quiet: true });
     if (!res || !res.success) {
-      global.alert((res && res.error) || '生成失败');
+      global.alert((res && res.error) || t('enrollment.auth.operationFailed'));
       return;
     }
-    showGeneratedSecret('新邀请码（点击复制，发给新用户）', res.inviteCode, $('admin-pane-invites'));
+    if (!res.data || !res.data.link) { global.alert(t('enrollment.auth.operationFailed')); return; }
+    showGeneratedSecret(t('enrollment.auth.shareLink'), res.data.link, $('admin-pane-invites'));
     loadInvites();
+  }
+
+  function closeDeviceModal() {
+    var modal = $('auth-device-modal');
+    if (modal) modal.classList.remove('open');
+    var content = $('auth-device-content');
+    if (content) content.textContent = '';
+  }
+
+  async function createDeviceEnrollment() {
+    closeMenu();
+    var identity = adminAuthIdentity();
+    var res = await BOBO.sendToServer('createDeviceEnrollment', {}, { quiet: true });
+    if (identity !== adminAuthIdentity()) return;
+    if (!res || !res.success || !res.data || !res.data.link) {
+      global.alert((res && res.error) || t('enrollment.auth.operationFailed')); return;
+    }
+    var content = $('auth-device-content');
+    content.textContent = '';
+    showGeneratedSecret(t('enrollment.auth.shareDeviceLink'), res.data.link, content);
+    $('auth-device-modal').classList.add('open');
+    $('auth-device-close').focus();
   }
 
   async function loadAudit() {
@@ -921,8 +998,18 @@
       var who = await BOBO.sendToServer('whoami', {}, { quiet: true });
       if (who && who.success) {
         S.auth.user = who.user;
-        saveCredential(S.auth.token, S.auth.expiresAt, who.user);
+        await saveCredential(S.auth.token, S.auth.expiresAt, who.user);
         renderChip();
+        try {
+          if (BOBO.enrollmentHost && typeof BOBO.enrollmentHost.enrollmentRefreshSync === 'function') {
+            var refreshed = await BOBO.enrollmentHost.enrollmentRefreshSync();
+            if (!refreshed) throw new Error('sync unavailable');
+            S.serverSettings = await BOBO.enrollmentHost.readServerSettings();
+          }
+        } catch (_) {
+          BOBO.updateRunOutput(t('enrollment.auth.syncRefreshFailed'));
+          return { success: false, error: t('enrollment.auth.syncRefreshFailed'), errorCode: 'sync_credential_unavailable' };
+        }
         if (BOBO.serverCapabilities && typeof BOBO.serverCapabilities.notify === 'function') {
           BOBO.serverCapabilities.notify('auth-restored');
         }
@@ -993,6 +1080,10 @@
     $('auth-menu-logout').addEventListener('click', doLogout);
     $('auth-menu-chpwd').addEventListener('click', openChpwd);
     $('auth-menu-admin').addEventListener('click', function() { openAdmin('users'); });
+    $('auth-menu-add-device').addEventListener('click', createDeviceEnrollment);
+    $('auth-device-close').addEventListener('click', closeDeviceModal);
+    $('auth-device-modal').addEventListener('click', function(e) { if (e.target === $('auth-device-modal')) closeDeviceModal(); });
+    $('auth-device-modal').addEventListener('keydown', function(e) { if (e.key === 'Escape') closeDeviceModal(); });
 
     // 修改密码弹窗
     $('chpwd-cancel').addEventListener('click', closeChpwd);
@@ -1074,6 +1165,7 @@
     onServerChanged: onServerChanged,
     handleAuthExpired: handleAuthExpired,
     openAuthModal: openAuthModal,
+    openEnrollment: openEnrollment,
     renderChip: renderChip
   };
 })(window);

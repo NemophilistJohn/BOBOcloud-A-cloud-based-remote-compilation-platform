@@ -47,25 +47,24 @@ test('first download guides server setup once and keeps legacy credentials out o
     fixture = await launch(sandbox, true);
     const { page } = fixture;
     await page.setViewportSize({ width: 1100, height: 760 });
-    await expect(page.locator('#settings-modal')).toBeVisible();
-    await expect(page.locator('#server-first-run-intro')).toBeVisible();
-    await expect(page.locator('.settings-tabs')).toBeHidden();
-    await expect(page.locator('#server-apikey')).toBeHidden();
+    await expect(page.locator('#welcome-page')).toBeVisible();
+    await expect(page.locator('#settings-modal')).toBeHidden();
+    await expect(page.locator('#welcome-link')).toBeVisible();
     await page.waitForTimeout(250);
-    await expect(page.locator('#settings-modal')).toBeVisible();
+    await expect(page.locator('#welcome-page')).toBeVisible();
     await page.keyboard.press('Escape');
-    await expect(page.locator('#settings-modal')).toBeVisible();
+    await expect(page.locator('#welcome-page')).toBeVisible();
     const layout = await page.evaluate(() => {
-      const card = document.querySelector('#settings-modal .settings-card').getBoundingClientRect();
+      const card = document.querySelector('#welcome-page').getBoundingClientRect();
       return {
-        inside: card.left >= 0 && card.top >= 0 && card.right <= innerWidth && card.bottom <= innerHeight,
+        inside: card.left >= -1 && card.top >= -1 && card.right <= innerWidth + 1 && card.bottom <= innerHeight + 1,
         overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1
       };
     });
     expect(layout).toEqual({ inside: true, overflow: false });
     fs.mkdirSync(path.join(process.cwd(), 'test-results'), { recursive: true });
     await page.screenshot({ path: path.join(process.cwd(), 'test-results', 'server-onboarding-ui.png') });
-    await page.getByRole('button', { name: 'Use local editor only' }).click();
+    await page.locator('#welcome-local').click();
     await expect(page.locator('#settings-modal')).toBeHidden();
     const persisted = await page.evaluate(() => window.api.readServerSettings());
     expect(persisted.setupCompleted).toBe(true);
@@ -87,8 +86,9 @@ test('a first-run guide that cannot render releases the workbench interaction lo
   try {
     fixture = await launch(sandbox, true);
     const { page } = fixture;
-    await expect(page.locator('#settings-modal')).toBeVisible();
+    await expect(page.locator('#welcome-page')).toBeVisible();
     await page.evaluate(() => {
+      window.BOBO.welcome.close();
       document.querySelector('#settings-modal .settings-card').style.display = 'none';
       window.BOBO.settings.openFirstRun();
     });
@@ -111,7 +111,7 @@ test('AI answers render safe Markdown, copyable code, and native MathML', async 
     const { page } = fixture;
     await page.setViewportSize({ width: 1180, height: 780 });
     if (await page.locator('#settings-modal').isVisible()) {
-      await page.getByRole('button', { name: 'Use local editor only' }).click();
+      await page.locator('#welcome-local').click();
       await expect(page.locator('#settings-modal')).toBeHidden();
     }
     expect(await page.evaluate(() => ({

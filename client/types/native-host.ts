@@ -277,6 +277,13 @@ export interface NativeHost {
   authGet: Invoke<'auth-get'>;
   authSet(credential: unknown): Promise<unknown>;
   authClear: Invoke<'auth-clear'>;
+  enrollmentPreview: Invoke<'enrollment:preview'>;
+  enrollmentActivate: Invoke<'enrollment:activate'>;
+  enrollmentAuthenticate: Invoke<'enrollment:authenticate'>;
+  enrollmentLogin: Invoke<'enrollment:login'>;
+  enrollmentRefreshSync: Invoke<'enrollment:refresh-sync'>;
+  enrollmentIncoming: Invoke<'enrollment:incoming'>;
+  onEnrollmentOpen: Subscribe<'enrollment:open'>;
   authUpdateState(state: unknown): void;
   onOpenAuthLogin: Subscribe<'open-auth-login'>;
   onAuthLogoutRequest: Subscribe<'auth-logout-request'>;

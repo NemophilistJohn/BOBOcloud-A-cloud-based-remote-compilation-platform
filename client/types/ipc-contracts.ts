@@ -7,6 +7,7 @@
  */
 
 import type { Dispose } from './lifecycle';
+import type { EnrollmentPreview, EnrollmentAuthentication, EnrollmentAuthResult } from './enrollment';
 import type { ViewsSplitPreviewBounds } from './views';
 import type { RealtimeHost, SharedState } from './realtime';
 import type { CollaborationTeamMappingDto, CollaborationWriteTeamMappingRequestDto } from './collaboration';
@@ -269,6 +270,12 @@ export interface IpcInvokeContracts {
   'auth-get': IpcInvokeContract;
   'auth-set': IpcInvokeContract<[request: unknown]>;
   'auth-clear': IpcInvokeContract;
+  'enrollment:preview': IpcInvokeContract<[link: string], EnrollmentPreview>;
+  'enrollment:activate': IpcInvokeContract<[id: string], Record<string, unknown>>;
+  'enrollment:authenticate': IpcInvokeContract<[payload: EnrollmentAuthentication], EnrollmentAuthResult>;
+  'enrollment:login': IpcInvokeContract<[payload: EnrollmentAuthentication], EnrollmentAuthResult>;
+  'enrollment:refresh-sync': IpcInvokeContract<[], boolean>;
+  'enrollment:incoming': IpcInvokeContract<[], string>;
 }
 
 export interface IpcSendContracts {
@@ -311,6 +318,7 @@ export interface IpcEventContracts {
   'toggle-ai-chat': IpcEventContract;
   'open-diagnostics-settings': IpcEventContract;
   'open-auth-login': IpcEventContract;
+  'enrollment:open': IpcEventContract;
   'auth-logout-request': IpcEventContract;
   'open-admin-panel': IpcEventContract<[payload: unknown]>;
 }

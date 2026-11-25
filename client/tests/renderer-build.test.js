@@ -86,6 +86,7 @@ const EXPECTED_MODULES = [
   './compat/realtime-adapter.ts',
   './compat/social-adapter.ts',
   './compat/account-profile-adapter.ts',
+  './compat/welcome-adapter.ts',
   './compat/ai-settings-schema-adapter.ts',
   './compat/ai-prompts-adapter.ts',
   './compat/ai-service-adapter.ts',

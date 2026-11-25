@@ -20,7 +20,7 @@ server-settings.json
 # Generated application and test output
 renderer-dist/
 test-results/
-output/playwright/
+output/
 server/release/
 /server/data/
 /data/

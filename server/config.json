@@ -6,6 +6,14 @@
   "server_root": "/shareOnling",
   "_server_root": "服务端存放所有项目代码的根目录，checkFolder/runCode 均在此目录下操作",
   "http_port": 3100,
+  "public_host": "",
+  "_public_host": "邀请链接中用户实际可达的域名或 IP；公网/NAT 部署应显式配置。",
+  "sync_sftp_port": 3103,
+  "_sync_sftp_port": "3.x 受限 SFTP 专用端口，复用应用会话和当前团队权限，不提供 shell。",
+  "root_ssh_credential_file": "",
+  "_root_ssh_credential_file": "可选的受保护系统 root SSH 凭据 JSON 路径；不能提交真实密码。",
+  "enrollment_file": "",
+  "_enrollment_file": "根管理员首次认领链接输出位置；留空位于程序同目录。生产使用私有状态目录。",
   "_http_port": "HTTP API 服务的监听端口（REST 接口）",
   "ws_port": 3101,
   "_ws_port": "WebSocket 流式输出服务的监听端口",
@@ -264,7 +272,7 @@
 
   "_section_auth": "────────── 认证配置 ──────────",
   "auth_mode": "multi",
-  "_auth_mode": "运行模式：single=单机模式（免登录，所有请求归为 default 用户）；multi=多人模式（邀请制注册 + 用户名/邮箱登录 + 三级角色）。留空则按 auth_enabled 推断。当前为 multi：云功能需登录，root 管理员可用 root_user 配置的账号密码直接登录，无需注册。",
+  "_auth_mode": "3.x 使用 multi 多人模式：一次性邀请链接注册、账号会话与三级角色。旧 single 匿名模式不再启动。首次根管理员必须通过同目录 admin-claim.link 和既有/生成的应用密码认领。",
   "auth_enabled": false,
   "_auth_enabled": "【向后兼容】等价于 auth_mode 的开关形式：false=single，true=multi。auth_mode 显式设置时本项被忽略。",
   "root_user": {

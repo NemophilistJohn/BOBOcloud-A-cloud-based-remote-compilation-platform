@@ -15,6 +15,7 @@ import type {
 import type { DisposableStore } from './lifecycle';
 import type { RealtimeHost } from './realtime';
 import type { NativeHost, RcloneNativeHost } from './native-host';
+import type { EnrollmentHostPort } from './enrollment';
 import type { FileIconPluginView, FileIconService } from './file-icons';
 import type {
   FileDecorationProvider,
@@ -93,6 +94,7 @@ export interface RendererCommandMap {
 }
 
 export interface RendererServiceMap {
+  readonly 'host.enrollment': Readonly<EnrollmentHostPort>;
   readonly 'workbench.completion': CompletionCoordinatorService;
   readonly 'host.completionIndex': Readonly<Pick<NativeHost,
     'lspControl' | 'lspClientCacheDependencyIndexGet' | 'lspClientCacheDependencyIndexPut' | 'lspSettingsWrite'>>;

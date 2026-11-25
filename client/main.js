@@ -9,6 +9,7 @@ const { createAiController } = require('./main/ai');
 const { createAgentPlatformBroker } = require('./main/agent-platform');
 const { createLspController } = require('./main/lsp');
 const { createAuthController } = require('./main/auth');
+const { registerEnrollment } = require('./main/enrollment-registration');
 const { registerDiagnosticsIpc } = require('./main/diagnostics');
 const { registerRcloneIpc } = require('./main/rclone-ipc');
 const { registerInboxDownload } = require('./main/inbox-download');
@@ -117,6 +118,10 @@ const auth = createAuthController({ ipcMain, settings, disposeLsp: disposeRemote
   },
   onCredentialChanged: () => { inboxDownload?.cancel(); notebookKernels.closeAll(); realtime.close(); return rcloneService.cancelAll('credential-changed'); }
 });
+const enrollment = registerEnrollment({ app, ipcMain, settings, auth, getWindow, session: electronSession,
+  fetch: (...args) => electronSession.defaultSession.fetch(...args),
+  notify: () => rendererEvents.send('enrollment:open')
+});
 menu = createMenuController({ Menu, dialog, getWindow, sendToRenderer: rendererEvents.send, languagePacks, getAuthState: auth.getState,
   pickAndOpenWorkspace: workspace.pickAndOpenWorkspace });
 const tasks = createTasksController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity });
@@ -125,6 +130,7 @@ dap = createDapController({ ipcMain, getWindow, sendToRenderer: rendererEvents.s
 terminal = createTerminalController({ ipcMain, getWindow, sendToRenderer: rendererEvents.send, getWorkspaceIdentity: workspace.getIdentity, settings });
 lifecycle.register('remote-editor-services', disposeRemoteEditorServices);
 lifecycle.register('ai', async () => { ai.dispose(); });
+lifecycle.register('enrollment', async () => { enrollment.dispose(); });
 lifecycle.register('agent-platform', async () => { agentBroker.dispose(); });
 lifecycle.register('rclone', (reason) => rcloneService.cancelAll(reason));
 lifecycle.register('inbox-download', () => inboxDownload?.cancel());
@@ -186,12 +192,6 @@ app.on('before-quit', (event) => {
     quitApproved = true;
     app.quit();
   });
-});
-app.on('second-instance', () => {
-  if (!window || window.isDestroyed()) return;
-  if (window.isMinimized()) window.restore();
-  window.show();
-  window.focus();
 });
 app.on('will-quit', () => {
   languagePacks.dispose();

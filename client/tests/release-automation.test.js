@@ -29,8 +29,9 @@ test('automatic publication waits for both components, while emergency force sti
 test('the packaged numeric host version remains compatible with official plugin engine ranges', () => {
   const version = require('../package.json').version;
   assert.match(version, /^\d+\.\d+\.\d+$/);
-  assert.equal(satisfiesVersionRange(version, '>=2.6.0 <3.0.0'), true);
-  assert.equal(satisfiesVersionRange(version + '-ci.123.1', '>=2.6.0 <3.0.0'), false);
+  // Official packages released for host 3.x retain the 2.x lower bound.
+  assert.equal(satisfiesVersionRange(version, '>=2.6.0 <5.0.0'), true);
+  assert.equal(satisfiesVersionRange(version + '-ci.123.1', '>=2.6.0 <5.0.0'), false);
 });
 
 test('release baseline accumulates both components across commits and rejects a forged marker', (t) => {

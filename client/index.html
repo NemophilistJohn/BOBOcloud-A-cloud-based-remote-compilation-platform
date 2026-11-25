@@ -5,6 +5,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' http://*:* ws://*:* wss://*:*; img-src 'self' file: blob: data:;">
   <title>BOBOCLOUD Editor</title>
   <link rel="stylesheet" href="./styles/tokens.css">
+  <link rel="stylesheet" href="./styles/welcome.css">
   <link rel="stylesheet" href="./styles/main.css">
   <link rel="stylesheet" href="./styles/modals.css">
   <link rel="stylesheet" href="./styles/ai.css">
@@ -1033,7 +1034,7 @@
         </div>
       </div>
 
-      <div class="auth-tabs">
+      <div class="auth-tabs" hidden style="display:none">
         <div class="auth-tab active" id="auth-tab-login">Login</div>
         <div class="auth-tab" id="auth-tab-register">Register</div>
       </div>
@@ -1081,10 +1082,6 @@
               <input id="auth-reg-password2" type="password" placeholder="Confirm password" autocomplete="new-password">
               <svg class="auth-field-icon" viewBox="0 0 16 16" fill="none"><rect x="3" y="7" width="10" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7V5.5a2.5 2.5 0 0 1 5 0V7" stroke="currentColor" stroke-width="1.4"/><path d="M6.8 10.2l1 1 1.8-2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </div>
-            <div class="auth-field">
-              <input id="auth-reg-invite" type="text" placeholder="Invite code (INV-XXXXXXXX)" autocapitalize="characters">
-              <svg class="auth-field-icon" viewBox="0 0 16 16" fill="none"><path d="M2 5.5A1.5 1.5 0 0 1 3.5 4h9A1.5 1.5 0 0 1 14 5.5v1a1.75 1.75 0 0 0 0 3.5v1a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-1a1.75 1.75 0 0 0 0-3.5v-1z" stroke="currentColor" stroke-width="1.4"/><path d="M9.5 4v1.5M9.5 7.25v2M9.5 11v1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-dasharray="0.1 2.2"/></svg>
-            </div>
           </div>
         </div>
 
@@ -1116,6 +1113,10 @@
       <svg viewBox="0 0 16 16" fill="none"><circle cx="5.2" cy="5.2" r="2.2" stroke="currentColor" stroke-width="1.3"/><circle cx="11.5" cy="6" r="1.7" stroke="currentColor" stroke-width="1.2"/><path d="M1.8 13c.2-2.4 1.8-3.7 3.8-3.7s3.6 1.3 3.8 3.7M9 10.2c2-.8 4.6.1 4.9 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
       Team workspace
     </div>
+    <div class="auth-menu-item" id="auth-menu-add-device">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="2.5" width="12" height="9" rx="1.4" stroke="currentColor" stroke-width="1.4"/><path d="M5 14h6M8 11.5V14M8 4.5v5M5.5 7h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+      <span data-i18n="enrollment.auth.addDevice">Add device</span>
+    </div>
     <div class="auth-menu-item" id="auth-menu-admin" style="display:none">
       <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.8v1.8M8 12.4v1.8M1.8 8h1.8M12.4 8h1.8M3.6 3.6l1.3 1.3M11.1 11.1l1.3 1.3M12.4 3.6l-1.3 1.3M4.9 11.1l-1.3 1.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
       Admin panel
@@ -1123,6 +1124,13 @@
     <div class="auth-menu-item danger" id="auth-menu-logout">
       <svg viewBox="0 0 16 16" fill="none"><path d="M6 2.5H3.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1H6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M10.5 5l3 3-3 3M13 8H6.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
       Log out
+    </div>
+  </div>
+
+  <div id="auth-device-modal" class="collab-overlay" role="dialog" aria-modal="true" aria-labelledby="auth-device-title">
+    <div class="admin-dialog-card">
+      <div class="ss-head"><div class="ss-title" id="auth-device-title" data-i18n="enrollment.auth.addDevice">Add device</div><button id="auth-device-close" class="close-btn" type="button" aria-label="Close">&times;</button></div>
+      <div class="admin-body" id="auth-device-content"></div>
     </div>
   </div>
 
@@ -1254,7 +1262,7 @@
       </div>
       <div class="admin-tabs" role="tablist">
         <button type="button" class="admin-tab active" data-pane="users" role="tab" aria-selected="true" aria-controls="admin-pane-users">Users</button>
-        <button type="button" class="admin-tab" data-pane="invites" role="tab" aria-selected="false" aria-controls="admin-pane-invites" tabindex="-1">Invite codes</button>
+        <button type="button" class="admin-tab" data-pane="invites" role="tab" aria-selected="false" aria-controls="admin-pane-invites" tabindex="-1" data-i18n="enrollment.auth.inviteLinks">Invitation links</button>
         <button type="button" class="admin-tab" data-pane="audit" role="tab" aria-selected="false" aria-controls="admin-pane-audit" tabindex="-1">Audit log</button>
       </div>
       <div class="admin-body">
@@ -1265,11 +1273,13 @@
               <option value="member">Member</option>
               <option value="admin" id="invite-role-admin" style="display:none">Admin</option>
             </select>
-            <label class="admin-label">Uses</label>
-            <input id="invite-maxuses" type="number" min="1" max="100" value="1">
-            <label class="admin-label">Valid (hours)</label>
-            <input id="invite-hours" type="number" min="1" max="720" value="168">
-            <button class="admin-mini-btn" id="invite-create">Generate</button>
+            <select id="invite-sync-mode" aria-label="Synchronization access">
+              <option value="restricted" data-i18n="enrollment.auth.restricted">Restricted synchronization</option>
+              <option value="root" id="invite-sync-root" data-i18n="enrollment.auth.rootAccess">Linux root access</option>
+            </select>
+            <label class="admin-label" for="invite-hours" data-i18n="enrollment.auth.validHours">Valid for hours</label>
+            <input id="invite-hours" type="number" min="1" max="24" value="1">
+            <button class="admin-mini-btn" id="invite-create" data-i18n="enrollment.auth.generate">Generate</button>
           </div>
           <div id="invite-new-box"></div>
           <div id="invite-list"></div>

@@ -12,5 +12,7 @@ require (
 
 require (
 	github.com/aquasecurity/go-version v0.0.1 // indirect
+	github.com/kr/fs v0.1.0 // indirect
+	github.com/pkg/sftp v1.13.10 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 )

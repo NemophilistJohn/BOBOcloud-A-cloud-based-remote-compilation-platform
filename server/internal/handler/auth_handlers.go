@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"bobocloud-server/internal/auth"
+	"bobocloud-server/internal/enrollment"
 	"bobocloud-server/internal/model"
 	"bobocloud-server/internal/rootbootstrap"
 	"bobocloud-server/internal/storage"
@@ -231,11 +232,42 @@ func (h *HTTPHandler) handleLogin(w http.ResponseWriter, r *http.Request, req *m
 		writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "Account is disabled. Contact your administrator."})
 		return
 	}
-
-	sess, err := h.AuthSessions.Create(user.ID, h.Config.SessionTokenTTL())
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to create session"})
+	if h.Enrollment != nil && req.EnrollmentToken == "" && h.Enrollment.RootClaimRequired(user.ID) {
+		writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "Administrator enrollment is required"})
 		return
+	}
+
+	var sess *auth.AuthSession
+	rootClaimed := false
+	if req.EnrollmentToken != "" {
+		if !h.enrollmentReady(w, r) {
+			return
+		}
+		record, inspectErr := h.Enrollment.Inspect(req.EnrollmentToken)
+		if inspectErr != nil || (record.Kind != "root" && record.Kind != "device") || (record.Kind == "root" && user.EffectiveRole() != auth.RoleRoot) || (h.Enrollment.RootClaimRequired(user.ID) && record.Kind != "root") {
+			writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid or expired enrollment"})
+			return
+		}
+		_, err = h.Enrollment.Claim(req.EnrollmentToken, record.Kind, user.ID, func(_ enrollment.Record) error {
+			var createErr error
+			sess, createErr = h.AuthSessions.Create(user.ID, h.Config.SessionTokenTTL())
+			return createErr
+		})
+		rootClaimed = err == nil && record.Kind == "root"
+	} else {
+		sess, err = h.AuthSessions.Create(user.ID, h.Config.SessionTokenTTL())
+	}
+	if err != nil {
+		if sess != nil {
+			h.AuthSessions.Delete(sess.Token)
+		}
+		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Login or enrollment could not be completed"})
+		return
+	}
+	if rootClaimed && h.OnRootEnrollmentClaimed != nil {
+		if cleanupErr := h.OnRootEnrollmentClaimed(); cleanupErr != nil {
+			slog.Warn("Root enrollment file cleanup failed", "error", cleanupErr)
+		}
 	}
 
 	h.auditEvent(r, user.ID, user.Username, "login", "", "", true)
@@ -245,6 +277,7 @@ func (h *HTTPHandler) handleLogin(w http.ResponseWriter, r *http.Request, req *m
 		Token:     sess.Token,
 		ExpiresAt: &sess.ExpiresAt,
 		User:      sanitizeUser(user),
+		Data:      h.syncResponse(r, user, sess.Token),
 	})
 }
 
@@ -261,8 +294,11 @@ func (h *HTTPHandler) handleRegister(w http.ResponseWriter, r *http.Request, req
 
 	username := strings.TrimSpace(req.Username)
 	email := strings.TrimSpace(req.Email)
-	if username == "" || email == "" || req.Password == "" || req.InviteCode == "" {
-		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "username, email, password and inviteCode are all required"})
+	if !h.enrollmentReady(w, r) {
+		return
+	}
+	if username == "" || email == "" || req.Password == "" || req.EnrollmentToken == "" {
+		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "username, email, password and enrollmentToken are all required"})
 		return
 	}
 	if err := auth.ValidateUsername(username); err != nil {
@@ -303,10 +339,14 @@ func (h *HTTPHandler) handleRegister(w http.ResponseWriter, r *http.Request, req
 	}
 
 	// 原子消耗邀请码（校验有效期/剩余次数）
-	inv, err := h.Invites.Consume(strings.ToUpper(strings.TrimSpace(req.InviteCode)))
+	inv, err := h.Enrollment.Inspect(req.EnrollmentToken)
 	if err != nil {
-		h.auditEvent(r, "", username, "register", req.InviteCode, "invite rejected: "+err.Error(), false)
-		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invite code invalid: " + err.Error()})
+		h.auditEvent(r, "", username, "register", "", "enrollment rejected", false)
+		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid or expired enrollment"})
+		return
+	}
+	if inv.Kind != "register" {
+		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid or expired enrollment"})
 		return
 	}
 
@@ -336,29 +376,40 @@ func (h *HTTPHandler) handleRegister(w http.ResponseWriter, r *http.Request, req
 	if user.RateLimit <= 0 {
 		user.RateLimit = 60
 	}
-	if err := h.UserStore.Create(user); err != nil {
-		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Failed to create user"})
+	var sess *auth.AuthSession
+	_, err = h.Enrollment.Claim(req.EnrollmentToken, "register", user.ID, func(_ enrollment.Record) error {
+		var createErr error
+		sess, createErr = h.AuthSessions.Create(user.ID, h.Config.SessionTokenTTL())
+		if createErr != nil {
+			return createErr
+		}
+		if createErr = h.UserStore.Create(user); createErr != nil {
+			h.AuthSessions.Delete(sess.Token)
+			sess = nil
+			return createErr
+		}
+		return nil
+	})
+	if err != nil {
+		if sess != nil {
+			h.AuthSessions.Delete(sess.Token)
+		}
+		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Registration could not be completed; contact your administrator"})
 		return
 	}
 	if h.SetUserLimit != nil {
 		h.SetUserLimit(user.ID, user.ContainerLimit)
 	}
 
-	// 注册即登录：直接签发会话
-	sess, err := h.AuthSessions.Create(user.ID, h.Config.SessionTokenTTL())
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "User created but failed to create session; please login"})
-		return
-	}
-
-	h.auditEvent(r, user.ID, user.Username, "register", inv.Code, "role="+role, true)
-	slog.Info("User registered", "user_id", user.ID, "role", role, "invite", inv.Code)
+	h.auditEvent(r, user.ID, user.Username, "register", inv.ID, "role="+role, true)
+	slog.Info("User registered", "user_id", user.ID, "role", role)
 	writeJSON(w, http.StatusOK, model.Response{
 		Success:   true,
 		Message:   "Registration successful",
 		Token:     sess.Token,
 		ExpiresAt: &sess.ExpiresAt,
 		User:      sanitizeUser(user),
+		Data:      h.syncResponse(r, user, sess.Token),
 	})
 }
 

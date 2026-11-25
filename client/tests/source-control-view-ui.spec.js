@@ -115,7 +115,7 @@ export async function activate(context) {
     displayName: 'Source Control Host Test',
     description: 'Playwright package for the bounded sidebar host.',
     version: '1.0.0',
-    engines: { pluginApi: '^1.2.0', bobocloud: '>=2.6.0 <3.0.0' },
+    engines: { pluginApi: '^1.2.0', bobocloud: '>=2.6.0 <5.0.0' },
     main: 'dist/extension.js',
     activationEvents: ['onStartupFinished'],
     permissions: ['commands.register', 'sourceControl.register'],

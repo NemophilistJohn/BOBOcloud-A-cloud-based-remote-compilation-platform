@@ -75,10 +75,14 @@ type Config struct {
 	// TLSRequired is a deployment guard. Development configurations may keep
 	// TLS disabled, but a production unit can set this flag so an accidental
 	// plaintext listener fails closed during configuration loading.
-	TLSRequired bool   `json:"tls_required"`
-	TLSEnabled  bool   `json:"tls_enabled"`
-	TLSCertFile string `json:"tls_cert_file"`
-	TLSKeyFile  string `json:"tls_key_file"`
+	TLSRequired           bool   `json:"tls_required"`
+	TLSEnabled            bool   `json:"tls_enabled"`
+	TLSCertFile           string `json:"tls_cert_file"`
+	TLSKeyFile            string `json:"tls_key_file"`
+	PublicHost            string `json:"public_host"`
+	SyncSFTPPort          int    `json:"sync_sftp_port"`
+	RootSSHCredentialFile string `json:"root_ssh_credential_file"`
+	EnrollmentFile        string `json:"enrollment_file"`
 	// Listener limits protect the public HTTP/WebSocket entry points without
 	// imposing a write deadline on long-running compilation or streaming flows.
 	HTTPReadHeaderTimeoutSeconds    int `json:"http_read_header_timeout_seconds"`
@@ -249,6 +253,7 @@ func Default() *Config {
 	return &Config{
 		ServerRoot:                      "/shareOnling",
 		HTTPPort:                        3100,
+		SyncSFTPPort:                    3103,
 		WSPort:                          3101,
 		DAPChildWSPort:                  3102,
 		TLSRequired:                     false,
@@ -1045,6 +1050,20 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("BOBOCLOUD_TLS_KEY_FILE"); v != "" {
 		cfg.TLSKeyFile = v
+	}
+	if v := os.Getenv("BOBOCLOUD_PUBLIC_HOST"); v != "" {
+		cfg.PublicHost = v
+	}
+	if v := os.Getenv("BOBOCLOUD_SYNC_SFTP_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.SyncSFTPPort = n
+		}
+	}
+	if v := os.Getenv("BOBOCLOUD_ROOT_SSH_CREDENTIAL_FILE"); v != "" {
+		cfg.RootSSHCredentialFile = v
+	}
+	if v := os.Getenv("BOBOCLOUD_ENROLLMENT_FILE"); v != "" {
+		cfg.EnrollmentFile = v
 	}
 	if v := os.Getenv("BOBOCLOUD_LOG_LEVEL"); v != "" {
 		cfg.LogLevel = v

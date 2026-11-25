@@ -13,6 +13,7 @@ const MAIN_DIRECTORY = path.join(ROOT, 'main');
 const RENDERER_OUTPUT = path.join(ROOT, 'renderer-dist');
 
 const EXPECTED_IPC = new Map([
+  ...['enrollment:preview','enrollment:activate','enrollment:authenticate','enrollment:login','enrollment:refresh-sync','enrollment:incoming'].map(channel => [channel, 'handle']),
   ['views:capture-split-preview', 'handle'],
   ...['realtime:prepare-transition','realtime:connect','realtime:send','realtime:close','realtime:materialize','realtime:drafts','realtime:recover'].map(channel => [channel, 'handle']),
   ['workspace-leave-response', 'on'],
@@ -282,6 +283,8 @@ const REQUIRED_RENDERER_INPUTS = [
   'renderer/compat/collaboration-adapter.ts',
   'src/account-profile.ts',
   'renderer/compat/account-profile-adapter.ts',
+  'src/welcome.ts',
+  'renderer/compat/welcome-adapter.ts',
   'renderer/compat/ai-settings-schema-adapter.ts',
   'src/ai-settings-schema.js',
   'renderer/ai-ui-entry.ts',

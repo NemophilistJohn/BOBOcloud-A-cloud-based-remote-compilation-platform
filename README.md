@@ -2,11 +2,11 @@
 
 <p align="right"><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a></p>
 
-BOBOCLOUD is a self-hosted cloud development workbench: an Electron desktop editor keeps the project on the developer's computer, while a Go service provides Linux execution, Docker runtimes, dependency environments, tasks, terminals, language intelligence, debugging, collaboration, and resource governance. The current source identifies the client as **2.9.2** and the server as **2.6.2**.
+BOBOCLOUD is a self-hosted cloud development workbench: an Electron desktop editor keeps the project on the developer's computer, while a Go service provides Linux execution, Docker runtimes, dependency environments, tasks, terminals, language intelligence, debugging, collaboration, and resource governance. The current source identifies the client as **3.0.0** and the server as **3.0.0**.
 
 **Keep your source locally. Bring the toolchain to the cloud.** Open a normal project folder, choose a server runtime, and run, inspect, debug, or extend it from one desktop workbench. You can use the local editor without a cloud account; a connected service supplies the remote capabilities.
 
-Documentation refreshed against the current source on **2026-11-25**. The English and [Chinese](README.zh-CN.md) editions follow the same structure. Plugin API: **1.12.0**. Available images, adapters, quotas, and optional plugins depend on your deployment.
+Documentation refreshed against the current source on **2026-11-26**. The English and [Chinese](README.zh-CN.md) editions follow the same structure. Plugin API: **1.12.0**. Available images, adapters, quotas, and optional plugins depend on your deployment.
 
 The editor is useful before a server is connected. You can open a folder, edit with Monaco, search, inspect Problems, and configure the workbench locally. Run, Debug, cloud terminals, project dependencies, teams, and server storage become available only after a compatible BOBOCLOUD service is selected.
 
@@ -33,6 +33,33 @@ This edited recording uses a new, isolated demonstration project and a real auth
 | [Beginner onboarding proposal](docs/onboarding-design.en.md) | Proposed guided first run, connection diagnostics, and lifecycle integration; not implemented. |
 | [Plugin quick start](docs/plugin-quickstart.en.md) | Package a real example, understand permissions, choose the right extension surface. |
 | [Contributing](CONTRIBUTING.md) | Find an owning module, select useful tests, submit a focused change. |
+
+
+## 3.0.0 — invitation links and secure first connection
+
+The desktop and server are now **3.0.0**. A single public installer supports self-hosted servers; company-specific builds are not required. The editor-area Welcome page selects English, Simplified Chinese or Japanese, verifies an invitation and its pinned self-signed TLS certificate, previews the server, and opens the appropriate login or registration flow. Local editing remains available without an account.
+
+- **Administrator claim:** the first 3.x startup creates `admin-claim.link`, valid for 24 hours and one successful account authentication. The existing BOBOCLOUD root password is preserved. A fresh installation generates its random password in `data/bootstrap/root-credentials.json`; this is an application password, separate from Linux root. Production exposes a root-owned shortcut `/root/cloudeEditor/admin-claim.link` to the protected state file. Reading/previewing the link never consumes it; a successful root login consumes it and removes the target file. Restart renews expired unclaimed links, never already claimed accounts.
+- **Join links:** administrators issue one-use registration links. Root may explicitly grant ordinary restricted SFTP or the configured high-privilege system-root SSH connection. A normal administrator cannot grant root SSH or administrator roles. Used, expired and revoked links cannot register another account.
+- **Another device:** the signed-in account can issue a one-use device link. It carries server trust and binds the receiving login to that same account; it cannot change the account's synchronization privileges. Each login gets its own revocable application session. Losing every device still requires the account password and a trusted server connection; no public account-recovery bypass is introduced.
+- **Restricted synchronization:** existing rclone/SFTP remains the data transport. Port `3103` is a new SFTP-only endpoint; `bobocloud` plus the application's session token authenticates it. It provides no shell, SSH command execution or forwarding. Every filesystem operation, including reads/writes on already opened handles, revalidates the account/session and current team membership, workspace generation and collaboration mode. Linux enforces beneath-root, no-symlink/no-cross-mount access and rejects multiply linked files.
+- **Teams:** a restricted user can sync personal workspaces and their own current worktrees in every authorized team. Joining a team needs no credential reissue; removal, project deletion or mode changes invalidate stale paths. Realtime collaboration remains on authenticated WebSockets; canonical room data, Git internals, analysis copies and retired worktree generations are never exposed through restricted SFTP.
+
+Links contain only the server endpoint, **public TLS certificate fingerprint** and a random one-use token in the URL fragment. TLS private keys and Linux passwords are never embedded in URLs. After account authentication, main retrieves the selected SFTP credential over pinned HTTPS and keeps it out of renderer previews. With root SSH selected, consuming a link does **not** rotate or revoke the shared Linux password; operators must rotate it separately if it leaks. Application logout/disable immediately blocks restricted SFTP, but cannot revoke a copied system-root password.
+
+Server settings added in 3.0:
+
+| Setting / environment | Purpose |
+| --- | --- |
+| `public_host` / `BOBOCLOUD_PUBLIC_HOST` | Address users can reach; set this for NAT/public servers. |
+| `sync_sftp_port` / `BOBOCLOUD_SYNC_SFTP_PORT` | Restricted SFTP listener, default `3103`; permit it in the host and cloud firewall. |
+| `enrollment_file` / `BOBOCLOUD_ENROLLMENT_FILE` | Protected local root-claim output; default is beside the server executable. Production uses the private state directory and a local shortcut. |
+| `root_ssh_credential_file` / `BOBOCLOUD_ROOT_SSH_CREDENTIAL_FILE` | Optional protected JSON containing `host`, `port`, `user` (`root`), `password` and verified OpenSSH `hostKey`. Supply explicitly at deployment; Linux cannot recover a plaintext root password from its password hash. Without this file, root uses restricted sync and high-privilege invitations are unavailable. |
+
+The credential JSON must be a regular, non-symlink file, owner-only or `root:bobocloud` `0640`; never commit it. Existing TLS certificates are preserved. A previously plaintext standalone server automatically creates its own self-signed certificate/key under `data/tls`, with the configured public host as a SAN. Trust is currently leaf-certificate pinning: intentional certificate replacement requires a fresh trusted link; the implementation does not silently trust a new certificate or claim automatic CA rotation.
+
+The short `INV-...` registration endpoints and anonymous `auth_mode=single` executable mode are retired. Existing multi-user accounts, passwords, projects and teams are preserved. Change an explicitly single-user installation to multi-user and migrate its workspaces before starting 3.x; the server refuses to silently reinterpret that data. Multi-user programmatic API keys remain separate from the retired anonymous mode. Enrollment writes a durable reservation before account/session changes; interrupted cross-store claims fail closed and may require a newly issued link, rather than replaying an uncertain transaction.
+
 
 ## Why BOBOCLOUD
 

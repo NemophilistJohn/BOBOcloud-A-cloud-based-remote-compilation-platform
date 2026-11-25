@@ -32,13 +32,16 @@ type Request struct {
 	PackageChanges      []ProjectPackageChange `json:"changes,omitempty"`
 
 	// ── 账户系统字段 ──
-	Identity               string `json:"identity,omitempty"`       // login：用户名或邮箱
-	Username               string `json:"username,omitempty"`       // register：用户名
-	Email                  string `json:"email,omitempty"`          // register：邮箱
-	Password               string `json:"password,omitempty"`       // login / register
-	OldPassword            string `json:"oldPassword,omitempty"`    // changePassword
-	NewPassword            string `json:"newPassword,omitempty"`    // changePassword / resetUserPassword
-	InviteCode             string `json:"inviteCode,omitempty"`     // register / revokeInvite
+	Identity               string `json:"identity,omitempty"`    // login：用户名或邮箱
+	Username               string `json:"username,omitempty"`    // register：用户名
+	Email                  string `json:"email,omitempty"`       // register：邮箱
+	Password               string `json:"password,omitempty"`    // login / register
+	OldPassword            string `json:"oldPassword,omitempty"` // changePassword
+	NewPassword            string `json:"newPassword,omitempty"` // changePassword / resetUserPassword
+	InviteCode             string `json:"inviteCode,omitempty"`  // register / revokeInvite
+	EnrollmentToken        string `json:"enrollmentToken,omitempty"`
+	EnrollmentID           string `json:"enrollmentId,omitempty"`
+	SyncMode               string `json:"syncMode,omitempty"`
 	Role                   string `json:"role,omitempty"`           // createInvite / setUserRole
 	UserID                 string `json:"userId,omitempty"`         // 用户管理操作的目标用户
 	Disabled               *bool  `json:"disabled,omitempty"`       // setUserDisabled（指针区分未传与 false）

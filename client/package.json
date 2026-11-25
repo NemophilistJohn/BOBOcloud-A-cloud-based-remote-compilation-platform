@@ -1,6 +1,6 @@
 {
   "name": "bobocloud-editer",
-  "version": "2.9.2",
+  "version": "3.0.0",
   "description": "BOBOCLOUD CODE EDITOR",
   "main": "main.js",
   "scripts": {
@@ -171,6 +171,14 @@
         "zh_CN",
         "ja_JP"
       ]
-    }
+    },
+    "protocols": [
+      {
+        "name": "BOBOCLOUD enrollment",
+        "schemes": [
+          "bobocloud"
+        ]
+      }
+    ]
   }
 }

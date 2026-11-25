@@ -273,6 +273,13 @@ contextBridge.exposeInMainWorld('api', {
   authGet: () => ipcRenderer.invoke('auth-get'),
   authSet: (credential) => ipcRenderer.invoke('auth-set', { credential }),
   authClear: () => ipcRenderer.invoke('auth-clear'),
+  enrollmentPreview: (link) => ipcRenderer.invoke('enrollment:preview', link),
+  enrollmentActivate: (id) => ipcRenderer.invoke('enrollment:activate', id),
+  enrollmentAuthenticate: (payload) => ipcRenderer.invoke('enrollment:authenticate', payload),
+  enrollmentLogin: (payload) => ipcRenderer.invoke('enrollment:login', payload),
+  enrollmentRefreshSync: () => ipcRenderer.invoke('enrollment:refresh-sync'),
+  enrollmentIncoming: () => ipcRenderer.invoke('enrollment:incoming'),
+  onEnrollmentOpen: (cb) => subscribe('enrollment:open', cb),
   // 推送认证状态到主进程（用于动态显示"管理"菜单）：{ loggedIn, role }
   authUpdateState: (state) => ipcRenderer.send('auth-state-update', state),
   onOpenAuthLogin: (cb) => subscribe('open-auth-login', cb),

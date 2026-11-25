@@ -69,7 +69,7 @@ export async function activate(context) {
     displayName: 'Invalid Return Test',
     description: 'Protocol boundary regression fixture.',
     version: '1.0.0',
-    engines: { bobocloud: '>=2.6.0 <3.0.0', pluginApi: '^1.2.0' },
+    engines: { bobocloud: '>=2.6.0 <5.0.0', pluginApi: '^1.2.0' },
     main: 'dist/extension.js',
     activationEvents: ['onStartupFinished'],
     permissions: ['commands.register'],

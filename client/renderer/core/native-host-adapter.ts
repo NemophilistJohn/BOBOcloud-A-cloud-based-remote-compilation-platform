@@ -20,6 +20,7 @@ import type {
 import type { Disposable } from '../../types/lifecycle';
 import type { AiAgentButtonHostPort } from '../../types/ai-agent-button';
 import type { NativeHost, RcloneNativeHost, RcloneProgressListener } from '../../types/native-host';
+import type { EnrollmentHostPort, EnrollmentAuthentication } from '../../types/enrollment';
 import type { PluginExtensionNativeHost } from '../../types/plugin-extension-bootstrap';
 import type {
   PluginManagementChangedDto,
@@ -75,6 +76,7 @@ import { rendererPlatform } from './bootstrap';
 import { unwrapPluginRpcResult } from './plugin-extension-protocol.js';
 
 export const DIAGNOSTICS_HOST_SERVICE_ID = 'host.diagnostics';
+export const ENROLLMENT_HOST_SERVICE_ID = 'host.enrollment';
 export const DOCUMENT_VIEWS_HOST_SERVICE_ID = 'host.documentViews';
 export const ENVIRONMENT_CENTER_HOST_SERVICE_ID = 'host.environmentCenter';
 export const FILE_SEARCH_HOST_SERVICE_ID = 'host.fileSearch';
@@ -107,6 +109,21 @@ function createDiagnosticsHost(host: NativeHost): Readonly<DiagnosticsHost> {
     onOpen: (listener: DiagnosticsOpenListener) => toDisposable(
       host.onOpenDiagnosticsSettings(() => listener())
     )
+  });
+}
+
+function createEnrollmentHost(host: NativeHost): Readonly<EnrollmentHostPort> {
+  return Object.freeze({
+    enrollmentPreview: (link: string) => host.enrollmentPreview(link),
+    enrollmentActivate: (id: string) => host.enrollmentActivate(id),
+    enrollmentAuthenticate: (payload: EnrollmentAuthentication) => host.enrollmentAuthenticate(payload),
+    enrollmentLogin: (payload: EnrollmentAuthentication) => host.enrollmentLogin(payload),
+    enrollmentRefreshSync: () => host.enrollmentRefreshSync(),
+    enrollmentIncoming: () => host.enrollmentIncoming(),
+    onEnrollmentOpen: (listener: () => void) => host.onEnrollmentOpen(listener),
+    readServerSettings: () => host.readServerSettings() as Promise<Record<string, unknown>>,
+    writeServerSettings: (settings: unknown) => host.writeServerSettings(settings),
+    commitServerSettings: () => host.commitServerSettings()
   });
 }
 
@@ -497,6 +514,11 @@ const nativeHost = window.api;
 if (!nativeHost || typeof nativeHost !== 'object') {
   throw new Error('The BOBOCLOUD native host bridge is unavailable.');
 }
+
+rendererPlatform.lifecycle.add(rendererPlatform.services.registerPrivate(
+  ENROLLMENT_HOST_SERVICE_ID,
+  createEnrollmentHost(nativeHost)
+));
 
 rendererPlatform.lifecycle.add(rendererPlatform.services.registerPrivate('host.realtime', Object.freeze({
   readTextFile: nativeHost.readFile,

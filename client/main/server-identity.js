@@ -50,6 +50,8 @@ function rcloneConnectionIdentity(settings) {
   return digest([
     IDENTITY_SCHEMA,
     normalizeHost(value.ip).toLowerCase(),
+    normalizedPort(value.sshPort, 22),
+    String(value.sshHostKey || ''),
     String(value.user || ''),
     String(value.pass || '')
   ]);

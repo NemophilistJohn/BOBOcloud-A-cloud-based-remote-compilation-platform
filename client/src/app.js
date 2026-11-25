@@ -307,7 +307,7 @@ import { renderRunHistorySummary, runHistoryTarget, runHistoryTime } from './run
       var serverSaveButton = document.getElementById('server-save');
       var firstRunConnection = Boolean(BOBO.settings && BOBO.settings.isFirstRunOpen && BOBO.settings.isFirstRunOpen());
       var previousConfig = S.serverSettings || {};
-      var config = {
+      var config = Object.assign({}, previousConfig, {
         ip: document.getElementById('server-ip').value.trim(),
         user: document.getElementById('server-user').value.trim(),
         pass: document.getElementById('server-pass').value,
@@ -327,7 +327,7 @@ import { renderRunHistorySummary, runHistoryTarget, runHistoryTime } from './run
 		})(),
         syncInterval: (parseInt(document.getElementById('sync-interval').value) || 30) * 1000,
         setupCompleted: !firstRunConnection
-      };
+      });
       var sameSshAccount = previousConfig.ip === config.ip && previousConfig.user === config.user;
       config.passConfigured = Boolean(!config.pass && previousConfig.passConfigured && sameSshAccount);
       if (!config.ip || !config.user || (!config.pass && !config.passConfigured)) {
@@ -532,6 +532,9 @@ import { renderRunHistorySummary, runHistoryTarget, runHistoryTime } from './run
   document.documentElement.setAttribute('data-bobo-ready', 'true');
   try { window.dispatchEvent(new CustomEvent('bobo:ready')); } catch (e) {}
   console.log('BOBOCLOUD Editor initialized successfully');
-  if (BOBO.settings && BOBO.settings.openFirstRun) BOBO.settings.openFirstRun();
+  if (BOBO.welcome) {
+    BOBO.welcome.init(Boolean(S.serverSettings && S.serverSettings.firstRunRequired));
+    if (BOBO.commands) BOBO.commands.register('welcome', 'Welcome to BOBOCLOUD', '', 'Help', function() { BOBO.welcome.open(); });
+  }
   });
 })();

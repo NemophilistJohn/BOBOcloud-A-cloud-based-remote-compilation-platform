@@ -47,7 +47,7 @@ async function installMarketplaceMock(app) {
           versions: [{
             version: '1.0.0',
             publishedAt: '2026-08-17T00:00:00.000Z',
-            engines: { bobocloud: '>=2.6.0 <3.0.0', pluginApi: '^1.2.0' },
+            engines: { bobocloud: '>=2.6.0 <5.0.0', pluginApi: '^1.2.0' },
             permissions: ['sourceControl.register', 'scm.git.read', 'scm.git.write'],
             locales: ['en', 'zh-CN', 'ja'],
             size: 46353,
@@ -68,7 +68,7 @@ async function installMarketplaceMock(app) {
           versions: [{
             version: '2.0.0',
             publishedAt: '2026-08-17T00:00:00.000Z',
-            engines: { bobocloud: '>=2.6.0 <3.0.0', pluginApi: '^1.2.0' },
+            engines: { bobocloud: '>=2.6.0 <5.0.0', pluginApi: '^1.2.0' },
             permissions: [],
             locales: ['en'],
             size: 100,

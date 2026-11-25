@@ -21,6 +21,7 @@ import (
 	"bobocloud-server/internal/collab"
 	"bobocloud-server/internal/config"
 	"bobocloud-server/internal/dap"
+	"bobocloud-server/internal/enrollment"
 	"bobocloud-server/internal/lifecycle"
 	"bobocloud-server/internal/lsp"
 	"bobocloud-server/internal/metrics"
@@ -88,38 +89,41 @@ type PackageLockResolver func(context.Context, PackageLockResolutionRequest) (Pa
 
 // HTTPHandler 包含所有 HTTP API 处理器及其依赖
 type HTTPHandler struct {
-	Config              *config.Config
-	Sessions            storage.SessionStore
-	Channels            *session.ChannelManager
-	Terminal            TerminalExecutor
-	EnvironmentSetup    EnvironmentSetupExecutor
-	PackageLockResolver PackageLockResolver
-	CompileActivity     storage.CompileActivityStore
-	RateLimiter         *RateLimiter // Phase 2: 限流器（按用户）
-	LoginLimiter        *RateLimiter // 登录/注册限速（按 IP，防爆破）
-	UserStore           auth.UserStore
-	AuthSessions        auth.AuthSessionStore   // 登录会话 token（可为 nil = 单机模式）
-	Invites             auth.InviteStore        // 邀请码（可为 nil = 单机模式）
-	RunHistory          storage.RunHistoryStore // 运行历史查询（可为 nil）
-	Audit               storage.AuditStore      // 审计日志（可为 nil）
-	Version             string                  // 服务端版本号（serverInfo 返回）
-	Collaboration       *collab.Manager         // 团队、Git 工作树与邀请
-	Social              *social.Store
-	ProjectSnapshots    *snapshot.Store
-	BuildCache          *buildcache.Manager // 团队编译缓存
-	LSP                 *lsp.Manager        // 远程语言服务器与独立分析缓存
-	DAP                 *dap.Manager        // 独立远程调试适配器会话
-	DependencyViews     *lsp.DependencyRegistry
-	Lifecycle           *lifecycle.Manager // 运行/终端与破坏性存储操作的用户级互斥
-	PersonalCache       *personalcache.Manager
-	PackageCatalog      packagecatalog.Catalog
-	PackagePlans        *packageops.Store
-	RuntimeMetadata     RuntimeMetadataProvider
-	Metrics             *metrics.Registry
-	Resources           *resourcecontrol.Controller
-	Readiness           ReadinessProbe // 无认证 /readyz 的依赖检查；由 main 在组件装配后注入
-	Accepting           func() bool    // nil keeps legacy embedders accepting work
-	AcquireWork         func(string) (func(), error)
+	Config                  *config.Config
+	Sessions                storage.SessionStore
+	Channels                *session.ChannelManager
+	Terminal                TerminalExecutor
+	EnvironmentSetup        EnvironmentSetupExecutor
+	PackageLockResolver     PackageLockResolver
+	CompileActivity         storage.CompileActivityStore
+	RateLimiter             *RateLimiter // Phase 2: 限流器（按用户）
+	LoginLimiter            *RateLimiter // 登录/注册限速（按 IP，防爆破）
+	UserStore               auth.UserStore
+	AuthSessions            auth.AuthSessionStore // 登录会话 token（可为 nil = 单机模式）
+	Invites                 auth.InviteStore      // 邀请码（可为 nil = 单机模式）
+	Enrollment              *enrollment.Manager
+	SyncCredential          func(*auth.User, string) map[string]any
+	OnRootEnrollmentClaimed func() error
+	RunHistory              storage.RunHistoryStore // 运行历史查询（可为 nil）
+	Audit                   storage.AuditStore      // 审计日志（可为 nil）
+	Version                 string                  // 服务端版本号（serverInfo 返回）
+	Collaboration           *collab.Manager         // 团队、Git 工作树与邀请
+	Social                  *social.Store
+	ProjectSnapshots        *snapshot.Store
+	BuildCache              *buildcache.Manager // 团队编译缓存
+	LSP                     *lsp.Manager        // 远程语言服务器与独立分析缓存
+	DAP                     *dap.Manager        // 独立远程调试适配器会话
+	DependencyViews         *lsp.DependencyRegistry
+	Lifecycle               *lifecycle.Manager // 运行/终端与破坏性存储操作的用户级互斥
+	PersonalCache           *personalcache.Manager
+	PackageCatalog          packagecatalog.Catalog
+	PackagePlans            *packageops.Store
+	RuntimeMetadata         RuntimeMetadataProvider
+	Metrics                 *metrics.Registry
+	Resources               *resourcecontrol.Controller
+	Readiness               ReadinessProbe // 无认证 /readyz 的依赖检查；由 main 在组件装配后注入
+	Accepting               func() bool    // nil keeps legacy embedders accepting work
+	AcquireWork             func(string) (func(), error)
 
 	// SetUserLimit 把用户容器配额变更同步到 Docker 池（可为 nil，仅重启生效）
 	SetUserLimit func(userID string, limit int)
@@ -258,6 +262,9 @@ func (h *HTTPHandler) handleAuthenticatedRequest(w http.ResponseWriter, r *http.
 		return
 	case "register":
 		h.handleRegister(w, r, req)
+		return
+	case "inspectEnrollment":
+		h.handleInspectEnrollment(w, r, req)
 		return
 	}
 
@@ -461,11 +468,13 @@ func (h *HTTPHandler) routeRequest(w http.ResponseWriter, r *http.Request, req *
 
 	// ── 用户与邀请管理（admin+ / root）──
 	case "createInvite":
-		h.handleCreateInvite(w, r, req)
+		writeJSON(w, http.StatusGone, model.Response{Success: false, Error: "Invite codes have been replaced by enrollment links"})
 	case "listInvites":
-		h.handleListInvites(w, r)
+		writeJSON(w, http.StatusGone, model.Response{Success: false, Error: "Invite codes have been replaced by enrollment links"})
 	case "revokeInvite":
-		h.handleRevokeInvite(w, r, req)
+		writeJSON(w, http.StatusGone, model.Response{Success: false, Error: "Invite codes have been replaced by enrollment links"})
+	case "createEnrollment", "createDeviceEnrollment", "listEnrollments", "revokeEnrollment", "getSyncCredential":
+		h.handleEnrollment(w, r, req)
 	case "listUsers":
 		h.handleListUsers(w, r)
 	case "setUserDisabled":

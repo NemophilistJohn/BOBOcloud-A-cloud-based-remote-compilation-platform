@@ -140,6 +140,17 @@ async function ensureConfig(settings, executablePath, configPath, options) {
     var host = safeConfigValue(settings.ip, 'host', 1024);
     var user = safeConfigValue(settings.user, 'user', 1024);
     var pass = safeConfigValue(settings.pass, 'password', 64 * 1024, false);
+    var port = settings.sshPort === undefined ? 22 : Number(settings.sshPort);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid SFTP port');
+    var trust = [];
+    if (settings.sshHostKey) {
+      var hostKey = safeConfigValue(settings.sshHostKey, 'SSH host key', 8192);
+      if (!/^(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp\d+) [A-Za-z0-9+/=]+$/.test(hostKey)) throw new Error('Invalid SSH host key');
+      var digest = require('node:crypto').createHash('sha256').update(host + ':' + port + hostKey).digest('hex');
+      var knownHostsPath = path.join(path.dirname(configPath), 'host-trust-' + digest + '.known_hosts');
+      writeFileAtomicSync(knownHostsPath, (port === 22 ? host : '[' + host + ']:' + port) + ' ' + hostKey + '\n', { mode: 0o600, maxBytes: 16384 });
+      trust.push('known_hosts_file = ' + knownHostsPath);
+    } else if (settings.syncManaged) throw new Error('Managed SFTP requires a verified host key');
     var protectedPassword = await obscurePassword(rcloneExecutable, pass, options);
     if (!protectedPassword.success) return protectedPassword;
     if (options.signal && options.signal.aborted) return fixedFailure('rclone configuration was cancelled', 'CANCELLED');
@@ -148,8 +159,11 @@ async function ensureConfig(settings, executablePath, configPath, options) {
       'type = sftp',
       'host = ' + host,
       'user = ' + user,
-      'port = 22',
+      'port = ' + port,
       'pass = ' + protectedPassword.value,
+      'disable_hashcheck = true',
+      'shell_type = none',
+      ...trust,
       ''
     ].join('\n');
     writeFileAtomicSync(configPath, content, { maxBytes: 128 * 1024, mode: 0o600 });

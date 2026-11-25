@@ -79,6 +79,7 @@ import './compat/collaboration-adapter.ts';
 import './compat/realtime-adapter.ts';
 import './compat/social-adapter.ts';
 import './compat/account-profile-adapter.ts';
+import './compat/welcome-adapter.ts';
 
 // AI modules.
 import './compat/ai-settings-schema-adapter.ts';

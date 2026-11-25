@@ -404,6 +404,20 @@ test -s "$tls_key"
 test "$(stat -c '%u' "$tls_key")" = 0
 test "$(stat -c '%A' "$tls_key" | cut -c5-6)" = "r-"
 
+# Enrollment secrets belong in the writable private state tree. The release
+# directory stays root-owned; its link is only a local administrator shortcut.
+bootstrap_dir="$data_root/bootstrap"
+test ! -L "$bootstrap_dir"
+install -d -o "$service_user" -g "$service_group" -m 0700 "$bootstrap_dir"
+claim_shortcut="$root/admin-claim.link"
+if [ -L "$claim_shortcut" ]; then
+  test "$(readlink "$claim_shortcut")" = "$bootstrap_dir/admin-claim.link"
+elif [ -e "$claim_shortcut" ]; then
+  echo "Refusing to replace an existing claim file" >&2; exit 1
+else
+  ln -s "$bootstrap_dir/admin-claim.link" "$claim_shortcut"
+fi
+
 # The env file is intentionally required by the unit. Create an empty,
 # protected file on a first install so systemd cannot silently omit it.
 if [ -e "$environment_file" ] && [ -L "$environment_file" ]; then

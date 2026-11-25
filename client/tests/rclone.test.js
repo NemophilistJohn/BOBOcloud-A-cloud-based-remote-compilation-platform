@@ -107,6 +107,35 @@ test('SFTP passwords travel through stdin and never enter process arguments, con
   assert.doesNotMatch(JSON.stringify(failed), /another-secret|command failed/);
 });
 
+test('managed SFTP pins the supplied SSH host key and port and refuses missing trust', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-rclone-host-key-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const checkVersion = async (executablePath) => ({ available: true, path: executablePath });
+  const execFile = (_path, _args, _options, callback) => ({
+    stdin: { on() {}, end() { setImmediate(() => callback(null, 'obscured\n', '')); } }
+  });
+  const configPath = path.join(root, 'rclone.conf');
+  const settings = { ip: 'compiler.example', user: 'sync-user', pass: 'secret', syncManaged: true,
+    sshPort: 4022, sshHostKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6' };
+  assert.equal((await rclone.ensureConfig(settings, process.execPath, configPath, { checkVersion, execFile })).success, true);
+  const content = fs.readFileSync(configPath, 'utf8');
+  assert.match(content, /(?:^|\n)port = 4022(?:\n|$)/);
+  const trust = content.match(/(?:^|\n)known_hosts_file = ([^\r\n]+)/);
+  assert.ok(trust, 'managed connection must configure a known-hosts file');
+  assert.equal(fs.readFileSync(trust[1], 'utf8'), '[compiler.example]:4022 ' + settings.sshHostKey + '\n');
+  assert.doesNotMatch(content, /secret/);
+
+  for (const invalid of [
+    { sshHostKey: '' }, { sshHostKey: 'ssh-ed25519 AAAA\nmalicious' }, { sshPort: 65536 }
+  ]) {
+    const target = path.join(root, 'invalid-' + Object.keys(invalid)[0] + '-' + String(invalid.sshPort || invalid.sshHostKey.length) + '.conf');
+    const result = await rclone.ensureConfig({ ...settings, ...invalid }, process.execPath, target, { checkVersion, execFile });
+    assert.equal(result.success, false);
+    assert.equal(fs.existsSync(target), false);
+    assert.doesNotMatch(JSON.stringify(result), /secret/);
+  }
+});
+
 test('SFTP connection validation is bounded and returns only classified errors', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-rclone-connection-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
