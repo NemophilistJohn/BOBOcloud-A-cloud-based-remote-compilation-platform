@@ -1210,6 +1210,12 @@ func TestPackageCenterCapabilityRequiresManagedCacheAndAdvertisesTimeout(t *test
 func TestPackageCenterRejectsMismatchedInventoryBeforePublication(t *testing.T) {
 	handler, serverRoot, dataRoot := newProjectEnvironmentTestHandler(t)
 	configurePackageCenterTestHandler(handler, dataRoot)
+	// This fixture verifies exact staged inventory, not the periodic quota
+	// scanner. Avoid a scan racing its temporary metadata renames on slower
+	// Windows disks and cancelling before the inventory validation is reached.
+	handler.PersonalCache = newPersonalCacheManagerForTest(dataRoot, personalcache.Options{
+		ScopeMode: "project-lock", ReservationBytes: 8, ReservationFiles: 1, ScanInterval: time.Hour,
+	})
 	workspace := filepath.Join(serverRoot, "project-key")
 	manifest := filepath.Join(workspace, "requirements.txt")
 	writeEnvironmentFile(t, manifest, "numpy==2.1.0\n")
