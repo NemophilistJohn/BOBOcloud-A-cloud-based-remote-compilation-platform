@@ -648,7 +648,7 @@ export interface CollaborationWorkspacePort {
     tree: CollaborationTreeNodeDto | null,
     workspaceIdentity: number,
     leaveToken?: string | null,
-    options?: Readonly<{ approved?: boolean }>
+    options?: Readonly<{ approved?: boolean; teamMapping?: CollaborationTeamMappingDto | null }>
   ): Promise<boolean>;
 }
 
@@ -783,7 +783,7 @@ export interface CollaborationFacade {
   openHub(): Promise<void>;
   openProfile(): void;
   clearCurrent(): void;
-  restoreMapping(mapping: CollaborationTeamMappingDto | null, localPath?: string): void;
+  restoreMapping(mapping: CollaborationTeamMappingDto | null, localPath?: string, skipModeRefresh?: boolean): void;
   updateTeamChrome(): void;
   refreshWorkbench(): Promise<void>;
   uploadCurrent(): Promise<boolean>;

@@ -481,6 +481,9 @@
     S.workspaceGeneration = (S.workspaceGeneration || 0) + 1;
     S.workspaceChangeVersion = 0;
     S.lastSyncedVersion = -1;
+    if (Object.prototype.hasOwnProperty.call(options, 'teamMapping') && BOBO.collaboration) {
+      BOBO.collaboration.restoreMapping(options.teamMapping, rootPath, true);
+    }
     if (BOBO.workspaceSettings && BOBO.workspaceSettings.refreshForWorkspace) {
       await BOBO.workspaceSettings.refreshForWorkspace(rootPath, S.workspaceIdentity);
     }
@@ -499,11 +502,11 @@
     updateTitlebar();
     if (BOBO.workbench) BOBO.workbench.refreshContext();
     if (BOBO.lsp && BOBO.lsp.workspaceChanged) BOBO.lsp.workspaceChanged();
-    try { global.dispatchEvent(new CustomEvent('bobo:workspace-changed', { detail: { rootPath: rootPath } })); } catch (e) {}
     if (leaveToken && global.api && global.api.workspaceSwitchApplied) {
       try { await global.api.workspaceSwitchApplied({ leaveToken: leaveToken }); } catch (e) {}
     }
     abortWorkspaceLeave(leaveToken);
+    try { global.dispatchEvent(new CustomEvent('bobo:workspace-changed', { detail: { rootPath: rootPath } })); } catch (e) {}
     if (BOBO.runner && BOBO.runner.syncWithServer) {
       var appliedRoot = rootPath;
       var appliedGeneration = S.workspaceGeneration;
@@ -792,7 +795,8 @@
   // ──── Incremental file event handling ────
   function handleFileEvent(data) {
     if (!data || !data.event) return false;
-    var accepted = BOBO.workspaceSyncStatus ? BOBO.workspaceSyncStatus.handleFileEvent(data) : true;
+    var accepted = BOBO.workspaceSyncStatus && !BOBO.realtime?.isActive()
+      ? BOBO.workspaceSyncStatus.handleFileEvent(data) : true;
 
     var container = document.getElementById('file-tree');
     var rootUl = container.querySelector('ul');
@@ -2156,6 +2160,10 @@
   }
 
   BOBO.workspace = {
+    markSharedSnapshotSynced: function() {
+      var status = BOBO.workspaceSyncStatus;
+      if (status) status.finishSync(status.beginSync(), { success: true });
+    },
     resolveSplitSurface: function(key) {
       var tab = S.tabs.find(function(item) { return item.path === key; });
       if (tab && tab.documentView && !tab.documentView.disposed) return {

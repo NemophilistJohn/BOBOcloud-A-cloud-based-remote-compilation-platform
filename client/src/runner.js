@@ -504,11 +504,19 @@
       !!S.serverSettings.ip && !!S.serverSettings.user && hasCloudAuth();
   }
 
+  async function workspaceSyncMode() {
+    var identity = currentSyncIdentity();
+    var mode = BOBO.realtime?.resolveSyncMode ? await BOBO.realtime.resolveSyncMode()
+      : BOBO.realtime?.isActive() ? 'shared' : 'normal';
+    return syncOperationMatchesCurrent(identity) ? mode : 'pending';
+  }
+
   async function doSyncWithServer() {
     // No folder open or server not configured -> skip silently.
     // This guards the auto-sync interval from spamming the output panel
     // with errors when no workspace is opened.
     if (!canSyncCurrentWorkspace()) return false;
+    if (BOBO.realtime?.isActive() || await workspaceSyncMode() !== 'normal') return false;
     if (syncPromise) {
       if (syncOperationMatchesCurrent(syncOperation)) return syncPromise;
       await syncPromise;
@@ -520,11 +528,14 @@
 
   // Manual Sync is intentionally forceful; pre-run sync uses version checks.
   async function manualSyncWithServer() {
-    if (!S.workspaceRoot || S.workspaceTransitionLocked || !S.serverSettings.ip || !S.serverSettings.user) return false;
+    if (!S.workspaceRoot || S.workspaceTransitionLocked || !S.serverSettings.ip) return false;
     if (!hasCloudAuth()) {
       BOBO.updateRunOutput('Cloud sync requires login. Click the account button in the status bar to sign in.');
       return false;
     }
+    var mode = await workspaceSyncMode();
+    if (mode === 'shared') return BOBO.realtime.syncPersonal();
+    if (mode !== 'normal') return false;
     // A user-triggered upload must run after any background sync so edits
     // saved immediately before clicking Sync cannot be skipped.
     if (syncPromise) await syncPromise;
@@ -538,6 +549,7 @@
   async function ensureWorkspaceSyncedForRun(runContext) {
     if (syncPromise) await syncPromise;
     if (!canSyncCurrentWorkspace()) return false;
+    if (BOBO.realtime?.isActive() || await workspaceSyncMode() !== 'normal') return false;
     if (syncedIdentityEpoch === (S.runIdentityEpoch || 0) && S.lastSyncedVersion === S.workspaceChangeVersion) {
       runOutputDetail('Workspace unchanged - using the existing server copy', { stage: 'sync' }, runContext);
       return true;
@@ -546,6 +558,7 @@
   }
 
   function startSync(verbose, runContext) {
+    if (BOBO.realtime?.isActive()) return Promise.resolve(false);
     var operation = currentSyncIdentity();
     var syncStatusContext = BOBO.workspaceSyncStatus && BOBO.workspaceSyncStatus.beginSync({ force: verbose === true });
     syncInFlight = true;
@@ -575,6 +588,7 @@
   }
 
   async function uploadWorkspace() {
+    if (BOBO.realtime?.isActive()) return manualSyncWithServer();
     if (BOBO.workspace && BOBO.workspace.saveAllTabs) {
       var saved = await BOBO.workspace.saveAllTabs();
       if (!saved) return false;
@@ -722,7 +736,6 @@
 
   // Public sync function (wraps doSyncWithServer with mutex)
   function syncWithServer() {
-    if (BOBO.realtime && BOBO.realtime.isActive()) return BOBO.realtime.syncPersonal();
     return doSyncWithServer();
   }
 

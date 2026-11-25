@@ -120,13 +120,7 @@ import { renderRunHistorySummary, runHistoryTarget, runHistoryTime } from './run
 
   async function applyOpenedWorkspace(res) {
     if (!res) return false;
-    var applied = await BOBO.workspace.applyWorkspace(res.rootPath, res.tree, res.workspaceIdentity, res.leaveToken);
-    if (!applied) return false;
-    if (BOBO.collaboration) {
-      if (res.teamMapping) BOBO.collaboration.restoreMapping(res.teamMapping, res.rootPath);
-      else BOBO.collaboration.clearCurrent();
-    }
-    return true;
+    return BOBO.workspace.applyWorkspace(res.rootPath, res.tree, res.workspaceIdentity, res.leaveToken, { teamMapping: res.teamMapping || null });
   }
 
   // Requests from the first painted frame are buffered until workspace/editor
@@ -143,7 +137,8 @@ import { renderRunHistorySummary, runHistoryTarget, runHistoryTime } from './run
         var uploaded = await BOBO.runner.uploadWorkspace();
         if (!uploaded) throw new Error('Workspace synchronization failed. Check the Output panel for details.');
         var teamProject = S.collaboration && S.collaboration.current;
-        if (BOBO.toast) BOBO.toast.success(teamProject ? 'Uploaded to your team cloud worktree. Commit & push when ready.' : 'Workspace synchronized');
+        var shared = BOBO.realtime?.isActive();
+        if (BOBO.toast) BOBO.toast.success(shared ? 'Personal cloud snapshot saved' : teamProject ? 'Uploaded to your team cloud worktree. Commit & push when ready.' : 'Workspace synchronized');
         if (teamProject && BOBO.collaboration) await BOBO.collaboration.refreshWorkbench();
       } catch (error) {
         if (BOBO.toast) BOBO.toast.error(error.message);

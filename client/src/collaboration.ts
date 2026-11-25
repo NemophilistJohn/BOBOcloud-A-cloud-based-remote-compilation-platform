@@ -1178,7 +1178,7 @@ export function createCollaborationService(
     } catch (e) {}
   }
 
-  async function refreshApprovedWorkspace(rootPath) {
+  async function refreshApprovedWorkspace(rootPath, teamMapping?) {
     if (disposed) return false;
     var epoch = lifecycleEpoch;
     var tree = await dependencies.host.refreshWorkspace();
@@ -1187,7 +1187,8 @@ export function createCollaborationService(
     if (!tree || !identity || identity.rootPath !== rootPath) {
       throw new Error(t('Pull failed'));
     }
-    var applied = await BOBO.workspace.applyWorkspace(rootPath, tree, identity.workspaceIdentity, null, { approved: true });
+    var options = teamMapping ? { approved: true, teamMapping: teamMapping } : { approved: true };
+    var applied = await BOBO.workspace.applyWorkspace(rootPath, tree, identity.workspaceIdentity, null, options);
     if (!isCurrent(epoch)) return false;
     if (!applied) throw new Error(t('Pull failed'));
     return true;
@@ -1290,16 +1291,14 @@ export function createCollaborationService(
         if (storedMapping?.realtimeEpoch) nextCurrent.realtimeEpoch = storedMapping.realtimeEpoch;
         if (!isCurrent(epoch)) return false;
         if (replacesCurrentWorkspace) {
-          await refreshApprovedWorkspace(localPath);
+          await refreshApprovedWorkspace(localPath, nextCurrent);
         } else {
           var opened = await dependencies.host.pickWorkspace(localPath);
-          if (!opened || !(await BOBO.workspace.applyWorkspace(opened.rootPath, opened.tree, opened.workspaceIdentity, opened.leaveToken))) return false;
+          if (!opened || !(await BOBO.workspace.applyWorkspace(opened.rootPath, opened.tree, opened.workspaceIdentity, opened.leaveToken, { teamMapping: nextCurrent }))) return false;
         }
 	      if (!isCurrent(epoch)) return false;
 	    writeMapping(project.team_id, project.id, selectedBranch, localPath);
-        S.collaboration.current = nextCurrent;
         if (BOBO.realtime) await BOBO.realtime.openProject(project, nextCurrent);
-        updateTeamChrome();
         BOBO.switchToPanel?.('team');
         BOBO.workbench?.setPrimaryView?.('explorer');
         notify(t('Team project opened on {branch}', { branch: selectedBranch }), 'success');
@@ -1343,9 +1342,9 @@ export function createCollaborationService(
     }, undefined, false);
   }
 
-  function updateTeamChrome() {
+  function updateTeamChrome(skipModeRefresh?) {
     if (disposed) return;
-    dispatchWorkbenchEvent('bobo:team-workspace-changed');
+    if (!skipModeRefresh) dispatchWorkbenchEvent('bobo:team-workspace-changed');
     var current = S.collaboration && S.collaboration.current;
     if (conflictSession && (!current || conflictSession.teamId !== current.teamId || conflictSession.projectId !== current.projectId || conflictSession.branch !== current.branch)) {
       closeConflictSession();
@@ -1371,7 +1370,7 @@ export function createCollaborationService(
     renderActiveLockStatus();
   }
 
-	function clearCurrent() {
+	function clearCurrent(skipModeRefresh?) {
 	  if (disposed) return;
 	  var previous = S.collaboration.current;
 	  if (previous) releaseHeldFileLocks(previous);
@@ -1379,20 +1378,20 @@ export function createCollaborationService(
       if (lockRefreshTimer) { clearInterval(lockRefreshTimer); lockRefreshTimer = null; }
       if (lockBroadcastTimer) { clearInterval(lockBroadcastTimer); lockBroadcastTimer = null; }
       if (lockCountdownTimer) { clearInterval(lockCountdownTimer); lockCountdownTimer = null; }
-	  updateTeamChrome();
+	  updateTeamChrome(skipModeRefresh);
 	  if (BOBO.environmentActivity) BOBO.environmentActivity.contextChanged('team');
 	}
 
-	function restoreMapping(mapping, localPath) {
+	function restoreMapping(mapping, localPath, skipModeRefresh?) {
 	  if (disposed) return;
-	  if (!mapping) { clearCurrent(); return; }
+	  if (!mapping) { clearCurrent(skipModeRefresh); return; }
 	  if (S.collaboration.current) releaseHeldFileLocks(S.collaboration.current);
 	  S.collaboration.current = {
 		teamId: mapping.teamId, teamName: mapping.teamName || 'Team', projectId: mapping.projectId,
 		projectName: mapping.projectName || 'Cloud project', branch: mapping.branch,
 		localPath: localPath || mapping.localPath || '', realtimeEpoch: mapping.realtimeEpoch || undefined
 	  };
-	  updateTeamChrome();
+	  updateTeamChrome(skipModeRefresh);
 	}
 
   // ─── Team workbench ────────────────────────────────────────

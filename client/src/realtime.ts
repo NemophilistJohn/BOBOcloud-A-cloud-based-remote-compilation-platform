@@ -34,7 +34,8 @@ export interface RealtimeDependencies {
   workspace: { updateTabbar(): void; updateTitlebar(): void; closeTab(path: string, options?: { force: boolean }): Promise<boolean>;
     renderTree(tree: unknown): void; saveAllTabs(options?: unknown): Promise<boolean>; renameSharedFile(oldPath: string, newPath: string): void;
     prepareSharedViews(readTextFile: (path: string) => Promise<string>): Promise<{ path: string; text: string }[]>;
-    applySharedSnapshot(files: SharedFile[]): Promise<void> };
+    applySharedSnapshot(files: SharedFile[]): Promise<void>;
+    markSharedSnapshotSynced?(): void };
   refreshTree(): Promise<unknown>;
   editors(): Editor[];
   runArgs(language: string): Record<string, unknown>;
@@ -86,6 +87,9 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
   const panelMarkup = new WeakMap<HTMLElement, string>();
   const modeChanges = new Set<string>();
   let refreshPromise: Promise<void> | null = null;
+  let transitionLeave: Promise<void> | null = null;
+  let normalMapping: TeamMapping | null = null;
+  let sharedMapping: TeamMapping | null = null;
   let reconciliation: Promise<void> | null = null;
   let lastRunId = '', lastRunEvent = 0;
   let draftContext = '';
@@ -103,7 +107,10 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
     if (!auth.user || ((auth.mode === 'multi' || 'token' in auth) && !auth.token)) return '';
     return JSON.stringify([auth.mode || '', auth.user.id || auth.user.name || '', auth.token || '']);
   }
-  function isActive(): boolean { return !!mapping()?.realtimeEpoch; }
+  function isActive(): boolean {
+    const current = mapping();
+    return !!current && (!!current.realtimeEpoch || sharedMapping === current);
+  }
   function publishProjectMode(current: TeamMapping, enabled: boolean): void {
     const value = JSON.stringify([current.teamId, current.projectId, enabled]);
     if (joinedProjectMode === value) return;
@@ -531,6 +538,7 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
     const previous = shared;
     if (!next.enabled) {
       const current = mapping();
+      sharedMapping = null;
       if (current) publishProjectMode(current, false);
       await reconcileDisabled(next);
       return;
@@ -644,6 +652,7 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
     const tree = await d.refreshTree();
     if (settled !== generation) return;
     d.workspace.renderTree(tree); renderPanel();
+    if (mapping() === current && settled === generation) normalMapping = current;
     events.dispatchEvent(new Event('bobo:realtime-mode-changed'));
   }
   function receive(message: Record<string, unknown>): void {
@@ -720,7 +729,13 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
       const authoritative = knownState ?? await d.send('getRealtimeState', { teamId: current.teamId, projectId: current.projectId }) as SharedState;
       if (!isCurrent()) return;
       publishProjectMode(current, authoritative.enabled);
-      if (!authoritative.enabled) { await reconcileDisabled(authoritative); return; }
+      if (!authoritative.enabled) {
+        sharedMapping = null;
+        if (current.realtimeEpoch) await reconcileDisabled(authoritative);
+        else normalMapping = current;
+        return;
+      }
+      sharedMapping = current;
       if (authoritative.branch && authoritative.branch !== current.branch) {
         connectionPaused = true;
         throw new Error(t('Live collaboration uses branch {branch}. Reopen the team project to join it.', { branch: authoritative.branch }));
@@ -731,10 +746,10 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
         documents.forEach(item => item.subscription?.dispose()); documents.clear();
         shared = authoritative;
       }
-      current.realtimeEpoch = authoritative.epoch;
       const versionBeforeConnect = presenceVersion;
       const next = await host.connect({ teamId: current.teamId, projectId: current.projectId, epoch: shared.epoch, sessionId: actor });
       if (!isCurrent()) return;
+      current.realtimeEpoch = next.epoch;
       online = true;
       lastSentPresence = '';
       if (initial) {
@@ -780,6 +795,7 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
         const treeAfter = await d.refreshTree();
         if (!isCurrent()) return;
         d.workspace.renderTree(treeAfter);
+        d.workspace.markSharedSnapshotSynced?.();
       } else {
         await applyState(next, versionBeforeConnect);
         if (!isCurrent()) return;
@@ -833,6 +849,8 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
     }
   }
   async function refresh(): Promise<void> {
+    if (!authIdentity() || disposed || !mapping()) return;
+    if (transitionLeave) await transitionLeave;
     const identity = authIdentity();
     if (!identity || disposed || !mapping()) return;
     if (refreshPromise) return refreshPromise;
@@ -843,11 +861,27 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
       const info = await d.send('getRealtimeState', { teamId: current.teamId, projectId: current.projectId }) as SharedState;
       if (!isCurrent()) return;
       publishProjectMode(current, info.enabled);
-      if (info.enabled && (!isActive() || !online || shared.epoch !== info.epoch)) await join(info);
-      else if (!info.enabled && isActive()) await reconcileDisabled(info);
+      if (info.enabled) {
+        normalMapping = null;
+        sharedMapping = current;
+        if (!online || shared.epoch !== info.epoch) await join(info);
+      } else {
+        sharedMapping = null;
+        if (current.realtimeEpoch) await reconcileDisabled(info);
+        else normalMapping = current;
+      }
     })().catch(error => { if (isCurrent()) d.notify(errorMessage(error), true); }).finally(() => { if (refreshPromise === work) refreshPromise = null; });
     refreshPromise = work;
     return work;
+  }
+  async function resolveSyncMode(): Promise<'normal' | 'shared' | 'pending'> {
+    const current = mapping();
+    if (!current) return 'normal';
+    if (online && isActive()) return 'shared';
+    if (normalMapping !== current || isActive()) await refresh();
+    if (current !== mapping()) return 'pending';
+    if (isActive()) return 'shared';
+    return normalMapping === current && authIdentity() ? 'normal' : 'pending';
   }
   async function save(path?: string): Promise<boolean> {
     if (!isActive()) return false;
@@ -934,6 +968,7 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
   async function leave(): Promise<void> {
     const turn = ++generation;
     refreshPromise = null; joining = false;
+    normalMapping = null; sharedMapping = null;
     deferredState = null;
     initializedEpoch = ''; connectionPaused = false; connectionError = ''; reconnectAttempts = 0;
     lastSentPresence = ''; lastRunId = ''; lastRunEvent = 0;
@@ -950,7 +985,11 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
   }
   function leaveAndRefresh(): void {
     const completion = leave(), turn = generation;
-    void completion.then(() => { if (turn === generation && authIdentity()) return refresh(); });
+    const transition = completion.catch(error => {
+      if (turn === generation) d.notify(errorMessage(error), true);
+    }).finally(() => { if (transitionLeave === transition) transitionLeave = null; });
+    transitionLeave = transition;
+    void transition.then(() => { if (turn === generation && authIdentity()) return refresh(); });
   }
   listeners.push(host.onMessage(receive));
   on(events, 'bobo:visible-editors-changed', bindEditors);
@@ -994,7 +1033,7 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
     if (mapping() && !isActive() && !joining && reconnectTimer === undefined && !connectionPaused) void refresh();
     else if (isActive()) renderPresence();
   }, 5000);
-  return { isActive, decorateTreeRow, prepareFile, save, fileOperation, openProject, manage, run, runTask, stop,
+  return { isActive, resolveSyncMode, decorateTreeRow, prepareFile, save, fileOperation, openProject, manage, run, runTask, stop,
     syncPersonal: async () => { await save(); return d.syncPersonal(); }, leave, refresh,
     dispose() { disposed = true; clearInterval(timer); void leave(); listeners.forEach(fn => fn()); editorBindings.forEach(items => items.forEach(item => item.dispose())); panel?.remove(); } };
 }

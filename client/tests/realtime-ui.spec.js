@@ -130,17 +130,25 @@ test('two workbenches converge through split renames, offline drafts, deletion v
         b.state.selectedRuntime = 'python:3.10';
         b.sendToServer = async action => {
           if (action === 'getRealtimeState' || action === 'getRealtimeSnapshot') return (await fetch('http://127.0.0.1:' + port + '/fixture/' + action)).json();
+          if (action === 'snapshotRealtimePersonal') { window.__liveSnapshots++; return { success: true }; }
           return { success: true, data: [] };
         };
+        window.__ordinarySyncs = 0;
+        window.__liveSnapshots = 0;
+        b.state.serverSettings.user = 'sync-fixture';
+        b.rclone.prepareWorkspace = async () => { window.__ordinarySyncs++; throw new Error('Ordinary sync must skip a live project'); };
         const opened = await window.api.pickWorkspace(workspace);
-        await b.workspace.applyWorkspace(opened.rootPath, opened.tree, opened.workspaceIdentity, opened.leaveToken);
-        b.collaboration.restoreMapping(mapping, workspace);
+        await b.workspace.applyWorkspace(opened.rootPath, opened.tree, opened.workspaceIdentity, opened.leaveToken, { teamMapping: opened.teamMapping });
         await b.realtime.openProject({}, b.state.collaboration.current);
         await b.workspace.openFile(workspace + '/main.py', 'main.py');
       }, { workspace, mapping, user, port, room, snapshot: doc.text() });
       await expect(page.locator('.realtime-panel')).toHaveCount(1);
     }
     const a = await apps[0].firstWindow(), b = await apps[1].firstWindow();
+    await a.locator('#cloud-sync-btn').click();
+    await expect.poll(() => a.evaluate(() => window.__liveSnapshots)).toBe(1);
+    for (const page of [a, b]) expect(await page.evaluate(() => window.__ordinarySyncs)).toBe(0);
+    await expect(a.locator('#file-tree .tree-row[data-type="file"][data-path$="main.py"]')).toHaveAttribute('data-sync-state', 'synced');
     await expect.poll(() => a.evaluate(() => window.BOBO.state.editor.getValue())).toContain('hello');
     await focusEditor(a, 0);
     await a.keyboard.type('#Alice\n');

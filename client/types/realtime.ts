@@ -44,6 +44,7 @@ export interface RealtimeHost {
 }
 export interface RealtimeFacade {
   isActive(): boolean;
+  resolveSyncMode(): Promise<'normal' | 'shared' | 'pending'>;
   decorateTreeRow(row: HTMLElement, path: string): void;
   prepareFile(path: string): Promise<void>;
   save(path?: string): Promise<boolean>;

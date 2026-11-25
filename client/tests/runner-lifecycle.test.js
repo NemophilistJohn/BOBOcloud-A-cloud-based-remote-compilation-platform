@@ -193,6 +193,31 @@ test('leaving a shared task settles its local handle without stopping the room p
   assert.equal(stopped, false);
 });
 
+test('shared workspace auto-sync and pre-run sync never prepare rclone, and toolbar sync saves a personal snapshot', async () => {
+  const negotiation = deferred();
+  let active = false;
+  let prepares = 0;
+  let snapshots = 0;
+  const fixture = loadRunner({ BOBO: {
+    rclone: { async prepareWorkspace() { prepares++; throw new Error('Unexpected rclone prepare'); } },
+    realtime: {
+      isActive: () => active,
+      resolveSyncMode: () => negotiation.promise,
+      async syncPersonal() { snapshots++; return true; }
+    }
+  } });
+  const background = fixture.BOBO.runner.syncWithServer();
+  assert.equal(prepares, 0);
+  active = true;
+  negotiation.resolve('shared');
+  assert.equal(await background, false);
+  assert.equal(await fixture.BOBO.runner.ensureWorkspaceSyncedForRun(), false);
+  fixture.state.serverSettings.user = '';
+  assert.equal(await fixture.BOBO.runner.uploadWorkspace(), true);
+  assert.equal(prepares, 0);
+  assert.equal(snapshots, 1);
+});
+
 test('a sync from the previous workspace cannot swallow the new workspace sync', async () => {
   const firstSync = deferred();
   const secondSync = deferred();
