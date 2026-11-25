@@ -125,14 +125,9 @@ Platform packages are produced with `npm run build:win`, `npm run build:mac`, or
 
 ### First launch and connection
 
-The first-launch guide opens Server settings. Supply:
+The first launch opens the Welcome page inside the editor area. Select your language, paste the invitation from your administrator or another signed-in device, and check the verified server overview. Confirm the connection to continue through the welcome animation, then register for a join link or log in for a root-claim/device link. Self-signed TLS trust and the selected SFTP credentials are configured automatically.
 
-- the HTTP or HTTPS service address;
-- the SSH/SFTP account used to synchronize personal projects;
-- an application account when the service runs in multi-user mode;
-- an optional trusted self-signed certificate SHA-256 pin when HTTPS is used.
-
-Choosing **Use local editor only** dismisses the guide without creating a fake connection. You can return to Server settings later.
+Choosing **Continue with local editing** dismisses Welcome without creating a fake connection. You can reopen Welcome from the command palette; Server settings remain available for advanced manual configuration and diagnostics. The old single-user API-key control is retired.
 
 Server, authentication, and AI settings live in Electron's user-data directory for the current OS account. When Electron `safeStorage` is available, they are stored in an encrypted envelope and readable legacy profiles are migrated. If OS-backed encryption is unavailable, the codec falls back to ordinary JSON: this is not an unconditional encryption guarantee. Protect the OS account and never publish the profile directory. Plugin-local storage is not a credential vault.
 

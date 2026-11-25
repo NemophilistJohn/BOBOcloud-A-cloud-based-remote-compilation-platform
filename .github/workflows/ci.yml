@@ -317,21 +317,21 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: NemophilistJohn/BOBOCloud-AI-Agent-plugin-offical
-          ref: 75376095c9685e5684669e49f614234b15f2a567
+          ref: 62d17a92ee8d55159970340f12d1ae70e6e674a0
           path: .ci-plugins/ai-agent
           persist-credentials: false
       - name: Check out document preview plugin
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: NemophilistJohn/bobocloud-document-preview
-          ref: 9e0f25631cddb10cacfdee61eb01374b55f4fdba
+          ref: ba666c4e4533efc617c6165e10d8405342883d54
           path: .ci-plugins/document-preview
           persist-credentials: false
       - name: Check out local SCM plugin
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: NemophilistJohn/BOBOCLOUD-Compiler-Git-Integration-Plugin-Official-
-          ref: 0e87d0ca8a0e0d06aee5848a794c11dc6866c633
+          ref: 47785821b00cd8727141a505d0352aad24eb37d6
           path: .ci-plugins/local-scm
           persist-credentials: false
       - name: Set up Node.js

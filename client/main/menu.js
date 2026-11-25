@@ -75,7 +75,7 @@ function createMenuController(options) {
           { label: t('Administration...'), click: () => send('open-admin-panel', { tab: 'users' }) },
           { type: 'separator' },
           { label: t('Users'), click: () => send('open-admin-panel', { tab: 'users' }) },
-          { label: t('Invite Codes'), click: () => send('open-admin-panel', { tab: 'invites' }) },
+          { label: t('enrollment.auth.inviteLinks'), click: () => send('open-admin-panel', { tab: 'invites' }) },
           { label: t('Audit Log'), click: () => send('open-admin-panel', { tab: 'audit' }) }
         ]
       });

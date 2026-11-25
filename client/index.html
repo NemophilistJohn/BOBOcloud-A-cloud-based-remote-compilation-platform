@@ -840,14 +840,7 @@
               </div>
             </div>
           </div>
-          <details class="server-legacy-auth">
-            <summary>Legacy single-user authentication</summary>
-            <p>Only older single-user servers require an API key. Multi-user servers use account login.</p>
-            <div class="ss-field">
-              <label class="ss-label" for="server-apikey">Legacy API key</label>
-              <input id="server-apikey" class="ss-input" type="password" placeholder="bobo_...">
-            </div>
-          </details>
+          <input id="server-apikey" type="hidden" value="">
           <details class="server-legacy-auth server-secure-transport">
             <summary>Secure transport</summary>
             <p>Encrypt API and WebSocket traffic with TLS 1.3.</p>
