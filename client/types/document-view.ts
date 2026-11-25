@@ -184,6 +184,7 @@ export interface SandboxedDocumentViewOptions {
   readonly execute?: (request: DocumentKernelRequest) => Promise<DocumentKernelResult>;
   readonly onNavigation?: (navigation: DocumentNavigation) => void;
   readonly onFocus?: () => void;
+  readonly onSplitShortcut?: () => void;
 }
 
 export interface SandboxedDocumentView extends Disposable {
@@ -235,6 +236,7 @@ export interface DocumentViewThemePort {
 }
 
 export interface DocumentViewViewsPort {
+  openSplit?(): unknown;
   closeSplit?(): unknown;
   closeDiff?(): unknown;
   closeImagePreview?(): unknown;

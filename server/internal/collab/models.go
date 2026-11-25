@@ -31,6 +31,7 @@ type Project struct {
 	Description        string    `json:"description,omitempty"`
 	DefaultBranch      string    `json:"default_branch"`
 	WorktreeGeneration string    `json:"worktree_generation,omitempty"`
+	RealtimeEnabled    bool      `json:"realtime_enabled"`
 	CreatedBy          string    `json:"created_by"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`

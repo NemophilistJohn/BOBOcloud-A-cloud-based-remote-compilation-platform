@@ -2555,5 +2555,17 @@
   "Save document preview edits before joining live collaboration": "Save document preview edits before joining live collaboration",
   "Reconcile the shared workspace before normal synchronization": "Reconcile the shared workspace before normal synchronization",
   "Open a file or plugin tab": "Open a file or plugin tab",
-  "Cannot start live collaboration: {user} / {branch} has local changes: {paths}. Save and publish these changes, or resolve conflicts first.": "Cannot start live collaboration: {user} / {branch} has local changes: {paths}. Save and publish these changes, or resolve conflicts first."
+  "Cannot start live collaboration: {user} / {branch} has local changes: {paths}. Save and publish these changes, or resolve conflicts first.": "Cannot start live collaboration: {user} / {branch} has local changes: {paths}. Save and publish these changes, or resolve conflicts first.",
+  "Enable Collaboration": "Enable Collaboration",
+  "Disable Collaboration": "Disable Collaboration",
+  "Collaboration enabled": "Collaboration enabled",
+  "Collaboration disabled": "Collaboration disabled",
+  "Shared run history": "Shared run history",
+  "No output captured": "No output captured",
+  "Interrupted": "Interrupted",
+  "Timed out": "Timed out",
+  "Activate this view": "Activate this view",
+  "Collaboration is paused": "Collaboration is paused",
+  "Joining live collaboration…": "Joining live collaboration…",
+  "Live collaboration uses branch {branch}. Reopen the team project to join it.": "Live collaboration uses branch {branch}. Reopen the team project to join it."
 }

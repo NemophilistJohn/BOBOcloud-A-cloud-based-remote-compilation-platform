@@ -202,6 +202,12 @@ function bootstrapSource(): string {
       const announceFocus = () => post({ type: 'focus' });
       focusRoot?.addEventListener?.('pointerdown', announceFocus, true);
       focusRoot?.addEventListener?.('focusin', announceFocus, true);
+      document.addEventListener('keydown', (event) => {
+        if (!event.isTrusted || !(event.ctrlKey || event.metaKey) || event.altKey || event.key !== '\\\\') return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!event.repeat) post({ type: 'split-shortcut' });
+      }, true);
       const context = Object.freeze({
       root: document.getElementById('app'),
       document: documentInfo,
@@ -584,6 +590,7 @@ export function createSandboxedDocumentView(
       return;
     }
     if (message.type === 'focus') { options.onFocus?.(); return; }
+    if (message.type === 'split-shortcut') { options.onSplitShortcut?.(); return; }
     if (message.type === 'navigation' && options.onNavigation) {
       const navigation = normalizeDocumentNavigation(message.value);
       if (navigation) options.onNavigation(navigation);

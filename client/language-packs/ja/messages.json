@@ -2555,5 +2555,17 @@
   "Save document preview edits before joining live collaboration": "リアルタイム共同編集に参加する前に文書プレビューの変更を保存してください",
   "Reconcile the shared workspace before normal synchronization": "通常の同期を再開する前に共有ワークスペースを更新してください",
   "Open a file or plugin tab": "ファイルまたはプラグインのタブを開く",
-  "Cannot start live collaboration: {user} / {branch} has local changes: {paths}. Save and publish these changes, or resolve conflicts first.": "リアルタイム共同編集を開始できません：{user} の {branch} にローカル変更があります：{paths}。先に保存してコミット・プッシュするか、競合を解決してください。"
+  "Cannot start live collaboration: {user} / {branch} has local changes: {paths}. Save and publish these changes, or resolve conflicts first.": "リアルタイム共同編集を開始できません：{user} の {branch} にローカル変更があります：{paths}。先に保存してコミット・プッシュするか、競合を解決してください。",
+  "Enable Collaboration": "共同編集を有効にする",
+  "Disable Collaboration": "共同編集を無効にする",
+  "Collaboration enabled": "共同編集が有効",
+  "Collaboration disabled": "共同編集が無効",
+  "Shared run history": "共有実行履歴",
+  "No output captured": "出力は記録されていません",
+  "Interrupted": "中断",
+  "Timed out": "タイムアウト",
+  "Activate this view": "このビューをアクティブにする",
+  "Collaboration is paused": "共同編集は一時停止中です",
+  "Joining live collaboration…": "リアルタイム共同編集に参加中…",
+  "Live collaboration uses branch {branch}. Reopen the team project to join it.": "リアルタイム共同編集は {branch} ブランチを使用します。チームプロジェクトを開き直して参加してください。"
 }

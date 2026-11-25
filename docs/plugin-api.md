@@ -1,6 +1,6 @@
 # BOBOCloud Plugin API 1.12.0
 
-Status: public package and isolated extension-host contract. BOBOCloud desktop `2.9.1` implements Plugin API `1.12.0`. API `1.6.0` introduced truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism; later API 1.x releases extend that contract.
+Status: public package and isolated extension-host contract. BOBOCloud desktop `2.9.2` implements Plugin API `1.12.0`. API `1.6.0` introduced truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism; later API 1.x releases extend that contract.
 
 The reference guide, package checklist, and complete example are in [Plugin Development Guide](./plugin-development.md).
 
@@ -206,7 +206,7 @@ Plugin contribution ids must also begin with the plugin id plus `.`. API 1.6.0 a
 
 ## Document Views
 
-Desktop 2.9.1 can display two different document views, or a document and a text/plugin page, side by side. The host keeps each iframe mounted; pane focus selects save, navigation and virtual-document analysis. Selecting the same live view focuses its existing pane rather than cloning private drafts. This host layout capability uses the existing API 1.12.0 contract and requires no additional plugin permission. Plugin views should size their root responsively to the available pane.
+The host can display two different document views, or a document and a text or plugin page, side by side. Each iframe stays mounted and pane focus selects save, navigation and virtual-document analysis. Starting a split from a plugin view creates a preview of its current pane. Clicking the preview moves the original live iframe to that pane and preserves its private draft. The layout works with the existing API 1.12.0 contract. Plugin views should size their root to the available pane.
 
 Document viewers require package schema 2 and both `documentViews.register` and `documents.read`. The manifest is the executable-code allowlist:
 

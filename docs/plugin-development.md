@@ -1,6 +1,6 @@
 # BOBOCloud Plugin Development Guide
 
-This guide covers BOBOCloud Plugin API `1.12.0`. BOBOCloud desktop `2.9.1` implements API `1.12.0`; check `context.apiVersion` when a plugin uses a capability introduced after its declared minimum.
+This guide covers BOBOCloud Plugin API `1.12.0`. BOBOCloud desktop `2.9.2` implements API `1.12.0`; check `context.apiVersion` when a plugin uses a capability introduced after its declared minimum.
 
 Unless a tested incompatibility requires a cap, declare only the oldest supported host and Plugin API versions. Published plugin tags, artifacts, and Registry descriptors are immutable, so apply a changed compatibility range in the next plugin version rather than rewriting an existing release.
 

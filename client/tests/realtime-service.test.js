@@ -102,6 +102,7 @@ async function fixture(t, options = {}) {
   const emit = message => { for (const listener of listenerSet) listener(message); };
   const sent = [], materialized = [], notifications = [], network = [], widgets = [];
   const disk = new Map();
+  let snapshotFailure = null;
   let drafts = [], gate, closeGate, draftsGate, stateGate;
   function record(kind) { network.push({ kind, user: state.auth.user?.id, token: state.auth.token }); }
   const host = {
@@ -114,7 +115,12 @@ async function fixture(t, options = {}) {
       if (payload) drafts = structuredClone(payload.drafts);
       return { sessionId: 'alice-session', contextKey: 'draft-context', drafts: structuredClone(drafts) };
     },
-    async materialize(files) {
+    async materialize(files, options) {
+      if (options?.replace && snapshotFailure) {
+        const error = snapshotFailure;
+        snapshotFailure = null;
+        throw error;
+      }
       const snapshot = structuredClone(files);
       const blocked = gate;
       if (blocked && !blocked.started) {
@@ -122,7 +128,11 @@ async function fixture(t, options = {}) {
         blocked.entered.resolve();
         await blocked.release.promise;
       }
-      for (const item of snapshot) disk.set(item.path, item.content);
+      for (const item of snapshot) {
+        if (item.previousPath) { disk.set(item.path, disk.get(item.previousPath)); disk.delete(item.previousPath); }
+        if (item.deleted) disk.delete(item.path);
+        else if (typeof item.content === 'string') disk.set(item.path, item.content);
+      }
       materialized.push(snapshot);
     },
     async send(message) {
@@ -178,7 +188,8 @@ async function fixture(t, options = {}) {
   events.dispatchEvent(new Event('bobo:visible-editors-changed'));
   await until(() => model.subscriptionCount === 1, 'the actual realtime service must bind the file model');
   return {
-    service, model, tab, sent, server, materialized, disk, notifications, state, events, emit, network, widgets,
+    service, model, tab, sent, server, room, materialized, disk, notifications, state, events, emit, network, widgets,
+    failNextSnapshot() { snapshotFailure = new Error('Failed to publish initial workspace'); },
     poll() { intervals.forEach(fn => fn()); },
     blockClose() { closeGate = { entered: deferred(), release: deferred(), started: false }; return closeGate; },
     blockDrafts() { draftsGate = { entered: deferred(), release: deferred(), started: false }; return draftsGate; },
@@ -211,6 +222,32 @@ test('edits typed during acknowledged-edit disk materialization drain without an
   assert.equal(f.server.text(), f.model.getValue());
   assert.equal(f.tab.dirty, false);
   assert.deepEqual(f.notifications, []);
+});
+
+test('reconnect applies offline renames over the existing snapshot without replacing the folder', { timeout: 5000 }, async t => {
+  const f = await fixture(t);
+  const snapshots = f.network.filter(event => event.kind === 'getRealtimeSnapshot').length;
+  f.emit({ type: 'disconnected' });
+  f.room.files[0] = { ...f.room.files[0], path: 'renamed.py', revision: 2 };
+  f.room.revision++;
+  await f.service.refresh();
+  await until(() => f.disk.has('renamed.py'), 'offline rename must be materialized on reconnect');
+  assert.equal(f.disk.has('main.py'), false);
+  assert.equal(f.network.filter(event => event.kind === 'getRealtimeSnapshot').length, snapshots);
+  assert.ok(f.materialized.some(files => files.some(file => file.path === 'renamed.py' && file.previousPath === 'main.py')));
+});
+
+test('initial snapshot publication failures retry the full initialization before edits are allowed', { timeout: 5000 }, async t => {
+  const f = await fixture(t);
+  await f.service.leave();
+  f.failNextSnapshot();
+  await f.service.refresh();
+  await assert.rejects(f.service.save(), /reconnecting/);
+  const firstAttempt = f.network.filter(event => event.kind === 'getRealtimeSnapshot').length;
+  await f.service.refresh();
+  assert.equal(f.network.filter(event => event.kind === 'getRealtimeSnapshot').length, firstAttempt + 1);
+  assert.equal(await f.service.save(), true);
+  assert.equal(f.notifications.filter(message => message.endsWith('Failed to publish initial workspace')).length, 1);
 });
 
 test('logout gates delayed leave refresh and background polling before the workspace mapping is cleared', { timeout: 5000 }, async t => {

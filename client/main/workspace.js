@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { readFileBounded, writeFileAtomic } = require('./atomic-file');
 const { MAX_TEAM_MAPPING_BYTES, readTeamMapping: readTeamMappingFile } = require('./team-mapping');
+const { registerSplitPreview } = require('./split-preview');
 const { createWorkspaceWriteQueue, createWorkspaceWriteTracker } = require('./workspace-write-tracker');
 const { MAX_WORKSPACE_TEXT_FILE_BYTES } = require('./workspace-limits');
 const { RCLONE_IGNORED_DIRECTORIES } = require('../rclone-policy');
@@ -834,6 +835,7 @@ function createWorkspaceController(options) {
   }
 
   function registerIpc() {
+    registerSplitPreview({ ipcMain, getWindow });
     ipcMain.on('workspace-leave-response', (_event, response) => {
       const pending = response && pendingLeaveRequests.get(response.requestId);
       if (pending) pending.complete(response.allowed === true);
@@ -968,6 +970,10 @@ function createWorkspaceController(options) {
           localPath: directory
         };
         if (!allowed.teamId || !allowed.projectId || !allowed.branch) throw new Error('Incomplete mapping metadata');
+        const previous = readTeamMappingFile(directory, { requireLocalPath: true });
+        if (previous && previous.teamId === allowed.teamId && previous.projectId === allowed.projectId && previous.branch === allowed.branch) {
+          if (previous.realtimeEpoch) allowed.realtimeEpoch = previous.realtimeEpoch;
+        }
         assertCurrent();
         await writeFileAtomic(
           path.join(directory, '.bobocloud-team.json'),
@@ -976,7 +982,7 @@ function createWorkspaceController(options) {
         );
         assertCurrent();
         if (settings && typeof settings.rememberRecentWorkspace === 'function') settings.rememberRecentWorkspace(directory);
-        return true;
+        return allowed;
       });
     });
     ipcMain.handle('close-workspace', async () => {

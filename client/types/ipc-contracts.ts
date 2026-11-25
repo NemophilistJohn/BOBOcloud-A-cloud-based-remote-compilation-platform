@@ -7,7 +7,9 @@
  */
 
 import type { Dispose } from './lifecycle';
+import type { ViewsSplitPreviewBounds } from './views';
 import type { RealtimeHost, SharedState } from './realtime';
+import type { CollaborationTeamMappingDto, CollaborationWriteTeamMappingRequestDto } from './collaboration';
 import type { DiagnosticsSettingsDto, DiagnosticsSettingsWriteDto } from './diagnostics';
 import type {
   ProjectTaskConfigurationDto,
@@ -129,6 +131,7 @@ export interface IpcInvokeContracts {
   'terminal:status': IpcInvokeContract;
   'refresh-workspace': IpcInvokeContract;
   'read-file': IpcInvokeContract<[filePath: string], string>;
+  'views:capture-split-preview': IpcInvokeContract<[bounds: ViewsSplitPreviewBounds], string | null>;
   'save-file': IpcInvokeContract<[payload: unknown]>;
   'save-binary-file': IpcInvokeContract<[payload: unknown]>;
   'save-artifact': IpcInvokeContract<[payload: unknown]>;
@@ -178,7 +181,7 @@ export interface IpcInvokeContracts {
   'rclone:validate-connection': IpcInvokeContract<[], RcloneConnectionResultDto>;
   'pick-local-mapping': IpcInvokeContract;
   'local-path-info': IpcInvokeContract<[request: unknown]>;
-  'write-team-mapping': IpcInvokeContract<[payload: unknown]>;
+  'write-team-mapping': IpcInvokeContract<[payload: CollaborationWriteTeamMappingRequestDto], CollaborationTeamMappingDto>;
   'language-packs:startup': IpcInvokeContract<[], LanguagePacksStartupDto>;
   'language-packs:list': IpcInvokeContract<[], LanguagePacksListDto>;
   'language-packs:load': IpcInvokeContract<[id: string], LanguagePackDto>;

@@ -428,7 +428,10 @@
   cursor: pointer; transition: background var(--transition);
 }
 .history-row:hover { background: var(--bg-hover); }
-.history-row-status { font-size: var(--text-sm); }
+.history-row-status { color: var(--red); font-size: var(--text-sm); }
+.history-row-status[data-status="completed"] { color: var(--green); }
+.history-row-status[data-status="timed_out"] { color: var(--yellow); }
+.history-row-status[data-status="running"] { color: var(--blue); }
 .history-row-file { color: var(--text-primary); }
 .history-row-meta { color: var(--text-secondary); font-size: var(--text-xs); }
 .history-detail {

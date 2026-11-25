@@ -50,13 +50,13 @@ replaces only the same authenticated user's previous transport. Replies and
 broadcasts use these shapes:
 
 ```text
-state     {type, state:{enabled,epoch,branch,revision,files,presence,deletions,run?}}
+state     {type, state:{enabled,epoch,branch,revision,files,presence,deletions,run?,runs?}}
 document  {type, requestId, file:{id,path,revision,content,nodes,binary?,base64?}}
 operation {type, requestId, fileId, revision, insert, delete}
 presence  {type, presence, deletions}
 ack       {type, requestId, revision?}
 error     {type, requestId?, code, message}
-runEvent  {type, runId, event:<existing run WebSocket message>}
+runEvent  {type, runId, sequence, event:<existing run WebSocket message>}
 ```
 
 Every operation carries the current opaque `epoch` and an optional bounded
@@ -89,9 +89,10 @@ explicit tree entry. Create missing directories first with `create {directory:tr
 `presence {panes:[{paneId,fileId,editing,cursor?:{anchor,focus}}]}` replaces a
 session's active panes. Cursor anchors/focus are CRDT IDs and are ephemeral.
 Switching away retains edited-file ownership for ten seconds (`held` expiry
-map). The client heartbeats every twenty seconds; sixty seconds without an app
-message removes all that session's panes/holds. A transport disconnect alone
-does not immediately revoke editing or stop a shared run.
+map). The client sends a heartbeat every fifteen seconds. The server removes a
+session's panes and holds after sixty seconds without a message. Rejoining the
+same session preserves its presence during this interval. Presence frames carry
+session and voting changes independently of the file manifest and run history.
 
 `run {run:{filePath,runtime,folderKey?,folderName?,compileArgs?,runArgs?,
 setupCommands?,buildTarget?,task?}}` starts one shared room run. The exact source
@@ -99,9 +100,12 @@ generation is captured at acceptance and materialized after normal resource
 admission. Existing runners, execution budgets, cache mounts, dependency policy,
 and Docker isolation are reused. Any current member can send `stdin {data}` or
 `cancelRun`. `run.events` replays a bounded 256-KiB tail, with `omitted:true` when
-earlier events were dropped. Live events use the existing status/stdout/stderr/
-artifact/result schema. A restarted server reports an unfinished run as
+earlier events were dropped. Each live event includes a sequence within the run
+so reconnecting clients can replay missed output. `runs` retains up to twelve
+archived records with up to 32 KiB of output each. Run records include target,
+runtime, timestamps and outcome. A restarted server marks an unfinished run as
 `interrupted`, clears old deletion ballots, and preserves acknowledged edits.
+Project lists expose `realtime_enabled` for the collaboration switch.
 
 LSP, DAP, and environment inspection receive separate member-owned source
 snapshots. Their writes cannot mutate canonical text. Existing terminal and

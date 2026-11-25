@@ -236,6 +236,10 @@ html, body {
 #split-container .split-pane-editor { flex: 1; min-height: 0; overflow: hidden; }
 .split-pane-placeholder { display: none; position: absolute; inset: 30px 0 0; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 12px; pointer-events: none; }
 .split-pane.empty-pane .split-pane-placeholder { display: flex; }
+.split-surface-preview { position: absolute; inset: 30px 0 0; display: grid; place-items: center; border: 0; padding: 0; overflow: hidden; background: var(--bg-deep); color: var(--text-secondary); cursor: pointer; }
+.split-surface-preview:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.split-surface-preview img { width: 100%; height: 100%; object-fit: fill; position: absolute; inset: 0; }
+.split-surface-preview img:not([src]), .split-surface-preview img[src] + span { display: none; }
 .workbench-split-surface { position: absolute !important; top: 30px !important; bottom: 0 !important; width: 50% !important; height: calc(100% - 30px) !important; margin: 0 !important; pointer-events: auto; }
 .workbench-split-left { left: 0 !important; right: 50% !important; }
 .workbench-split-right { left: 50% !important; right: 0 !important; }

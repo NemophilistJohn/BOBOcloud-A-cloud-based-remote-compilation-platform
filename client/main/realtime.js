@@ -28,6 +28,7 @@ function createRealtimeController({ ipcMain, settings, dialog, getWindow, prepar
     const previous = current;
     current = null;
     if (previous) {
+      clearTimeout(previous.connectTimer);
       clearInterval(previous.heartbeat);
       previous.reject?.(new Error('Collaboration connection closed'));
       previous.socket?.terminate();
@@ -39,14 +40,16 @@ function createRealtimeController({ ipcMain, settings, dialog, getWindow, prepar
         identity.workspaceIdentity !== session.identity.workspaceIdentity) throw new Error('Collaboration workspace changed');
   }
   async function persistEpoch(session, epoch) {
+    if (session.mapping.realtimeEpoch === epoch) return;
     await runMutation(session.identity.rootPath, async mutation => {
       assertContext(session); mutation.assertCurrent();
       const target = path.join(session.identity.rootPath, '.bobocloud-team.json');
       mutation.resolvePath(target);
-      await writeFileAtomic(target, JSON.stringify({ ...session.mapping, realtimeEpoch: epoch }), {
+      const mapping = { ...session.mapping, realtimeEpoch: epoch };
+      await writeFileAtomic(target, JSON.stringify(mapping), {
         maxBytes: 32768, beforeReplace: () => { assertContext(session); mutation.assertCurrent(); }
       });
-      session.mapping.realtimeEpoch = epoch;
+      session.mapping = mapping;
     });
   }
   async function connect(payload) {
@@ -55,6 +58,7 @@ function createRealtimeController({ ipcMain, settings, dialog, getWindow, prepar
     const identity = getWorkspaceIdentity();
     const mapping = identity?.rootPath && readTeamMapping(identity.rootPath, { requireLocalPath: true });
     if (!mapping || mapping.teamId !== payload?.teamId || mapping.projectId !== payload?.projectId ||
+        typeof payload.epoch !== 'string' || !payload.epoch || payload.epoch.length > 256 ||
         !/^[a-zA-Z0-9_-]{8,80}$/.test(payload.sessionId || '')) throw new Error('Invalid collaboration mapping');
     const preferences = await settings.readServerSettings();
     const stored = credentialForServer(settings.readAuth(), preferences).credential;
@@ -67,20 +71,20 @@ function createRealtimeController({ ipcMain, settings, dialog, getWindow, prepar
     current = session;
     const state = await new Promise((resolve, reject) => {
       session.reject = reject;
-      const timer = setTimeout(() => { reject(new Error('Collaboration connection timed out')); if (current === session) close(); }, 15000);
-      const fail = error => { clearTimeout(timer); reject(error); };
+      session.connectTimer = setTimeout(() => fail(new Error('Collaboration connection timed out')), 15000);
+      const fail = error => {
+        if (current !== session) return;
+        if (session.reject) reject(error);
+        else emit({ type: 'disconnected', reason: error.message });
+        close();
+      };
       socket.once('open', () => {
         try {
           assertContext(session);
           verifier(preferences)(socket, url.toString());
           socket.send(JSON.stringify({ type: 'join', token, teamId: mapping.teamId, projectId: mapping.projectId,
             epoch: payload.epoch, sessionId: payload.sessionId }));
-          session.heartbeat = setInterval(() => {
-            try { assertContext(session); socket.send(JSON.stringify({ type: 'heartbeat', epoch: payload.epoch })); }
-            catch (_) { if (current === session) close(); }
-          }, 20000);
-          session.heartbeat.unref?.();
-        } catch (error) { fail(error); close(); }
+        } catch (error) { fail(error); }
       });
       socket.on('message', bytes => {
         try {
@@ -89,23 +93,30 @@ function createRealtimeController({ ipcMain, settings, dialog, getWindow, prepar
           const message = JSON.parse(String(bytes));
           if (message.type === 'error' && session.reject) {
             fail(new Error(String(message.message || message.code || 'Collaboration join rejected')));
-            close(); return;
+            return;
           }
-          if (message.type === 'state') {
-            clearTimeout(timer); session.reject = null; resolve(message.state);
+          if (message.type === 'state' && session.reject) {
+            if (!message.state?.enabled || message.state.epoch !== payload.epoch) throw new Error('Unexpected collaboration epoch');
+            clearTimeout(session.connectTimer);
+            session.reject = null;
+            session.lastMessageAt = Date.now();
+            session.heartbeat = setInterval(() => {
+              try {
+                assertContext(session);
+                if (Date.now() - session.lastMessageAt > 55000 || socket.readyState !== 1) throw new Error('Collaboration heartbeat timed out');
+                socket.send(JSON.stringify({ type: 'heartbeat', epoch: payload.epoch }));
+              } catch (error) { fail(error); }
+            }, 15000);
+            session.heartbeat.unref?.();
+            resolve(message.state);
+            return;
           }
+          session.lastMessageAt = Date.now();
           emit(message);
-        } catch (error) { fail(error); if (current === session) close(); }
+        } catch (error) { fail(error); }
       });
-      socket.on('error', () => { fail(new Error('Collaboration network error')); });
-      socket.on('close', () => {
-        clearTimeout(timer);
-        clearInterval(session.heartbeat);
-        if (current !== session) return;
-        emit({ type: 'disconnected' });
-        current = null;
-        reject(new Error('Collaboration disconnected'));
-      });
+      socket.on('error', error => fail(error));
+      socket.on('close', () => fail(new Error('Collaboration disconnected')));
     });
     assertContext(session);
     await persistEpoch(session, payload.epoch);

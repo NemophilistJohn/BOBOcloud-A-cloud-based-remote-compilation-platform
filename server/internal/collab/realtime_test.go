@@ -360,7 +360,7 @@ func TestRealtimeRenameDirectoryAndRunSnapshots(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := f.m.BeginRealtimeRun("alice", f.team, f.project, f.epoch, "run1", cancel, func(string) error { return nil }); err != nil {
+	if err := f.m.BeginRealtimeRun("alice", f.team, f.project, f.epoch, "run1", cancel, func(string) error { return nil }, RealtimeRunTarget{FilePath: "main.txt", Runtime: "python:3.11"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.m.BeginRealtimeRun("bob", f.team, f.project, f.epoch, "run2", cancel, nil); err == nil {
@@ -394,6 +394,19 @@ func TestRealtimeRenameDirectoryAndRunSnapshots(t *testing.T) {
 	f.m.FinishRealtimeRun(f.team, f.project, "run1", "cancelled")
 	if _, err = os.Stat(snapshot); !os.IsNotExist(err) {
 		t.Fatal("run snapshot leaked")
+	}
+	if err = f.m.BeginRealtimeRun("bob", f.team, f.project, f.epoch, "run2", cancel, nil, RealtimeRunTarget{TaskLabel: "Smoke task", TaskKind: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	f.m.FinishRealtimeRun(f.team, f.project, "run2", "completed")
+	restarted := NewManager(f.m.store, f.m.users, f.root)
+	state, err = restarted.GetRealtimeState("alice", f.team, f.project)
+	if err != nil || state.Run == nil || state.Run.TaskLabel != "Smoke task" || state.Run.CompletedAt == nil || len(state.Runs) != 1 {
+		t.Fatalf("shared history did not survive reconnect/restart: %+v %v", state, err)
+	}
+	record := state.Runs[0]
+	if record.ID != "run1" || record.Status != "cancelled" || record.FilePath != "main.txt" || record.Runtime != "python:3.11" || record.Sequence != 100 || !record.Omitted || len(record.Events) >= 8 || record.CreatedAt == nil || record.CompletedAt == nil {
+		t.Fatalf("archived run metadata or retention is incorrect: id=%s status=%s sequence=%d events=%d", record.ID, record.Status, record.Sequence, len(record.Events))
 	}
 }
 

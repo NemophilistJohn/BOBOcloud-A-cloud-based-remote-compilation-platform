@@ -398,7 +398,7 @@ test('dynamic UI translation entry points reference defined English keys', () =>
   const messages = JSON.parse(fs.readFileSync(path.join(ROOT, 'language-packs', 'en', 'messages.json'), 'utf8'));
   const sourceFiles = [
     'ai-agent-button.ts', 'ai-chat-panel.ts', 'ai-markdown.ts', 'ai-settings-center.ts',
-    'ai-prompts.ts', 'collaboration.ts', 'realtime.ts', 'views.ts', 'social.ts', 'account-profile.ts',
+    'ai-prompts.ts', 'collaboration.ts', 'realtime.ts', 'run-history.ts', 'views.ts', 'social.ts', 'account-profile.ts',
     'project-tasks.ts', 'workspace-sync-status.ts', 'task-problem-matcher.ts', 'runner.js', 'run-config.ts', 'runtime.ts', 'dap-client.js', 'terminal.js', 'auth.js', 'plugin-manager-ui.ts', 'plugin-details.ts',
     'source-control-view.ts', 'agent-workbench.ts', 'command-palette.ts', 'language-packs-panel.ts', 'file-search.ts', 'settings.ts', 'workspace-launch.ts', 'workspace.js', 'projects.ts', 'cache-center.ts', 'environment-center.ts', 'environment-center-model.ts', 'package-center.js', 'rclone-settings.ts'
   ];
@@ -432,14 +432,17 @@ test('dynamic UI translation entry points reference defined English keys', () =>
   }
 
   const dapSource = fs.readFileSync(path.join(ROOT, 'src', 'dap-client.js'), 'utf8');
-  function assertMapValues(scope, mapName) {
-    const match = scope.match(new RegExp(`\\bvar\\s+${mapName}\\s*=\\s*\\{([\\s\\S]*?)\\n\\s*\\};`));
-    assert.ok(match, `dap-client.js is missing the ${mapName} translation map`);
-    assertLiteralCalls(match[1], `dap-client.js ${mapName}`, /:\s*((?:'(?:\\.|[^'\\])*')|(?:"(?:\\.|[^"\\])*"))/g, 1);
+  function assertMapValues(scope, mapName, fileName = 'dap-client.js') {
+    const match = scope.match(new RegExp(`\\b(?:var|const)\\s+${mapName}\\s*=\\s*\\{([\\s\\S]*?)\\s*\\};`));
+    assert.ok(match, `${fileName} is missing the ${mapName} translation map`);
+    assertLiteralCalls(match[1], `${fileName} ${mapName}`, /:\s*((?:'(?:\\.|[^'\\])*')|(?:"(?:\\.|[^"\\])*"))/g, 1);
   }
 
   assertMapValues(dapSource, 'statusKeys');
   assertMapValues(dapSource, 'stopReasonKeys');
+  const runHistorySource = fs.readFileSync(path.join(ROOT, 'src', 'run-history.ts'), 'utf8');
+  assertMapValues(runHistorySource, 'taskKinds', 'run-history.ts');
+  assertMapValues(runHistorySource, 'statuses', 'run-history.ts');
   const warningScope = dapSource.slice(dapSource.indexOf('function warningText'), dapSource.indexOf('function adapterUnavailableReason'));
   assertMapValues(warningScope, 'keys');
 

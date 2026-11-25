@@ -35,6 +35,14 @@ function disposeSilently(disposable: { dispose?(): void } | null | undefined): v
   }
 }
 
+type SplitPane = 'left' | 'right';
+const SPLIT_PREVIEW_REFRESH_MS = 500;
+const SPLIT_PREVIEW_SAMPLE_POINTS = [[0.1, 0.1], [0.9, 0.1], [0.5, 0.5], [0.1, 0.9], [0.9, 0.9]] as const;
+
+function otherPane(pane: SplitPane): SplitPane {
+  return pane === 'left' ? 'right' : 'left';
+}
+
 export function createViewsService(dependencies: ViewsDependencies): ViewsService {
   const document = dependencies.document;
   const state = dependencies.state;
@@ -43,7 +51,8 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
   let disposed = false;
   let diffRequestEpoch = 0;
   const splitListeners = new DisposableStore();
-  let activePane: 'left' | 'right' = 'right';
+  let activePane: SplitPane = 'right';
+  let liveSurfacePane: SplitPane = 'left';
   let routingPane = false;
   let splitOpen = false;
   const panePaths: { left: string | null; right: string | null } = { left: null, right: null };
@@ -52,6 +61,11 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
   const paneStates = { left: new Map<string, unknown>(), right: new Map<string, unknown>() };
   let ownedSplitEditor: ViewsSplitEditorPort | null = null;
   let ownedDiffEditor: ViewsDiffEditorPort | null = null;
+  let splitPreview: { key: string; pane: SplitPane; source: HTMLElement } | null = null;
+  let previewButton: HTMLButtonElement | null = null;
+  let previewImage: HTMLImageElement | null = null;
+  let previewTimer: number | undefined;
+  let previewPending = false;
 
   function requiredElement<ElementType extends HTMLElement>(id: string): ElementType {
     const element = document.getElementById(id);
@@ -122,9 +136,84 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     dependencies.notifyVisibleEditorsChanged?.();
   }
 
+  function localizeSplitPreview(): void {
+    if (!previewButton) return;
+    const label = translate('Activate this view');
+    previewButton.title = label;
+    previewButton.setAttribute('aria-label', label);
+    previewButton.lastElementChild!.textContent = label;
+  }
+
+  function updateSplitPreview(key: string | null, pane: SplitPane, source?: HTMLElement): void {
+    if (!dependencies.host.captureSplitPreview || !document.defaultView) return;
+    if (key && source && splitPreview?.key === key && splitPreview.pane === pane && splitPreview.source === source) return;
+    if (previewTimer !== undefined) document.defaultView.clearTimeout(previewTimer);
+    previewTimer = undefined;
+    if (splitPreview?.key !== key) previewImage?.removeAttribute('src');
+    splitPreview = key && source ? { key, pane, source } : null;
+    if (!splitPreview) {
+      previewButton?.remove();
+      return;
+    }
+    if (!previewButton) {
+      previewButton = document.createElement('button');
+      previewButton.type = 'button';
+      previewButton.className = 'split-surface-preview';
+      previewImage = document.createElement('img');
+      previewImage.alt = '';
+      previewImage.draggable = false;
+      const fallback = document.createElement('span');
+      previewButton.append(previewImage, fallback);
+      previewButton.addEventListener('pointerdown', event => event.stopPropagation());
+      previewButton.addEventListener('click', () => {
+        if (!splitPreview) return;
+        const { pane, source } = splitPreview;
+        focusPane(pane);
+        source.focus();
+      });
+    }
+    localizeSplitPreview();
+    requiredElement('split-' + pane + '-pane').appendChild(previewButton);
+    scheduleSplitPreview(0);
+  }
+
+  function scheduleSplitPreview(delay: number): void {
+    if (previewTimer !== undefined || previewPending || !splitPreview || !document.defaultView) return;
+    previewTimer = document.defaultView.setTimeout(() => {
+      previewTimer = undefined;
+      void captureSplitPreview();
+    }, delay);
+  }
+
+  async function captureSplitPreview(): Promise<void> {
+    const preview = splitPreview;
+    if (!preview || !previewImage || !dependencies.host.captureSplitPreview) return;
+    const { x, y, width, height } = preview.source.getBoundingClientRect();
+    const visible = width > 0 && height > 0 && SPLIT_PREVIEW_SAMPLE_POINTS.every(([across, down]) => {
+      const element = document.elementFromPoint(x + width * across, y + height * down);
+      return element && preview.source.contains(element);
+    });
+    if (document.hidden || !visible) {
+      scheduleSplitPreview(SPLIT_PREVIEW_REFRESH_MS);
+      return;
+    }
+    previewPending = true;
+    try {
+      const image = await dependencies.host.captureSplitPreview({ x, y, width, height });
+      if (image && splitPreview === preview && previewImage.src !== image) previewImage.src = image;
+    } catch (_) {
+      // The window can resize or close while its visible surface is captured.
+    } finally {
+      previewPending = false;
+      scheduleSplitPreview(splitPreview === preview ? SPLIT_PREVIEW_REFRESH_MS : 0);
+    }
+  }
+
   function paintSplit(): void {
     const visible = new Set<HTMLElement>();
     const documents: string[] = [];
+    const sharedPath = panePaths.left === panePaths.right ? panePaths.left : null;
+    const sharedSurface = sharedPath ? dependencies.resolveSurface?.(sharedPath) : null;
     for (const pane of ['left', 'right'] as const) {
       const key = panePaths[pane];
       const editor = pane === 'left' ? state.splitEditor : state.splitEditor?.rightEditor;
@@ -137,7 +226,7 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
       const tab = state.tabs.find(item => item.path === panePaths[pane]);
       if (editor && editor.getModel() !== (tab?.model || null)) editor.setModel(tab?.model || null);
       const surface = key ? dependencies.resolveSurface?.(key) : null;
-      if (surface) {
+      if (surface && (!sharedSurface || pane === liveSurfacePane)) {
         if (surface.kind === 'document') documents.push(key!);
         for (const element of surface.elements) {
           element.classList.add('workbench-split-surface');
@@ -165,6 +254,8 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
       element.classList.remove('workbench-split-surface', 'workbench-split-left', 'workbench-split-right', 'active');
       delete element.dataset.splitTabKey;
     }
+    const source = sharedSurface?.elements.find(element => !element.hidden);
+    updateSplitPreview(sharedPath, otherPane(liveSurfacePane), source);
     dependencies.showSplitDocuments?.(documents, panePaths[activePane]);
     requiredElement('split-container').classList.add('active');
     requiredElement('container').style.display = 'none';
@@ -195,11 +286,13 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     const tab = state.tabs.find(candidate => candidate.path === filePath);
     const surface = dependencies.resolveSurface?.(filePath);
     if (!tab?.model && !surface) return false;
-    const other = activePane === 'left' ? 'right' : 'left';
+    const other = otherPane(activePane);
     const otherSurface = panePaths[other] ? dependencies.resolveSurface?.(panePaths[other]!) : null;
-    // A document/plugin view has one live instance. Reuse it rather than
-    // cloning its private draft or reloading an iframe.
-    if (surface && otherSurface?.id === surface.id) activePane = other;
+    if (surface && otherSurface?.id === surface.id) {
+      // Two copies of one tab share a live instance. Different tab keys owned
+      // by a singleton workbench provider still use its existing pane.
+      activePane = panePaths[activePane] === filePath && panePaths[other] === filePath ? liveSurfacePane : other;
+    }
     const editor = activePane === 'left' ? state.splitEditor : state.splitEditor.rightEditor;
     const previous = tabForEditor(editor);
     if (previous && previous.path !== filePath) paneStates[activePane].set(previous.path, editor.saveViewState?.());
@@ -221,10 +314,11 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     return true;
   }
 
-  function focusPane(pane: 'left' | 'right'): void {
+  function focusPane(pane: SplitPane): void {
     if (!splitOpen || !state.splitEditor) return;
     activePane = pane;
     const path = panePaths[pane];
+    if (path && path === panePaths[otherPane(pane)] && dependencies.resolveSurface?.(path)) liveSurfacePane = pane;
     if (path) activateTab(path);
     else { state.activeTabPath = null; paintSplit(); }
   }
@@ -270,16 +364,25 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
       dependencies.updateRunOutput(translate('No active file to split'));
       return;
     }
-    if (splitOpen || state.currentViewMode === 'split') {
+    const initialViewState = getActiveEditor()?.saveViewState?.();
+    if (filePath && (splitOpen || state.currentViewMode === 'split')) {
       activePane = 'right'; activateTab(key); getActiveEditor()?.focus?.(); return;
     }
-    const initialViewState = state.editor?.saveViewState?.();
     if (!state.splitEditor) createSplitEditor(tab || { path: key });
+    const sourcePane = activePane;
+    const alreadySplit = splitOpen;
+    if (alreadySplit) {
+      const previousPane = otherPane(sourcePane);
+      const previousEditor = previousPane === 'left' ? state.splitEditor : state.splitEditor?.rightEditor;
+      const previousTab = previousEditor ? tabForEditor(previousEditor) : null;
+      if (previousTab && previousTab.path !== key) paneStates[previousPane].set(previousTab.path, previousEditor?.saveViewState?.());
+    }
     splitOpen = true;
     panePaths.left = key;
-    panePaths.right = tab?.model ? key : null;
+    panePaths.right = key;
+    if (surface && (!alreadySplit || splitPreview?.key !== key)) liveSurfacePane = alreadySplit ? sourcePane : 'left';
     activePane = 'right';
-    state.activeTabPath = panePaths.right;
+    state.activeTabPath = key;
     paintSplit();
     if (initialViewState && tab?.model) {
       state.splitEditor?.restoreViewState?.(initialViewState);
@@ -294,9 +397,10 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     if (disposed) return;
     const editor = getActiveEditor();
     const viewState = editor?.saveViewState?.();
-    const key = panePaths[activePane] || panePaths[activePane === 'left' ? 'right' : 'left'] || state.activeTabPath;
+    const key = panePaths[activePane] || panePaths[otherPane(activePane)] || state.activeTabPath;
     const model = editor?.getModel() || activeTab()?.model || null;
     splitOpen = false;
+    updateSplitPreview(null, 'right');
     for (const element of splitSurfaces) {
       element.classList.remove('workbench-split-surface', 'workbench-split-left', 'workbench-split-right');
       element.classList.remove('active');
@@ -326,7 +430,7 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     for (const pane of ['left', 'right'] as const) {
       const editor = pane === 'left' ? state.splitEditor : state.splitEditor.rightEditor;
       if (panePaths[pane] === filePath || (closed?.model && editor.getModel() === closed.model)) {
-        const otherKey = panePaths[pane === 'left' ? 'right' : 'left'];
+        const otherKey = panePaths[otherPane(pane)];
         const otherSurface = otherKey ? dependencies.resolveSurface?.(otherKey) : null;
         const available = state.tabs.filter(tab => tab.path !== filePath &&
           (!otherSurface || dependencies.resolveSurface?.(tab.path)?.id !== otherSurface.id));
@@ -546,12 +650,16 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
       listen(closeDiffButton, 'click', closeDiff);
       const splitButton = document.getElementById('editor-split-action');
       if (splitButton) listen(splitButton, 'click', () => openSplit());
+      if (document.defaultView) listen(document.defaultView, 'bobo:language-changed', localizeSplitPreview);
       for (const pane of ['left', 'right'] as const) {
         const element = document.getElementById('split-' + pane + '-pane');
         if (element) listen(element, 'pointerdown', () => focusPane(pane));
       }
       const closeSplitButton = document.getElementById('close-split');
-      if (closeSplitButton) listen(closeSplitButton, 'click', closeSplit);
+      if (closeSplitButton) {
+        listen(closeSplitButton, 'pointerdown', event => event.stopPropagation());
+        listen(closeSplitButton, 'click', closeSplit);
+      }
       if (typeof document.addEventListener === 'function') {
         const onKeyDown = (event: KeyboardEvent): void => {
           if (state.currentViewMode === 'split' && event.key === 'F5' && !event.shiftKey && !event.altKey) {
@@ -565,7 +673,7 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
           if (event.key === '\\') {
             event.preventDefault();
             event.stopPropagation();
-            openSplit();
+            if (!event.repeat) openSplit();
           } else if (state.currentViewMode === 'split' && event.key.toLowerCase() === 's' && !event.shiftKey) {
             event.preventDefault();
             event.stopPropagation();
@@ -603,6 +711,7 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     if (disposed) return;
     const imageWasVisible = state.currentImagePath != null;
     splitOpen = false;
+    updateSplitPreview(null, 'right');
     for (const element of splitSurfaces) {
       element.classList.remove('workbench-split-surface', 'workbench-split-left', 'workbench-split-right');
       element.classList.remove('active');

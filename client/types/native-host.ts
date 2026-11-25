@@ -167,6 +167,7 @@ export interface NativeHost {
   refreshWorkspace: Invoke<'refresh-workspace'>;
 
   readFile: Invoke<'read-file'>;
+  captureSplitPreview: Invoke<'views:capture-split-preview'>;
   saveFile(payload: WorkspaceTextFileWrite): Promise<unknown>;
   saveBinaryFile: Invoke<'save-binary-file'>;
   saveArtifact: Invoke<'save-artifact'>;

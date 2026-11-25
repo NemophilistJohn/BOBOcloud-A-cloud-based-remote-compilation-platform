@@ -50,7 +50,7 @@ import (
 )
 
 // ServerVersion 服务端版本号（serverInfo/whoami 返回，客户端用于兼容性判断）
-const ServerVersion = "2.6.1"
+const ServerVersion = "2.6.2"
 
 type dependencyRecoverySteps struct {
 	cleanupManagedContainers func(context.Context) error

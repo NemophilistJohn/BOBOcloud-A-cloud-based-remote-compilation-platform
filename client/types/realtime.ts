@@ -18,10 +18,13 @@ export interface SharedDeletion {
 }
 export interface SharedRun {
   id: string; status: string; starterUserId: string; events?: Record<string, unknown>[]; omitted?: boolean;
+  filePath?: string; taskLabel?: string; taskKind?: string; runtime?: string;
+  createdAt?: string; completedAt?: string; sequence?: number;
 }
 export interface SharedState {
   enabled: boolean; epoch: string; branch: string; revision: number;
   files: SharedFile[]; presence: SharedPresence[]; deletions: SharedDeletion[]; run?: SharedRun | null;
+  runs?: SharedRun[];
 }
 export interface SharedOperation { insert: SharedNode[]; delete: string[] }
 export interface SharedDraft {
@@ -41,6 +44,7 @@ export interface RealtimeHost {
 }
 export interface RealtimeFacade {
   isActive(): boolean;
+  decorateTreeRow(row: HTMLElement, path: string): void;
   prepareFile(path: string): Promise<void>;
   save(path?: string): Promise<boolean>;
   fileOperation(kind: 'create' | 'mkdir' | 'rename' | 'delete', path: string, target?: string): Promise<unknown>;

@@ -269,6 +269,11 @@ export function createDocumentViewService(
         onFocus: () => {
           if (instance && !instance.disposed && visibleInstances.has(instance)) workspace.activateTab?.(instance.path);
         },
+        onSplitShortcut: () => {
+          if (!instance || instance.disposed || (activeInstance !== instance && !visibleInstances.has(instance))) return;
+          if (state.currentViewMode === 'split') workspace.activateTab?.(instance.path);
+          views.openSplit?.();
+        },
         onNavigation: dependencies.navigation ? (value) => {
           if (!instance || instance.disposed) return;
           instance.navigation = value;

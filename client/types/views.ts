@@ -105,6 +105,14 @@ export interface ViewsRendererState {
 
 export interface ViewsHost {
   readFile(filePath: string): Promise<string>;
+  captureSplitPreview?(bounds: ViewsSplitPreviewBounds): Promise<string | null>;
+}
+
+export interface ViewsSplitPreviewBounds {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
 }
 
 export interface ViewsCollaborationPort {

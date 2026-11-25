@@ -2555,5 +2555,17 @@
   "Save document preview edits before joining live collaboration": "加入实时协作前请先保存文档预览中的修改",
   "Reconcile the shared workspace before normal synchronization": "恢复普通同步前，请先刷新共享工作区",
   "Open a file or plugin tab": "打开文件或插件页面",
-  "Cannot start live collaboration: {user} / {branch} has local changes: {paths}. Save and publish these changes, or resolve conflicts first.": "无法启用实时协作：{user} 的 {branch} 分支存在本地改动：{paths}。请先保存并提交推送，或解决冲突。"
+  "Cannot start live collaboration: {user} / {branch} has local changes: {paths}. Save and publish these changes, or resolve conflicts first.": "无法启用实时协作：{user} 的 {branch} 分支存在本地改动：{paths}。请先保存并提交推送，或解决冲突。",
+  "Enable Collaboration": "开启协作模式",
+  "Disable Collaboration": "关闭协作模式",
+  "Collaboration enabled": "协作已开启",
+  "Collaboration disabled": "协作已关闭",
+  "Shared run history": "共享运行历史",
+  "No output captured": "未记录输出",
+  "Interrupted": "已中断",
+  "Timed out": "已超时",
+  "Activate this view": "激活此视图",
+  "Collaboration is paused": "协作已暂停",
+  "Joining live collaboration…": "正在加入实时协作…",
+  "Live collaboration uses branch {branch}. Reopen the team project to join it.": "实时协作使用 {branch} 分支。请重新打开团队项目加入协作。"
 }

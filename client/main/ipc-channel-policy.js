@@ -117,6 +117,7 @@ const IPC_CHANNEL_POLICY = Object.freeze({
     'rclone:sync',
     'rclone:validate-connection',
     'read-file',
+    'views:capture-split-preview',
     'read-files',
     'read-project-names',
     'read-server-settings',

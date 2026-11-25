@@ -28,7 +28,7 @@ import type {
 import type { PluginPermissionDto } from '../../types/plugin-runtime';
 import type { ProjectsHost, ProjectsProjectNamesDto } from '../../types/projects';
 import type { RcloneSelectBinaryRequestDto } from '../../types/rclone';
-import type { ViewsHost } from '../../types/views';
+import type { ViewsHost, ViewsSplitPreviewBounds } from '../../types/views';
 import type {
   WorkspaceSettingsChangedListener,
   WorkspaceSettingsHost,
@@ -161,7 +161,8 @@ function createCompletionIndexHost(host: NativeHost): Readonly<Pick<NativeHost,
 
 function createViewsHost(host: NativeHost): Readonly<ViewsHost> {
   return Object.freeze({
-    readFile: (filePath: string) => host.readFile(filePath)
+    readFile: (filePath: string) => host.readFile(filePath),
+    captureSplitPreview: (bounds: ViewsSplitPreviewBounds) => host.captureSplitPreview(bounds)
   });
 }
 
@@ -486,9 +487,7 @@ function createCollaborationHost(host: NativeHost): Readonly<CollaborationHostPo
     pickWorkspace: (localPath: string) => (
       host.pickWorkspace(localPath) as Promise<CollaborationOpenedWorkspaceDto | null>
     ),
-    writeTeamMapping: (request: CollaborationWriteTeamMappingRequestDto) => (
-      host.writeTeamMapping(request) as Promise<unknown>
-    )
+    writeTeamMapping: (request: CollaborationWriteTeamMappingRequestDto) => host.writeTeamMapping(request)
   });
 }
 

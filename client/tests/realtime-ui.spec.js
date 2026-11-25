@@ -23,9 +23,9 @@ test('two workbenches converge through split renames, offline drafts, deletion v
   const doc = new SharedDocument('server', initial);
   const documents = new Map([['f1', doc]]);
   const offlineUsers = new Set();
-  let nextFile = 0, nextDelete = 0;
+  let nextFile = 0, nextDelete = 0, nextRun = 0;
   const room = { enabled: true, epoch: 'epoch-fixture', branch: 'main', revision: 1,
-    files: [{ id: 'f1', path: 'main.py', revision: 1 }], presence: [], deletions: [], run: null };
+    files: [{ id: 'f1', path: 'main.py', revision: 1 }], presence: [], deletions: [], run: null, runs: [] };
   const sockets = new Map();
   const broadcast = value => { for (const socket of sockets.keys()) if (socket.readyState === 1) socket.send(JSON.stringify(value)); };
   const server = http.createServer((req, res) => {
@@ -73,11 +73,15 @@ test('two workbenches converge through split renames, offline drafts, deletion v
       }
       room.revision++; broadcast({ type: 'state', state: room }); ack();
     } else if (message.type === 'run') {
-      room.run = { id: 'one-run', status: 'running', starterUserId: sockets.get(socket).token, events: [] };
+      if (room.run) room.runs.unshift(room.run);
+      room.run = { id: 'run-' + (++nextRun), status: 'running', starterUserId: sockets.get(socket).token, events: [],
+        filePath: message.run.filePath, runtime: message.run.runtime, createdAt: new Date().toISOString() };
       broadcast({ type: 'state', state: room }); ack();
-      for (const event of [{ type: 'status', message: 'Running shared snapshot', stage: 'run:python' }, { type: 'stdout', line: 'shared hello' }, { type: 'result', success: true, returncode: 0 }]) {
-        room.run.events.push(event); broadcast({ type: 'runEvent', runId: 'one-run', event });
+      for (const event of [{ type: 'status', message: 'Running shared snapshot', stage: 'run:python' }, { type: 'stdout', line: 'shared hello ' + nextRun }, { type: 'result', success: true, returncode: 0 }]) {
+        room.run.events.push(event); broadcast({ type: 'runEvent', runId: room.run.id, event });
       }
+      room.run.status = 'completed';
+      broadcast({ type: 'state', state: room });
     } else ack();
     });
   });
@@ -130,8 +134,8 @@ test('two workbenches converge through split renames, offline drafts, deletion v
         };
         const opened = await window.api.pickWorkspace(workspace);
         await b.workspace.applyWorkspace(opened.rootPath, opened.tree, opened.workspaceIdentity, opened.leaveToken);
-        b.state.collaboration.current = mapping;
-        await b.realtime.openProject({}, mapping);
+        b.collaboration.restoreMapping(mapping, workspace);
+        await b.realtime.openProject({}, b.state.collaboration.current);
         await b.workspace.openFile(workspace + '/main.py', 'main.py');
       }, { workspace, mapping, user, port, room, snapshot: doc.text() });
       await expect(page.locator('.realtime-panel')).toHaveCount(1);
@@ -152,20 +156,35 @@ test('two workbenches converge through split renames, offline drafts, deletion v
       const sync = row.querySelector('.tree-sync-rail');
       if (!people || !sync) return false;
       const peopleRect = people.getBoundingClientRect(), syncRect = sync.getBoundingClientRect();
-      const before = syncRect.right;
-      people.remove();
-      const after = sync.getBoundingClientRect().right;
-      return peopleRect.right <= syncRect.left && Math.abs(before - after) < 1;
+      window.__sharedPresenceRail = people;
+      return peopleRect.right <= syncRect.left;
     })).toBe(true);
     await focusEditor(a, 0, false);
     await a.keyboard.press('Control+z');
     await expect.poll(() => b.evaluate(() => window.BOBO.state.editor.getValue())).not.toContain('#Alice');
     await expect.poll(() => b.evaluate(() => window.BOBO.state.editor.getValue())).toContain('#Bob');
+    await a.keyboard.press('End');
+    await a.keyboard.press('Enter');
+    await a.evaluate(() => window.BOBO.realtime.save());
+    expect(await fileRow.evaluate(row => row.querySelector('.realtime-tree-people') === window.__sharedPresenceRail)).toBe(true);
     await a.evaluate(() => window.BOBO.realtime.fileOperation('create', window.BOBO.state.workspaceRoot + '/second.py'));
     await expect(b.locator('[data-path$="second.py"]').first()).toBeAttached();
+    await a.evaluate(() => window.BOBO.switchToPanel('output'));
     await a.evaluate(() => window.BOBO.realtime.run(window.BOBO.state.workspaceRoot + '/main.py'));
     await expect(a.locator('#panel-output')).toContainText('shared hello');
     await expect(b.locator('#panel-output')).toContainText('shared hello');
+    expect(await a.evaluate(() => window.BOBO.state.activePanel)).toBe('output');
+    await a.evaluate(() => window.BOBO.realtime.run(window.BOBO.state.workspaceRoot + '/main.py'));
+    await expect(a.locator('#panel-output')).toContainText('shared hello 2');
+    await a.locator('#team-panel-tab').click();
+    const runHistory = a.locator('.realtime-run-history details');
+    await expect(runHistory).toHaveCount(2);
+    await expect(runHistory.first().locator('summary')).toContainText('main.py');
+    await expect(runHistory.first().locator('pre')).toBeHidden();
+    await runHistory.last().locator('summary').click();
+    await expect(runHistory.last().locator('pre')).toBeVisible();
+    await expect(runHistory.last().locator('pre')).toHaveText('shared hello 1');
+    await expect(runHistory.first().locator('pre')).toBeHidden();
     await expect.poll(() => b.evaluate(() => window.BOBO.state.editor.getValue())).toBe(await a.evaluate(() => window.BOBO.state.editor.getValue()));
     // A remote rename replaces the file model once, preserving both panes and the active path.
     await a.evaluate(() => {

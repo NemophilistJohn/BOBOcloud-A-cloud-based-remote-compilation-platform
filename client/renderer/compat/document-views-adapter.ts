@@ -71,6 +71,7 @@ const documentViews = createDocumentViewService({
     onChange: (listener: () => void) => theme.onChange(listener)
   }),
   views: Object.freeze({
+    openSplit: () => BOBO.views?.openSplit?.(),
     closeSplit: () => BOBO.views?.closeSplit?.(),
     closeDiff: () => BOBO.views?.closeDiff?.(),
     closeImagePreview: () => BOBO.views?.closeImagePreview?.()

@@ -74,6 +74,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // Files
   readFile: (filePath) => ipcRenderer.invoke('read-file', filePath),
+  captureSplitPreview: (bounds) => ipcRenderer.invoke('views:capture-split-preview', bounds),
   saveFile: (payload) => {
     if (!payload || typeof payload.content !== 'string' ||
         Buffer.byteLength(payload.content, 'utf8') > MAX_WORKSPACE_TEXT_FILE_BYTES) {

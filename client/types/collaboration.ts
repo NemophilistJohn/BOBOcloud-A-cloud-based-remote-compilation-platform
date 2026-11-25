@@ -104,6 +104,7 @@ export interface CollaborationProjectDto {
   readonly name: string;
   readonly description?: string;
   readonly default_branch: string;
+  readonly realtime_enabled?: boolean;
   readonly created_by?: string;
   readonly created_at?: string;
   readonly updated_at?: string;
@@ -541,7 +542,7 @@ export interface CollaborationOpenedWorkspaceDto {
 export interface CollaborationWriteTeamMappingRequestDto {
   readonly localPath: string;
   readonly localGrant: string;
-  readonly mapping: CollaborationTeamMappingDto;
+  readonly mapping: Omit<CollaborationTeamMappingDto, 'version' | 'realtimeEpoch'>;
 }
 
 export interface CollaborationHostPort {
@@ -550,7 +551,7 @@ export interface CollaborationHostPort {
   localPathInfo(path: string, grantId?: string): Promise<CollaborationLocalPathInfoDto>;
   pickLocalMapping(): Promise<CollaborationLocalMappingSelectionDto | null>;
   pickWorkspace(localPath: string): Promise<CollaborationOpenedWorkspaceDto | null>;
-  writeTeamMapping(request: CollaborationWriteTeamMappingRequestDto): Promise<unknown>;
+  writeTeamMapping(request: CollaborationWriteTeamMappingRequestDto): Promise<CollaborationTeamMappingDto>;
 }
 
 /* ------------------------------------------------------------------------- *

@@ -141,6 +141,10 @@ func (h *WSHandler) HandleCollaborationWebSocket(w http.ResponseWriter, r *http.
 		if write(reply) != nil {
 			return
 		}
+		// A mode change or expired session cannot be repaired on the old socket.
+		if err != nil && (strings.HasPrefix(err.Error(), "realtime_epoch_stale") || strings.HasPrefix(err.Error(), "session expired")) {
+			return
+		}
 	}
 }
 
@@ -241,12 +245,16 @@ func (h *WSHandler) startRealtimeRun(socketCtx context.Context, user *auth.User,
 		cleanup()
 		return err
 	}
+	target := collab.RealtimeRunTarget{FilePath: sess.FilePath, Runtime: sess.Runtime}
+	if sess.Task != nil {
+		target.TaskLabel, target.TaskKind = sess.Task.Label, sess.Task.Kind
+	}
 	if err = h.Collaboration.BeginRealtimeRun(user.ID, teamID, projectID, epoch, runID, cancel, func(data string) error {
 		if !queue.Enqueue(data) {
 			return fmt.Errorf("shared stdin queue full")
 		}
 		return nil
-	}); err != nil {
+	}, target); err != nil {
 		_ = h.Sessions.Delete(runID)
 		queue.Stop()
 		_ = read.Close()

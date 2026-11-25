@@ -1,3 +1,5 @@
+import { renderRunHistorySummary, runHistoryTarget, runHistoryTime } from './run-history';
+
 // src/app.js - Main entry point, wires everything together.
 // CRITICAL: language preference and require.config must resolve before Monaco.
 (async function bootstrap() {
@@ -190,40 +192,21 @@
       return;
     }
     list.innerHTML = '';
+    function historyText(source, replacements) {
+      return BOBO.i18n && BOBO.i18n.t ? BOBO.i18n.t(source, replacements) : source.replace(/\{([^}]+)\}/g, function(match, key) {
+        return replacements && replacements[key] !== undefined ? replacements[key] : match;
+      });
+    }
     res.history.forEach(function(rec) {
-      function historyText(source, replacements) {
-        return BOBO.i18n && BOBO.i18n.t ? BOBO.i18n.t(source, replacements) : source.replace(/\{([^}]+)\}/g, function(match, key) {
-          return replacements && replacements[key] !== undefined ? replacements[key] : match;
-        });
-      }
-      var kindKeys = { build: 'Build', test: 'Test', run: 'Run', custom: 'Custom' };
-      var statusKeys = { completed: 'Completed', failed: 'Failed', timed_out: 'Timed out', cancelled: 'Cancelled' };
-      var target = rec.file_path || '?';
-      if (rec.target_type === 'task' && rec.task_label) {
-        target = historyText('{kind} task: {label}', {
-          kind: historyText(kindKeys[rec.task_kind] || 'Custom'),
-          label: rec.task_label
-        });
-      }
       var row = document.createElement('div');
       row.className = 'history-row';
-      var statusColor = rec.status === 'completed' ? 'var(--green)' : (rec.status === 'timed_out' ? 'var(--yellow)' : 'var(--red)');
-      var time = rec.created_at ? new Date(rec.created_at).toLocaleString() : '';
-      var status = document.createElement('span');
-      status.className = 'history-row-status';
-      status.style.color = statusColor;
-      status.textContent = '\u25cf';
-      var targetElement = document.createElement('span');
-      targetElement.className = 'history-row-file';
-      targetElement.textContent = target;
-      var metadata = document.createElement('span');
-      metadata.className = 'history-row-meta';
-      metadata.textContent = '[' + (rec.runtime || 'local') + '] ' + historyText(statusKeys[rec.status] || rec.status || 'Failed') +
-        ' rc=' + rec.exit_code + ' ' + (rec.duration_ms || 0) + 'ms ' + time + ' · ' + historyText('Run ID: {id}', { id: rec.run_id || '?' });
       row.setAttribute('data-run-id', rec.run_id || '');
-      row.append(status, document.createTextNode(' '), targetElement, document.createTextNode(' '), metadata);
+      renderRunHistorySummary(row, historyText,
+        runHistoryTarget(historyText, rec.file_path, rec.target_type === 'task' ? rec.task_label : '', rec.task_kind),
+        rec.status, ['[' + (rec.runtime || 'local') + ']', 'rc=' + rec.exit_code + ' ' + (rec.duration_ms || 0) + 'ms ' + runHistoryTime(rec.created_at),
+          historyText('Run ID: {id}', { id: rec.run_id || '?' })]);
       row.onclick = function() {
-        var output = rec.output_summary || '(no output captured)';
+        var output = rec.output_summary || historyText('No output captured');
         if (rec.output_truncated) {
           output = historyText('Earlier output was not retained.') + '\n\n' + output;
         }

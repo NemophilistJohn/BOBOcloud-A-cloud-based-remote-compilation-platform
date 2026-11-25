@@ -77,6 +77,7 @@ test('two independently editable split panes preserve files, focus, saves, run t
       const opened = await window.api.pickWorkspace(workspace);
       await window.BOBO.workspace.applyWorkspace(opened.rootPath, opened.tree, opened.workspaceIdentity, opened.leaveToken);
       await window.BOBO.workspace.openFile(leftFile, 'left.ts');
+      window.BOBO.state.editor.setSelection(new monaco.Selection(1, 7, 1, 11));
       if (window.BOBO.state.autoSyncInterval) clearInterval(window.BOBO.state.autoSyncInterval);
     }, { workspace, leftFile });
     await page.locator('#editor-split-action').click();
@@ -85,6 +86,10 @@ test('two independently editable split panes preserve files, focus, saves, run t
       const [left, right] = window.BOBO.views.getVisibleEditors();
       return left.getModel() === right.getModel() && !left.getOption(monaco.editor.EditorOption.readOnly) && !right.getOption(monaco.editor.EditorOption.readOnly);
     })).toBe(true);
+    expect(await page.evaluate(() => window.BOBO.views.getVisibleEditors().map(editor => {
+      const selection = editor.getSelection();
+      return [selection.startColumn, selection.endColumn];
+    }))).toEqual([[7, 11], [7, 11]]);
     await page.evaluate(async rightFile => window.BOBO.workspace.openFile(rightFile, 'right.py'), rightFile);
     expect(await page.evaluate(() => window.BOBO.views.getVisibleEditors().map(editor => editor.getModel().getLanguageId()))).toEqual(['typescript', 'python']);
     await page.locator('#split-left .view-lines').click({ position: { x: 35, y: 10 } });
@@ -122,6 +127,14 @@ test('two independently editable split panes preserve files, focus, saves, run t
     expect(await page.evaluate(() => window.BOBO.state.tabs.every(tab => !tab.dirty && !tab.model.isDisposed()))).toBe(true);
     await page.keyboard.press('ControlOrMeta+\\');
     await expect(page.locator('#split-container')).toHaveClass('active');
+    await page.locator('#tabbar .tab-title').filter({ hasText: 'left.ts' }).click();
+    await page.locator('#split-left .view-lines').click({ position: { x: 30, y: 10 } });
+    await page.evaluate(() => window.BOBO.views.getActiveEditor().setPosition({ lineNumber: 2, column: 5 }));
+    await page.locator('#editor-split-action').click();
+    expect(await page.evaluate(() => window.BOBO.views.getVisibleEditors().map(editor => {
+      const position = editor.getPosition();
+      return [editor.getModel().getLanguageId(), position.lineNumber, position.column];
+    }))).toEqual([['python', 2, 5], ['python', 2, 5]]);
     await page.setViewportSize({ width: 720, height: 800 });
     expect(await page.locator('#split-container').evaluate(node => getComputedStyle(node).flexDirection)).toBe('column');
     const closed = await page.evaluate(async path => {

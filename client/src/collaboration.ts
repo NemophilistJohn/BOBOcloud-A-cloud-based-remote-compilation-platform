@@ -119,6 +119,8 @@ export function createCollaborationService(
   var sidebarIdentity = '';
   var teamListRequest = 0;
   var detailRequest = 0;
+  var projectModeRevision = 0;
+  var projectModeRequest = null;
   var expandedProjects = new Map();
   var actionConfirm = null;
   var actionRevision = 0;
@@ -731,6 +733,7 @@ export function createCollaborationService(
     });
     var page = teamTabs.get(S.activeTabPath);
     if (page) page.pane = name;
+    if (name === 'projects') void refreshProjectModes();
   }
   async function selectTeam(teamId, expectedEpoch) {
     var epoch = expectedEpoch === undefined ? lifecycleEpoch : expectedEpoch;
@@ -804,6 +807,41 @@ export function createCollaborationService(
     renderTeamCache(selectedCacheInfo, detail.projects, isAdmin);
     $('collab-team-detail').hidden = false;
   }
+  function updateProjectMode(projectId, enabled) {
+    var project = asArray(selectedDetail?.projects).find(function(item) { return item.id === projectId; });
+    if (!project || typeof enabled !== 'boolean' || enabled === project.realtime_enabled) return;
+    project.realtime_enabled = enabled;
+    var card = Array.from($('collab-project-list').querySelectorAll<HTMLElement>('[data-team-project-card]')).find(function(item) {
+      return item.dataset.teamProjectCard === projectId;
+    });
+    if (!card) return;
+    var status = card.querySelector<HTMLElement>('.team-project-mode');
+    status.hidden = false;
+    status.dataset.enabled = String(enabled);
+    bindText(status, enabled ? 'Collaboration enabled' : 'Collaboration disabled');
+    var button = card.querySelector<HTMLButtonElement>('[data-realtime-project]');
+    if (!button) return;
+    button.disabled = false;
+    button.dataset.enable = String(!enabled);
+    bindText(button, enabled ? 'Disable Collaboration' : 'Enable Collaboration');
+  }
+  async function refreshProjectModes() {
+    var detail = selectedDetail;
+    if (disposed || !detail || projectModeRequest === detail || document.hidden || $('collab-pane-projects')?.hidden || S.activeTabPath !== teamKey(detail.team.id)) return;
+    var identity = getSidebarIdentity();
+    if (!identity) return;
+    var revision = projectModeRevision;
+    projectModeRequest = detail;
+    try {
+      var projects = asArray(await api('listTeamProjects', { teamId: detail.team.id }));
+      if (disposed || detail !== selectedDetail || revision !== projectModeRevision || identity !== getSidebarIdentity()) return;
+      projects.forEach(function(project) { updateProjectMode(project.id, project.realtime_enabled); });
+    } catch (_) {
+      // Keep the last server-confirmed state while the team list is unavailable.
+    } finally {
+      if (projectModeRequest === detail) projectModeRequest = null;
+    }
+  }
   function renderProjects(projects, isAdmin) {
     var teamId = selectedTeamId;
     var cacheByProject = projectCacheSizes(selectedCacheInfo);
@@ -813,11 +851,14 @@ export function createCollaborationService(
       var usage = cacheByProject[project.id] || 0;
       var namespaces = projectCacheNamespaces(selectedCacheInfo, project.id);
       var remove = isAdmin ? '<button class="icon-command collab-delete-project" data-project-id="' + esc(project.id) + '" title="' + esc(t('Delete project')) + '" aria-label="' + esc(t('Delete project')) + '"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>' : '';
-      var realtimeButton = isAdmin ? '<button class="team-tool-btn" data-realtime-project="' + esc(project.id) + '" data-team="' + esc(teamId) + '" data-branch="' + esc(project.default_branch || 'main') + '" title="' + esc(t('Collaboration mode')) + '">' + esc(t('Collaboration mode')) + '</button>' : '';
+      var enabled = project.realtime_enabled;
+      var knownMode = typeof enabled === 'boolean';
+      var modeStatus = '<span class="team-project-mode"' + (knownMode ? ' data-enabled="' + enabled + '"' : ' hidden') + '>' + (knownMode ? esc(t(enabled ? 'Collaboration enabled' : 'Collaboration disabled')) : '') + '</span>';
+      var realtimeButton = isAdmin ? '<button type="button" class="team-tool-btn" data-realtime-project="' + esc(project.id) + '" data-team="' + esc(teamId) + '" data-branch="' + esc(project.default_branch || 'main') + '"' + (knownMode ? ' data-enable="' + !enabled + '"' : ' disabled') + '>' + esc(t(knownMode ? (enabled ? 'Disable Collaboration' : 'Enable Collaboration') : 'Loading...')) + '</button>' : '';
       var details = namespaces.length ? '<details class="team-project-cache-details"><summary data-i18n="Cache breakdown">' + esc(t('Cache breakdown')) + '</summary>' + namespaces.map(function(ns) {
         return '<div class="team-project-cache-row"><span>' + esc(ns.cache_kind + ' · ' + ns.branch + ' · ' + ns.runtime + ' · ' + ns.language) + '</span><span>' + formatBytes(ns.size_bytes) + '</span>' + (isAdmin && ns.clearable && !ns.active ? '<button type="button" class="team-tool-btn cache-clear-namespace" data-namespace="' + esc(ns.key) + '" data-i18n="Clear">' + esc(t('Clear')) + '</button>' : '') + '</div>';
       }).join('') + '</details>' : '';
-      return '<article class="team-project-card" style="--project-accent:' + color + '"><h4 dir="auto">' + esc(project.name) + '</h4><p>' + esc(project.description || t('No description')) + '</p><div class="team-project-card-meta"><span>' + esc(t('default: {branch}', { branch: project.default_branch })) + '</span><span class="team-project-card-cache">' + formatBytes(usage) + '</span></div>' + details + '<div class="team-project-card-actions">' + remove + realtimeButton + '<button class="ss-btn ss-btn-primary collab-open-project" data-project-id="' + esc(project.id) + '" data-i18n="Open">' + esc(t('Open')) + '</button></div></article>';
+      return '<article class="team-project-card" data-team-project-card="' + esc(project.id) + '" style="--project-accent:' + color + '"><h4 dir="auto">' + esc(project.name) + '</h4><p>' + esc(project.description || t('No description')) + '</p><div class="team-project-card-meta"><span>' + esc(t('default: {branch}', { branch: project.default_branch })) + '</span><span class="team-project-card-cache">' + formatBytes(usage) + '</span></div>' + modeStatus + details + '<div class="team-project-card-actions">' + remove + realtimeButton + '<button class="ss-btn ss-btn-primary collab-open-project" data-project-id="' + esc(project.id) + '" data-i18n="Open">' + esc(t('Open')) + '</button></div></article>';
     });
     if (isAdmin) cards.push('<button type="button" class="team-project-add" id="team-create-project" title="' + esc(t('Create cloud project')) + '" aria-label="' + esc(t('Create cloud project')) + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>');
     $('collab-project-list').innerHTML = cards.join('') || '<div class="collab-empty" data-i18n="No team projects">' + esc(t('No team projects')) + '</div>';
@@ -1172,7 +1213,7 @@ export function createCollaborationService(
     var realtimeInfo;
     try {
       if (BOBO.realtime) realtimeInfo = await api('getRealtimeState', { teamId: project.team_id, projectId: project.id });
-      branches = await api('listTeamBranches', { teamId: project.team_id, projectId: project.id });
+      if (!realtimeInfo?.enabled) branches = await api('listTeamBranches', { teamId: project.team_id, projectId: project.id });
     } catch (err) {
       if (!isCurrent(epoch) || revision !== actionRevision || identity !== getSidebarIdentity()) return false;
       $('collab-action-body').innerHTML = '<div class="collab-open-error"><strong data-i18n="Could not load this project">' + esc(t('Could not load this project')) + '</strong><span>' + esc(err.message) + '</span></div><div id="collab-action-status" class="collab-action-status"></div>';
@@ -1182,24 +1223,29 @@ export function createCollaborationService(
       return;
     }
     if (!isCurrent(epoch) || revision !== actionRevision || identity !== getSidebarIdentity()) return false;
-    if (!Array.isArray(branches)) {
+    var sharedProject = realtimeInfo?.enabled === true;
+    if (realtimeInfo && typeof realtimeInfo.enabled === 'boolean' && selectedTeamId === project.team_id) {
+      projectModeRevision++;
+      updateProjectMode(project.id, realtimeInfo.enabled);
+    }
+    if (!sharedProject && !Array.isArray(branches)) {
       setActionStatusKey('The server returned an invalid branch list', null, true);
       return false;
     }
-    var names = branches.map(function(b) { return b && b.name; }).filter(Boolean);
+    var names = sharedProject ? [realtimeInfo.branch].filter(Boolean) : branches.map(function(b) { return b && b.name; }).filter(Boolean);
     if (!names.length) {
       setActionStatusKey('This project has no cloud branches', null, true);
       return false;
     }
-    var branch = realtimeInfo && realtimeInfo.enabled ? realtimeInfo.branch : preferredBranch || project.default_branch || names[0];
+    var branch = sharedProject ? realtimeInfo.branch : preferredBranch || project.default_branch || names[0];
     if (names.indexOf(branch) < 0) branch = names[0];
     var existing = readMapping(project.team_id, project.id, branch);
     var body = selectField('action-open-branch', 'Cloud branch', names, branch) +
       '<div class="collab-action-field"><label data-i18n="Local mapping">' + esc(t('Local mapping')) + '</label><div id="action-mapping-path" class="mapping-path">' + esc(existing || t('Not selected')) + '</div><button id="action-choose-mapping" class="ss-btn ss-btn-ghost" type="button" data-i18n="Choose directory">' + esc(t('Choose directory')) + '</button></div>' +
-      selectField('action-open-mode', 'Open mode', existing ? [{value:'local',label:'Open local changes'}, {value:'pull',label:'Reset from cloud (discard local changes)'}] : [{value:'pull',label:'Initial pull from cloud'}], existing ? 'local' : 'pull');
+      (sharedProject ? '' : selectField('action-open-mode', 'Open mode', existing ? [{value:'local',label:'Open local changes'}, {value:'pull',label:'Reset from cloud (discard local changes)'}] : [{value:'pull',label:'Initial pull from cloud'}], existing ? 'local' : 'pull'));
     openAction('Open {name}', body, 'Open project', async function() {
       if (!isCurrent(epoch) || identity !== getSidebarIdentity()) return false;
-      var selectedBranch = $('action-open-branch').value;
+	  var selectedBranch = sharedProject ? realtimeInfo.branch : $('action-open-branch').value;
 	  var storedPath = readMapping(project.team_id, project.id, selectedBranch);
 	  var mappingElement = $('action-mapping-path');
 	  var localPath = mappingElement.getAttribute('data-path') || storedPath;
@@ -1209,8 +1255,8 @@ export function createCollaborationService(
       if (!pathInfo.exists || !pathInfo.directory) throw new Error(t('Local mapping directory is unavailable'));
 	  if (!pathInfo.grantId) throw new Error(t('Choose the local mapping directory again to authorize synchronization'));
 	  var isFirst = !storedPath || storedPath !== localPath;
-      if (isFirst && !pathInfo.empty && !(realtimeInfo && realtimeInfo.enabled)) throw new Error(t('The first mapping must use an empty directory'));
-	  var mode = isFirst ? 'pull' : $('action-open-mode').value;
+      if (isFirst && !pathInfo.empty && !sharedProject) throw new Error(t('The first mapping must use an empty directory'));
+	  var mode = sharedProject ? 'shared' : (isFirst ? 'pull' : $('action-open-mode').value);
       var replacesCurrentWorkspace = (isFirst || mode === 'pull') && S.workspaceRoot === localPath;
       var leaveApproved = false;
       if (replacesCurrentWorkspace) {
@@ -1221,9 +1267,7 @@ export function createCollaborationService(
       if (!isCurrent(epoch)) return false;
       try {
         var prepared;
-        if (realtimeInfo && realtimeInfo.enabled) {
-          // The canonical snapshot is fetched after the approved local mapping is open.
-        } else if (isFirst || mode === 'pull') {
+        if (!sharedProject && (isFirst || mode === 'pull')) {
           setActionStatusKey('Pulling cloud branch...', null, false);
           prepared = await BOBO.rclone.prepareTeamPull({
             teamId: project.team_id,
@@ -1236,13 +1280,14 @@ export function createCollaborationService(
            var result = await BOBO.rclone.pull({ dest: localPath, localGrant: pathInfo.grantId, remoteGrantId: prepared.remoteGrantId, onProgress: function(line) { setActionStatus(line, false); } });
            if (!isCurrent(epoch)) return false;
            if (!result.success) throw new Error(result.error && result.error.message || t('Pull failed'));
-        } else {
+        } else if (!sharedProject) {
           await api('prepareTeamProject', { teamId: project.team_id, projectId: project.id, branch: selectedBranch, reset: false });
         }
 	      if (!isCurrent(epoch)) return false;
 	    var teamName = project.team_name || (selectedDetail && selectedDetail.team && selectedDetail.team.name) || (S.collaboration.current && S.collaboration.current.teamName) || 'Team';
         var nextCurrent = { teamId: project.team_id, teamName: teamName, projectId: project.id, projectName: project.name, branch: selectedBranch, localPath: localPath };
-    await dependencies.host.writeTeamMapping({ localPath: localPath, localGrant: pathInfo.grantId, mapping: nextCurrent });
+        var storedMapping = await dependencies.host.writeTeamMapping({ localPath: localPath, localGrant: pathInfo.grantId, mapping: nextCurrent });
+        if (storedMapping?.realtimeEpoch) nextCurrent.realtimeEpoch = storedMapping.realtimeEpoch;
         if (!isCurrent(epoch)) return false;
         if (replacesCurrentWorkspace) {
           await refreshApprovedWorkspace(localPath);
@@ -1253,7 +1298,7 @@ export function createCollaborationService(
 	      if (!isCurrent(epoch)) return false;
 	    writeMapping(project.team_id, project.id, selectedBranch, localPath);
         S.collaboration.current = nextCurrent;
-        if (realtimeInfo && realtimeInfo.enabled && BOBO.realtime) await BOBO.realtime.openProject(project, nextCurrent);
+        if (BOBO.realtime) await BOBO.realtime.openProject(project, nextCurrent);
         updateTeamChrome();
         BOBO.switchToPanel?.('team');
         BOBO.workbench?.setPrimaryView?.('explorer');
@@ -1269,6 +1314,7 @@ export function createCollaborationService(
     else bindText(initialPath, 'Not selected');
     initialPath.setAttribute('data-path', existing || '');
     initialPath.setAttribute('data-grant', '');
+    $('action-open-branch').disabled = sharedProject;
     function updateMappingForBranch() {
       if (disposed) return;
       var selected = $('action-open-branch').value;
@@ -1280,7 +1326,7 @@ export function createCollaborationService(
       pathEl.setAttribute('data-grant', '');
       $('action-open-mode').innerHTML = mapped ? '<option value="local" data-i18n="Open local changes">' + esc(t('Open local changes')) + '</option><option value="pull" data-i18n="Reset from cloud (discard local changes)">' + esc(t('Reset from cloud (discard local changes)')) + '</option>' : '<option value="pull" data-i18n="Initial pull from cloud">' + esc(t('Initial pull from cloud')) + '</option>';
     }
-    listen($('action-open-branch'), 'change', updateMappingForBranch, undefined, false);
+    if (!sharedProject) listen($('action-open-branch'), 'change', updateMappingForBranch, undefined, false);
     listen($('action-choose-mapping'), 'click', async function() {
       if (disposed) return;
       var chosen = await dependencies.host.pickLocalMapping();
@@ -1288,11 +1334,11 @@ export function createCollaborationService(
       if (!chosen) return;
       var selected = $('action-open-branch').value;
       var first = !readMapping(project.team_id, project.id, selected);
-      if (first && !chosen.empty && !(realtimeInfo && realtimeInfo.enabled)) { setActionStatusKey('Choose an empty directory for the initial pull', null, true); return; }
+      if (first && !chosen.empty && !sharedProject) { setActionStatusKey('Choose an empty directory for the initial pull', null, true); return; }
       setRawText($('action-mapping-path'), chosen.path);
       $('action-mapping-path').setAttribute('data-path', chosen.path);
 	  $('action-mapping-path').setAttribute('data-grant', chosen.grantId || '');
-	  $('action-open-mode').innerHTML = '<option value="pull" data-i18n="Initial pull from cloud">' + esc(t('Initial pull from cloud')) + '</option>';
+	  if (!sharedProject) $('action-open-mode').innerHTML = '<option value="pull" data-i18n="Initial pull from cloud">' + esc(t('Initial pull from cloud')) + '</option>';
       setActionStatus('', false);
     }, undefined, false);
   }
@@ -2067,6 +2113,12 @@ export function createCollaborationService(
     lifecycleEpoch++;
     initialized = true;
     listen(global, 'bobo:realtime-mode-changed', function() { updateTeamChrome(); });
+    listen(global, 'bobo:realtime-project-mode', function(event) {
+      if (event.detail?.teamId !== selectedTeamId) return;
+      projectModeRevision++;
+      updateProjectMode(event.detail.projectId, event.detail.enabled);
+    });
+    setInterval(refreshProjectModes, 5000);
     listen(global, 'bobo:visible-editors-changed', function() {
       if (!(BOBO.realtime && BOBO.realtime.isActive())) onFileActivated(S.activeTabPath);
     });

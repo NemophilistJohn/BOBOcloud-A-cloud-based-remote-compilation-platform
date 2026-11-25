@@ -4,7 +4,6 @@ package collab
 // write-through cache for a room. Each durable edit is committed before its
 // acknowledgement; ephemeral presence is deliberately not restored on restart.
 import (
-	"bobocloud-server/internal/safefile"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,10 +11,13 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"bobocloud-server/internal/safefile"
 )
 
 const (
@@ -91,11 +93,18 @@ type RealtimeDeletion struct {
 	ExpiresAt   time.Time       `json:"expiresAt"`
 }
 type RealtimeRun struct {
-	ID            string `json:"id"`
-	Status        string `json:"status"`
-	StarterUserID string `json:"starterUserId"`
-	Events        []any  `json:"events"`
-	Omitted       bool   `json:"omitted"`
+	ID            string     `json:"id"`
+	Status        string     `json:"status"`
+	StarterUserID string     `json:"starterUserId"`
+	FilePath      string     `json:"filePath,omitempty"`
+	TaskLabel     string     `json:"taskLabel,omitempty"`
+	TaskKind      string     `json:"taskKind,omitempty"`
+	Runtime       string     `json:"runtime,omitempty"`
+	CreatedAt     *time.Time `json:"createdAt,omitempty"`
+	CompletedAt   *time.Time `json:"completedAt,omitempty"`
+	Sequence      uint64     `json:"sequence,omitempty"`
+	Events        []any      `json:"events"`
+	Omitted       bool       `json:"omitted"`
 }
 type RealtimeState struct {
 	Enabled         bool                `json:"enabled"`
@@ -106,6 +115,7 @@ type RealtimeState struct {
 	Presence        []*RealtimePresence `json:"presence"`
 	Deletions       []*RealtimeDeletion `json:"deletions"`
 	Run             *RealtimeRun        `json:"run,omitempty"`
+	Runs            []*RealtimeRun      `json:"runs,omitempty"`
 	AppliedRequests []string            `json:"_appliedRequests,omitempty"`
 }
 type RealtimeOperation struct {
@@ -162,6 +172,8 @@ func (m *Manager) roomLocked(teamID, projectID string) (*realtimeRoom, error) {
 	if room.State.Run != nil {
 		if room.State.Run.Status == "running" {
 			room.State.Run.Status = "interrupted"
+			completedAt := time.Now().UTC()
+			room.State.Run.CompletedAt = &completedAt
 		}
 		for _, event := range room.State.Run.Events {
 			encoded, _ := json.Marshal(event)
@@ -225,7 +237,20 @@ func stateView(room *realtimeRoom) RealtimeState {
 		s.Files = append(s.Files, copyRealtimeFile(f, false))
 	}
 	sort.Slice(s.Files, func(i, j int) bool { return s.Files[i].Path < s.Files[j].Path })
-	s.Presence = make([]*RealtimePresence, 0, len(room.sessions))
+	s.Presence, s.Deletions = realtimePresenceView(room)
+	if s.Run != nil {
+		r := *s.Run
+		r.Events = append([]any{}, s.Run.Events...)
+		s.Run = &r
+	}
+	// Archived records are immutable after publication. Copy the slice so a
+	// later run cannot change a queued state frame.
+	s.Runs = append([]*RealtimeRun(nil), s.Runs...)
+	return s
+}
+
+func realtimePresenceView(room *realtimeRoom) ([]*RealtimePresence, []*RealtimeDeletion) {
+	presence := make([]*RealtimePresence, 0, len(room.sessions))
 	for _, p := range room.sessions {
 		v := *p
 		v.Panes = append([]RealtimePane{}, p.Panes...)
@@ -233,9 +258,15 @@ func stateView(room *realtimeRoom) RealtimeState {
 		for k, t := range p.Held {
 			v.Held[k] = t
 		}
-		s.Presence = append(s.Presence, &v)
+		presence = append(presence, &v)
 	}
-	s.Deletions = make([]*RealtimeDeletion, 0, len(room.State.Deletions))
+	sort.Slice(presence, func(i, j int) bool {
+		if presence[i].UserID == presence[j].UserID {
+			return presence[i].SessionID < presence[j].SessionID
+		}
+		return presence[i].UserID < presence[j].UserID
+	})
+	deletions := make([]*RealtimeDeletion, 0, len(room.State.Deletions))
 	for _, d := range room.State.Deletions {
 		v := *d
 		v.Electorate = append([]string{}, d.Electorate...)
@@ -243,14 +274,14 @@ func stateView(room *realtimeRoom) RealtimeState {
 		for k, b := range d.Consents {
 			v.Consents[k] = b
 		}
-		s.Deletions = append(s.Deletions, &v)
+		deletions = append(deletions, &v)
 	}
-	if s.Run != nil {
-		r := *s.Run
-		r.Events = append([]any{}, s.Run.Events...)
-		s.Run = &r
-	}
-	return s
+	return presence, deletions
+}
+
+func publishRealtimePresence(room *realtimeRoom) {
+	presence, deletions := realtimePresenceView(room)
+	publishRealtime(room, map[string]any{"type": "presence", "presence": presence, "deletions": deletions})
 }
 func publishRealtime(room *realtimeRoom, event any) {
 	for key, ch := range room.subscribers {
@@ -595,6 +626,10 @@ func (m *Manager) RecoverRealtimeState(ctx context.Context) error {
 				room, e := m.roomLocked(team.ID, project.ID)
 				if e == nil {
 					e = m.persistRoomLocked(team.ID, project.ID, room)
+					if e == nil && project.RealtimeEnabled != room.State.Enabled {
+						project.RealtimeEnabled = room.State.Enabled
+						e = m.store.SaveProject(project)
+					}
 				}
 				m.realtimeMu.Unlock()
 				if e != nil {
@@ -661,6 +696,7 @@ func (m *Manager) SetRealtimeMode(ctx context.Context, userID, teamID, projectID
 	persistTransition := func(previous RealtimeState) error {
 		previousProject := *p
 		p.WorktreeGeneration = room.State.Epoch
+		p.RealtimeEnabled = room.State.Enabled
 		if e := m.store.SaveProject(p); e != nil {
 			*p = previousProject
 			room.State = previous
@@ -818,6 +854,7 @@ func (m *Manager) SetRealtimeMode(ctx context.Context, userID, teamID, projectID
 		room.State.Epoch = generatedID("epoch")
 		room.State.Revision++
 		room.State.Files = []*RealtimeFile{}
+		room.State.Runs = nil
 		room.State.Run = nil
 		room.State.AppliedRequests = nil
 		room.State.Deletions = []*RealtimeDeletion{}
@@ -974,8 +1011,7 @@ func (m *Manager) JoinRealtime(userID, name, teamID, projectID, epoch, sessionID
 		}
 	}
 	p.LastSeen = time.Now().UTC()
-	view := stateView(room)
-	publishRealtime(room, map[string]any{"type": "presence", "presence": view.Presence, "deletions": view.Deletions})
+	publishRealtimePresence(room)
 	leave := func() {
 		m.realtimeMu.Lock()
 		defer m.realtimeMu.Unlock()
@@ -1128,15 +1164,15 @@ func (m *Manager) ApplyRealtime(userID, sessionID, teamID, projectID string, op 
 		}
 		now := time.Now().UTC()
 		newEditing := map[string]bool{}
-		ids := map[string]bool{}
-		for i := range op.Panes {
-			pane := op.Panes[i]
-			for _, old := range p.Panes {
-				if old.PaneID == pane.PaneID && old.FileID == pane.FileID && old.Editing {
-					pane.Editing = true
-					op.Panes[i].Editing = true
-				}
+		previousEditing := map[string]bool{}
+		for _, pane := range p.Panes {
+			if pane.Editing {
+				previousEditing[pane.FileID] = true
 			}
+		}
+		ids := map[string]bool{}
+		panes := make([]RealtimePane, 0, len(op.Panes))
+		for _, pane := range op.Panes {
 			if len(pane.PaneID) == 0 || len(pane.PaneID) > 96 || ids[pane.PaneID] {
 				return nil, fmt.Errorf("invalid pane id")
 			}
@@ -1151,9 +1187,17 @@ func (m *Manager) ApplyRealtime(userID, sessionID, teamID, projectID string, op 
 			if pane.Cursor != nil && (len(pane.Cursor.Anchor) > 160 || len(pane.Cursor.Focus) > 160) {
 				return nil, fmt.Errorf("invalid cursor")
 			}
+			pane.Editing = pane.Editing || previousEditing[pane.FileID] || p.Held[pane.FileID].After(now)
+			panes = append(panes, pane)
 			if pane.Editing {
 				newEditing[pane.FileID] = true
 			}
+		}
+		if slices.EqualFunc(p.Panes, panes, func(a, b RealtimePane) bool {
+			return a.PaneID == b.PaneID && a.FileID == b.FileID && a.Editing == b.Editing &&
+				(a.Cursor == b.Cursor || a.Cursor != nil && b.Cursor != nil && *a.Cursor == *b.Cursor)
+		}) {
+			return ack, nil
 		}
 		for _, old := range p.Panes {
 			if old.Editing && !newEditing[old.FileID] {
@@ -1163,9 +1207,8 @@ func (m *Manager) ApplyRealtime(userID, sessionID, teamID, projectID string, op 
 		for id := range newEditing {
 			delete(p.Held, id)
 		}
-		p.Panes = append([]RealtimePane{}, op.Panes...)
-		s := stateView(room)
-		publishRealtime(room, map[string]any{"type": "presence", "presence": s.Presence, "deletions": s.Deletions})
+		p.Panes = panes
+		publishRealtimePresence(room)
 		return ack, nil
 	}
 	// Snapshot only durable state for rollback. Ephemeral presence is independent.
@@ -1453,17 +1496,18 @@ func (m *Manager) SweepRealtime(teamID, projectID string) {
 		if err = m.persistRoomLocked(teamID, projectID, room); err != nil {
 			_ = json.Unmarshal(old, &room.State)
 		} else {
-			changed = true
+			publishRealtimeState(room)
+			return
 		}
 	}
 	if changed {
-		publishRealtimeState(room)
+		publishRealtimePresence(room)
 	}
 }
 
 // BeginRealtimeRun captures the exact source generation; allocation and disk
 // materialization happen later, after the normal execution resource admission.
-func (m *Manager) BeginRealtimeRun(userID, teamID, projectID, epoch, runID string, cancel context.CancelFunc, input func(string) error) error {
+func (m *Manager) BeginRealtimeRun(userID, teamID, projectID, epoch, runID string, cancel context.CancelFunc, input func(string) error, metadata ...RealtimeRunTarget) error {
 	if _, err := m.projectForMember(userID, teamID, projectID); err != nil {
 		return err
 	}
@@ -1483,10 +1527,18 @@ func (m *Manager) BeginRealtimeRun(userID, teamID, projectID, epoch, runID strin
 	for _, f := range room.State.Files {
 		room.runFiles = append(room.runFiles, copyRealtimeFile(f, true))
 	}
-	previous := room.State.Run
-	room.State.Run = &RealtimeRun{ID: runID, Status: "running", StarterUserID: userID, Events: []any{}}
+	previous, previousRuns := room.State.Run, room.State.Runs
+	room.State.Runs = archiveRealtimeRun(previous, previousRuns)
+	createdAt := time.Now().UTC()
+	run := &RealtimeRun{ID: runID, Status: "running", StarterUserID: userID, CreatedAt: &createdAt, Events: []any{}}
+	if len(metadata) > 0 {
+		target := metadata[0]
+		run.FilePath, run.TaskLabel, run.TaskKind, run.Runtime = target.FilePath, target.TaskLabel, target.TaskKind, target.Runtime
+	}
+	room.State.Run = run
 	if err = m.persistRoomLocked(teamID, projectID, room); err != nil {
 		room.State.Run = previous
+		room.State.Runs = previousRuns
 		room.runFiles = nil
 		return err
 	}
@@ -1495,6 +1547,31 @@ func (m *Manager) BeginRealtimeRun(userID, teamID, projectID, epoch, runID strin
 	room.runEventBytes = 0
 	publishRealtimeState(room)
 	return nil
+}
+
+type RealtimeRunTarget struct {
+	FilePath, TaskLabel, TaskKind, Runtime string
+}
+
+func archiveRealtimeRun(run *RealtimeRun, previous []*RealtimeRun) []*RealtimeRun {
+	if run == nil {
+		return previous
+	}
+	const retainedRuns = 12
+	const archivedOutputBytes = 32 << 10
+	archived := *run
+	bytes, start := 0, len(run.Events)
+	for start > 0 {
+		encoded, _ := json.Marshal(run.Events[start-1])
+		if bytes+len(encoded) > archivedOutputBytes {
+			break
+		}
+		bytes += len(encoded)
+		start--
+	}
+	archived.Events = append([]any{}, run.Events[start:]...)
+	archived.Omitted = run.Omitted || start > 0
+	return append([]*RealtimeRun{&archived}, previous[:min(len(previous), retainedRuns-1)]...)
 }
 func (m *Manager) MaterializeRealtimeRun(userID, teamID, projectID, epoch, runID string) (string, error) {
 	if _, err := m.projectForMember(userID, teamID, projectID); err != nil {
@@ -1530,6 +1607,7 @@ func (m *Manager) PublishRealtimeRunEvent(teamID, projectID, runID string, event
 	if err != nil {
 		return
 	}
+	room.State.Run.Sequence++
 	if len(encoded) <= realtimeRunBytes {
 		room.State.Run.Events = append(room.State.Run.Events, event)
 		room.runEventBytes += len(encoded)
@@ -1542,7 +1620,7 @@ func (m *Manager) PublishRealtimeRunEvent(teamID, projectID, runID string, event
 	} else {
 		room.State.Run.Omitted = true
 	}
-	publishRealtime(room, map[string]any{"type": "runEvent", "runId": runID, "event": event})
+	publishRealtime(room, map[string]any{"type": "runEvent", "runId": runID, "sequence": room.State.Run.Sequence, "event": event})
 }
 func (m *Manager) FinishRealtimeRun(teamID, projectID, runID, status string) {
 	m.realtimeMu.Lock()
@@ -1552,6 +1630,8 @@ func (m *Manager) FinishRealtimeRun(teamID, projectID, runID, status string) {
 		return
 	}
 	room.State.Run.Status = status
+	completedAt := time.Now().UTC()
+	room.State.Run.CompletedAt = &completedAt
 	room.runCancel = nil
 	room.runInput = nil
 	room.runFiles = nil

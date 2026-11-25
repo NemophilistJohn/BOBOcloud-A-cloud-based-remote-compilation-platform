@@ -32,7 +32,8 @@ test('team sidebar orders roles, bounds expanded projects, and confirms project 
         { id: 'member', name: 'A member team', is_admin: false, admin_user_id: 'other', project_count: 0, member_count: 1 },
         { id: 'admin', name: 'Z admin team', is_admin: true, admin_user_id: 'me', project_count: 8, member_count: 1 }
       ];
-      const projects = Array.from({ length: 8 }, (_, i) => ({ id: `p-${i}`, team_id: 'admin', name: `Project ${i}`, default_branch: 'main' }));
+      const projects = Array.from({ length: 8 }, (_, i) => ({ id: `p-${i}`, team_id: 'admin', name: `Project ${i}`, default_branch: 'main', realtime_enabled: i === 1 }));
+      window.__changeTeamProjectMode = (id, enabled) => { projects.find(project => project.id === id).realtime_enabled = enabled; };
       const daily = Array.from({ length: 200 }, (_, i) => i === 199 ? 2 : 0);
       const secondDaily = Array.from({ length: 200 }, (_, i) => i === 199 ? 3 : 0);
       let bouncedInvite = false;
@@ -40,10 +41,10 @@ test('team sidebar orders roles, bounds expanded projects, and confirms project 
       host.sendToServer = async (action, payload) => {
         window.__teamSidebarCalls.push({ action, payload });
         if (action === 'listTeams') return { success: true, data: teams };
-        if (action === 'listTeamProjects') return { success: true, data: projects };
+        if (action === 'listTeamProjects') return { success: true, data: structuredClone(projects) };
         if (action === 'getTeam') return { success: true, data: {
           team: teams.find(team => team.id === payload.teamId),
-          projects: payload.teamId === 'admin' ? projects : [],
+          projects: payload.teamId === 'admin' ? structuredClone(projects) : [],
           members: payload.teamId === 'admin' ? [
             { user_id: 'member-1', uid: 'member-uid-1', username: 'member1', name: 'Member One', avatar: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jY1sAAAAASUVORK5CYII=', is_admin: false },
             { user_id: 'me', uid: 'fixture-1', username: 'fixture', name: 'Admin', avatar: 'graphite', is_admin: true }
@@ -77,6 +78,11 @@ test('team sidebar orders roles, bounds expanded projects, and confirms project 
         }
         if (action === 'sendInbox') return { success: true, data: { id: 'invite-' + payload.recipientId, kind: 'invite', status: 'pending', createdAt: new Date().toISOString() } };
         if (action === 'listTeamBranches') return { success: true, data: [{ name: 'main' }] };
+        if (action === 'getRealtimeState') return { success: true, data: { enabled: projects.find(project => project.id === payload.projectId)?.realtime_enabled, branch: payload.projectId === 'p-1' ? 'live-branch' : 'main', epoch: 'fixture' } };
+        if (action === 'setRealtimeMode') {
+          window.__changeTeamProjectMode(payload.projectId, payload.enabled);
+          return { success: true, data: { enabled: payload.enabled, branch: payload.branch } };
+        }
         return { success: true, data: [] };
       };
       window.__friendVisibility = [];
@@ -169,6 +175,23 @@ test('team sidebar orders roles, bounds expanded projects, and confirms project 
     expect(insightsLayout.cacheWidth).toBeGreaterThan(250);
     expect(insightsLayout.activityWidth).toBeGreaterThan(250);
     await expect(page.locator('.team-project-card')).toHaveCount(8);
+    const projectCard = page.locator('[data-team-project-card="p-0"]');
+    const modeButton = projectCard.locator('[data-realtime-project]');
+    await expect(modeButton).toHaveText('Enable Collaboration');
+    await expect(page.locator('[data-realtime-project="p-1"]')).toHaveText('Disable Collaboration');
+    await page.locator('[data-team-project-card="p-1"] .collab-open-project').click();
+    await expect(page.locator('#action-open-branch')).toHaveValue('live-branch');
+    await expect(page.locator('#action-open-branch')).toBeDisabled();
+    await expect(page.locator('#action-open-mode')).toHaveCount(0);
+    await page.locator('#collab-action-cancel').click();
+    await modeButton.click();
+    await expect(page.locator('#confirm-dialog-title')).toHaveText('Enable Collaboration');
+    await page.locator('#confirm-dialog').getByRole('button', { name: 'Continue' }).click();
+    await expect(modeButton).toHaveText('Disable Collaboration');
+    await expect(projectCard.locator('.team-project-mode')).toHaveText('Collaboration enabled');
+    expect(await page.evaluate(() => window.__teamSidebarCalls.find(call => call.action === 'setRealtimeMode').payload)).toMatchObject({ projectId: 'p-0', branch: 'main', enabled: true });
+    await page.evaluate(() => window.__changeTeamProjectMode('p-0', false));
+    await expect(modeButton).toHaveText('Enable Collaboration', { timeout: 8000 });
     await expect(page.locator('.team-project-add')).toBeVisible();
     await expect(page.locator('#team-project-activity [data-date]')).toHaveCount(200);
     const activeDay = page.locator('#team-project-activity [data-date]').last();

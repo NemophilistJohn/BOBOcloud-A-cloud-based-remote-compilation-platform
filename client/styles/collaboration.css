@@ -467,8 +467,10 @@
 .team-project-card h4 { margin: 0; color: var(--text-primary); font-size: 13px; overflow-wrap: anywhere; }
 .team-project-card p { flex: 1; margin: 0; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
 .team-project-card-meta { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-muted); font-size: 9px; }
+.team-project-mode { color: var(--text-muted); font-size: 10px; }
+.team-project-mode[data-enabled="true"] { color: var(--green); }
 .team-project-card-cache { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.team-project-card-actions { width: 100%; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.team-project-card-actions { width: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; }
 .team-project-card-actions .collab-delete-project { margin-right: auto; }
 .team-project-add { min-height: 136px; display: grid; place-items: center; border: 1px dashed color-mix(in srgb, var(--blue) 52%, var(--border-focus)); border-radius: 8px; background: color-mix(in srgb, var(--bg-surface) 78%, var(--blue) 22%); color: color-mix(in srgb, var(--blue-hover) 68%, transparent); cursor: pointer; }
 .team-project-add:hover { border-color: var(--blue); color: var(--blue); background: color-mix(in srgb, var(--blue) 7%, var(--bg-secondary)); }

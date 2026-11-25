@@ -690,6 +690,7 @@
     row.appendChild(icon);
     row.appendChild(name);
     decorateTreeRow(row, node);
+    if (node.type === 'file') BOBO.realtime?.decorateTreeRow?.(row, node.path);
     li.appendChild(row);
 
     if (node.type === 'folder') {
