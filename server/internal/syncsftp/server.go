@@ -221,3 +221,16 @@ func (s *Server) Close() error {
 	s.wg.Wait()
 	return nil
 }
+
+// Shutdown closes the transport during the runtime's listener phase, before it
+// waits for managed Serve workers and before account/storage teardown.
+func (s *Server) Shutdown(ctx context.Context) error {
+	done := make(chan error, 1)
+	go func() { done <- s.Close() }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}

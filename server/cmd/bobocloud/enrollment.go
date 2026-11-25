@@ -240,7 +240,7 @@ func configureEnrollment(cfg *config.Config, h *handler.HTTPHandler, store auth.
 			return nil, err
 		}
 	}
-	if err := rt.RegisterStopHook(serverruntime.PhaseServices, "sync-sftp", func(context.Context) error { return sftpServer.Close() }); err != nil {
+	if err := rt.RegisterListener("sync-sftp", sftpServer); err != nil {
 		_ = sftpServer.Close()
 		return nil, err
 	}

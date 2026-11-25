@@ -1,6 +1,7 @@
 package syncsftp
 
 import (
+	"bobocloud-server/internal/serverruntime"
 	"context"
 	"errors"
 	"io"
@@ -15,6 +16,34 @@ import (
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
+
+func TestRuntimeDrainsSFTPBeforeWaitingForServe(t *testing.T) {
+	s, err := New(Config{HostKeyPath: filepath.Join(t.TempDir(), "host.key"), Authenticate: func(context.Context, string, string) (string, error) { return "test", nil }, Authorize: func(context.Context, string, string, bool) (RootAccess, error) {
+		return RootAccess{}, errors.New("denied")
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := serverruntime.New(context.Background())
+	if err = rt.RegisterListener("sftp", s); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	if err = rt.Go("sftp-serve", func(context.Context) { close(started); _ = s.Serve(listener) }); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err = rt.Shutdown(ctx); err != nil {
+		t.Fatalf("SFTP listener blocked managed-worker shutdown: %v", err)
+	}
+}
 
 func TestTransportAndRevocation(t *testing.T) {
 	root := t.TempDir()
