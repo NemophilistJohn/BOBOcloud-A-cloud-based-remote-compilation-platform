@@ -49,6 +49,13 @@ export interface ViewsTabDto {
   readonly [key: string]: unknown;
 }
 
+export interface ViewsSurfaceDto {
+  readonly id: string;
+  readonly title: string;
+  readonly kind: 'document' | 'workbench';
+  readonly elements: readonly HTMLElement[];
+}
+
 export interface ViewsDiffPathsDto {
   readonly originalPath?: string | null;
   readonly modifiedPath?: string | null;
@@ -135,6 +142,9 @@ export interface ViewsDependencies {
   readonly detectLanguage: (name: string, content: string) => string;
   readonly updateRunOutput: (message: string) => void;
   readonly activateFile?: (filePath: string) => void;
+  readonly resolveSurface?: (key: string) => ViewsSurfaceDto | null;
+  readonly showSplitDocuments?: (paths: readonly string[], active: string | null) => void;
+  readonly onPaneFocus?: () => void;
   readonly saveActiveFile?: () => unknown;
   readonly runActiveFile?: () => unknown;
   readonly debugActiveFile?: () => unknown;
@@ -151,6 +161,7 @@ export interface ViewsFacade {
   getActiveEditor(): ViewsCodeEditorPort | null;
   getVisibleEditors(): readonly ViewsCodeEditorPort[];
   activateTab(filePath: string): boolean;
+  isSplitActive(): boolean;
   onTabClosed(filePath: string): void;
   refreshReadOnly(): void;
   openDiff(originalPath?: string | null, modifiedPath?: string | null): void;

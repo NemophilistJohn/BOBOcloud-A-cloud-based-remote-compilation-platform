@@ -1556,6 +1556,10 @@
   }
 
   function activateTab(filePath) {
+    if (BOBO.views && BOBO.views.activateTab && BOBO.views.activateTab(filePath)) {
+      refreshTabBarActive(); updateTitlebar(); revealActiveTab();
+      return true;
+    }
     if (activateWorkbenchTab(filePath)) {
       revealActiveTab();
       return true;
@@ -1609,6 +1613,7 @@
     var workbenchClose = closeWorkbenchTab(filePath);
     if (workbenchClose) {
       return workbenchClose.then(function(result) {
+        if (result !== false && BOBO.views && BOBO.views.onTabClosed) BOBO.views.onTabClosed(filePath);
         updateTabbar();
         return result;
       }, function(error) {
@@ -1912,19 +1917,6 @@
       barTab.appendChild(close);
     }
 
-    if (!providerId && tab.model && BOBO.views && BOBO.views.openSplit) {
-      var split = document.createElement('button');
-      split.className = 'tab-split';
-      split.type = 'button';
-      split.title = t('Split Editor Right');
-      split.setAttribute('aria-label', t('Split Editor Right'));
-      split.innerHTML = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1" stroke="currentColor"/><path d="M8 3v10" stroke="currentColor"/></svg>';
-      split.onclick = function(event) {
-        event.stopPropagation();
-        BOBO.views.openSplit(key);
-      };
-      barTab.appendChild(split);
-    }
 
     barTab.onclick = (function(tabKey) { return function() { activateTab(tabKey); }; })(key);
     setupTabDrag(barTab, title, providerId ? tab.draggable : true);
@@ -2163,6 +2155,21 @@
   }
 
   BOBO.workspace = {
+    resolveSplitSurface: function(key) {
+      var tab = S.tabs.find(function(item) { return item.path === key; });
+      if (tab && tab.documentView && !tab.documentView.disposed) return {
+        id: 'document:' + key, title: tab.name, kind: 'document',
+        elements: [tab.documentView.sandbox.element, tab.documentView.error]
+      };
+      var match = findWorkbenchTab(key);
+      if (match && match.provider && typeof match.provider.getSurface === 'function') {
+        var surface = match.provider.getSurface(key);
+        if (surface && surface.elements && surface.elements.length) return {
+          id: match.tab.providerId, title: match.tab.name, kind: 'workbench', elements: surface.elements
+        };
+      }
+      return null;
+    },
     setupSidebarResizer: setupSidebarResizer,
     setupGlobalKeys: setupGlobalKeys,
 

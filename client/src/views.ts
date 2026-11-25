@@ -44,6 +44,11 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
   let diffRequestEpoch = 0;
   const splitListeners = new DisposableStore();
   let activePane: 'left' | 'right' = 'right';
+  let routingPane = false;
+  let splitOpen = false;
+  const panePaths: { left: string | null; right: string | null } = { left: null, right: null };
+  const splitSurfaces = new Set<HTMLElement>();
+  const focusBound = new WeakSet<HTMLElement>();
   const paneStates = { left: new Map<string, unknown>(), right: new Map<string, unknown>() };
   let ownedSplitEditor: ViewsSplitEditorPort | null = null;
   let ownedDiffEditor: ViewsDiffEditorPort | null = null;
@@ -75,22 +80,25 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
   }
 
   function getVisibleEditors(): readonly ViewsCodeEditorPort[] {
-    if (disposed || state.currentViewMode === 'diff' || state.currentImagePath) return [];
+    if (disposed || state.currentViewMode === 'diff') return [];
     if (state.currentViewMode === 'split' && state.splitEditor) {
-      return [state.splitEditor, state.splitEditor.rightEditor];
+      return [state.splitEditor, state.splitEditor.rightEditor].filter(editor => !!editor.getModel());
     }
+    if (state.currentImagePath || !activeTab()?.model) return [];
     return state.editor ? [state.editor] : [];
   }
 
   function getActiveEditor(): ViewsCodeEditorPort | null {
     if (state.currentViewMode === 'split' && state.splitEditor) {
-      return activePane === 'left' ? state.splitEditor : state.splitEditor.rightEditor;
+      const editor = activePane === 'left' ? state.splitEditor : state.splitEditor.rightEditor;
+      return editor.getModel() ? editor : null;
     }
     return state.editor;
   }
 
   function tabForEditor(editor: ViewsCodeEditorPort): ViewsTabDto | null {
-    return state.tabs.find((tab) => tab.model === editor.getModel()) || null;
+    const model = editor.getModel();
+    return model ? state.tabs.find((tab) => tab.model === model) || null : null;
   }
 
   function updateStatus(tab: ViewsTabDto | null): void {
@@ -103,14 +111,67 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
       const container = document.getElementById('split-' + pane + '-pane');
       const editor = pane === 'left' ? state.splitEditor : state.splitEditor?.rightEditor;
       const tab = editor ? tabForEditor(editor) : null;
+      const surface = panePaths[pane] ? dependencies.resolveSurface?.(panePaths[pane]!) : null;
       const label = document.getElementById('split-' + pane + '-label');
       if (label) {
-        label.textContent = tab ? baseName(tab.path, '') : '';
-        label.title = tab?.path || '';
+        label.textContent = tab ? baseName(tab.path, '') : surface?.title || translate('Open a file or plugin tab');
+        label.title = tab?.path || surface?.title || '';
       }
       if (container) container.classList.toggle('focused', activePane === pane);
     }
     dependencies.notifyVisibleEditorsChanged?.();
+  }
+
+  function paintSplit(): void {
+    const visible = new Set<HTMLElement>();
+    const documents: string[] = [];
+    for (const pane of ['left', 'right'] as const) {
+      const key = panePaths[pane];
+      const editor = pane === 'left' ? state.splitEditor : state.splitEditor?.rightEditor;
+      // Workspace renames replace a model and its tab path before publishing
+      // visible-editor changes. Follow that file-owned model in both panes.
+      if (key && !state.tabs.some(item => item.path === key) && editor?.getModel()) {
+        const renamed = tabForEditor(editor);
+        if (renamed) panePaths[pane] = renamed.path;
+      }
+      const tab = state.tabs.find(item => item.path === panePaths[pane]);
+      if (editor && editor.getModel() !== (tab?.model || null)) editor.setModel(tab?.model || null);
+      const surface = key ? dependencies.resolveSurface?.(key) : null;
+      if (surface) {
+        if (surface.kind === 'document') documents.push(key!);
+        for (const element of surface.elements) {
+          element.classList.add('workbench-split-surface');
+          element.classList.toggle('workbench-split-left', pane === 'left');
+          element.classList.toggle('workbench-split-right', pane === 'right');
+          element.dataset.splitTabKey = key!;
+          element.hidden = element.classList.contains('document-view-host-error') && !element.textContent;
+          element.classList.remove('hidden');
+          if (surface.kind === 'workbench') element.classList.add('active');
+          visible.add(element); splitSurfaces.add(element);
+          if (!focusBound.has(element)) {
+            const focus = () => { if (splitOpen && !routingPane) focusPane(element.classList.contains('workbench-split-left') ? 'left' : 'right'); };
+            element.addEventListener('pointerdown', focus, true);
+            listeners.add(toDisposable(() => element.removeEventListener('pointerdown', focus, true)));
+            focusBound.add(element);
+          }
+        }
+      }
+      const container = document.getElementById('split-' + pane + '-pane');
+      container?.classList.toggle('empty-pane', !tab?.model && !surface);
+    }
+    for (const element of splitSurfaces) {
+      if (visible.has(element)) continue;
+      element.hidden = true;
+      element.classList.remove('workbench-split-surface', 'workbench-split-left', 'workbench-split-right', 'active');
+      delete element.dataset.splitTabKey;
+    }
+    dependencies.showSplitDocuments?.(documents, panePaths[activePane]);
+    requiredElement('split-container').classList.add('active');
+    requiredElement('container').style.display = 'none';
+    state.currentImagePath = null;
+    state.currentViewMode = 'split';
+    state.editor?.setModel(getActiveEditor()?.getModel() || null);
+    refreshReadOnly(); publishEditors();
   }
 
   function refreshReadOnly(): void {
@@ -125,46 +186,55 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
   }
 
   function activateTab(filePath: string): boolean {
-    if (disposed || state.currentViewMode !== 'split' || !state.splitEditor) return false;
-    const tab = state.tabs.find((candidate) => candidate.path === filePath);
-    const editor = getActiveEditor();
-    if (!tab?.model || !editor) return false;
+    if (disposed || routingPane || (!splitOpen && state.currentViewMode !== 'split') || !state.splitEditor) return false;
+    if (!splitOpen) {
+      panePaths.left = tabForEditor(state.splitEditor)?.path || null;
+      panePaths.right = tabForEditor(state.splitEditor.rightEditor)?.path || null;
+      splitOpen = true;
+    }
+    const tab = state.tabs.find(candidate => candidate.path === filePath);
+    const surface = dependencies.resolveSurface?.(filePath);
+    if (!tab?.model && !surface) return false;
+    const other = activePane === 'left' ? 'right' : 'left';
+    const otherSurface = panePaths[other] ? dependencies.resolveSurface?.(panePaths[other]!) : null;
+    // A document/plugin view has one live instance. Reuse it rather than
+    // cloning its private draft or reloading an iframe.
+    if (surface && otherSurface?.id === surface.id) activePane = other;
+    const editor = activePane === 'left' ? state.splitEditor : state.splitEditor.rightEditor;
     const previous = tabForEditor(editor);
     if (previous && previous.path !== filePath) paneStates[activePane].set(previous.path, editor.saveViewState?.());
-    if (editor.getModel() !== tab.model) {
-      editor.setModel(tab.model);
-      const saved = paneStates[activePane].get(filePath);
-      if (saved) editor.restoreViewState?.(saved);
+    const changed = panePaths[activePane] !== filePath;
+    panePaths[activePane] = filePath;
+    if (changed) {
+      routingPane = true;
+      state.currentViewMode = 'single';
+      try { dependencies.activateFile?.(filePath); }
+      finally { routingPane = false; }
     }
-    // The primary editor remains the legacy active-model bridge for run/LSP.
-    state.editor?.setModel(tab.model);
-    refreshReadOnly();
-    updateStatus(tab);
-    publishEditors();
+    state.activeTabPath = filePath;
+    paintSplit();
+    const saved = paneStates[activePane].get(filePath);
+    if (changed && saved && tab?.model) editor.restoreViewState?.(saved);
+    updateStatus(tab || null);
+    dependencies.onPaneFocus?.();
+    if (changed && tab?.model) editor.focus?.();
     return true;
   }
 
   function focusPane(pane: 'left' | 'right'): void {
-    if (state.currentViewMode !== 'split' || !state.splitEditor) return;
+    if (!splitOpen || !state.splitEditor) return;
     activePane = pane;
-    const editor = getActiveEditor();
-    const tab = editor && tabForEditor(editor);
-    if (tab) {
-      if (state.activeTabPath !== tab.path) dependencies.activateFile?.(tab.path);
-      state.activeTabPath = tab.path;
-      state.editor?.setModel(tab.model || null);
-      refreshReadOnly();
-      updateStatus(tab);
-    }
-    publishEditors();
+    const path = panePaths[pane];
+    if (path) activateTab(path);
+    else { state.activeTabPath = null; paintSplit(); }
   }
 
-  function createSplitEditor(tab: ViewsTabDto & { readonly model: ViewsTextModelPort }): void {
+  function createSplitEditor(tab: ViewsTabDto): void {
     const editorApi = monaco().editor;
     let leftEditor: ViewsCodeEditorPort | null = null;
     let rightEditor: ViewsCodeEditorPort | null = null;
     try {
-      const options = { model: tab.model, theme: editorTheme(), automaticLayout: true, readOnly: false };
+      const options = { model: tab.model || null, theme: editorTheme(), automaticLayout: true, readOnly: false };
       leftEditor = editorApi.create(requiredElement('split-left'), options);
       rightEditor = editorApi.create(requiredElement('split-right'), options);
       const splitEditor = leftEditor as ViewsSplitEditorPort;
@@ -193,36 +263,30 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
   function openSplit(filePath?: string): void {
     if (disposed || state.workspaceTransitionLocked) return;
     if (state.currentViewMode === 'diff') closeDiff();
-    const tab = filePath ? state.tabs.find((candidate) => candidate.path === filePath) : activeTab();
-    if (!tab?.model) {
+    const key = filePath || state.activeTabPath;
+    const tab = state.tabs.find(candidate => candidate.path === key);
+    const surface = key ? dependencies.resolveSurface?.(key) : null;
+    if (!key || (!tab?.model && !surface)) {
       dependencies.updateRunOutput(translate('No active file to split'));
       return;
     }
-    if (state.currentViewMode === 'split') {
-      activePane = 'right';
-      dependencies.activateFile?.(tab.path);
-      activateTab(tab.path);
-      getActiveEditor()?.focus?.();
-      return;
+    if (splitOpen || state.currentViewMode === 'split') {
+      activePane = 'right'; activateTab(key); getActiveEditor()?.focus?.(); return;
     }
-    if (state.activeTabPath !== tab.path) dependencies.activateFile?.(tab.path);
     const initialViewState = state.editor?.saveViewState?.();
-    if (!state.splitEditor) createSplitEditor(tab as ViewsTabDto & { readonly model: ViewsTextModelPort });
-    else {
-      state.splitEditor.setModel(tab.model);
-      state.splitEditor.rightEditor.setModel(tab.model);
-    }
-    requiredElement('container').style.display = 'none';
-    requiredElement('split-container').classList.add('active');
-    state.currentViewMode = 'split';
+    if (!state.splitEditor) createSplitEditor(tab || { path: key });
+    splitOpen = true;
+    panePaths.left = key;
+    panePaths.right = tab?.model ? key : null;
     activePane = 'right';
-    if (initialViewState) {
+    state.activeTabPath = panePaths.right;
+    paintSplit();
+    if (initialViewState && tab?.model) {
       state.splitEditor?.restoreViewState?.(initialViewState);
       state.splitEditor?.rightEditor.restoreViewState?.(initialViewState);
     }
-    refreshReadOnly();
-    updateStatus(tab);
-    publishEditors();
+    updateStatus(tab || null);
+    dependencies.onPaneFocus?.();
     getActiveEditor()?.focus?.();
   }
 
@@ -230,34 +294,48 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     if (disposed) return;
     const editor = getActiveEditor();
     const viewState = editor?.saveViewState?.();
+    const key = panePaths[activePane] || panePaths[activePane === 'left' ? 'right' : 'left'] || state.activeTabPath;
     const model = editor?.getModel() || activeTab()?.model || null;
+    splitOpen = false;
+    for (const element of splitSurfaces) {
+      element.classList.remove('workbench-split-surface', 'workbench-split-left', 'workbench-split-right');
+      element.classList.remove('active');
+      delete element.dataset.splitTabKey;
+      element.hidden = true;
+    }
+    splitSurfaces.clear();
+    dependencies.showSplitDocuments?.([], null);
     requiredElement('split-container').classList.remove('active');
     requiredElement('container').style.display = '';
     state.currentViewMode = 'single';
     state.editor?.setModel(model);
-    if (viewState) state.editor?.restoreViewState?.(viewState);
-    // Split panes never own the file models. Detach them before tab disposal.
     state.splitEditor?.setModel(null);
     state.splitEditor?.rightEditor.setModel(null);
-    paneStates.left.clear();
-    paneStates.right.clear();
-    refreshReadOnly();
-    updateStatus(activeTab());
-    publishEditors();
-    state.editor?.focus?.();
+    panePaths.left = null; panePaths.right = null;
+    paneStates.left.clear(); paneStates.right.clear();
+    if (key) dependencies.activateFile?.(key);
+    if (viewState) state.editor?.restoreViewState?.(viewState);
+    refreshReadOnly(); updateStatus(activeTab()); publishEditors();
+    if (activeTab()?.model) state.editor?.focus?.();
   }
 
   function onTabClosed(filePath: string): void {
-    paneStates.left.delete(filePath);
-    paneStates.right.delete(filePath);
-    const closed = state.tabs.find((tab) => tab.path === filePath);
-    if (!closed?.model || !state.splitEditor) return;
-    const replacement = state.tabs.find((tab) => tab.path !== filePath && tab.model)?.model || null;
-    for (const editor of [state.splitEditor, state.splitEditor.rightEditor]) {
-      if (editor.getModel() === closed.model) editor.setModel(replacement);
+    paneStates.left.delete(filePath); paneStates.right.delete(filePath);
+    if (!state.splitEditor || (!splitOpen && state.currentViewMode !== 'split')) return;
+    const closed = state.tabs.find(tab => tab.path === filePath);
+    for (const pane of ['left', 'right'] as const) {
+      const editor = pane === 'left' ? state.splitEditor : state.splitEditor.rightEditor;
+      if (panePaths[pane] === filePath || (closed?.model && editor.getModel() === closed.model)) {
+        const otherKey = panePaths[pane === 'left' ? 'right' : 'left'];
+        const otherSurface = otherKey ? dependencies.resolveSurface?.(otherKey) : null;
+        const available = state.tabs.filter(tab => tab.path !== filePath &&
+          (!otherSurface || dependencies.resolveSurface?.(tab.path)?.id !== otherSurface.id));
+        const replacement = available.find(tab => tab.model) || available[0];
+        panePaths[pane] = replacement?.path || null;
+        editor.setModel(replacement?.model || null);
+      }
     }
-    if (state.editor?.getModel() === closed.model) state.editor.setModel(replacement);
-    publishEditors();
+    paintSplit();
   }
 
   function detachDiffModels(editor: ViewsDiffEditorPort): ViewsDiffModelDto | null {
@@ -466,6 +544,12 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
       listen(zoomIn, 'click', () => zoomImage(1.25));
       listen(zoomReset, 'click', resetImageTransform);
       listen(closeDiffButton, 'click', closeDiff);
+      const splitButton = document.getElementById('editor-split-action');
+      if (splitButton) listen(splitButton, 'click', () => openSplit());
+      for (const pane of ['left', 'right'] as const) {
+        const element = document.getElementById('split-' + pane + '-pane');
+        if (element) listen(element, 'pointerdown', () => focusPane(pane));
+      }
       const closeSplitButton = document.getElementById('close-split');
       if (closeSplitButton) listen(closeSplitButton, 'click', closeSplit);
       if (typeof document.addEventListener === 'function') {
@@ -518,6 +602,15 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
   function dispose(): void {
     if (disposed) return;
     const imageWasVisible = state.currentImagePath != null;
+    splitOpen = false;
+    for (const element of splitSurfaces) {
+      element.classList.remove('workbench-split-surface', 'workbench-split-left', 'workbench-split-right');
+      element.classList.remove('active');
+      delete element.dataset.splitTabKey;
+      element.hidden = true;
+    }
+    splitSurfaces.clear();
+    dependencies.showSplitDocuments?.([], null);
     disposed = true;
     initialized = false;
     diffRequestEpoch += 1;
@@ -579,6 +672,7 @@ export function createViewsService(dependencies: ViewsDependencies): ViewsServic
     getActiveEditor,
     getVisibleEditors,
     activateTab,
+    isSplitActive: () => splitOpen,
     onTabClosed,
     refreshReadOnly,
     openDiff,

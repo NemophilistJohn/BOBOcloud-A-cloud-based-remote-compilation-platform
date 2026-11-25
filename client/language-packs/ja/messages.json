@@ -2553,5 +2553,7 @@
   "Reconnect": "再接続",
   "Shared run {id}": "共有実行 {id}",
   "Save document preview edits before joining live collaboration": "リアルタイム共同編集に参加する前に文書プレビューの変更を保存してください",
-  "Reconcile the shared workspace before normal synchronization": "通常の同期を再開する前に共有ワークスペースを更新してください"
+  "Reconcile the shared workspace before normal synchronization": "通常の同期を再開する前に共有ワークスペースを更新してください",
+  "Open a file or plugin tab": "ファイルまたはプラグインのタブを開く",
+  "Cannot start live collaboration: {user} / {branch} has local changes: {paths}. Save and publish these changes, or resolve conflicts first.": "リアルタイム共同編集を開始できません：{user} の {branch} にローカル変更があります：{paths}。先に保存してコミット・プッシュするか、競合を解決してください。"
 }

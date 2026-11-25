@@ -1,6 +1,6 @@
 # BOBOCloud Plugin API 1.12.0
 
-Status: public package and isolated extension-host contract. BOBOCloud desktop `2.9.0` implements Plugin API `1.12.0`. API `1.6.0` introduced truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism; later API 1.x releases extend that contract.
+Status: public package and isolated extension-host contract. BOBOCloud desktop `2.9.1` implements Plugin API `1.12.0`. API `1.6.0` introduced truthful model capability snapshots, provider-effective reasoning, model streaming, versioned state patches, revision-bound Skills, and trusted read-tool parallelism; later API 1.x releases extend that contract.
 
 The reference guide, package checklist, and complete example are in [Plugin Development Guide](./plugin-development.md).
 
@@ -205,6 +205,8 @@ Plugin contribution ids must also begin with the plugin id plus `.`. API 1.6.0 a
 `documentViews` and `agents` use dedicated structurally validated registration APIs and cannot be registered through `context.contributions.register()`. Executable file-decoration callbacks and debug-configuration providers are intentionally not exposed to installed package code because they require executable callbacks or security-sensitive workflow ownership. The static SCM decoration publisher documented below remains the sole data-only file-decoration exception in API 1.6.0.
 
 ## Document Views
+
+Desktop 2.9.1 can display two different document views, or a document and a text/plugin page, side by side. The host keeps each iframe mounted; pane focus selects save, navigation and virtual-document analysis. Selecting the same live view focuses its existing pane rather than cloning private drafts. This host layout capability uses the existing API 1.12.0 contract and requires no additional plugin permission. Plugin views should size their root responsively to the available pane.
 
 Document viewers require package schema 2 and both `documentViews.register` and `documents.read`. The manifest is the executable-code allowlist:
 

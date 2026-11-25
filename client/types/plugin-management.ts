@@ -296,6 +296,7 @@ export interface PluginDetailsWorkbenchTabDto {
 }
 
 export interface PluginDetailsTabProvider {
+  getSurface?(key: string): { elements: readonly HTMLElement[] } | null;
   getTabs(): readonly PluginDetailsWorkbenchTabDto[];
   activate(key: string): unknown;
   close(key: string): boolean;

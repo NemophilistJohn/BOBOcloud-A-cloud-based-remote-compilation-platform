@@ -111,7 +111,8 @@ function fakeNode(tagName = 'div') {
     classList: {
       values: new Set(),
       add(value) { this.values.add(value); },
-      remove(value) { this.values.delete(value); }
+      remove(value) { this.values.delete(value); },
+      toggle(value, enabled) { if (enabled) this.values.add(value); else this.values.delete(value); }
     },
     appendChild(child) {
       child.parentNode = this;
@@ -267,6 +268,55 @@ test('document-view selection compares each viewer by its longest compound exten
   const compound = contribution('acme.preview.compound', ['.gz', '.tar.gz'], -100);
   const selected = selectDocumentView([shortHighPriority, compound], 'ARCHIVE.TAR.GZ');
   assert.equal(selected.id, 'acme.preview.compound');
+});
+
+test('split documents retain their analysis snapshots and in-flight execution across pane focus changes', async (t) => {
+  const { createDocumentViewService } = await loadModule(t);
+  let sequence = 0;
+  const harness = createHarness({ openDocument: async () => ({
+    documentId: 'split-' + (++sequence), name: 'sample.preview', extension: '.preview',
+    size: 0, writable: true, executable: true, analyzable: true
+  }) });
+  const analyses = [], completions = [], executions = [], closed = [], focused = [];
+  const sync = deferred();
+  harness.host.executeDocument = async (...args) => { executions.push(args); return { ok: true }; };
+  harness.dependencies.kernelOptions = () => ({ runtimeId: 'python:3.10' });
+  harness.dependencies.syncKernelWorkspace = () => sync.promise;
+  harness.dependencies.analysis = {
+    update: (...args) => analyses.push(args),
+    close: path => closed.push(path),
+    complete: async (...args) => { completions.push(args); return ['completion']; }
+  };
+  harness.dependencies.workspace.activateTab = path => focused.push(path);
+  const service = createDocumentViewService(harness.dependencies);
+  const a = await service.create('C:/workspace/a.preview', 'a.preview', service.find('a.preview'));
+  const b = await service.create('C:/workspace/b.preview', 'b.preview', service.find('b.preview'));
+  const [first, second] = harness.sandboxes;
+  service.setSplitVisibility([a.path, b.path], a.path);
+  assert.equal(first.shown && second.shown, true);
+  first.options.analyze({ kind: 'update', revision: 1, text: 'import math' });
+  second.options.analyze({ kind: 'update', revision: 2, text: 'import json' });
+  assert.deepEqual(analyses.map(args => args.slice(0, 3)), [[a.path, 1, 'import math']]);
+  const running = first.options.execute({ kind: 'execute', code: 'print(1)' });
+  service.setSplitVisibility([a.path, b.path], b.path);
+  assert.deepEqual(analyses.at(-1).slice(0, 3), [b.path, 2, 'import json']);
+  sync.resolve(true);
+  assert.deepEqual(await running, { ok: true });
+  assert.equal(executions[0][0], a.documentId);
+  service.setSplitVisibility([a.path, b.path], a.path);
+  assert.deepEqual(analyses.at(-1).slice(0, 3), [a.path, 1, 'import math']);
+  assert.deepEqual(await first.options.analyze({ kind: 'complete', revision: 1, line: 0, character: 3 }), ['completion']);
+  assert.equal(completions.at(-1)[0], a.path);
+  second.options.onFocus();
+  assert.deepEqual(focused, [b.path]);
+  service.hideAll();
+  assert.equal(first.shown || second.shown, false);
+  assert.deepEqual(await first.options.execute({ kind: 'execute', code: 'print(2)' }), { ok: false, code: 'kernel_closed' });
+  second.options.onFocus();
+  assert.equal(focused.length, 1);
+  assert.ok(closed.includes(a.path) && closed.includes(b.path));
+  service.dispose();
+  assert.equal(first.disposed && second.disposed, true);
 });
 
 test('document-view creation coalesces by path and disposal invalidates an open in-flight handle', async (t) => {

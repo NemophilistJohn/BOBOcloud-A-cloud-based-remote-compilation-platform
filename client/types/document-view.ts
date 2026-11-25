@@ -183,6 +183,7 @@ export interface SandboxedDocumentViewOptions {
   readonly analyze?: (request: DocumentAnalysisRequest) => unknown;
   readonly execute?: (request: DocumentKernelRequest) => Promise<DocumentKernelResult>;
   readonly onNavigation?: (navigation: DocumentNavigation) => void;
+  readonly onFocus?: () => void;
 }
 
 export interface SandboxedDocumentView extends Disposable {
@@ -240,6 +241,7 @@ export interface DocumentViewViewsPort {
 }
 
 export interface DocumentViewWorkspacePort {
+  activateTab?(path: string): unknown;
   closeTab(path: string, options: Readonly<{ force: true }>): unknown;
 }
 
@@ -291,6 +293,7 @@ export interface DocumentViewService extends Disposable {
     registration: DocumentViewRegistrationDto
   ): Promise<DocumentViewInstance>;
   show(tab: DocumentViewTabLike | null | undefined): boolean;
+  setSplitVisibility(paths: readonly string[], activePath: string | null): void;
   hideAll(options?: DocumentViewHideOptions): void;
   disposeTab(tab: DocumentViewTabLike | null | undefined): void;
   disposeAll(): void;

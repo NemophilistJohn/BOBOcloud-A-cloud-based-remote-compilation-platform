@@ -2553,5 +2553,7 @@
   "Reconnect": "重新连接",
   "Shared run {id}": "共享运行 {id}",
   "Save document preview edits before joining live collaboration": "加入实时协作前请先保存文档预览中的修改",
-  "Reconcile the shared workspace before normal synchronization": "恢复普通同步前，请先刷新共享工作区"
+  "Reconcile the shared workspace before normal synchronization": "恢复普通同步前，请先刷新共享工作区",
+  "Open a file or plugin tab": "打开文件或插件页面",
+  "Cannot start live collaboration: {user} / {branch} has local changes: {paths}. Save and publish these changes, or resolve conflicts first.": "无法启用实时协作：{user} 的 {branch} 分支存在本地改动：{paths}。请先保存并提交推送，或解决冲突。"
 }

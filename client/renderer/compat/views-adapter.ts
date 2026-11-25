@@ -21,7 +21,10 @@ interface LegacyViewsNamespace {
   detectLanguage?: (name: string, content: string) => string;
   updateRunOutput?: (message: string) => void;
   views?: ViewsFacade;
-  workspace?: { activateTab(filePath: string): unknown; saveActiveTab(): unknown };
+  workspace?: { activateTab(filePath: string): unknown; saveActiveTab(): unknown; updateTabbar?(): void; updateTitlebar?(): void; resolveSplitSurface?(key: string): import('../../types/views').ViewsSurfaceDto | null };
+  runtime?: { autoSelectForActiveFile?(): unknown };
+  runConfig?: { refreshForActiveFile?(): unknown };
+  documentViews?: { setSplitVisibility(paths: readonly string[], active: string | null): void };
   i18n?: { t(source: string): string };
   projectTasks?: { runSelected(): unknown };
   runner?: { runActive(): unknown };
@@ -62,6 +65,9 @@ const views = createViewsService({
     BOBO.updateRunOutput.call(BOBO, message);
   },
   activateFile: (filePath) => { BOBO.workspace?.activateTab(filePath); },
+  resolveSurface: key => BOBO.workspace?.resolveSplitSurface?.(key) || null,
+  showSplitDocuments: (paths, active) => BOBO.documentViews?.setSplitVisibility(paths, active),
+  onPaneFocus: () => { BOBO.runtime?.autoSelectForActiveFile?.(); BOBO.runConfig?.refreshForActiveFile?.(); BOBO.workspace?.updateTabbar?.(); BOBO.workspace?.updateTitlebar?.(); },
   saveActiveFile: () => BOBO.workspace?.saveActiveTab(),
   runActiveFile: () => BOBO.projectTasks ? BOBO.projectTasks.runSelected() : BOBO.runner?.runActive(),
   debugActiveFile: () => {
@@ -88,6 +94,7 @@ BOBO.views = {
   getActiveEditor: views.getActiveEditor,
   getVisibleEditors: views.getVisibleEditors,
   activateTab: views.activateTab,
+  isSplitActive: views.isSplitActive,
   onTabClosed: views.onTabClosed,
   refreshReadOnly: views.refreshReadOnly,
   openDiff: views.openDiff,

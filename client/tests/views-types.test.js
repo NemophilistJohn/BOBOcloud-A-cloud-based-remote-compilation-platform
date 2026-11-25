@@ -27,7 +27,7 @@ test('views contracts keep the host read capability private and the legacy facad
     '  (<Value>() => Value extends Right ? 1 : 2) ? true : false;',
     'type AssertTrue<Value extends true> = Value;',
     'type AssertFalse<Value extends false> = Value;',
-    "type FacadeKeys = 'init' | 'openSplit' | 'closeSplit' | 'getActiveEditor' | 'getVisibleEditors' | 'activateTab' | 'onTabClosed' | 'refreshReadOnly' | 'openDiff' | 'closeDiff' | 'showImagePreview' | 'closeImagePreview' | 'openThemePicker';",
+    "type FacadeKeys = 'init' | 'openSplit' | 'closeSplit' | 'getActiveEditor' | 'getVisibleEditors' | 'activateTab' | 'isSplitActive' | 'onTabClosed' | 'refreshReadOnly' | 'openDiff' | 'closeDiff' | 'showImagePreview' | 'closeImagePreview' | 'openThemePicker';",
     'type FacadeIsExact = AssertTrue<Equal<keyof ViewsFacade, FacadeKeys>>;',
     'type ServiceIsExact = AssertTrue<Equal<keyof ViewsService, FacadeKeys | \'dispose\' | \'disposed\'>>;',
     'type ServiceIsDisposable = AssertTrue<ViewsService extends Disposable ? true : false>;',

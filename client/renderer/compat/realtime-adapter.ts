@@ -15,7 +15,7 @@ interface Legacy {
   runConfig?: { getArgs(language: string): Record<string, unknown> };
   detectLanguage(path: string): string;
   projectKey(path: string): string;
-  sendToServer(action: string, payload: Record<string, unknown>): Promise<{ success: boolean; data?: unknown; error?: string }>;
+  sendToServer(action: string, payload: Record<string, unknown>, options?: { quiet: boolean }): Promise<{ success: boolean; data?: unknown; error?: string; errorCode?: string; details?: { baseline?: { userId?: string; userName?: string; branch?: string; changes?: { path: string }[] } } }>;
   switchToPanel?(name: string): void;
   updateRunOutput?(message: string, options?: Record<string, unknown>): void;
   runOutput?: { begin(options: unknown): unknown; stdout(text: string, options?: unknown): void;
@@ -31,8 +31,16 @@ const realtime = createRealtimeService({
   confirm: options => rendererPlatform.services.require(CONFIRM_SERVICE_ID).confirm(options),
   notify: (text, error) => error ? toast.error(text) : toast.success(text),
   async send(action, payload) {
-    const result = await bobo.sendToServer(action, payload);
-    if (!result?.success) throw new Error(result?.error || 'Collaboration request failed');
+    const result = await bobo.sendToServer(action, payload, { quiet: true });
+    if (!result?.success) {
+      const baseline = result?.errorCode === 'realtime_baseline_dirty' ? result.details?.baseline : null;
+      const message = baseline ? rendererPlatform.services.require(I18N_SERVICE_ID).t(
+        'Cannot start live collaboration: {user} / {branch} has local changes: {paths}. Save and publish these changes, or resolve conflicts first.',
+        { user: baseline.userName || baseline.userId || '', branch: baseline.branch || '',
+          paths: (baseline.changes || []).slice(0, 4).map(change => change.path).join(', ') + ((baseline.changes?.length || 0) > 4 ? '…' : '') }
+      ) : result?.error || 'Collaboration request failed';
+      throw new Error(message);
+    }
     return result.data;
   },
   workspace: bobo.workspace,

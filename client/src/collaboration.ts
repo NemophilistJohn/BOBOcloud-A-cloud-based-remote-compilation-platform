@@ -2072,6 +2072,7 @@ export function createCollaborationService(
     });
     if (BOBO.workspace?.registerWorkbenchTabProvider) lifecycle.add(BOBO.workspace.registerWorkbenchTabProvider('team-pages', {
       getTabs: teamProviderTabs,
+        getSurface: function() { var element = $('collab-team-page'); return element ? { elements: [element] } : null; },
       activate: activateTeamPage,
       close: closeTeamPage,
       deactivate: deactivateTeamPage,

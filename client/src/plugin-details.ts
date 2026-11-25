@@ -595,11 +595,16 @@ export function createPluginDetailsService(
     return tab ? closeByKey(tab.key) : false;
   }
 
+  function isTabVisible(key: string): boolean {
+    const element = document.getElementById(PAGE_ID);
+    return state.activeTabPath === key || Boolean(element && !element.hidden && element.dataset.splitTabKey === key);
+  }
+
   function statusMessage(tab: PluginDetailsTab | null, text: string, tone: string): void {
     if (!tab || disposed) return;
     tab.message = text || '';
     tab.messageTone = tone || '';
-    if (state.activeTabPath === tab.key) renderPage(tab);
+    if (isTabVisible(tab.key)) renderPage(tab);
   }
 
   function genericError(): string {
@@ -648,7 +653,7 @@ export function createPluginDetailsService(
         } else {
           activate(tab, { resetScroll: options.resetScroll === true });
         }
-      } else if (state.activeTabPath === tab.key) renderPage(tab);
+      } else if (isTabVisible(tab.key)) renderPage(tab);
       else dependencies.getWorkspace()?.updateTabbar();
       return true;
     } catch (_) {
@@ -782,7 +787,7 @@ export function createPluginDetailsService(
         return;
       }
       tab.detail = detail;
-      if (state.activeTabPath === tab.key) renderPage(tab);
+      if (isTabVisible(tab.key)) renderPage(tab);
     });
     dependencies.getWorkspace()?.updateTabbar();
   }
@@ -823,6 +828,7 @@ export function createPluginDetailsService(
     if (typeof workspace?.registerWorkbenchTabProvider === 'function') {
       const provider: PluginDetailsTabProvider = {
         getTabs: providerTabs,
+        getSurface: () => { const element = view(); return element ? { elements: [element] } : null; },
         activate: (key) => activate(findTabByKey(key)),
         close: closeByKey,
         deactivate: () => deactivate(),

@@ -627,6 +627,7 @@ export interface CollaborationWorkspaceLeaveOptionsDto {
 
 export interface CollaborationWorkspacePort {
   registerWorkbenchTabProvider?(id: string, provider: {
+    getSurface?(key: string): { elements: readonly HTMLElement[] } | null;
     getTabs(): readonly { key: string; name: string; title: string; category: string; closeable: true; draggable: boolean }[];
     activate(key: string): boolean;
     close(key: string): boolean;

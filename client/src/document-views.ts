@@ -76,6 +76,8 @@ export function createDocumentViewService(
   const releasedInstances = new WeakSet<DocumentViewInstance>();
   const subscriptions: Disposable[] = [];
   let activeInstance: DocumentViewInstance | null = null;
+  const visibleInstances = new Set<DocumentViewInstance>();
+  const analysisSnapshots = new WeakMap<DocumentViewInstance, { revision: number; text: string }>();
   let revealedNavigationFor: DocumentViewInstance | null = null;
   let creationEpoch = 0;
   let localeEpoch = 0;
@@ -129,7 +131,7 @@ export function createDocumentViewService(
     if (activeInstance === instance) dependencies.navigation?.clear();
     try { instance.sandbox.dispose(); } catch (_) {}
     releaseDocument(instance);
-    instance.error.hidden = activeInstance !== instance;
+    instance.error.hidden = activeInstance !== instance && !visibleInstances.has(instance);
     instance.error.textContent = t('Document preview failed') + ': ' + exceptionMessage(error);
   }
 
@@ -140,6 +142,14 @@ export function createDocumentViewService(
       if (activeInstance === instance && !instance.disposed && instance.navigation === value) instance.sandbox.navigate?.(id);
     }, revealedNavigationFor !== instance);
     if (shown) revealedNavigationFor = instance;
+  }
+
+  function restoreAnalysis(instance: DocumentViewInstance): void {
+    const snapshot = analysisSnapshots.get(instance);
+    if (!snapshot || !dependencies.analysis) return;
+    dependencies.analysis.update(instance.path, snapshot.revision, snapshot.text, (revision, items) => {
+      if (!instance.disposed && activeInstance === instance) instance.sandbox.diagnostics?.(revision, items);
+    });
   }
 
   function closeDocument(documentId: string): void {
@@ -237,7 +247,7 @@ export function createDocumentViewService(
         } : undefined,
         execute: documentInfo.executable && host.executeDocument && dependencies.kernelOptions && dependencies.syncKernelWorkspace
           ? async (request) => {
-            if (!instance || instance.disposed || activeInstance !== instance) return { ok: false, code: 'kernel_closed' };
+            if (!instance || instance.disposed || (activeInstance !== instance && !visibleInstances.has(instance))) return { ok: false, code: 'kernel_closed' };
             if (request.kind === 'restart') {
               kernelEpoch += 1;
               return host.executeDocument!(documentId, request);
@@ -248,7 +258,7 @@ export function createDocumentViewService(
             try {
               if (!await dependencies.syncKernelWorkspace!()) return { ok: false, code: 'sync_failed' };
             } catch (_) { return { ok: false, code: 'sync_failed' }; }
-            if (instance.disposed || activeInstance !== instance || generation !== kernelEpoch) return { ok: false, code: 'kernel_closed' };
+            if (instance.disposed || (activeInstance !== instance && !visibleInstances.has(instance)) || generation !== kernelEpoch) return { ok: false, code: 'kernel_closed' };
             return host.executeDocument!(documentId, { ...request, ...options });
           } : undefined,
         onDirty: (dirty) => {
@@ -256,18 +266,21 @@ export function createDocumentViewService(
           instance.dirty = dirty;
           dependencies.onDirty?.(pending.path, dirty);
         },
+        onFocus: () => {
+          if (instance && !instance.disposed && visibleInstances.has(instance)) workspace.activateTab?.(instance.path);
+        },
         onNavigation: dependencies.navigation ? (value) => {
           if (!instance || instance.disposed) return;
           instance.navigation = value;
           showNavigation(instance);
         } : undefined,
         analyze: documentInfo.analyzable && dependencies.analysis ? (request) => {
-          if (!instance || instance.disposed || activeInstance !== instance) return;
+          if (!instance || instance.disposed) return;
           if (request.kind === 'update') {
-            dependencies.analysis!.update(pending.path, request.revision, request.text, (revision, items) => {
-              if (activeInstance === instance && !instance?.disposed) sandbox?.diagnostics?.(revision, items);
-            });
+            analysisSnapshots.set(instance, { revision: request.revision, text: request.text });
+            if (activeInstance === instance) restoreAnalysis(instance);
           } else {
+            if (activeInstance !== instance) return;
             return dependencies.analysis!.complete(pending.path, request.revision, request.line, request.character);
           }
         } : undefined,
@@ -336,6 +349,7 @@ export function createDocumentViewService(
     const root = hostDocument.getElementById('document-view-host');
     if (editor) editor.style.display = 'none';
     root?.classList.remove('hidden');
+    root?.classList.remove('split-active');
 
     if (activeInstance && activeInstance !== instance && !activeInstance.disposed) {
       dependencies.navigation?.clear();
@@ -344,6 +358,7 @@ export function createDocumentViewService(
       activeInstance.error.hidden = true;
     }
     activeInstance = instance;
+    restoreAnalysis(instance);
     instance.error.hidden = instance.error.textContent === '';
     instance.sandbox.show();
     showNavigation(instance);
@@ -352,8 +367,13 @@ export function createDocumentViewService(
   }
 
   function hideAll(options: { readonly restoreEditor?: boolean } = {}): void {
+    for (const instance of visibleInstances) {
+      if (!instance.disposed) { instance.sandbox.hide(); instance.error.hidden = true; }
+    }
+    visibleInstances.clear();
     dependencies.navigation?.clear();
     hostDocument.getElementById('document-view-host')?.classList.add('hidden');
+    hostDocument.getElementById('document-view-host')?.classList.remove('split-active');
     if (activeInstance && !activeInstance.disposed) {
       dependencies.analysis?.close(activeInstance.path);
       activeInstance.sandbox.hide();
@@ -367,9 +387,31 @@ export function createDocumentViewService(
     }
   }
 
+  function setSplitVisibility(paths: readonly string[], activePath: string | null): void {
+    const next = new Set(Array.from(instances).filter(instance => !instance.disposed && paths.includes(instance.path)));
+    for (const instance of instances) {
+      if (next.has(instance)) { instance.sandbox.show(); instance.error.hidden = !instance.error.textContent; }
+      else { instance.sandbox.hide(); instance.error.hidden = true; }
+    }
+    const active = Array.from(next).find(instance => instance.path === activePath) || null;
+    const changed = activeInstance !== active;
+    if (changed) {
+      dependencies.navigation?.clear();
+      if (activeInstance) dependencies.analysis?.close(activeInstance.path);
+    }
+    activeInstance = active;
+    if (changed && active) restoreAnalysis(active);
+    visibleInstances.clear(); next.forEach(instance => visibleInstances.add(instance));
+    const root = hostDocument.getElementById('document-view-host');
+    root?.classList.toggle('hidden', next.size === 0);
+    root?.classList.toggle('split-active', next.size > 0);
+    if (active) showNavigation(active);
+  }
+
   function disposeInstance(instance: DocumentViewInstance | null | undefined): void {
     if (!instance || instance.disposed) return;
     instance.disposed = true;
+    visibleInstances.delete(instance);
     dependencies.analysis?.close(instance.path);
     instances.delete(instance);
     if (instancesByPath.get(instance.path) === instance) instancesByPath.delete(instance.path);
@@ -494,6 +536,7 @@ export function createDocumentViewService(
     find,
     create,
     show,
+    setSplitVisibility,
     hideAll,
     disposeTab,
     disposeAll,

@@ -24,7 +24,7 @@ interface TeamMapping { teamId: string; projectId: string; branch: string; local
 export interface RealtimeDependencies {
   document: Document; events: Window; host: RealtimeHost;
   state: { workspaceRoot: string | null; workspaceIdentity: unknown; tabs: Tab[]; activeTabPath: string | null;
-    collaboration: { current: TeamMapping | null }; auth: { user: { id?: string; name?: string } | null }; selectedRuntime: string; setupCommands: string[] };
+    collaboration: { current: TeamMapping | null }; auth: { user: { id?: string; name?: string } | null; mode?: string; token?: string }; selectedRuntime: string; setupCommands: string[] };
   send(action: string, payload: Record<string, unknown>): Promise<unknown>;
   t(key: string, params?: Record<string, unknown>): string;
   confirm(options: Record<string, unknown>): Promise<boolean>;
@@ -52,11 +52,17 @@ function esc(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 }
 function emptyState(): SharedState { return { enabled: false, epoch: '', branch: '', revision: 0, files: [], presence: [], deletions: [] }; }
+function peerColor(userId: string): number {
+  let hash = 0;
+  for (const character of userId) hash = (Math.imul(hash, 31) + character.codePointAt(0)!) >>> 0;
+  return hash % 6;
+}
 
 export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade & { dispose(): void; refresh(): Promise<void> } {
   const { state: local, document: document, events, host, t } = d;
   let shared = emptyState(), online = false, disposed = false, joining = false, initializing = false, actor = '';
   let generation = 0, sequence = 0, reconnectTimer: number | undefined, draftTimer: number | undefined;
+  let joiningGeneration = -1;
   const requestNonce = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
   const documents = new Map<string, DocumentState>();
   const recovered = new Map<string, SharedDraft>();
@@ -80,6 +86,12 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
     target.addEventListener(name, fn); listeners.push(() => target.removeEventListener(name, fn));
   }
   function mapping(): TeamMapping | null { return local.collaboration.current; }
+  function authIdentity(): string {
+    const auth = local.auth;
+    if (auth.mode === 'single') return 'single';
+    if (!auth.user || ((auth.mode === 'multi' || 'token' in auth) && !auth.token)) return '';
+    return JSON.stringify([auth.mode || '', auth.user.id || auth.user.name || '', auth.token || '']);
+  }
   function isActive(): boolean { return !!mapping()?.realtimeEpoch; }
   function relative(path: string): string {
     const root = (local.workspaceRoot || '').replace(/\\/g, '/').replace(/\/$/, '');
@@ -91,7 +103,7 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
   function fileAt(path: string): SharedFile | undefined { return shared.files.find(file => file.path === relative(path)); }
   function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
   function request(message: Record<string, unknown>): Promise<Record<string, unknown>> {
-    if (!online) return Promise.reject(new Error(t('Collaboration is reconnecting. Your edits are kept locally.')));
+    if (!online || !authIdentity()) return Promise.reject(new Error(t('Collaboration is reconnecting. Your edits are kept locally.')));
     const requestId = actor + '-' + requestNonce + '-' + (++sequence);
     return new Promise((resolve, reject) => {
       const timer = events.setTimeout(() => { requests.delete(requestId); reject(new Error(t('Collaboration request timed out'))); }, 20000);
@@ -251,7 +263,7 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
   function sendPresence(): void {
     clearTimeout(presenceTimer);
     presenceTimer = events.setTimeout(() => {
-      if (!isActive() || !online) return;
+      if (!isActive() || !online || !authIdentity()) return;
       const panes: SharedPane[] = [];
       d.editors().forEach((editor, index) => {
         const model = editor.getModel(), item = Array.from(documents.values()).find(item => item.model === model);
@@ -273,18 +285,19 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
       const item = Array.from(documents.values()).find(item => item.model === editor.getModel());
       if (!item?.model || !isActive()) { collection.clear(); continue; }
       const values: unknown[] = [];
-      (shared.presence || []).forEach((person, index) => {
+      (shared.presence || []).forEach(person => {
         if (person.sessionId === actor) return;
+        const color = peerColor(person.userId || person.name);
         for (const pane of person.panes || []) {
           if (pane.fileId !== item.file.id || !pane.cursor) continue;
           const start = item.model!.getPositionAt(item.doc.offset(pane.cursor.anchor));
           const end = item.model!.getPositionAt(item.doc.offset(pane.cursor.focus));
           values.push({ range: { startLineNumber: start.lineNumber, startColumn: start.column, endLineNumber: end.lineNumber, endColumn: end.column },
-            options: { className: 'realtime-selection realtime-color-' + index % 6,
-              after: { content: '│', inlineClassName: 'realtime-cursor realtime-color-' + index % 6 },
+            options: { className: 'realtime-selection realtime-color-' + color,
+              after: { content: '\u200b', inlineClassName: 'realtime-cursor realtime-color-' + color },
               hoverMessage: { value: person.name }, stickiness: 1 } });
           const label = document.createElement('div');
-          label.className = 'realtime-cursor-label realtime-color-' + index % 6;
+          label.className = 'realtime-cursor-label realtime-color-' + color;
           label.innerHTML = avatar(person) + '<span>' + esc(person.name) + '</span>';
           const widget: CursorWidget = { getId: () => 'shared-cursor-' + person.sessionId + '-' + pane.paneId,
             getDomNode: () => label, getPosition: () => ({ position: end, preference: [1, 2] }), allowEditorOverflow: true };
@@ -471,20 +484,22 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
       reconnectTimer = events.setTimeout(() => { void join(false).catch(error => d.notify(errorMessage(error), true)); }, 1500);
     }
     if (message.type === 'error' && !pending) d.notify(String(message.message || message.code), true);
-    if (message.type === 'reset') void leave().then(refresh);
+    if (message.type === 'reset') leaveAndRefresh();
   }
   async function join(initial: boolean): Promise<void> {
-    if (joining || disposed || !mapping()) return;
+    if ((joining && joiningGeneration === generation) || disposed || !mapping() || !authIdentity()) return;
     joining = true;
-    const turn = generation, current = mapping()!;
+    const turn = generation, current = mapping()!, identity = authIdentity();
+    joiningGeneration = turn;
+    const isCurrent = () => turn === generation && identity === authIdentity() && mapping() === current && !disposed;
     try {
       if (documents.size) await persistDrafts();
-      if (turn !== generation) return;
+      if (!isCurrent()) return;
       const draft = await host.drafts();
-      if (turn !== generation) return;
+      if (!isCurrent()) return;
       actor = draft.sessionId; draftContext = draft.contextKey;
       const authoritative = await d.send('getRealtimeState', { teamId: current.teamId, projectId: current.projectId }) as SharedState;
-      if (turn !== generation) return;
+      if (!isCurrent()) return;
       if (!authoritative.enabled) { await reconcileDisabled(authoritative); return; }
       if (shared.epoch !== authoritative.epoch) {
         for (const saved of draft.drafts) recovered.set(saved.fileId, saved);
@@ -492,13 +507,13 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
         shared = authoritative; current.realtimeEpoch = authoritative.epoch; initial = true;
       }
       const next = await host.connect({ teamId: current.teamId, projectId: current.projectId, epoch: shared.epoch, sessionId: actor });
-      if (turn !== generation) return;
+      if (!isCurrent()) return;
       online = true; shared = next; current.realtimeEpoch = next.epoch;
       if (initial) {
         initializing = true;
         d.editors().forEach(editor => editor.updateOptions({ readOnly: true }));
         const previewDrafts = await d.workspace.prepareSharedViews(path => host.readTextFile(path));
-        if (turn !== generation) return;
+        if (!isCurrent()) return;
         for (const saved of previewDrafts) {
           const id = 'local-' + saved.path;
           recovered.set(id, { fileId: id, path: relative(saved.path), epoch: 'local-preview', text: saved.text, pending: [], nodes: [], clock: 0 });
@@ -508,29 +523,29 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
           recovered.set(id, { fileId: id, path: relative(tab.path), epoch: 'local-buffer', text: tab.model!.getValue(), pending: [], nodes: [], clock: 0 });
         }
         if (recovered.size) await persistDrafts();
-        if (turn !== generation) return;
+        if (!isCurrent()) return;
         const tree = await d.refreshTree() as { children?: unknown[] } | null;
-        if (turn !== generation) return;
+        if (!isCurrent()) return;
         if (tree?.children?.some(entry => (entry as { name?: string }).name !== '.bobocloud-team.json') &&
             !await d.confirm({ title: t('Replace local folder with shared snapshot?'),
               message: t('Existing local files will be replaced after the complete shared snapshot is downloaded. Unsent collaboration drafts are preserved.'),
               confirmLabel: t('Replace'), cancelLabel: t('Cancel'), danger: true })) {
           await host.close(); online = false; renderPanel(); return;
         }
-        if (turn !== generation) return;
+        if (!isCurrent()) return;
         const snapshot = await d.send('getRealtimeSnapshot', { teamId: current.teamId, projectId: current.projectId, epoch: next.epoch }) as { files: (SharedFile & { data?: string })[] };
-        if (turn !== generation) return;
+        if (!isCurrent()) return;
         await host.materialize(snapshot.files.map(file => ({ ...file, base64: file.base64 || file.data })), { replace: true, epoch: next.epoch, workspaceIdentity: local.workspaceIdentity });
-        if (turn !== generation) return;
+        if (!isCurrent()) return;
         const treeAfter = await d.refreshTree();
-        if (turn !== generation) return;
+        if (!isCurrent()) return;
         d.workspace.renderTree(treeAfter);
       }
       for (const saved of draft.drafts) {
         const file = next.files.find(file => file.id === saved.fileId);
         if (saved.epoch !== next.epoch || !file) { recovered.set(saved.fileId, saved); d.notify(t('Recovered edits are available in local collaboration drafts'), true); continue; }
         const item = await loadFile(file);
-        if (turn !== generation) return;
+        if (!isCurrent()) return;
         if (!item.pending.length) {
           for (const operation of saved.pending) item.doc.apply(operation);
           item.pending = saved.pending;
@@ -543,7 +558,7 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
         if (!next.files.some(file => file.id === item.file.id)) continue;
         // Merge the current server document before retrying idempotent edits.
         const snapshot = await request({ type: 'open', fileId: item.file.id });
-        if (turn !== generation) return;
+        if (!isCurrent()) return;
         item.doc.apply({ insert: (snapshot.file as SharedFile).nodes || [], delete: [] });
         publishText(item); void sendPending(item);
       }
@@ -552,28 +567,33 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
       for (const event of replay.slice(lastRunEvent)) { d.output({ ...event, runId: next.run!.id }); lastRunEvent++; }
       initializing = false; bindEditors(); renderPanel();
     } catch (error) {
-      if (turn !== generation) return;
+      if (!isCurrent()) return;
       online = false; renderPanel();
-      if (turn === generation && !disposed && mapping()) {
+      if (isCurrent()) {
         clearTimeout(reconnectTimer); reconnectTimer = events.setTimeout(() => { void join(false); }, 3000);
       }
       d.notify(errorMessage(error), true);
     } finally {
-      joining = false;
-      const next = deferredState; deferredState = null;
-      if (next && turn === generation && online) stateQueue = stateQueue.then(() => turn === generation ? applyState(next) : undefined).catch(error => d.notify(errorMessage(error), true));
+      if (joiningGeneration === turn) joining = false;
+      const next = isCurrent() ? deferredState : null; if (isCurrent()) deferredState = null;
+      if (next && isCurrent() && online) stateQueue = stateQueue.then(() => turn === generation ? applyState(next) : undefined).catch(error => d.notify(errorMessage(error), true));
     }
   }
   async function refresh(): Promise<void> {
+    const identity = authIdentity();
+    if (!identity || disposed || !mapping()) return;
     if (refreshPromise) return refreshPromise;
-    refreshPromise = (async () => {
-      const current = mapping(); if (!current || disposed) return;
+    const turn = generation, current = mapping();
+    const isCurrent = () => turn === generation && identity === authIdentity() && mapping() === current && !disposed;
+    const work: Promise<void> = (async () => {
+      if (!current || !isCurrent()) return;
       const info = await d.send('getRealtimeState', { teamId: current.teamId, projectId: current.projectId }) as SharedState;
-      if (mapping() !== current) return;
+      if (!isCurrent()) return;
       if (info.enabled && (!isActive() || !online || shared.epoch !== info.epoch)) await join(!isActive() || shared.epoch !== info.epoch || documents.size === 0);
       else if (!info.enabled && isActive()) await reconcileDisabled(info);
-    })().catch(error => d.notify(errorMessage(error), true)).finally(() => { refreshPromise = null; });
-    return refreshPromise;
+    })().catch(error => { if (isCurrent()) d.notify(errorMessage(error), true); }).finally(() => { if (refreshPromise === work) refreshPromise = null; });
+    refreshPromise = work;
+    return work;
   }
   async function save(path?: string): Promise<boolean> {
     if (!isActive()) return false;
@@ -636,6 +656,8 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
   }
   async function leave(): Promise<void> {
     const turn = ++generation;
+    refreshPromise = null; joining = false;
+    deferredState = null;
     runObserver?.({ type: 'error', code: 'workspace-change', message: t('Collaboration workspace changed') }); runObserver = null;
     const persistence = documents.size || recovered.size ? persistDrafts().catch(() => {}) : Promise.resolve();
     online = false; initializing = false; clearTimeout(reconnectTimer); clearTimeout(presenceTimer);
@@ -645,11 +667,15 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
     await Promise.all([host.close(), persistence]);
     if (turn === generation) { renderPanel(); bindEditors(); }
   }
+  function leaveAndRefresh(): void {
+    const completion = leave(), turn = generation;
+    void completion.then(() => { if (turn === generation && authIdentity()) return refresh(); });
+  }
   listeners.push(host.onMessage(receive));
   on(events, 'bobo:visible-editors-changed', bindEditors);
   on(events, 'bobo:team-workspace-changed', () => { void refresh(); });
-  on(events, 'bobo:workspace-changed', () => { void leave().then(refresh); });
-  on(events, 'bobo:auth-changed', () => { void leave().then(refresh); });
+  on(events, 'bobo:workspace-changed', leaveAndRefresh);
+  on(events, 'bobo:auth-changed', leaveAndRefresh);
   on(document, 'click', event => {
     const button = (event.target as Element).closest<HTMLElement>('[data-realtime-project], [data-vote], [data-rt]');
     if (!button) return;
@@ -674,7 +700,7 @@ export function createRealtimeService(d: RealtimeDependencies): RealtimeFacade &
     const button = (event.target as Element).closest<HTMLElement>('[data-recover]');
     if (button?.dataset.recover) void host.recover(button.dataset.recover).catch(error => d.notify(errorMessage(error), true));
   });
-  const timer = events.setInterval(() => { if (mapping() && !isActive()) void refresh(); else if (isActive()) renderPresence(); }, 5000);
+  const timer = events.setInterval(() => { if (!authIdentity()) return; if (mapping() && !isActive()) void refresh(); else if (isActive()) renderPresence(); }, 5000);
   return { isActive, prepareFile, save, fileOperation, openProject, manage, run, runTask, stop,
     syncPersonal: async () => { await save(); return d.syncPersonal(); }, leave, refresh,
     dispose() { disposed = true; clearInterval(timer); void leave(); listeners.forEach(fn => fn()); editorBindings.forEach(items => items.forEach(item => item.dispose())); panel?.remove(); } };

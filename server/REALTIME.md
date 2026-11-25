@@ -12,6 +12,15 @@ After the final Git export, disabling removes canonical files, CRDT nodes,
 request receipts, and run replay from durable room state; only mode metadata is
 retained.
 
+Server 2.6.1 excludes the reserved root `.bobocloud-team.json` mapping from
+baseline validation and seeding. A stale checkout may contain an untracked
+regular file already present in the chosen canonical branch: only identical
+bytes and executable permissions are accepted. Tracked modifications, merge
+conflicts, genuinely new/unmatched files and unpublished commits still block
+entry. Validation never resets or cleans member copies. Dirty-baseline errors
+use HTTP 409, `errorCode: realtime_baseline_dirty` and bounded
+`details.baseline` member/branch/path diagnostics.
+
 HTTP actions use the normal authenticated action envelope:
 
 - `getRealtimeState {teamId,projectId}` returns a file manifest and room state.

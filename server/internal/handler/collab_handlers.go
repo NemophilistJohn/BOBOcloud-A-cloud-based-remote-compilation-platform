@@ -21,7 +21,7 @@ func collabError(w http.ResponseWriter, err error) {
 		response.ErrorCode = operationErr.Code
 		response.Details = operationErr.Details
 		switch operationErr.Code {
-		case collab.ErrorCodePushConflict, collab.ErrorCodeMergeConflict, collab.ErrorCodeNoChanges, collab.ErrorCodeLockHeld, collab.ErrorCodeLockStale:
+		case collab.ErrorCodePushConflict, collab.ErrorCodeMergeConflict, collab.ErrorCodeNoChanges, collab.ErrorCodeLockHeld, collab.ErrorCodeLockStale, collab.ErrorCodeRealtimeBaselineDirty:
 			status = http.StatusConflict
 		case collab.ErrorCodePushFailed:
 			status = http.StatusServiceUnavailable

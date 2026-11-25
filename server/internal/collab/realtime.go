@@ -396,6 +396,12 @@ func (m *Manager) GetRealtimeSnapshotContext(ctx context.Context, userID, teamID
 			if rel == "." {
 				return nil
 			}
+			if realtimeHostMetadata(rel) {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 			if d.Name() == ".git" {
 				if d.IsDir() {
 					return filepath.SkipDir
@@ -670,6 +676,14 @@ func (m *Manager) SetRealtimeMode(ctx context.Context, userID, teamID, projectID
 	}
 
 	if enabled {
+		baseline, e := os.MkdirTemp(m.repoRoot(teamID, projectID), ".realtime-enable-")
+		if e != nil {
+			return RealtimeState{}, e
+		}
+		defer os.RemoveAll(baseline)
+		if _, e = gitRun(ctx, "", "clone", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "--branch", branch, m.repoPath(teamID, projectID), baseline); e != nil {
+			return RealtimeState{}, e
+		}
 		// Only current-generation worktrees can supply the selected branch's
 		// baseline. Detached upload grants from old epochs remain quarantined.
 		members, e := m.store.ListMembers(teamID)
@@ -683,12 +697,8 @@ func (m *Manager) SetRealtimeMode(ctx context.Context, userID, teamID, projectID
 			} else if e != nil {
 				return RealtimeState{}, e
 			}
-			status, e := gitRun(ctx, worktree, "status", "--porcelain")
-			if e != nil {
+			if e = m.realtimeBaselineError(ctx, member.UserID, branch, worktree, baseline); e != nil {
 				return RealtimeState{}, e
-			}
-			if strings.TrimSpace(status) != "" {
-				return RealtimeState{}, fmt.Errorf("all member worktrees require a clean conflict-free baseline")
 			}
 			ahead, e := gitRun(ctx, worktree, "rev-list", "--count", "HEAD", "--not", "--remotes=origin")
 			if e != nil {
@@ -697,21 +707,6 @@ func (m *Manager) SetRealtimeMode(ctx context.Context, userID, teamID, projectID
 			if strings.TrimSpace(ahead) != "0" {
 				return RealtimeState{}, fmt.Errorf("all member worktrees must publish pending commits before enabling realtime")
 			}
-		}
-		info, e := m.ensureWorktreeUnchecked(ctx, p, userID, branch, true)
-		if e != nil {
-			return RealtimeState{}, e
-		}
-		if info.Dirty || len(info.Conflicts) > 0 {
-			return RealtimeState{}, fmt.Errorf("clean conflict-free baseline required")
-		}
-		baseline, e := os.MkdirTemp(m.repoRoot(teamID, projectID), ".realtime-enable-")
-		if e != nil {
-			return RealtimeState{}, e
-		}
-		defer os.RemoveAll(baseline)
-		if _, e = gitRun(ctx, "", "clone", "--branch", branch, m.repoPath(teamID, projectID), baseline); e != nil {
-			return RealtimeState{}, e
 		}
 		files := []*RealtimeFile{}
 		total := 0
@@ -722,6 +717,12 @@ func (m *Manager) SetRealtimeMode(ctx context.Context, userID, teamID, projectID
 			rel, _ := filepath.Rel(baseline, pth)
 			rel = filepath.ToSlash(rel)
 			if rel == "." {
+				return nil
+			}
+			if realtimeHostMetadata(rel) {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
 				return nil
 			}
 			if d.Name() == ".git" {

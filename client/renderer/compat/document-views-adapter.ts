@@ -76,6 +76,7 @@ const documentViews = createDocumentViewService({
     closeImagePreview: () => BOBO.views?.closeImagePreview?.()
   }),
   workspace: Object.freeze({
+    activateTab: (path: string) => BOBO.workspace?.activateTab?.(path),
     closeTab: (path: string, options: Readonly<{ force: true }>) => (
       BOBO.workspace?.closeTab(path, options)
     )

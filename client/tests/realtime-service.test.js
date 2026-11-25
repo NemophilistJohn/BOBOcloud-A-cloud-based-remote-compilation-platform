@@ -79,7 +79,7 @@ function modelFor(initial) {
   return model;
 }
 
-async function fixture(t) {
+async function fixture(t, options = {}) {
   const initial = 'print("hello")\n';
   const server = new SharedDocument('server', []);
   server.apply(server.change([{ rangeOffset: 0, rangeLength: 0, text: initial }]));
@@ -90,22 +90,27 @@ async function fixture(t) {
   const state = {
     workspaceRoot: '/workspace', workspaceIdentity: 1, tabs: [tab], activeTabPath: tab.path,
     collaboration: { current: { teamId: 'team', projectId: 'project', branch: 'main', localPath: '/workspace' } },
-    auth: { user: { id: 'alice', name: 'Alice' } }, selectedRuntime: 'python:3.10', setupCommands: []
+    auth: options.auth || { user: { id: 'alice', name: 'Alice' } }, selectedRuntime: 'python:3.10', setupCommands: []
   };
   const document = Object.assign(new EventTarget(), {
-    getElementById: () => null, querySelectorAll: () => [], querySelector: () => null
+    getElementById: () => null, querySelectorAll: () => [], querySelector: () => null,
+    createElement: () => ({ className: '', innerHTML: '' })
   });
-  const events = Object.assign(new EventTarget(), { setTimeout, setInterval });
+  const intervals = [];
+  const events = Object.assign(new EventTarget(), { setTimeout, setInterval(fn, delay) { intervals.push(fn); return setInterval(fn, delay); } });
   const listenerSet = new Set();
   const emit = message => { for (const listener of listenerSet) listener(message); };
-  const sent = [], materialized = [], notifications = [];
+  const sent = [], materialized = [], notifications = [], network = [], widgets = [];
   const disk = new Map();
-  let drafts = [], gate;
+  let drafts = [], gate, closeGate, draftsGate, stateGate;
+  function record(kind) { network.push({ kind, user: state.auth.user?.id, token: state.auth.token }); }
   const host = {
     onMessage(listener) { listenerSet.add(listener); return () => listenerSet.delete(listener); },
-    async connect() { return structuredClone(room); },
-    async close() {},
+    async connect() { record('connect'); return structuredClone(room); },
+    async close() { const blocked = closeGate; if (blocked && !blocked.started) { blocked.started = true; blocked.entered.resolve(); await blocked.release.promise; } },
     async drafts(payload) {
+      const blocked = !payload && draftsGate;
+      if (blocked && !blocked.started) { blocked.started = true; blocked.entered.resolve(); await blocked.release.promise; }
       if (payload) drafts = structuredClone(payload.drafts);
       return { sessionId: 'alice-session', contextKey: 'draft-context', drafts: structuredClone(drafts) };
     },
@@ -121,6 +126,7 @@ async function fixture(t) {
       materialized.push(snapshot);
     },
     async send(message) {
+      record('socket-' + message.type);
       if (message.type === 'open') queueMicrotask(() => emit({ type: 'document', requestId: message.requestId,
         file: { ...file, content: server.text(), nodes: server.snapshot() } }));
       if (message.type === 'edit') {
@@ -135,13 +141,19 @@ async function fixture(t) {
     getModel: () => model, getSelection: () => null, getPosition: () => ({ lineNumber: 1, column: 1 }),
     updateOptions: noop, createContextKey: () => ({ set: noop }),
     onDidChangeCursorSelection: () => ({ dispose: noop }), addAction: () => ({ dispose: noop }),
-    createDecorationsCollection: () => ({ set: noop, clear: noop }), addContentWidget: noop, removeContentWidget: noop
+    createDecorationsCollection: () => ({ set: noop, clear: noop }),
+    addContentWidget: widget => widgets.push(widget), removeContentWidget: widget => { const index = widgets.indexOf(widget); if (index >= 0) widgets.splice(index, 1); }
   };
   let visible = [];
   const service = createRealtimeService({
     document, events, state, host,
     async send(action) {
-      if (action === 'getRealtimeState') return structuredClone(room);
+      record(action);
+      if (action === 'getRealtimeState') {
+        const blocked = stateGate;
+        if (blocked && !blocked.started) { blocked.started = true; blocked.entered.resolve(); await blocked.release.promise; }
+        return structuredClone(room);
+      }
       if (action === 'getRealtimeSnapshot') return { ...structuredClone(room), files: [{ ...file, content: server.text() }] };
       throw new Error('Unexpected action: ' + action);
     },
@@ -156,6 +168,7 @@ async function fixture(t) {
   });
   t.after(async () => {
     gate?.release.resolve();
+    closeGate?.release.resolve(); draftsGate?.release.resolve(); stateGate?.release.resolve();
     await service.leave();
     service.dispose();
   });
@@ -165,7 +178,11 @@ async function fixture(t) {
   events.dispatchEvent(new Event('bobo:visible-editors-changed'));
   await until(() => model.subscriptionCount === 1, 'the actual realtime service must bind the file model');
   return {
-    service, model, tab, sent, server, materialized, disk, notifications,
+    service, model, tab, sent, server, materialized, disk, notifications, state, events, emit, network, widgets,
+    poll() { intervals.forEach(fn => fn()); },
+    blockClose() { closeGate = { entered: deferred(), release: deferred(), started: false }; return closeGate; },
+    blockDrafts() { draftsGate = { entered: deferred(), release: deferred(), started: false }; return draftsGate; },
+    blockState() { stateGate = { entered: deferred(), release: deferred(), started: false }; return stateGate; },
     blockMaterialization() {
       gate = { entered: deferred(), release: deferred(), started: false };
       return gate;
@@ -194,4 +211,65 @@ test('edits typed during acknowledged-edit disk materialization drain without an
   assert.equal(f.server.text(), f.model.getValue());
   assert.equal(f.tab.dirty, false);
   assert.deepEqual(f.notifications, []);
+});
+
+test('logout gates delayed leave refresh and background polling before the workspace mapping is cleared', { timeout: 5000 }, async t => {
+  const f = await fixture(t, { auth: { mode: 'multi', token: 'alice-token', user: { id: 'alice', name: 'Alice' } } });
+  const gate = f.blockClose(), before = f.network.length;
+  f.state.auth.user = null; f.state.auth.token = '';
+  f.events.dispatchEvent(new Event('bobo:auth-changed'));
+  await gate.entered.promise;
+  // Logout clears credentials before its later workspace-close IPC completes.
+  f.state.collaboration.current.realtimeEpoch = undefined;
+  await f.service.refresh(); f.poll();
+  gate.release.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  f.poll(); await f.service.refresh();
+  assert.deepEqual(f.network.slice(before), [], 'logout callbacks must not issue HTTP or WebSocket work without credentials');
+});
+
+test('logout fences in-flight mode responses and delayed join continuations', { timeout: 5000 }, async t => {
+  const f = await fixture(t, { auth: { mode: 'multi', token: 'alice-token', user: { id: 'alice', name: 'Alice' } } });
+  await f.service.leave();
+  const gate = f.blockDrafts();
+  const pending = f.service.refresh();
+  await gate.entered.promise;
+  const before = f.network.length;
+  f.state.auth.user = null; f.state.auth.token = '';
+  f.events.dispatchEvent(new Event('bobo:auth-changed'));
+  gate.release.resolve(); await pending;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(f.network.slice(before), [], 'a join paused in draft loading must not continue after logout');
+});
+
+test('a mode response from the previous auth generation cannot reconnect after logout', { timeout: 5000 }, async t => {
+  const f = await fixture(t, { auth: { mode: 'multi', token: 'alice-token', user: { id: 'alice', name: 'Alice' } } });
+  const gate = f.blockState(), pending = f.service.refresh();
+  await gate.entered.promise;
+  const before = f.network.length;
+  f.state.auth.user = null; f.state.auth.token = '';
+  f.events.dispatchEvent(new Event('bobo:auth-changed'));
+  gate.release.resolve(); await pending;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(f.network.slice(before), [], 'the stale mode response must not open a socket or request another snapshot');
+});
+
+test('legacy single-user mode can refresh without a login token', { timeout: 5000 }, async t => {
+  const f = await fixture(t, { auth: { mode: 'single', user: null, token: '' } });
+  assert.ok(f.network.some(call => call.kind === 'connect'));
+});
+
+test('peer caret labels keep one color per user across presence ordering and multiple sessions', { timeout: 5000 }, async t => {
+  const f = await fixture(t);
+  const anchor = f.server.snapshot()[0].id;
+  const person = (userId, name, sessionId) => ({ userId, name, sessionId, panes: [{ paneId: 'main', fileId: 'file-one', editing: true, cursor: { anchor, focus: anchor } }] });
+  const bob = person('bob', 'Bob', 'bob-one'), carol = person('carol', 'Carol', 'carol-one'), bobOther = person('bob', 'Bob', 'bob-two');
+  f.emit({ type: 'presence', presence: [bob, carol, bobOther], deletions: [] });
+  const classes = () => new Map(f.widgets.map(widget => [widget.getId(), widget.getDomNode().className]));
+  const first = classes();
+  assert.equal(first.get('shared-cursor-bob-one-main'), first.get('shared-cursor-bob-two-main'));
+  assert.ok(f.widgets.every(widget => widget.getDomNode().innerHTML.includes('<span>')));
+  f.emit({ type: 'presence', presence: [carol, bobOther, bob], deletions: [] });
+  assert.deepEqual(classes(), first, 'changing presence order must not change cursor colors');
 });

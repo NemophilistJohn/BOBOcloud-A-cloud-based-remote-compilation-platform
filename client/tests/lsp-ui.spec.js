@@ -629,6 +629,12 @@ test('configured LSP address, strategy settings and status bar work in all built
     await expect(page.locator('#status-lsp')).toContainText('LSP: Remote');
     await expect(page.locator('#lsp-settings-state')).toHaveText('Remote analysis ready');
     await expect.poll(async () => (await app.evaluate(() => globalThis.__boboLspProbe.starts.length))).toBeGreaterThanOrEqual(3);
+    // The mode change can briefly restart Rust before opening HTML completes.
+    // Wait for the intended document's session, not an unrelated start count.
+    await expect.poll(() => app.evaluate(() => {
+      const start = globalThis.__boboLspProbe.starts.at(-1);
+      return start && { languageId: start.message.languageId, runtimeId: start.message.runtimeId };
+    })).toEqual({ languageId: 'html', runtimeId: 'local' });
     probe = await app.evaluate(() => globalThis.__boboLspProbe);
     const htmlStart = probe.starts.at(-1);
     expect(htmlStart.message.languageId).toBe('html');

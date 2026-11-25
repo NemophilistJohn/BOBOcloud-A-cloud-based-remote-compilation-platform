@@ -62,7 +62,7 @@ function installNotebookFixture(userData) {
   }));
 }
 
-test('plugin details use a reusable source-free workbench tab and restore the prior editor view', async () => {
+test('plugin details use a reusable source-free workbench tab alongside the existing split editor', async () => {
   test.setTimeout(60000);
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'bobo-plugin-details-'));
   const appData = path.join(sandbox, 'appdata');
@@ -141,10 +141,12 @@ test('plugin details use a reusable source-free workbench tab and restore the pr
     ]);
     await expect.poll(() => page.evaluate(() => ({
       mode: window.BOBO.state.currentViewMode,
-      editorModelUnchanged: window.BOBO.state.editor.getModel() === window.__pluginDetailsOriginalModel,
+      leftModelUnchanged: window.BOBO.state.splitEditor.getModel() === window.__pluginDetailsOriginalModel,
       fileTabs: window.BOBO.state.tabs.length,
       splitVisible: document.getElementById('split-container').classList.contains('active')
-    }))).toEqual({ mode: 'plugin-details', editorModelUnchanged: true, fileTabs: 2, splitVisible: false });
+    }))).toEqual({ mode: 'split', leftModelUnchanged: true, fileTabs: 2, splitVisible: true });
+    await expect(details).toHaveClass(/workbench-split-right/);
+    expect(await page.locator('#split-left').isVisible()).toBe(true);
 
     // Opening the same extension cannot create a duplicate workbench tab.
     await page.evaluate(() => window.BOBO.pluginDetails.open('example.hello-plugin'));

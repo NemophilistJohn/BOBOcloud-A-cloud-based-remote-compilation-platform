@@ -1624,6 +1624,11 @@ export function createAgentWorkbenchService(
     restoreFeedScroll(view, snapshot);
   }
 
+  function isWorkspaceVisible(key) {
+    var element = document.getElementById(PAGE_ID);
+    return S.activeTabPath === key || Boolean(element && !element.hidden && element.dataset.splitTabKey === key);
+  }
+
   function renderStatePatch(change) {
     var patch = change && change.type === 'state' ? change.patch : null;
     var record = change && change.record;
@@ -1633,7 +1638,7 @@ export function createAgentWorkbenchService(
     })) return false;
 
     // Inactive providers need no DOM work; their current snapshot is rendered on activation.
-    if (S.activeTabPath !== tabKey(record.id)) return true;
+    if (!isWorkspaceVisible(tabKey(record.id))) return true;
     var session = record.state && record.state.activeSession;
     var root = document.getElementById(PAGE_ID);
     var view = renderedWorkspace;
@@ -2073,7 +2078,7 @@ export function createAgentWorkbenchService(
 
   function renderWorkspace(record) {
     var root = page();
-    if (!root || !record || S.activeTabPath !== tabKey(record.id)) return;
+    if (!root || !record || !isWorkspaceVisible(tabKey(record.id))) return;
     renderedWorkspace = null;
     var oldScroll = root.querySelector('.agent-scroll');
     var oldInput = root.querySelector('.agent-composer-input');
@@ -2211,6 +2216,7 @@ export function createAgentWorkbenchService(
     if (BOBO.workspace && BOBO.workspace.registerWorkbenchTabProvider) {
       tabRegistration = BOBO.workspace.registerWorkbenchTabProvider(PROVIDER_ID, {
         getTabs: providerTabs,
+        getSurface: function() { var element = page(); return element ? { elements: [element] } : null; },
         activate: activate,
         close: close,
         deactivate: deactivate,

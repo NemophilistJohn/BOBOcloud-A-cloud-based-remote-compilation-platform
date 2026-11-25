@@ -3,12 +3,13 @@ package collab
 import "fmt"
 
 const (
-	ErrorCodePushConflict  = "push_conflict"
-	ErrorCodePushFailed    = "push_failed"
-	ErrorCodeMergeConflict = "merge_conflict"
-	ErrorCodeNoChanges     = "no_changes"
-	ErrorCodeLockHeld      = "lock_held"
-	ErrorCodeLockStale     = "lock_stale"
+	ErrorCodePushConflict          = "push_conflict"
+	ErrorCodePushFailed            = "push_failed"
+	ErrorCodeMergeConflict         = "merge_conflict"
+	ErrorCodeNoChanges             = "no_changes"
+	ErrorCodeLockHeld              = "lock_held"
+	ErrorCodeLockStale             = "lock_stale"
+	ErrorCodeRealtimeBaselineDirty = "realtime_baseline_dirty"
 )
 
 const (
@@ -23,11 +24,12 @@ const (
 // The underlying cause is intentionally kept server-side so Git diagnostics do
 // not become user-facing copy or a client parsing dependency.
 type ErrorDetails struct {
-	Retryable       bool      `json:"retryable"`
-	SuggestedAction string    `json:"suggestedAction"`
-	PendingCommit   string    `json:"pendingCommit,omitempty"`
-	ConflictCount   int       `json:"conflictCount,omitempty"`
-	Lock            *FileLock `json:"lock,omitempty"`
+	Retryable       bool                     `json:"retryable"`
+	SuggestedAction string                   `json:"suggestedAction"`
+	PendingCommit   string                   `json:"pendingCommit,omitempty"`
+	ConflictCount   int                      `json:"conflictCount,omitempty"`
+	Lock            *FileLock                `json:"lock,omitempty"`
+	Baseline        *RealtimeBaselineDetails `json:"baseline,omitempty"`
 }
 
 type OperationError struct {

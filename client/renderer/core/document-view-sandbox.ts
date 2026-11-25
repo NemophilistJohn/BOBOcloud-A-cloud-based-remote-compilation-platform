@@ -198,6 +198,10 @@ function bootstrapSource(): string {
       createAssetUrls(message.resources);
       const documentInfo = Object.freeze(Object.assign({}, message.document));
       const viewerInfo = Object.freeze(Object.assign({}, message.viewer));
+      const focusRoot = document.getElementById('app');
+      const announceFocus = () => post({ type: 'focus' });
+      focusRoot?.addEventListener?.('pointerdown', announceFocus, true);
+      focusRoot?.addEventListener?.('focusin', announceFocus, true);
       const context = Object.freeze({
       root: document.getElementById('app'),
       document: documentInfo,
@@ -579,6 +583,7 @@ export function createSandboxedDocumentView(
       options.onDirty?.(message.dirty);
       return;
     }
+    if (message.type === 'focus') { options.onFocus?.(); return; }
     if (message.type === 'navigation' && options.onNavigation) {
       const navigation = normalizeDocumentNavigation(message.value);
       if (navigation) options.onNavigation(navigation);

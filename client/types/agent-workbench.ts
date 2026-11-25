@@ -277,6 +277,7 @@ export interface AgentWorkbenchTabDto {
 }
 
 export interface AgentWorkbenchTabProvider {
+  getSurface?(key: string): { elements: readonly HTMLElement[] } | null;
   getTabs(): readonly AgentWorkbenchTabDto[];
   activate(key: string): boolean | void;
   close(key: string): boolean;

@@ -79,7 +79,7 @@ test('two independently editable split panes preserve files, focus, saves, run t
       await window.BOBO.workspace.openFile(leftFile, 'left.ts');
       if (window.BOBO.state.autoSyncInterval) clearInterval(window.BOBO.state.autoSyncInterval);
     }, { workspace, leftFile });
-    await page.locator('#tabbar .tab-split').click();
+    await page.locator('#editor-split-action').click();
     await expect(page.locator('#split-container')).toHaveClass('active');
     expect(await page.evaluate(() => {
       const [left, right] = window.BOBO.views.getVisibleEditors();

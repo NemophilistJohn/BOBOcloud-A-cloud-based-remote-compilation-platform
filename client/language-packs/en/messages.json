@@ -2553,5 +2553,7 @@
   "Reconnect": "Reconnect",
   "Shared run {id}": "Shared run {id}",
   "Save document preview edits before joining live collaboration": "Save document preview edits before joining live collaboration",
-  "Reconcile the shared workspace before normal synchronization": "Reconcile the shared workspace before normal synchronization"
+  "Reconcile the shared workspace before normal synchronization": "Reconcile the shared workspace before normal synchronization",
+  "Open a file or plugin tab": "Open a file or plugin tab",
+  "Cannot start live collaboration: {user} / {branch} has local changes: {paths}. Save and publish these changes, or resolve conflicts first.": "Cannot start live collaboration: {user} / {branch} has local changes: {paths}. Save and publish these changes, or resolve conflicts first."
 }

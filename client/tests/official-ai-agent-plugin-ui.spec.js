@@ -411,6 +411,21 @@ test('official AI Agent plugin owns a full workbench tab and cleans it up when d
     await expect(sidebar.locator('.agent-session-row')).toHaveCount(1);
     const composer = workbench.locator('.agent-composer');
     const input = composer.locator('.agent-composer-input');
+    // Native plugin pages remain live beside text, including an unsent draft.
+    await input.fill('Unsent split draft');
+    await page.locator('#editor-split-action').click();
+    await expect(workbench).toHaveClass(/workbench-split-left/);
+    await page.locator('#tabbar .tab:not([data-tab-provider]) .tab-title').click();
+    await expect(page.locator('#split-right .monaco-editor')).toBeVisible();
+    await expect(workbench).toBeVisible();
+    await expect(input).toHaveValue('Unsent split draft');
+    await input.click();
+    await expect(agentTab).toHaveClass(/active/);
+    await expect(input).toHaveValue('Unsent split draft');
+    await page.evaluate(() => window.BOBO.views.closeSplit());
+    await expect(workbench).toBeVisible();
+    await expect(input).toHaveValue('Unsent split draft');
+    await input.fill('');
     const controlsButton = composer.getByRole('button', { name: 'Agent controls', exact: true });
     const controls = composer.locator('.agent-composer-control-menu[aria-label="Agent controls"]');
     const openControls = async (timeout) => {

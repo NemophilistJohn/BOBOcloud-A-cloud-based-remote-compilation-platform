@@ -66,6 +66,11 @@ html, body {
   padding: 0 var(--space-1);
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
 }
+#tabbar { padding-right: 38px; }
+#editor-actions { grid-row: 2; grid-column: 3 / -1; justify-self: end; align-self: stretch; display: flex; align-items: center; padding: 0 7px; z-index: 5; background: var(--bg-surface); border-bottom: 1px solid var(--border-default); }
+#editor-split-action { display: grid; place-items: center; width: 25px; height: 25px; border: 0; border-radius: 5px; background: transparent; color: var(--text-secondary); cursor: pointer; }
+#editor-split-action:hover { color: var(--text-primary); background: var(--bg-hover); }
+#editor-split-action:focus-visible { outline: 1px solid var(--brand); }
 .tab {
   display: flex; align-items: center; flex: 0 0 auto; min-width: 78px; max-width: min(220px, 100%);
   height: calc(100% - 6px); position: relative; padding: 0 8px; gap: var(--space-2); cursor: default;
@@ -229,8 +234,17 @@ html, body {
 #split-container .split-pane-header button:hover { background: var(--bg-hover); }
 #split-container .split-pane-header button:focus-visible { outline: 1px solid var(--accent, #60a5fa); }
 #split-container .split-pane-editor { flex: 1; min-height: 0; overflow: hidden; }
-#tabbar .tab-split { display: flex; align-items: center; border: 0; background: transparent; color: inherit; padding: 2px; cursor: pointer; opacity: .65; }
-#tabbar .tab-split:hover, #tabbar .tab-split:focus-visible { opacity: 1; }
+.split-pane-placeholder { display: none; position: absolute; inset: 30px 0 0; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 12px; pointer-events: none; }
+.split-pane.empty-pane .split-pane-placeholder { display: flex; }
+.workbench-split-surface { position: absolute !important; top: 30px !important; bottom: 0 !important; width: 50% !important; height: calc(100% - 30px) !important; margin: 0 !important; pointer-events: auto; }
+.workbench-split-left { left: 0 !important; right: 50% !important; }
+.workbench-split-right { left: 50% !important; right: 0 !important; }
+#document-view-host.split-active { background: transparent; pointer-events: none; }
+@media (max-width: 760px) {
+  .workbench-split-surface { width: 100% !important; height: calc(50% - 30px) !important; }
+  .workbench-split-left { top: 30px !important; bottom: 50% !important; left: 0 !important; right: 0 !important; }
+  .workbench-split-right { top: calc(50% + 30px) !important; bottom: 0 !important; left: 0 !important; right: 0 !important; }
+}
 @media (max-width: 760px) {
   #split-container.active { flex-direction: column; }
   #split-container .split-pane:first-child { border-right: 0; border-bottom: 1px solid var(--border-default); }
