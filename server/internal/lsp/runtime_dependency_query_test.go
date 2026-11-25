@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRuntimeDependencyProbeFindsNodePrefixGlobalPackagesAndDollarExports(t *testing.T) {
@@ -52,9 +53,17 @@ func TestRuntimeDependencyPythonProbeResolvesConditionalBinaryReexports(t *testi
 	writeDependencyAPIIndexTestFile(t, filepath.Join(root, "numpy", "core", "multiarray.py"), "from ._multiarray_umath import array, ndarray\n__all__ = ['array', 'ndarray']\n")
 	encodedRoot, _ := json.Marshal(root)
 	script := strings.Replace(runtimePythonDependencyProbe, "paths=[]", "paths=["+string(encodedRoot)+"]", 1)
+	// This fixture tests extraction and response parsing. Give the CI host's
+	// Python startup its own budget instead of measuring the production probe timeout.
+	fixtureContext, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(fixtureContext, python, "-I", "-S", "-c", script, "numpy").Output()
+	if err != nil {
+		t.Fatalf("run static Python fixture: %v", err)
+	}
 	image := "sha256:" + strings.Repeat("a", 64)
-	page, err := runtimeDependencyAPIQuery(context.Background(), image, "python", "python:test", "rev", DependencyAPIQuery{Kind: "module", Module: "numpy"}, func(ctx context.Context, _, _, module string) ([]byte, error) {
-		return exec.CommandContext(ctx, python, "-I", "-S", "-c", script, module).Output()
+	page, err := runtimeDependencyAPIQuery(t.Context(), image, "python", "python:test", "rev", DependencyAPIQuery{Kind: "module", Module: "numpy"}, func(_ context.Context, _, _, _ string) ([]byte, error) {
+		return output, nil
 	})
 	if err != nil || !strings.Contains(querySymbolNames(page, "numpy"), "array") {
 		t.Fatalf("NumPy-shaped static binary reexports=%+v, %v", page, err)
