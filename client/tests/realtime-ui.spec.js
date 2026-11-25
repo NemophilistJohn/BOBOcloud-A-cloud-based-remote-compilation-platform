@@ -84,6 +84,20 @@ test('two workbenches converge through split renames, offline drafts, deletion v
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
   const apps = [];
+  async function focusEditor(page, index, resetPosition = true) {
+    // Separate Electron processes have separate native windows. Selecting a
+    // textarea in a background window is insufficient on a Windows runner.
+    const nativeWindow = await apps[index].browserWindow(page);
+    await nativeWindow.evaluate(window => { window.show(); window.focus(); });
+    await page.bringToFront();
+    await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(true);
+    await page.evaluate(reset => {
+      const editor = window.BOBO.views.getActiveEditor();
+      if (reset) editor.setPosition({ lineNumber: 1, column: 1 });
+      editor.focus();
+    }, resetPosition);
+    await expect.poll(() => page.evaluate(() => window.BOBO.views.getActiveEditor().hasTextFocus())).toBe(true);
+  }
   try {
     for (const user of ['Alice', 'Bob']) {
       const directory = path.join(sandbox, user), workspace = path.join(directory, 'workspace');
@@ -95,6 +109,14 @@ test('two workbenches converge through split renames, offline drafts, deletion v
       apps.push(app);
       const page = await app.firstWindow();
       await page.waitForFunction(() => document.documentElement.dataset.boboReady === 'true');
+      await page.evaluate(() => {
+        window.__sharedInputEvidence = [];
+        for (const type of ['keydown', 'input', 'focusin', 'focusout']) document.addEventListener(type, event => {
+          window.__sharedInputEvidence.push({ type, key: event.key, target: event.target.className,
+            focused: document.hasFocus(), active: document.activeElement?.className });
+          if (window.__sharedInputEvidence.length > 80) window.__sharedInputEvidence.shift();
+        }, true);
+      });
       await page.evaluate(async ({ workspace, mapping, user, port, room, snapshot }) => {
         const b = window.BOBO;
         await window.api.writeServerSettings({ ip: '127.0.0.1', httpPort: port, wsPort: port, secureTransport: false });
@@ -116,10 +138,10 @@ test('two workbenches converge through split renames, offline drafts, deletion v
     }
     const a = await apps[0].firstWindow(), b = await apps[1].firstWindow();
     await expect.poll(() => a.evaluate(() => window.BOBO.state.editor.getValue())).toContain('hello');
-    await a.evaluate(() => { const editor = window.BOBO.state.editor; editor.setPosition({ lineNumber: 1, column: 1 }); editor.focus(); });
+    await focusEditor(a, 0);
     await a.keyboard.type('#Alice\n');
     await expect.poll(() => b.evaluate(() => window.BOBO.state.editor.getValue())).toContain('#Alice');
-    await b.evaluate(() => { const editor = window.BOBO.state.editor; editor.setPosition({ lineNumber: 1, column: 1 }); editor.focus(); });
+    await focusEditor(b, 1);
     await b.keyboard.type('#Bob\n');
     await expect.poll(() => a.evaluate(() => window.BOBO.state.editor.getValue())).toContain('#Bob');
     await expect(a.locator('.realtime-cursor-label').filter({ hasText: 'Bob' })).toBeVisible();
@@ -135,6 +157,7 @@ test('two workbenches converge through split renames, offline drafts, deletion v
       const after = sync.getBoundingClientRect().right;
       return peopleRect.right <= syncRect.left && Math.abs(before - after) < 1;
     })).toBe(true);
+    await focusEditor(a, 0, false);
     await a.keyboard.press('Control+z');
     await expect.poll(() => b.evaluate(() => window.BOBO.state.editor.getValue())).not.toContain('#Alice');
     await expect.poll(() => b.evaluate(() => window.BOBO.state.editor.getValue())).toContain('#Bob');
@@ -159,7 +182,7 @@ test('two workbenches converge through split renames, offline drafts, deletion v
       window.__renamedMainModel = left.getModel();
       return left.getModel() === right.getModel() && window.__beforeRenameModel.isDisposed();
     })).toBe(true);
-    await a.evaluate(() => { const editor = window.BOBO.views.getActiveEditor(); editor.setPosition({ lineNumber: 1, column: 1 }); editor.focus(); });
+    await focusEditor(a, 0);
     await a.keyboard.type('#afterMainRename\n');
     await expect.poll(() => b.evaluate(() => window.BOBO.views.getActiveEditor().getValue())).toContain('#afterMainRename');
 
@@ -168,7 +191,7 @@ test('two workbenches converge through split renames, offline drafts, deletion v
     await b.evaluate(() => window.BOBO.realtime.fileOperation('rename', window.BOBO.state.workspaceRoot + '/second.py', window.BOBO.state.workspaceRoot + '/helper.py'));
     await expect.poll(() => a.evaluate(() => window.BOBO.views.getVisibleEditors().map(editor => editor.getModel().uri.fsPath.replace(/\\/g, '/').split('/').pop()))).toEqual(['renamed.py', 'helper.py']);
     await b.evaluate(async () => window.BOBO.workspace.openFile(window.BOBO.state.workspaceRoot + '/helper.py', 'helper.py'));
-    await a.evaluate(() => { const editor = window.BOBO.views.getActiveEditor(); editor.setPosition({ lineNumber: 1, column: 1 }); editor.focus(); });
+    await focusEditor(a, 0);
     await a.keyboard.type('#helperAfterRename\n');
     await expect.poll(() => b.evaluate(() => window.BOBO.views.getActiveEditor().getValue())).toContain('#helperAfterRename');
 
@@ -177,11 +200,11 @@ test('two workbenches converge through split renames, offline drafts, deletion v
     for (const [socket, joined] of sockets) if (joined.token === 'Alice') socket.terminate();
     const offlineStatus = await a.evaluate(() => window.BOBO.i18n.t('Collaboration is reconnecting. Your edits are kept locally.'));
     await expect(a.locator('.realtime-panel > header [role="status"]')).toHaveText(offlineStatus);
-    await a.evaluate(() => { const editor = window.BOBO.views.getActiveEditor(); editor.setPosition({ lineNumber: 1, column: 1 }); editor.focus(); });
+    await focusEditor(a, 0);
     await a.keyboard.type('#offlineAlice\n');
     await expect.poll(() => a.evaluate(async () => (await window.api.realtimeDrafts()).drafts.some(draft => draft.pending.length && draft.text.includes('#offlineAlice')))).toBe(true);
     expect(await b.evaluate(() => window.BOBO.views.getActiveEditor().getValue())).not.toContain('#offlineAlice');
-    await b.evaluate(() => { const editor = window.BOBO.views.getActiveEditor(); editor.setPosition({ lineNumber: 1, column: 1 }); editor.focus(); });
+    await focusEditor(b, 1);
     await b.keyboard.type('#onlineBob\n');
     offlineUsers.delete('Alice');
     for (const page of [a, b]) {
@@ -287,6 +310,17 @@ test('two workbenches converge through split renames, offline drafts, deletion v
     expect(JSON.parse(fs.readFileSync(path.join(bobWorkspace, '.bobocloud-team.json'), 'utf8')).realtimeEpoch || '').toBe('');
 
 
+  } catch (error) {
+    for (const [index, app] of apps.entries()) {
+      try {
+        const page = await app.firstWindow();
+        const evidence = await page.evaluate(() => ({ events: window.__sharedInputEvidence,
+          text: window.BOBO.views.getActiveEditor()?.getValue(), focused: document.hasFocus(),
+          active: document.activeElement?.className, readOnly: window.BOBO.views.getActiveEditor()?.getRawOptions().readOnly }));
+        await test.info().attach('shared-input-' + index, { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' });
+      } catch (_) {}
+    }
+    throw error;
   } finally {
     for (const app of apps) { try { await app.evaluate(({ app }) => app.exit(0)); } catch (_) {} }
     for (const socket of ws.clients) socket.terminate();
