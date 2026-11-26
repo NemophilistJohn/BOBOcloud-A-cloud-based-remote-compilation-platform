@@ -478,3 +478,22 @@ test('dynamic UI translation entry points reference defined English keys', () =>
   assert.ok(htmlKeys.has('Evaluate expression'));
   for (const key of htmlKeys) assert.ok(Object.hasOwn(messages, key), `index.html references missing Debug translation key: ${key}`);
 });
+
+test('static title, aria-label, and placeholder copy is present in all default language packs', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const locales = ['en', 'ja', 'zh-CN'];
+  const packs = Object.fromEntries(locales.map((locale) => [
+    locale,
+    JSON.parse(fs.readFileSync(path.join(ROOT, 'language-packs', locale, 'messages.json'), 'utf8'))
+  ]));
+  const examples = new Set([
+    'compiler.example.com', 'root', 'AA:BB:CC:...', '-O2 -std=c++17 -lm'
+  ]);
+  const keys = new Set([...html.matchAll(/\b(?:title|aria-label|placeholder)="([^"]+)"/g)].map((match) => match[1]));
+  for (const key of keys) {
+    if (examples.has(key)) continue;
+    for (const locale of locales) {
+      assert.ok(Object.hasOwn(packs[locale], key), `${locale} language pack is missing static UI attribute: ${key}`);
+    }
+  }
+});

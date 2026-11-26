@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"sync"
@@ -16,16 +17,23 @@ import (
 
 // AuthSession 是一条已签发的登录会话
 type AuthSession struct {
-	Token     string    `json:"token"`
-	UserID    string    `json:"user_id"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ID             string    `json:"id,omitempty"`
+	Token          string    `json:"token"`
+	UserID         string    `json:"user_id"`
+	DeviceName     string    `json:"device_name,omitempty"`
+	DevicePlatform string    `json:"device_platform,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	LastSeenAt     time.Time `json:"last_seen_at,omitempty"`
+	ExpiresAt      time.Time `json:"expires_at"`
 }
 
 // AuthSessionStore 会话 token 存储接口
 type AuthSessionStore interface {
 	// Create 为用户签发新 token（ttl 为有效期）
 	Create(userID string, ttl time.Duration) (*AuthSession, error)
+	CreateForDevice(userID, name, platform string, ttl time.Duration) (*AuthSession, error)
+	ListByUser(userID string) ([]*AuthSession, error)
+	RevokeDevice(userID, deviceID, currentToken string) error
 	// Validate 校验 token：过期/不存在返回 error；
 	// 剩余有效期不足一半时滑动续期到完整 ttl（活跃用户不会掉线）
 	Validate(token string, ttl time.Duration) (*AuthSession, error)
@@ -62,20 +70,37 @@ func NewMemoryAuthSessionStore() *MemoryAuthSessionStore {
 }
 
 func (s *MemoryAuthSessionStore) Create(userID string, ttl time.Duration) (*AuthSession, error) {
+	return s.CreateForDevice(userID, "", "", ttl)
+}
+
+func (s *MemoryAuthSessionStore) CreateForDevice(userID, name, platform string, ttl time.Duration) (*AuthSession, error) {
 	token, err := GenerateSessionToken()
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now()
 	sess := &AuthSession{
-		Token:     token,
-		UserID:    userID,
-		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(ttl),
+		ID:             GenerateUUID(),
+		Token:          token,
+		UserID:         userID,
+		DeviceName:     name,
+		DevicePlatform: platform,
+		CreatedAt:      now,
+		LastSeenAt:     now,
+		ExpiresAt:      now.Add(ttl),
 	}
 	s.mu.Lock()
 	s.sessions[sess.Token] = sess
 	s.mu.Unlock()
 	return sess, nil
+}
+
+func sessionDeviceID(sess *AuthSession) string {
+	if sess.ID != "" {
+		return sess.ID
+	}
+	sum := sha256.Sum256([]byte(sess.Token))
+	return hex.EncodeToString(sum[:])
 }
 
 func (s *MemoryAuthSessionStore) Validate(token string, ttl time.Duration) (*AuthSession, error) {
@@ -94,7 +119,43 @@ func (s *MemoryAuthSessionStore) Validate(token string, ttl time.Duration) (*Aut
 	if sess.ExpiresAt.Sub(now) < ttl/2 {
 		sess.ExpiresAt = now.Add(ttl)
 	}
+	sess.LastSeenAt = now
 	return sess, nil
+}
+
+func (s *MemoryAuthSessionStore) ListByUser(userID string) ([]*AuthSession, error) {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := make([]*AuthSession, 0)
+	for _, sess := range s.sessions {
+		if sess.UserID == userID && now.Before(sess.ExpiresAt) {
+			copy := *sess
+			copy.ID = sessionDeviceID(&copy)
+			items = append(items, &copy)
+		}
+	}
+	return items, nil
+}
+
+func (s *MemoryAuthSessionStore) RevokeDevice(userID, deviceID, currentToken string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	matched := false
+	for token, sess := range s.sessions {
+		if sess.UserID != userID || sessionDeviceID(sess) != deviceID {
+			continue
+		}
+		if token == currentToken {
+			return fmt.Errorf("cannot revoke the current device")
+		}
+		delete(s.sessions, token)
+		matched = true
+	}
+	if !matched {
+		return fmt.Errorf("device not found")
+	}
+	return nil
 }
 
 func (s *MemoryAuthSessionStore) Delete(token string) error {

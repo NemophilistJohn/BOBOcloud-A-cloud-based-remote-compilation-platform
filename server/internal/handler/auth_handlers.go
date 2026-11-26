@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"bobocloud-server/internal/auth"
 	"bobocloud-server/internal/enrollment"
@@ -203,36 +204,62 @@ func (h *HTTPHandler) handleLogin(w http.ResponseWriter, r *http.Request, req *m
 	}
 
 	identity := strings.TrimSpace(req.Identity)
-	if identity == "" || req.Password == "" {
+	if req.Password == "" || (identity == "" && req.EnrollmentToken == "") {
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "identity and password are required"})
 		return
 	}
-
-	// 用户名或邮箱登录：含 @ 优先按邮箱查，否则先用户名后邮箱兜底
 	var user *auth.User
+	var record enrollment.Record
 	var err error
-	if strings.Contains(identity, "@") {
-		user, err = h.UserStore.GetByEmail(identity)
-		if err != nil {
-			user, err = h.UserStore.GetByUsername(identity)
+	if req.EnrollmentToken != "" {
+		if !h.enrollmentReady(w, r) {
+			return
 		}
-	} else {
-		user, err = h.UserStore.GetByUsername(identity)
-		if err != nil {
-			user, err = h.UserStore.GetByEmail(identity)
+		record, err = h.Enrollment.Inspect(req.EnrollmentToken)
+		if err != nil || (record.Kind != "root" && record.Kind != "device") {
+			writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid or expired enrollment"})
+			return
 		}
 	}
-	if err != nil || !auth.CheckPassword(user.PasswordHash, req.Password) {
-		h.auditEvent(r, "", identity, "login", "", "invalid credentials", false)
-		writeJSON(w, http.StatusUnauthorized, model.Response{Success: false, Error: "Invalid username/email or password"})
-		return
+
+	rootPasswordSetup := false
+	if identity == "" && record.Kind == "root" {
+		user, err = h.UserStore.Get(record.TargetUserID)
+		if err == nil && user.EffectiveRole() == auth.RoleRoot && user.PasswordHash == "" && h.Enrollment.RootClaimRequired(user.ID) {
+			if passwordErr := auth.ValidatePassword(req.Password); passwordErr != nil {
+				writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: passwordErr.Error()})
+				return
+			}
+			rootPasswordSetup = true
+		} else {
+			writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid or expired enrollment"})
+			return
+		}
+	} else {
+		// 用户名或邮箱登录：含 @ 优先按邮箱查，否则先用户名后邮箱兜底。
+		if strings.Contains(identity, "@") {
+			user, err = h.UserStore.GetByEmail(identity)
+			if err != nil {
+				user, err = h.UserStore.GetByUsername(identity)
+			}
+		} else {
+			user, err = h.UserStore.GetByUsername(identity)
+			if err != nil {
+				user, err = h.UserStore.GetByEmail(identity)
+			}
+		}
+		if err != nil || !auth.CheckPassword(user.PasswordHash, req.Password) {
+			h.auditEvent(r, "", identity, "login", "", "invalid credentials", false)
+			writeJSON(w, http.StatusUnauthorized, model.Response{Success: false, Error: "Invalid username/email or password"})
+			return
+		}
 	}
 	if user.Disabled {
 		h.auditEvent(r, user.ID, user.Username, "login", "", "account disabled", false)
 		writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "Account is disabled. Contact your administrator."})
 		return
 	}
-	if h.Enrollment != nil && req.EnrollmentToken == "" && h.Enrollment.RootClaimRequired(user.ID) {
+	if h.Enrollment != nil && h.Enrollment.RootClaimRequired(user.ID) && (req.EnrollmentToken == "" || record.Kind != "root") {
 		writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "Administrator enrollment is required"})
 		return
 	}
@@ -240,22 +267,37 @@ func (h *HTTPHandler) handleLogin(w http.ResponseWriter, r *http.Request, req *m
 	var sess *auth.AuthSession
 	rootClaimed := false
 	if req.EnrollmentToken != "" {
-		if !h.enrollmentReady(w, r) {
-			return
-		}
-		record, inspectErr := h.Enrollment.Inspect(req.EnrollmentToken)
-		if inspectErr != nil || (record.Kind != "root" && record.Kind != "device") || (record.Kind == "root" && user.EffectiveRole() != auth.RoleRoot) || (h.Enrollment.RootClaimRequired(user.ID) && record.Kind != "root") {
+		if (record.Kind == "root" && user.EffectiveRole() != auth.RoleRoot) ||
+			(record.TargetUserID != "" && record.TargetUserID != user.ID) ||
+			(h.Enrollment.RootClaimRequired(user.ID) && record.Kind != "root") {
 			writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid or expired enrollment"})
 			return
 		}
 		_, err = h.Enrollment.Claim(req.EnrollmentToken, record.Kind, user.ID, func(_ enrollment.Record) error {
+			if rootPasswordSetup {
+				hash, hashErr := auth.HashPassword(req.Password)
+				if hashErr != nil {
+					return hashErr
+				}
+				updated, updateErr := h.UserStore.MutateExisting(user.ID, func(latest *auth.User) error {
+					if latest.EffectiveRole() != auth.RoleRoot || latest.PasswordHash != "" || latest.Disabled {
+						return errors.New("administrator account is already claimed")
+					}
+					latest.PasswordHash = hash
+					return nil
+				})
+				if updateErr != nil {
+					return updateErr
+				}
+				user = updated
+			}
 			var createErr error
-			sess, createErr = h.AuthSessions.Create(user.ID, h.Config.SessionTokenTTL())
+			sess, createErr = createDeviceSession(h, user.ID, req)
 			return createErr
 		})
 		rootClaimed = err == nil && record.Kind == "root"
 	} else {
-		sess, err = h.AuthSessions.Create(user.ID, h.Config.SessionTokenTTL())
+		sess, err = createDeviceSession(h, user.ID, req)
 	}
 	if err != nil {
 		if sess != nil {
@@ -279,6 +321,34 @@ func (h *HTTPHandler) handleLogin(w http.ResponseWriter, r *http.Request, req *m
 		User:      sanitizeUser(user),
 		Data:      h.syncResponse(r, user, sess.Token),
 	})
+}
+
+func createDeviceSession(h *HTTPHandler, userID string, req *model.Request) (*auth.AuthSession, error) {
+	if h.AuthSessions == nil || h.Config == nil {
+		return nil, errors.New("authentication sessions are unavailable")
+	}
+	name := cleanDeviceLabel(req.DeviceName, 120)
+	if name == "" {
+		name = "BOBOCLOUD desktop"
+	}
+	platform := cleanDeviceLabel(req.DevicePlatform, 40)
+	return h.AuthSessions.CreateForDevice(userID, name, platform, h.Config.SessionTokenTTL())
+}
+
+func cleanDeviceLabel(value string, limit int) string {
+	var result strings.Builder
+	count := 0
+	for _, char := range strings.TrimSpace(value) {
+		if unicode.IsControl(char) {
+			continue
+		}
+		if count >= limit {
+			break
+		}
+		result.WriteRune(char)
+		count++
+	}
+	return result.String()
 }
 
 // ---------- 预认证：register（邀请制） ----------
@@ -379,7 +449,7 @@ func (h *HTTPHandler) handleRegister(w http.ResponseWriter, r *http.Request, req
 	var sess *auth.AuthSession
 	_, err = h.Enrollment.Claim(req.EnrollmentToken, "register", user.ID, func(_ enrollment.Record) error {
 		var createErr error
-		sess, createErr = h.AuthSessions.Create(user.ID, h.Config.SessionTokenTTL())
+		sess, createErr = createDeviceSession(h, user.ID, req)
 		if createErr != nil {
 			return createErr
 		}

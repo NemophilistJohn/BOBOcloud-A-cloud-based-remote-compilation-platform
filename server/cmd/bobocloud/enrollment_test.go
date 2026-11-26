@@ -131,7 +131,7 @@ func TestLoadRootSSHFileSafety(t *testing.T) {
 		t.Fatal("invalid SSH host key accepted")
 	}
 }
-func TestConfigureEnrollmentFirstUpgradeClaimAndNoResurrection(t *testing.T) {
+func TestConfigureEnrollmentUnclaimedRootClaimLinkAndNoResurrection(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	cfg.PublicHost = "127.0.0.1"
@@ -145,11 +145,8 @@ func TestConfigureEnrollmentFirstUpgradeClaimAndNoResurrection(t *testing.T) {
 	}
 	cfg.RootSSHCredentialFile = cred
 	users := auth.NewMemoryUserStore()
-	passwordHash, e := auth.HashPassword("existing-password")
-	if e != nil {
-		t.Fatal(e)
-	}
-	root := &auth.User{ID: "root-existing", Username: "root-existing", Role: auth.RoleRoot, PasswordHash: passwordHash}
+	root := &auth.User{ID: "root-existing", Username: "root-existing", Role: auth.RoleRoot}
+	var e error
 	if e = users.Create(root); e != nil {
 		t.Fatal(e)
 	}
@@ -197,8 +194,8 @@ func TestConfigureEnrollmentFirstUpgradeClaimAndNoResurrection(t *testing.T) {
 		t.Fatal("claim file permissions too broad")
 	}
 	before, _ := users.Get(root.ID)
-	if !auth.CheckPassword(before.PasswordHash, "existing-password") {
-		t.Fatal("existing password changed")
+	if before.PasswordHash != "" {
+		t.Fatal("new root should remain unclaimed until the administrator sets a password")
 	}
 	stop()
 	h, stop = start()
@@ -261,6 +258,14 @@ func TestConfigureEnrollmentFirstUpgradeClaimAndNoResurrection(t *testing.T) {
 	if _, e = h.Enrollment.Claim(doc.Token, "root", root.ID, func(_ enrollment.Record) error { return nil }); e != nil {
 		t.Fatal(e)
 	}
+	claimedHash, e := auth.HashPassword("claimed-password")
+	if e != nil {
+		t.Fatal(e)
+	}
+	root.PasswordHash = claimedHash
+	if e = users.Create(root); e != nil {
+		t.Fatal(e)
+	}
 	if e = h.OnRootEnrollmentClaimed(); e != nil {
 		t.Fatal(e)
 	}
@@ -274,4 +279,40 @@ func TestConfigureEnrollmentFirstUpgradeClaimAndNoResurrection(t *testing.T) {
 		t.Fatalf("claim file regenerated: %v", e)
 	}
 
+}
+
+func TestConfigureEnrollmentKeepsExistingRootPasswordOnUpgrade(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	cfg.PublicHost = "127.0.0.1"
+	cfg.EnrollmentFile = filepath.Join(cfg.DataDir, "claim.link")
+	if err := prepareEnrollmentTLS(cfg); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := auth.HashPassword("existing-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := auth.NewMemoryUserStore()
+	root := &auth.User{ID: "root-existing", Username: "root-existing", Role: auth.RoleRoot, PasswordHash: hash}
+	if err := users.Create(root); err != nil {
+		t.Fatal(err)
+	}
+	sessions := auth.NewMemoryAuthSessionStore()
+	h := &handler.HTTPHandler{Config: cfg, UserStore: users, AuthSessions: sessions}
+	sftp, err := configureEnrollment(cfg, h, users, sessions, serverruntime.New(context.Background()), cfg.DataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sftp.Close()
+	if h.Enrollment.RootClaimRequired(root.ID) {
+		t.Fatal("upgrade unexpectedly marked the existing root account unclaimed")
+	}
+	if _, err := os.Stat(cfg.EnrollmentFile); !os.IsNotExist(err) {
+		t.Fatalf("upgrade unexpectedly created a claim link: %v", err)
+	}
+	stored, err := users.Get(root.ID)
+	if err != nil || stored.PasswordHash != hash || !auth.CheckPassword(stored.PasswordHash, "existing-password") {
+		t.Fatalf("existing root password changed: %v", err)
+	}
 }

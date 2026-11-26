@@ -15,6 +15,8 @@ import (
 
 var authSessionsBucket = []byte("auth_sessions")
 
+const sessionLastSeenWriteInterval = 5 * time.Minute
+
 // BoltAuthSessionStore 基于 BoltDB 的登录会话存储
 type BoltAuthSessionStore struct {
 	db *bolt.DB
@@ -33,15 +35,24 @@ func NewBoltAuthSessionStore(db *bolt.DB) *BoltAuthSessionStore {
 }
 
 func (s *BoltAuthSessionStore) Create(userID string, ttl time.Duration) (*AuthSession, error) {
+	return s.CreateForDevice(userID, "", "", ttl)
+}
+
+func (s *BoltAuthSessionStore) CreateForDevice(userID, name, platform string, ttl time.Duration) (*AuthSession, error) {
 	token, err := GenerateSessionToken()
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now()
 	sess := &AuthSession{
-		Token:     token,
-		UserID:    userID,
-		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(ttl),
+		ID:             GenerateUUID(),
+		Token:          token,
+		UserID:         userID,
+		DeviceName:     name,
+		DevicePlatform: platform,
+		CreatedAt:      now,
+		LastSeenAt:     now,
+		ExpiresAt:      now.Add(ttl),
 	}
 	data, err := json.Marshal(sess)
 	if err != nil {
@@ -73,11 +84,23 @@ func (s *BoltAuthSessionStore) Validate(token string, ttl time.Duration) (*AuthS
 			b.Delete([]byte(token))
 			return fmt.Errorf("session expired")
 		}
+		changed := false
 		// 滑动续期：剩余不足一半时重置到完整 ttl
 		if sess.ExpiresAt.Sub(now) < ttl/2 {
 			sess.ExpiresAt = now.Add(ttl)
-			if data, err := json.Marshal(&sess); err == nil {
-				b.Put([]byte(token), data)
+			changed = true
+		}
+		if sess.LastSeenAt.IsZero() || now.Sub(sess.LastSeenAt) >= sessionLastSeenWriteInterval {
+			sess.LastSeenAt = now
+			changed = true
+		}
+		if changed {
+			encoded, err := json.Marshal(&sess)
+			if err != nil {
+				return err
+			}
+			if err := b.Put([]byte(token), encoded); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -86,6 +109,58 @@ func (s *BoltAuthSessionStore) Validate(token string, ttl time.Duration) (*AuthS
 		return nil, err
 	}
 	return &sess, nil
+}
+
+func (s *BoltAuthSessionStore) ListByUser(userID string) ([]*AuthSession, error) {
+	items := make([]*AuthSession, 0)
+	now := time.Now()
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(authSessionsBucket).ForEach(func(_, value []byte) error {
+			var sess AuthSession
+			if err := json.Unmarshal(value, &sess); err != nil {
+				return nil
+			}
+			if sess.UserID != userID || !now.Before(sess.ExpiresAt) {
+				return nil
+			}
+			sess.ID = sessionDeviceID(&sess)
+			items = append(items, &sess)
+			return nil
+		})
+	})
+	return items, err
+}
+
+func (s *BoltAuthSessionStore) RevokeDevice(userID, deviceID, currentToken string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(authSessionsBucket)
+		var remove [][]byte
+		if err := b.ForEach(func(key, value []byte) error {
+			var sess AuthSession
+			if err := json.Unmarshal(value, &sess); err != nil {
+				return nil
+			}
+			if sess.UserID != userID || sessionDeviceID(&sess) != deviceID {
+				return nil
+			}
+			if string(key) == currentToken {
+				return fmt.Errorf("cannot revoke the current device")
+			}
+			remove = append(remove, append([]byte(nil), key...))
+			return nil
+		}); err != nil {
+			return err
+		}
+		if len(remove) == 0 {
+			return fmt.Errorf("device not found")
+		}
+		for _, key := range remove {
+			if err := b.Delete(key); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *BoltAuthSessionStore) Delete(token string) error {

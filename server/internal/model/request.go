@@ -32,10 +32,13 @@ type Request struct {
 	PackageChanges      []ProjectPackageChange `json:"changes,omitempty"`
 
 	// ── 账户系统字段 ──
-	Identity               string `json:"identity,omitempty"`    // login：用户名或邮箱
-	Username               string `json:"username,omitempty"`    // register：用户名
-	Email                  string `json:"email,omitempty"`       // register：邮箱
-	Password               string `json:"password,omitempty"`    // login / register
+	Identity               string `json:"identity,omitempty"` // login：用户名或邮箱
+	Username               string `json:"username,omitempty"` // register：用户名
+	Email                  string `json:"email,omitempty"`    // register：邮箱
+	Password               string `json:"password,omitempty"` // login / register
+	DeviceName             string `json:"deviceName,omitempty"`
+	DevicePlatform         string `json:"devicePlatform,omitempty"`
+	DeviceID               string `json:"deviceId,omitempty"`
 	OldPassword            string `json:"oldPassword,omitempty"` // changePassword
 	NewPassword            string `json:"newPassword,omitempty"` // changePassword / resetUserPassword
 	InviteCode             string `json:"inviteCode,omitempty"`  // register / revokeInvite

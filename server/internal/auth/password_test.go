@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestGeneratedBootstrapPasswordHasStrongRandomPayload(t *testing.T) {
+func TestGeneratedPasswordForAdministrativeResetHasStrongRandomPayload(t *testing.T) {
 	first, err := GeneratePassword()
 	if err != nil {
 		t.Fatal(err)

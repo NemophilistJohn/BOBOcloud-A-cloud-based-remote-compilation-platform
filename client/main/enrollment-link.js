@@ -44,7 +44,8 @@ function settingsForLink(link, previous = {}) {
 
 function publicPreview(link, inspect) {
   return { kind: link.kind, host: link.host, httpPort: link.httpPort, certificateFingerprint: link.certificateFingerprints[0],
-    version: String(inspect.version || ''), expiresAt: inspect.expiresAt || '', syncMode: inspect.syncMode || 'unknown' };
+    version: String(inspect.version || ''), expiresAt: inspect.expiresAt || '', syncMode: inspect.syncMode || 'unknown',
+    requiresPasswordSetup: inspect.requiresPasswordSetup === true };
 }
 
 module.exports = { parseEnrollmentLink, settingsForLink, publicPreview, randomId: () => crypto.randomUUID() };

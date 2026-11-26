@@ -111,6 +111,46 @@
 .account-field-wide { grid-column: 1 / -1; }
 .account-profile-foot { display: flex; align-items: center; justify-content: space-between; padding: 0 18px; border-top: 1px solid var(--border-primary); background: var(--bg-secondary); }
 .account-profile-foot > div { display: flex; gap: 8px; }
+
+/* Device management lives inside the account center so access stays close to
+   the identity it authorizes.  The art is intentionally inline SVG in the
+   markup and inherits the Cloud Forge accent tokens here. */
+.account-device-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.account-device-head .icon-command { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid var(--border-primary); border-radius: 5px; }
+.account-device-head .icon-command svg { width: 16px; height: 16px; }
+.account-device-scroll { padding-top: 18px; }
+.account-device-hero { min-height: 106px; display: grid; grid-template-columns: 152px minmax(0, 1fr); align-items: center; gap: 20px; padding: 17px 18px; border: 1px solid color-mix(in srgb, var(--brand) 35%, var(--border-primary)); border-radius: 8px; background: linear-gradient(118deg, color-mix(in srgb, var(--brand) 13%, var(--bg-secondary)), var(--bg-secondary)); }
+.account-device-hero-art { height: 92px; display: grid; place-items: center; color: var(--brand-hover); }
+.account-device-hero-art svg { width: 146px; height: 86px; filter: drop-shadow(0 8px 15px color-mix(in srgb, var(--brand) 18%, transparent)); }
+.account-device-hero h3 { margin: 0; color: var(--text-primary); font-size: 14px; letter-spacing: 0; }
+.account-device-hero p { max-width: 470px; margin: 7px 0 0; color: var(--text-secondary); font-size: 11px; line-height: 1.55; }
+.account-device-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; }
+.account-device-actions > span { min-height: 16px; color: var(--text-muted); font-size: 10px; }
+.account-device-actions > span.error { color: var(--red); }
+.account-device-actions .ss-btn { display: inline-flex; align-items: center; gap: 7px; }
+.account-device-actions .ss-btn svg { width: 15px; height: 15px; }
+.account-devices-list { display: grid; gap: 8px; margin-top: 12px; }
+.account-device-row { min-width: 0; display: grid; grid-template-columns: 36px minmax(0,1fr) auto; align-items: center; gap: 11px; padding: 11px 12px; border: 1px solid var(--border-primary); border-radius: 7px; background: var(--bg-secondary); transition: border-color .15s ease, background .15s ease; }
+.account-device-row:hover { border-color: color-mix(in srgb, var(--brand) 52%, var(--border-primary)); background: color-mix(in srgb, var(--bg-hover) 80%, var(--brand) 20%); }
+.account-device-row.is-current { border-color: color-mix(in srgb, var(--green) 50%, var(--border-primary)); }
+.account-device-glyph { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--brand) 45%, var(--border-primary)); border-radius: 7px; color: var(--brand-hover); background: color-mix(in srgb, var(--brand) 10%, var(--bg-elevated)); }
+.account-device-glyph svg { width: 18px; height: 18px; }
+.account-device-copy { min-width: 0; }
+.account-device-name { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; color: var(--text-primary); font-size: 12px; font-weight: 650; }
+.account-device-name span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-device-current { padding: 2px 6px; border: 1px solid color-mix(in srgb, var(--green) 48%, var(--border-primary)); border-radius: 999px; color: var(--green); background: color-mix(in srgb, var(--green) 9%, transparent); font-size: 9px; font-weight: 700; }
+.account-device-meta { display: flex; flex-wrap: wrap; gap: 5px 10px; margin-top: 4px; color: var(--text-muted); font-size: 10px; }
+.account-device-meta span + span { padding-left: 10px; border-left: 1px solid var(--border-primary); }
+.account-device-row .device-revoke { min-height: 28px; padding: 0 8px; border: 1px solid var(--border-primary); border-radius: 5px; color: var(--text-secondary); background: transparent; font-size: 10px; }
+.account-device-row .device-revoke:hover { border-color: color-mix(in srgb, var(--red) 58%, var(--border-primary)); color: var(--red); }
+.account-device-empty { display: grid; justify-items: center; gap: 7px; padding: 34px 14px; border: 1px dashed var(--border-primary); border-radius: 7px; color: var(--text-muted); text-align: center; font-size: 11px; }
+.account-device-empty svg { width: 34px; height: 34px; color: var(--brand-hover); opacity: .8; }
+.account-device-invite { display: grid; gap: 8px; margin-top: 12px; padding: 12px; border: 1px solid color-mix(in srgb, var(--brand) 46%, var(--border-primary)); border-radius: 7px; background: color-mix(in srgb, var(--brand) 8%, var(--bg-secondary)); }
+.account-device-invite[hidden] { display: none; }
+.account-device-invite-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-primary); font-size: 11px; font-weight: 650; }
+.account-device-invite-head button { min-height: 24px; padding: 0 7px; border: 1px solid var(--border-primary); border-radius: 4px; color: var(--text-secondary); background: transparent; font-size: 10px; }
+.account-device-invite textarea { width: 100%; min-height: 52px; box-sizing: border-box; resize: vertical; padding: 7px; border: 1px solid var(--border-primary); border-radius: 5px; color: var(--text-secondary); background: var(--bg-primary); font: 10px/1.4 var(--font-mono); }
+.account-device-invite small { color: var(--text-muted); font-size: 10px; line-height: 1.4; }
 #profile-save-status { color: var(--text-muted); font-size: 10px; }
 #profile-save-status.error { color: var(--red); }
 .account-activity-summary { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); border: 1px solid var(--border-primary); border-radius: 7px; overflow: hidden; }
@@ -144,6 +184,24 @@
 .avatar-violet { background: #7357a6; }
 .avatar-graphite { background: #52606d; }
 .avatar-amber { background: #a66a18; }
+
+@media (max-width: 700px) {
+  .account-profile-shell { width: calc(100vw - 18px); height: calc(100vh - 18px); }
+  #profile-modal .account-profile-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0,1fr); }
+  #profile-modal .account-profile-sidebar { display: grid; grid-template-columns: 48px minmax(0,1fr); grid-template-rows: auto auto auto; justify-items: start; align-items: center; column-gap: 10px; padding: 12px 14px; border-right: 0; border-bottom: 1px solid var(--border-primary); }
+  .account-summary-avatar { width: 46px; height: 46px; grid-row: 1 / 4; font-size: 16px; }
+  .account-profile-sidebar > strong { margin-top: 0; }
+  .account-profile-sidebar > span:not(.account-role-badge), .account-profile-sidebar > code { margin-top: 0; }
+  .account-role-badge { grid-column: 2; grid-row: 4; margin-top: 0; }
+  .account-profile-nav { grid-column: 1 / -1; grid-row: 5; grid-template-columns: 1fr 1.3fr 1fr; gap: 4px; margin-top: 10px; padding-top: 10px; }
+  .account-profile-nav button { min-width: 0; justify-content: center; padding: 2px 4px; gap: 5px; font-size: 11px; line-height: 1.2; }
+  .account-profile-nav button span { white-space: normal; }
+  .account-device-hero { grid-template-columns: 86px minmax(0,1fr); gap: 12px; padding: 12px; }
+  .account-device-hero-art svg { width: 86px; }
+  .account-device-row { grid-template-columns: 32px minmax(0,1fr); }
+  .account-device-row .device-revoke { grid-column: 2; justify-self: start; }
+  .account-profile-foot { padding: 0 12px; }
+}
 
 .collab-sidebar [hidden] { display: none; }
 .collab-mode-tabs { flex: 0 0 auto; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 4px; padding: 6px 9px; border-bottom: 1px solid var(--border-primary); }

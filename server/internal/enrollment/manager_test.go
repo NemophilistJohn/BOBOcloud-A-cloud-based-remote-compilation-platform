@@ -119,3 +119,42 @@ func TestRootClaimAndModeSurviveRestart(t *testing.T) {
 		t.Fatal("root claim did not persist")
 	}
 }
+
+func TestListReportsExpiredAndRevokedEnrollmentStates(t *testing.T) {
+	m, _ := newTestManager(t)
+	expiredLink, expired, err := m.Create("device", "u1", "restricted", "", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired.ExpiresAt = time.Now().Add(-time.Minute)
+	m.mu.Lock()
+	m.state.Records[expired.ID] = expired
+	err = m.persist()
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokedLink, revoked, err := m.Create("device", "u1", "restricted", "", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Revoke(revoked.ID); err != nil {
+		t.Fatal(err)
+	}
+	states := make(map[string]string)
+	for _, record := range m.List() {
+		states[record.ID] = record.State
+	}
+	if states[expired.ID] != "expired" || states[revoked.ID] != "revoked" {
+		t.Fatalf("listed states = %#v", states)
+	}
+	if _, err := m.Inspect(tokenFromLink(t, expiredLink)); err == nil {
+		t.Fatal("expired link remained usable")
+	}
+	if _, err := m.Inspect(tokenFromLink(t, revokedLink)); err == nil {
+		t.Fatal("revoked link remained usable")
+	}
+	if err := m.Revoke(revoked.ID); err == nil {
+		t.Fatal("used status transition was revocable again")
+	}
+}

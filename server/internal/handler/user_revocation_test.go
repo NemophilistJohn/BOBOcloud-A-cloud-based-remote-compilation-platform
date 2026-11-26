@@ -2,11 +2,11 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"bobocloud-server/internal/auth"
@@ -157,31 +157,29 @@ func TestDeleteUserRevokesBoundWorkAndPendingRuns(t *testing.T) {
 	}
 }
 
-func TestRootPasswordChangeRemovesOneTimeBootstrapCredential(t *testing.T) {
+func TestRootPasswordChangeRemovesLegacyBootstrapCredential(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
-	cfg.RootUser.Username = "root"
-	cfg.RootUser.Password = ""
 	users := auth.NewMemoryUserStore()
-	root, err := rootbootstrap.Ensure(cfg, users)
-	if err != nil || root == nil {
-		t.Fatalf("root bootstrap: root=%v err=%v", root, err)
-	}
-	credentialPath := rootbootstrap.CredentialPath(cfg.DataDir)
-	data, err := os.ReadFile(credentialPath)
+	hash, err := auth.HashPassword("existing-root-password")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var credential struct {
-		Password string `json:"password"`
+	root := &auth.User{ID: "root", Username: "root", Role: auth.RoleRoot, PasswordHash: hash}
+	if err := users.Create(root); err != nil {
+		t.Fatal(err)
 	}
-	if err := json.Unmarshal(data, &credential); err != nil || credential.Password == "" {
-		t.Fatalf("decode bootstrap credential: password_set=%v err=%v", credential.Password != "", err)
+	credentialPath := rootbootstrap.CredentialPath(cfg.DataDir)
+	if err := os.MkdirAll(filepath.Dir(credentialPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credentialPath, []byte("legacy bootstrap data"), 0600); err != nil {
+		t.Fatal(err)
 	}
 	handler := &HTTPHandler{Config: cfg, UserStore: users, authEnabled: true}
 	recorder := httptest.NewRecorder()
 	handler.handleChangePassword(recorder, accountRequest(root), &model.Request{
-		OldPassword: credential.Password, NewPassword: "changed-root-password",
+		OldPassword: "existing-root-password", NewPassword: "changed-root-password",
 	})
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())

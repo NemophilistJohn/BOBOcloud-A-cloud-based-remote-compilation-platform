@@ -86,7 +86,8 @@ func ValidatePassword(password string) error {
 	return nil
 }
 
-// GeneratePassword creates a bootstrap password with 96 bits of entropy.
+// GeneratePassword creates a temporary password for explicit administrator-initiated resets.
+// Root account initialization uses a claim link and never calls this helper.
 func GeneratePassword() (string, error) {
 	b, err := randomBytes(12)
 	if err != nil {

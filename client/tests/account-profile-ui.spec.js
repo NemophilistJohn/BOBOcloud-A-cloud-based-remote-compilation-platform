@@ -66,6 +66,14 @@ test('account center previews profile drafts and renders a stable 53 week activi
           { date: iso(0), count: 9 }, { date: iso(-1), count: 4 }, { date: iso(-29), count: 2 }, { date: iso(-45), count: 1 }
         ] } };
         if (action === 'updateProfile') return { success: false, error: 'Mock save failure' };
+        if (action === 'listDevices') return { success: true, data: { devices: [
+          { id: 'device-current', label: 'Studio PC', platform: 'Windows', createdAt: iso(-12), lastSeenAt: iso(0), current: true },
+          { id: 'device-old', label: 'Travel laptop', platform: 'macOS', createdAt: iso(-30), expiresAt: iso(30), current: false }
+        ] } };
+        if (action === 'createDeviceEnrollment') return { success: true, data: {
+          link: 'https://cloud.example/enroll/device/test-link', expiresAt: iso(1)
+        } };
+        if (action === 'revokeDevice') return { success: true };
         return { success: true };
       };
       window.BOBO.accountProfile.open('profile');
@@ -78,6 +86,18 @@ test('account center previews profile drafts and renders a stable 53 week activi
     await page.locator('[data-avatar="coral"]').click();
     await expect(page.locator('#account-summary-name')).toHaveText('Unsaved Builder');
     await expect(page.locator('#account-summary-avatar')).toHaveClass(/avatar-coral/);
+
+    await page.locator('[data-account-tab="devices"]').click();
+    await expect(page.locator('.account-device-row')).toHaveCount(2);
+    await expect(page.locator('.account-device-current')).toHaveText('This device');
+    await expect(page.locator('.device-revoke')).toHaveCount(1);
+    await page.locator('#profile-add-device').click();
+    await expect(page.locator('#profile-device-link')).toHaveValue('https://cloud.example/enroll/device/test-link');
+    await expect(page.locator('#account-device-invite')).toContainText('This link expires');
+    await page.locator('.device-revoke').click();
+    await expect(page.locator('#confirm-dialog')).toHaveClass(/open/);
+    await page.locator('#confirm-dialog .confirm-btn-danger').click();
+    await expect(page.locator('.account-device-row')).toHaveCount(1);
 
     await page.locator('[data-account-tab="activity"]').click();
     await expect(page.locator('.account-heatmap-cell')).toHaveCount(371);
@@ -124,6 +144,21 @@ test('account center previews profile drafts and renders a stable 53 week activi
     });
     expect(compactGeometry).toEqual({ shellInside: true, footerInside: true, pageOverflow: false, heatmapOwnsOverflow: true });
     await page.screenshot({ path: path.join(process.cwd(), 'test-results', 'account-profile-ui-compact.png') });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('[data-account-tab="devices"]').click();
+    const phoneGeometry = await page.evaluate(() => {
+      const shell = document.querySelector('.account-profile-shell').getBoundingClientRect();
+      const sidebar = document.querySelector('.account-profile-sidebar').getBoundingClientRect();
+      const pane = document.querySelector('[data-account-pane="devices"]').getBoundingClientRect();
+      const tabs = Array.from(document.querySelectorAll('[data-account-tab]'));
+      return {
+        shellInside: shell.left >= 0 && shell.top >= 0 && shell.right <= innerWidth + 1 && shell.bottom <= innerHeight + 1,
+        contentBelowNavigation: pane.top >= sidebar.bottom - 1,
+        tabsInsideSidebar: tabs.every(tab => tab.getBoundingClientRect().left >= sidebar.left - 1 && tab.getBoundingClientRect().right <= sidebar.right + 1),
+        pageOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1
+      };
+    });
+    expect(phoneGeometry).toEqual({ shellInside: true, contentBelowNavigation: true, tabsInsideSidebar: true, pageOverflow: false });
     await page.keyboard.press('Escape');
     await expect(page.locator('#confirm-dialog')).toHaveClass(/open/);
     await page.locator('#confirm-dialog .confirm-btn-ghost').click();

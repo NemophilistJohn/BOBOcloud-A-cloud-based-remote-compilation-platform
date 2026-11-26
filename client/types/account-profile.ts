@@ -45,10 +45,29 @@ export interface AccountProfileActivityDataWireDto {
   readonly [key: string]: unknown;
 }
 
+export interface AccountProfileDeviceWireDto {
+  readonly id?: unknown;
+  readonly deviceId?: unknown;
+  readonly name?: unknown;
+  readonly label?: unknown;
+  readonly platform?: unknown;
+  readonly browser?: unknown;
+  readonly userAgent?: unknown;
+  readonly ip?: unknown;
+  readonly createdAt?: unknown;
+  readonly lastSeenAt?: unknown;
+  readonly current?: unknown;
+  readonly revoked?: unknown;
+  readonly [key: string]: unknown;
+}
+
 export interface AccountProfileResponseWireDto {
   readonly success?: unknown;
   readonly error?: unknown;
   readonly data?: AccountProfileActivityDataWireDto | null;
+  readonly devices?: readonly AccountProfileDeviceWireDto[] | null;
+  readonly link?: unknown;
+  readonly expiresAt?: unknown;
   readonly user?: AccountProfileUserDto | null;
   readonly [key: string]: unknown;
 }
@@ -56,11 +75,17 @@ export interface AccountProfileResponseWireDto {
 export interface AccountProfileServerRequestMap {
   readonly getCompileActivity: Record<string, never>;
   readonly updateProfile: Readonly<{ name: string; avatar: string }>;
+  readonly listDevices: Record<string, never>;
+  readonly createDeviceEnrollment: Record<string, never>;
+  readonly revokeDevice: Readonly<{ deviceId: string }>;
 }
 
 export interface AccountProfileServerResponseMap {
   readonly getCompileActivity: AccountProfileResponseWireDto;
   readonly updateProfile: AccountProfileResponseWireDto;
+  readonly listDevices: AccountProfileResponseWireDto;
+  readonly createDeviceEnrollment: AccountProfileResponseWireDto;
+  readonly revokeDevice: AccountProfileResponseWireDto;
 }
 
 export type AccountProfileServerActionDto = keyof AccountProfileServerRequestMap;

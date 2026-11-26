@@ -288,7 +288,11 @@ func (m *Manager) List() []Record {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]Record, 0, len(m.state.Records))
+	now := time.Now()
 	for _, rec := range m.state.Records {
+		if rec.State == "available" && !now.Before(rec.ExpiresAt) {
+			rec.State = "expired"
+		}
 		out = append(out, rec)
 	}
 	return out
@@ -304,9 +308,14 @@ func (m *Manager) Revoke(id string) error {
 	if !ok {
 		return errors.New("enrollment not found")
 	}
-	delete(m.state.Records, id)
+	if old.State != "available" || !time.Now().Before(old.ExpiresAt) {
+		return errors.New("enrollment is no longer available")
+	}
+	original := old
+	old.State = "revoked"
+	m.state.Records[id] = old
 	if err := m.persist(); err != nil {
-		m.state.Records[id] = old
+		m.state.Records[id] = original
 		return err
 	}
 	return nil

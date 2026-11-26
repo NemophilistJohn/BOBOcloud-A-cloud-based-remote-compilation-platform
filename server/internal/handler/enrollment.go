@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"sort"
 	"time"
 
 	"bobocloud-server/internal/auth"
@@ -33,7 +34,15 @@ func (h *HTTPHandler) handleInspectEnrollment(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Invalid or expired enrollment"})
 		return
 	}
-	writeJSON(w, http.StatusOK, model.Response{Success: true, Data: map[string]any{"kind": record.Kind, "syncMode": record.SyncMode, "expiresAt": record.ExpiresAt, "version": h.Version}})
+	requiresPasswordSetup := false
+	if record.Kind == "root" {
+		user, getErr := h.UserStore.Get(record.TargetUserID)
+		requiresPasswordSetup = getErr == nil && user.EffectiveRole() == auth.RoleRoot && user.PasswordHash == ""
+	}
+	writeJSON(w, http.StatusOK, model.Response{Success: true, Data: map[string]any{
+		"kind": record.Kind, "syncMode": record.SyncMode, "expiresAt": record.ExpiresAt,
+		"requiresPasswordSetup": requiresPasswordSetup, "version": h.Version,
+	}})
 }
 
 func (h *HTTPHandler) syncCredential(user *auth.User, session string) any {
@@ -65,6 +74,54 @@ func (h *HTTPHandler) handleEnrollment(w http.ResponseWriter, r *http.Request, r
 	}
 	session, _ := r.Context().Value(contextKeySessionToken).(string)
 	switch req.Action {
+	case "listDevices":
+		if session == "" || h.AuthSessions == nil {
+			writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "A user session is required"})
+			return
+		}
+		items, err := h.AuthSessions.ListByUser(user.ID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Could not load authorized devices"})
+			return
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].Token == session {
+				return true
+			}
+			if items[j].Token == session {
+				return false
+			}
+			return items[i].LastSeenAt.After(items[j].LastSeenAt)
+		})
+		devices := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			name := item.DeviceName
+			if name == "" {
+				name = "BOBOCLOUD desktop"
+			}
+			devices = append(devices, map[string]any{
+				"id": item.ID, "deviceId": item.ID, "name": name,
+				"platform": item.DevicePlatform, "createdAt": item.CreatedAt,
+				"lastSeenAt": item.LastSeenAt, "expiresAt": item.ExpiresAt,
+				"current": item.Token == session,
+			})
+		}
+		writeJSON(w, http.StatusOK, model.Response{Success: true, Data: map[string]any{"devices": devices}})
+	case "revokeDevice":
+		if session == "" || h.AuthSessions == nil {
+			writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "A user session is required"})
+			return
+		}
+		if req.DeviceID == "" || len(req.DeviceID) > 128 {
+			writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Device ID is required"})
+			return
+		}
+		if err := h.AuthSessions.RevokeDevice(user.ID, req.DeviceID, session); err != nil {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
+			return
+		}
+		h.auditEvent(r, user.ID, user.Username, "revokeDevice", req.DeviceID, "", true)
+		writeJSON(w, http.StatusOK, model.Response{Success: true})
 	case "getSyncCredential":
 		credential := h.syncCredential(user, session)
 		if credential == nil {

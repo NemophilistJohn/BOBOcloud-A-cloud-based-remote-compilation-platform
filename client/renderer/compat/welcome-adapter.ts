@@ -10,7 +10,7 @@ declare module '../../types/renderer-platform' {
 // Host-only compatibility projection. Plugins receive no enrollment bridge.
 type HostWindow = Window & { BOBO: {
   i18n: I18nService; state: { serverSettings: Record<string, unknown> };
-  auth: { openEnrollment(kind: string, id: string): void };
+  auth: { openEnrollment(kind: string, id: string, requiresPasswordSetup?: boolean): void };
   workspace: { canLeaveWorkspace(options: Record<string, unknown>): Promise<boolean>; closeWorkspace(options: Record<string, unknown>): Promise<unknown> };
   welcome?: ReturnType<typeof createWelcome>;
   enrollmentHost?: Readonly<Pick<EnrollmentHostPort, 'enrollmentAuthenticate' | 'enrollmentLogin' | 'enrollmentRefreshSync' | 'readServerSettings'>>;
@@ -30,7 +30,7 @@ const service = createWelcome({ document, host: enrollmentHost, t: (key, params)
     await host.BOBO.workspace.closeWorkspace({ approved: true, reason: 'server-change' }); return true;
   },
   applySettings: value => { host.BOBO.state.serverSettings = value; },
-  authenticate: (kind,id) => host.BOBO.auth.openEnrollment(kind,id),
+  authenticate: (kind,id,requiresPasswordSetup) => host.BOBO.auth.openEnrollment(kind,id,requiresPasswordSetup),
   completeLocal: async () => {
     const settings = Object.assign({},host.BOBO.state.serverSettings,{setupCompleted:true,firstRunRequired:false});
     await enrollmentHost.writeServerSettings(settings); await enrollmentHost.commitServerSettings(); host.BOBO.state.serverSettings=settings;

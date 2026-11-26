@@ -1,112 +1,71 @@
 package rootbootstrap
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"bobocloud-server/internal/auth"
 	"bobocloud-server/internal/config"
 )
 
-func TestEnsurePersistsAndReusesGeneratedCredential(t *testing.T) {
+func TestEnsureCreatesUnclaimedRootWithoutPasswordFile(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	cfg.RootUser.Username = "root"
+	cfg.RootUser.Password = "legacy-config-value"
 	store := auth.NewMemoryUserStore()
+
 	created, err := Ensure(cfg, store)
 	if err != nil || created == nil {
 		t.Fatalf("Ensure() created=%v err=%v", created, err)
 	}
-	credential, err := readCredentials(cfg.DataDir, "root")
-	if err != nil || !auth.CheckPassword(created.PasswordHash, credential.Password) {
-		t.Fatalf("credential does not unlock root: err=%v", err)
+	if created.PasswordHash != "" {
+		t.Fatal("new root account must wait for claim-link password setup")
 	}
-	info, err := os.Stat(CredentialPath(cfg.DataDir))
-	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
-		t.Fatalf("credential info=%v err=%v", info, err)
+	if _, err := os.Stat(CredentialPath(cfg.DataDir)); !os.IsNotExist(err) {
+		t.Fatalf("generated root password file exists: %v", err)
 	}
 	if repeated, err := Ensure(cfg, store); err != nil || repeated != nil {
 		t.Fatalf("repeated Ensure()=%v err=%v", repeated, err)
 	}
 }
 
-func TestReadCredentialsRejectsUnsafeFiles(t *testing.T) {
-	writeCredential := func(t *testing.T, mode os.FileMode, data []byte) string {
-		t.Helper()
-		dataDir := t.TempDir()
-		if err := os.Mkdir(filepath.Join(dataDir, "bootstrap"), 0700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(CredentialPath(dataDir), data, mode); err != nil {
-			t.Fatal(err)
-		}
-		return dataDir
-	}
-	valid, err := json.Marshal(credentials{Username: "root", Password: "secret"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Run("oversized", func(t *testing.T) {
-		dataDir := writeCredential(t, 0600, make([]byte, 4097))
-		if _, err := readCredentials(dataDir, "root"); err == nil {
-			t.Fatal("oversized credential file was accepted")
-		}
-	})
-	t.Run("corrupt", func(t *testing.T) {
-		dataDir := writeCredential(t, 0600, []byte("not-json"))
-		if _, err := readCredentials(dataDir, "root"); err == nil {
-			t.Fatal("corrupt credential file was accepted")
-		}
-	})
-	if runtime.GOOS != "windows" {
-		t.Run("wide permissions", func(t *testing.T) {
-			dataDir := writeCredential(t, 0644, valid)
-			if _, err := readCredentials(dataDir, "root"); err == nil {
-				t.Fatal("widely readable credential file was accepted")
-			}
-		})
-	}
-	t.Run("symbolic file", func(t *testing.T) {
-		dataDir := t.TempDir()
-		if err := os.Mkdir(filepath.Join(dataDir, "bootstrap"), 0700); err != nil {
-			t.Fatal(err)
-		}
-		outside := filepath.Join(t.TempDir(), "outside.json")
-		if err := os.WriteFile(outside, valid, 0600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(outside, CredentialPath(dataDir)); err != nil {
-			if runtime.GOOS == "windows" {
-				t.Skipf("symlink unavailable: %v", err)
-			}
-			t.Fatal(err)
-		}
-		if _, err := readCredentials(dataDir, "root"); err == nil {
-			t.Fatal("symbolic credential file was accepted")
-		}
-	})
-}
-
-func TestConfiguredPasswordDoesNotRewriteEquivalentHash(t *testing.T) {
+func TestEnsurePreservesExistingRootPassword(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	cfg.RootUser.Username = "root"
-	cfg.RootUser.Password = "configured-password"
+	cfg.RootUser.Password = "replacement-from-config"
 	store := auth.NewMemoryUserStore()
-	created, err := Ensure(cfg, store)
+	hash, err := auth.HashPassword("existing-password")
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := created.PasswordHash
-	if _, err := Ensure(cfg, store); err != nil {
+	if err := store.Create(&auth.User{ID: "root", Username: "root", Role: auth.RoleRoot, PasswordHash: hash}); err != nil {
 		t.Fatal(err)
 	}
-	after, err := store.Get("root")
-	if err != nil || after.PasswordHash != before {
-		t.Fatalf("equivalent password was rehashed: err=%v", err)
+
+	if created, err := Ensure(cfg, store); err != nil || created != nil {
+		t.Fatalf("Ensure() created=%v err=%v", created, err)
+	}
+	stored, err := store.Get("root")
+	if err != nil || stored.PasswordHash != hash || !auth.CheckPassword(stored.PasswordHash, "existing-password") {
+		t.Fatalf("existing password changed: err=%v", err)
+	}
+}
+
+func TestRemoveLegacyCredentialFile(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(CredentialPath(dataDir)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(CredentialPath(dataDir), []byte("legacy"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveCredentialFile(dataDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(CredentialPath(dataDir)); !os.IsNotExist(err) {
+		t.Fatalf("legacy credential file remains: %v", err)
 	}
 }

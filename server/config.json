@@ -281,7 +281,7 @@
     "name": "Root Admin",
     "password": ""
   },
-  "_root_user": "多人模式的 root 管理员（全系统唯一，不可禁用/删除）。password 非空时为声明式密码。password 留空时首次启动生成高强度密码并写入 data_dir/bootstrap/root-credentials.json（目录 0700、文件 0600），日志只记录文件路径；root 修改密码后该一次性文件自动删除。也可用 BOBOCLOUD_ROOT_PASSWORD 注入强密码。",
+  "_root_user": "多人模式的 root 管理员（全系统唯一，不可禁用/删除）。新安装通过一次性 admin-claim.link 设置密码；已有账号升级时保留数据库中的密码。password 字段仅为旧配置兼容保留，不再生成随机密码或覆盖已存在的密码。",
   "session_token_ttl_hours": 720,
   "_session_token_ttl_hours": "登录会话 token 有效期（小时），默认 720=30 天。客户端本地保存该 token，有效期内免登录；活跃用户自动滑动续期。",
   "invite_ttl_hours": 168,

@@ -366,6 +366,9 @@ func (h *HTTPHandler) authenticate(r *http.Request) (*auth.User, string, error) 
 				if user.Disabled {
 					return nil, "", fmt.Errorf("account disabled")
 				}
+				if h.Enrollment != nil && h.Enrollment.RootClaimRequired(user.ID) {
+					return nil, "", fmt.Errorf("administrator enrollment is required")
+				}
 				return user, token, nil
 			}
 			// 会话存在但用户已被删除 → 作废会话，按无效凭证处理
@@ -378,6 +381,9 @@ func (h *HTTPHandler) authenticate(r *http.Request) (*auth.User, string, error) 
 		if user, err := h.authenticator.Validate(authHeader); err == nil {
 			if user.Disabled {
 				return nil, "", fmt.Errorf("account disabled")
+			}
+			if h.Enrollment != nil && h.Enrollment.RootClaimRequired(user.ID) {
+				return nil, "", fmt.Errorf("administrator enrollment is required")
 			}
 			return user, "", nil
 		}
@@ -473,7 +479,7 @@ func (h *HTTPHandler) routeRequest(w http.ResponseWriter, r *http.Request, req *
 		writeJSON(w, http.StatusGone, model.Response{Success: false, Error: "Invite codes have been replaced by enrollment links"})
 	case "revokeInvite":
 		writeJSON(w, http.StatusGone, model.Response{Success: false, Error: "Invite codes have been replaced by enrollment links"})
-	case "createEnrollment", "createDeviceEnrollment", "listEnrollments", "revokeEnrollment", "getSyncCredential":
+	case "createEnrollment", "createDeviceEnrollment", "listEnrollments", "revokeEnrollment", "getSyncCredential", "listDevices", "revokeDevice":
 		h.handleEnrollment(w, r, req)
 	case "listUsers":
 		h.handleListUsers(w, r)

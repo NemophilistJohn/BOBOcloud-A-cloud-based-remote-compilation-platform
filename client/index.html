@@ -1056,6 +1056,20 @@
           </div>
         </div>
 
+        <div id="auth-form-root-setup" style="display:none">
+          <p class="auth-notice-copy" data-i18n="enrollment.auth.rootSetupHelp">Set a password for the server administrator account.</p>
+          <div class="form-stack">
+            <div class="auth-field">
+              <input id="auth-root-password" type="password" placeholder="Password (at least 6 chars)" autocomplete="new-password">
+              <svg class="auth-field-icon" viewBox="0 0 16 16" fill="none"><rect x="3" y="7" width="10" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7V5.5a2.5 2.5 0 0 1 5 0V7" stroke="currentColor" stroke-width="1.4"/></svg>
+            </div>
+            <div class="auth-field">
+              <input id="auth-root-password2" type="password" placeholder="Confirm password" autocomplete="new-password">
+              <svg class="auth-field-icon" viewBox="0 0 16 16" fill="none"><rect x="3" y="7" width="10" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7V5.5a2.5 2.5 0 0 1 5 0V7" stroke="currentColor" stroke-width="1.4"/><path d="M6.8 10.2l1 1 1.8-2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+          </div>
+        </div>
+
         <!-- 注册表单 -->
         <div id="auth-form-register" style="display:none">
           <div class="form-stack">
@@ -1100,15 +1114,11 @@
     </div>
     <div class="auth-menu-item" id="auth-menu-profile">
       <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="5.2" r="2.6" stroke="currentColor" stroke-width="1.3"/><path d="M2.8 13.5c.2-2.6 2.2-4 5.2-4s5 1.4 5.2 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-      Profile
+      <span data-i18n="Personal center">Personal center</span>
     </div>
     <div class="auth-menu-item" id="auth-menu-teams">
       <svg viewBox="0 0 16 16" fill="none"><circle cx="5.2" cy="5.2" r="2.2" stroke="currentColor" stroke-width="1.3"/><circle cx="11.5" cy="6" r="1.7" stroke="currentColor" stroke-width="1.2"/><path d="M1.8 13c.2-2.4 1.8-3.7 3.8-3.7s3.6 1.3 3.8 3.7M9 10.2c2-.8 4.6.1 4.9 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
       Team workspace
-    </div>
-    <div class="auth-menu-item" id="auth-menu-add-device">
-      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="2.5" width="12" height="9" rx="1.4" stroke="currentColor" stroke-width="1.4"/><path d="M5 14h6M8 11.5V14M8 4.5v5M5.5 7h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-      <span data-i18n="enrollment.auth.addDevice">Add device</span>
     </div>
     <div class="auth-menu-item" id="auth-menu-admin" style="display:none">
       <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.8v1.8M8 12.4v1.8M1.8 8h1.8M12.4 8h1.8M3.6 3.6l1.3 1.3M11.1 11.1l1.3 1.3M12.4 3.6l-1.3 1.3M4.9 11.1l-1.3 1.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
@@ -1120,14 +1130,7 @@
     </div>
   </div>
 
-  <div id="auth-device-modal" class="collab-overlay" role="dialog" aria-modal="true" aria-labelledby="auth-device-title">
-    <div class="admin-dialog-card">
-      <div class="ss-head"><div class="ss-title" id="auth-device-title" data-i18n="enrollment.auth.addDevice">Add device</div><button id="auth-device-close" class="close-btn" type="button" aria-label="Close">&times;</button></div>
-      <div class="admin-body" id="auth-device-content"></div>
-    </div>
-  </div>
-
-  <!-- Account profile: identity, avatar and compile activity -->
+  <!-- Account center: identity, devices and compile activity -->
   <div id="profile-modal" class="collab-overlay" role="dialog" aria-modal="true" aria-labelledby="account-profile-title" tabindex="-1">
     <div class="profile-card account-profile-shell">
       <header class="account-profile-head">
@@ -1135,7 +1138,7 @@
           <div class="account-profile-mark" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.6"/><path d="M4.5 20c.4-4.1 3.2-6.3 7.5-6.3s7.1 2.2 7.5 6.3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
           </div>
-          <div><h1 id="account-profile-title">Personal profile</h1><p>Your identity and cloud compile activity</p></div>
+          <div><h1 id="account-profile-title" data-i18n="Personal center">Personal center</h1><p data-i18n="Your identity, devices and cloud compile activity">Your identity, devices and cloud compile activity</p></div>
         </div>
         <button id="profile-close-x" class="close-btn" type="button" title="Close" aria-label="Close">&times;</button>
       </header>
@@ -1146,62 +1149,91 @@
           <span id="account-summary-username"></span>
           <code id="account-summary-uid"></code>
           <span id="account-summary-role" class="account-role-badge"></span>
-          <nav class="account-profile-nav" aria-label="Account sections">
-            <button class="active" type="button" data-account-tab="profile">
+          <nav class="account-profile-nav" aria-label="Account sections" role="tablist">
+            <button id="account-tab-profile" class="active" type="button" role="tab" aria-controls="account-pane-profile" data-account-tab="profile">
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="8" r="3.5" stroke="currentColor" stroke-width="1.6"/><path d="M5 20c.4-4 3-6 7-6s6.6 2 7 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-              <span>Profile</span>
+              <span data-i18n="Profile">Profile</span>
             </button>
-            <button type="button" data-account-tab="activity">
+            <button id="account-tab-devices" type="button" role="tab" aria-controls="account-pane-devices" data-account-tab="devices">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="3" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M8 20h8M12 15v5M8 8h8M8 11h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              <span data-i18n="Device management">Device management</span>
+            </button>
+            <button id="account-tab-activity" type="button" role="tab" aria-controls="account-pane-activity" data-account-tab="activity">
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 19V9m5 10V5m6 14v-7m5 7V3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-              <span>Activity</span>
+              <span data-i18n="Activity">Activity</span>
             </button>
           </nav>
         </aside>
         <main class="account-profile-main">
-          <section class="account-profile-pane active" data-account-pane="profile">
-            <header class="account-pane-head"><h2>Profile details</h2><p>Update how teammates identify you.</p></header>
+          <section id="account-pane-profile" class="account-profile-pane active" role="tabpanel" aria-labelledby="account-tab-profile" data-account-pane="profile">
+            <header class="account-pane-head"><h2 data-i18n="Profile details">Profile details</h2><p data-i18n="Update how teammates identify you.">Update how teammates identify you.</p></header>
             <div class="account-pane-scroll">
               <div class="account-avatar-editor">
                 <div id="profile-avatar-preview" class="profile-avatar-preview"></div>
-                <div><h3>Avatar</h3><p>Choose a preset or upload an image.</p>
+                <div><h3 data-i18n="Avatar">Avatar</h3><p data-i18n="Choose a preset or upload an image.">Choose a preset or upload an image.</p>
                   <button id="profile-avatar-upload" class="ss-btn ss-btn-ghost" type="button">
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 15v4a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                    <span>Upload image</span>
+                    <span data-i18n="Upload image">Upload image</span>
                   </button>
                   <input id="profile-avatar-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
                 </div>
               </div>
               <div id="profile-avatar-options" class="avatar-options account-avatar-options"></div>
               <div class="account-info-grid">
-                <label class="account-field account-field-wide"><span>Display name</span><input id="profile-name" class="ss-input" maxlength="80"></label>
-                <div class="account-readonly-field"><span>Username</span><strong id="account-info-username"></strong></div>
-                <div class="account-readonly-field"><span>Email</span><strong id="account-info-email"></strong></div>
-                <div class="account-readonly-field"><span>Member since</span><strong id="account-info-created"></strong></div>
-                <div class="account-readonly-field account-field-wide"><span>Permanent user ID</span><div class="profile-uid-row"><code id="profile-uid"></code><button id="profile-copy-uid" class="icon-command" type="button" title="Copy user ID" aria-label="Copy user ID">&#10697;</button></div></div>
+                <label class="account-field account-field-wide"><span data-i18n="Display name">Display name</span><input id="profile-name" class="ss-input" maxlength="80"></label>
+                <div class="account-readonly-field"><span data-i18n="Username">Username</span><strong id="account-info-username"></strong></div>
+                <div class="account-readonly-field"><span data-i18n="Email">Email</span><strong id="account-info-email"></strong></div>
+                <div class="account-readonly-field"><span data-i18n="Member since">Member since</span><strong id="account-info-created"></strong></div>
+                <div class="account-readonly-field account-field-wide"><span data-i18n="Permanent user ID">Permanent user ID</span><div class="profile-uid-row"><code id="profile-uid"></code><button id="profile-copy-uid" class="icon-command" type="button" title="Copy user ID" aria-label="Copy user ID">&#10697;</button></div></div>
               </div>
             </div>
           </section>
-          <section class="account-profile-pane" data-account-pane="activity">
-            <header class="account-pane-head"><h2>Compile activity</h2><p>Accepted cloud compile requests, aggregated daily in UTC.</p></header>
+          <section id="account-pane-devices" class="account-profile-pane" role="tabpanel" aria-labelledby="account-tab-devices" data-account-pane="devices">
+            <header class="account-pane-head account-device-head"><div><h2 data-i18n="Device management">Device management</h2><p data-i18n="Manage trusted devices and authorize a new sign-in.">Manage trusted devices and authorize a new sign-in.</p></div><button id="profile-refresh-devices" class="icon-command" type="button" title="Refresh devices" aria-label="Refresh devices"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.8-4L3 10m0 0V5m0 5h5M4 13a8 8 0 0 0 14.8 4L21 14m0 0v5m0-5h-5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button></header>
+            <div class="account-pane-scroll account-device-scroll">
+              <div class="account-device-hero"><div class="account-device-hero-art" aria-hidden="true"><svg viewBox="0 0 160 92" fill="none"><rect x="38" y="12" width="84" height="57" rx="7" stroke="currentColor" stroke-width="2"/><path d="M53 80h54M68 69v11m24-11v11M52 30h56M52 42h32" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="107" cy="43" r="12" fill="var(--bg-secondary)" stroke="currentColor" stroke-width="2"/><path d="m102 43 3.5 3.5L112 40" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div><h3 data-i18n="Your trusted devices">Your trusted devices</h3><p data-i18n="Review access, remove old devices, or create a secure sign-in link for another device.">Review access, remove old devices, or create a secure sign-in link for another device.</p></div></div>
+              <div class="account-device-actions"><span id="account-devices-status" role="status"></span><button id="profile-add-device" class="ss-btn ss-btn-primary" type="button"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="3" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M8 20h8M12 15v5M12 7v4m-2-2h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span data-i18n="Add device">Add device</span></button></div>
+              <div id="account-device-invite" class="account-device-invite" hidden>
+                <div class="account-device-invite-head"><label for="profile-device-link" data-i18n="Device sign-in link">Device sign-in link</label><button type="button" id="profile-copy-device-link" data-i18n="Copy link">Copy link</button></div>
+                <textarea id="profile-device-link" readonly spellcheck="false"></textarea>
+                <small id="account-device-invite-expiry"></small>
+              </div>
+              <div id="account-devices-list" class="account-devices-list" aria-live="polite"></div>
+              <template id="account-device-row-template">
+                <article class="account-device-row">
+                  <div class="account-device-glyph" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="4" y="3" width="16" height="12" rx="2"/><path d="M8 20h8M12 15v5"/></svg>
+                  </div>
+                  <div class="account-device-copy">
+                    <div class="account-device-name"><span data-device-name data-i18n-skip></span><span class="account-device-current" data-i18n="This device">This device</span></div>
+                    <div class="account-device-meta" data-i18n-skip></div>
+                  </div>
+                  <button type="button" class="device-revoke" data-i18n="Revoke">Revoke</button>
+                </article>
+              </template>
+            </div>
+          </section>
+          <section id="account-pane-activity" class="account-profile-pane" role="tabpanel" aria-labelledby="account-tab-activity" data-account-pane="activity">
+            <header class="account-pane-head"><h2 data-i18n="Compile activity">Compile activity</h2><p data-i18n="Accepted cloud compile requests, aggregated daily in UTC.">Accepted cloud compile requests, aggregated daily in UTC.</p></header>
             <div class="account-pane-scroll">
               <div class="account-activity-summary">
-                <div><strong id="account-activity-today">0</strong><span>Today</span></div>
-                <div><strong id="account-activity-month">0</strong><span>Last 30 days</span></div>
-                <div><strong id="account-activity-days">0</strong><span>Active days</span></div>
+                <div><strong id="account-activity-today">0</strong><span data-i18n="Today">Today</span></div>
+                <div><strong id="account-activity-month">0</strong><span data-i18n="Last 30 days">Last 30 days</span></div>
+                <div><strong id="account-activity-days">0</strong><span data-i18n="Active days">Active days</span></div>
               </div>
               <div class="account-heatmap-region">
-                <div class="account-heatmap-toolbar"><span id="account-activity-range">UTC dates · one square per day</span><span id="account-activity-status" role="status"></span></div>
+                <div class="account-heatmap-toolbar"><span id="account-activity-range" data-i18n="UTC dates · one square per day">UTC dates · one square per day</span><span id="account-activity-status" role="status"></span></div>
                 <div class="account-heatmap-scroll">
                   <div id="account-heatmap-months" class="account-heatmap-months" aria-hidden="true"></div>
-                  <div class="account-heatmap-row"><div class="account-heatmap-weekdays" aria-hidden="true"><span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span></div><div id="account-heatmap" class="account-heatmap" role="grid" aria-label="Compile activity"></div></div>
+                  <div class="account-heatmap-row"><div class="account-heatmap-weekdays" aria-hidden="true"><span></span><span data-i18n="Mon">Mon</span><span></span><span data-i18n="Wed">Wed</span><span></span><span data-i18n="Fri">Fri</span><span></span></div><div id="account-heatmap" class="account-heatmap" role="grid" aria-label="Compile activity"></div></div>
                 </div>
-                <div class="account-heatmap-legend"><span>Less</span><i data-level="0"></i><i data-level="1"></i><i data-level="2"></i><i data-level="3"></i><i data-level="4"></i><span>More</span></div>
+                <div class="account-heatmap-legend"><span data-i18n="Less">Less</span><i data-level="0"></i><i data-level="1"></i><i data-level="2"></i><i data-level="3"></i><i data-level="4"></i><span data-i18n="More">More</span></div>
               </div>
             </div>
           </section>
         </main>
       </div>
-      <footer class="account-profile-foot"><span id="profile-save-status" role="status"></span><div><button id="profile-cancel" class="ss-btn ss-btn-ghost" type="button">Cancel</button><button id="profile-save" class="ss-btn ss-btn-primary" type="button">Save changes</button></div></footer>
+      <footer class="account-profile-foot"><span id="profile-save-status" role="status"></span><div><button id="profile-cancel" class="ss-btn ss-btn-ghost" type="button" data-i18n="Cancel">Cancel</button><button id="profile-save" class="ss-btn ss-btn-primary" type="button" data-i18n="Save changes">Save changes</button></div></footer>
     </div>
   </div>
 

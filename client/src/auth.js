@@ -68,9 +68,22 @@
   var currentTab = 'login';
   // Only an opaque main-owned preview id reaches the renderer.
   var pendingEnrollment = null;
+  var rootPasswordSetup = false;
 
   function switchTab(tab) {
     currentTab = tab;
+    if (rootPasswordSetup) {
+      $('auth-tab-login').classList.remove('active');
+      $('auth-tab-register').classList.remove('active');
+      $('auth-form-login').style.display = 'none';
+      $('auth-form-register').style.display = 'none';
+      $('auth-form-root-setup').style.display = '';
+      $('auth-submit').textContent = t('enrollment.auth.setRootPassword');
+      clearMessages();
+      setTimeout(function() { $('auth-root-password').focus(); }, 60);
+      return;
+    }
+    $('auth-form-root-setup').style.display = 'none';
     $('auth-tab-login').classList.toggle('active', tab === 'login');
     $('auth-tab-register').classList.toggle('active', tab === 'register');
     $('auth-form-login').style.display = tab === 'login' ? '' : 'none';
@@ -92,6 +105,8 @@
     $('auth-reg-email').value = '';
     $('auth-reg-password').value = '';
     $('auth-reg-password2').value = '';
+    $('auth-root-password').value = '';
+    $('auth-root-password2').value = '';
   }
   function showError(msg) {
     hide($('auth-notice'));
@@ -118,6 +133,7 @@
     $('auth-server-hint').textContent = S.serverSettings.ip
       ? ('Server: ' + S.serverSettings.ip) : 'No server configured - set it in Settings -> Server Settings first';
     $('auth-overlay').classList.add('open');
+    rootPasswordSetup = false;
     clearRegisterForm(); // Register form never remembers previous input (login form does)
     switchTab('login');
   }
@@ -126,15 +142,15 @@
     S.auth.modalOpen = false;
     $('auth-overlay').classList.remove('open');
     pendingEnrollment = null;
+    rootPasswordSetup = false;
   }
 
-  function openEnrollment(kind, id) {
+  function openEnrollment(kind, id, requiresPasswordSetup) {
     if (!id || ['root', 'register', 'device'].indexOf(kind) < 0) throw new Error('Invalid enrollment');
     bindUI();
     if (S.auth.modalOpen) closeAuthModal();
     closeAdmin();
     closeMenu();
-    closeDeviceModal();
     dropCredential();
     S.auth.mode = 'unknown';
     S.auth.serverVersion = '';
@@ -145,6 +161,7 @@
     }
     renderChip();
     pendingEnrollment = { kind: kind, id: id };
+    rootPasswordSetup = kind === 'root' && requiresPasswordSetup === true;
     S.auth.modalOpen = true;
     $('auth-overlay').classList.add('open');
     $('auth-server-hint').textContent = S.serverSettings.ip ? t('enrollment.auth.server') + ': ' + S.serverSettings.ip : '';
@@ -159,11 +176,31 @@
     if (submitting) {
       btn.innerHTML = '<span class="auth-spinner"></span>' + esc(t('enrollment.auth.pleaseWait'));
     } else {
-      btn.textContent = t(currentTab === 'login' ? 'enrollment.auth.login' : 'enrollment.auth.register');
+      btn.textContent = t(rootPasswordSetup ? 'enrollment.auth.setRootPassword' : currentTab === 'login' ? 'enrollment.auth.login' : 'enrollment.auth.register');
     }
   }
 
   async function submitLogin() {
+    if (rootPasswordSetup) {
+      var newPassword = $('auth-root-password').value;
+      var confirmPassword = $('auth-root-password2').value;
+      if (!newPassword || !confirmPassword) { showError(t('enrollment.auth.passwordRequired')); return; }
+      if (newPassword !== confirmPassword) { showError(t('enrollment.auth.passwordMismatch')); return; }
+      setSubmitting(true);
+      try {
+        var claimResult = await BOBO.enrollmentHost.enrollmentAuthenticate({ id: pendingEnrollment.id, password: newPassword });
+        if (!claimResult || !claimResult.success) {
+          showError((claimResult && claimResult.error) || t('enrollment.auth.loginFailed'));
+          return;
+        }
+        await onAuthSuccess(claimResult);
+      } catch (error) {
+        showError(t('enrollment.auth.loginFailed') + ' ' + t(error && error.message || ''));
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
     var identity = $('auth-login-identity').value.trim();
     var password = $('auth-login-password').value;
     if (!identity || !password) { showError(t('enrollment.auth.loginRequired')); return; }
@@ -338,7 +375,6 @@
   async function doLogout() {
     closeMenu();
     closeAdmin();
-    closeDeviceModal();
     if (BOBO.workspace && BOBO.workspace.canLeaveWorkspace) {
       var allowed = await BOBO.workspace.canLeaveWorkspace({ reason: 'logout' });
       if (!allowed) return false;
@@ -880,28 +916,6 @@
     loadInvites();
   }
 
-  function closeDeviceModal() {
-    var modal = $('auth-device-modal');
-    if (modal) modal.classList.remove('open');
-    var content = $('auth-device-content');
-    if (content) content.textContent = '';
-  }
-
-  async function createDeviceEnrollment() {
-    closeMenu();
-    var identity = adminAuthIdentity();
-    var res = await BOBO.sendToServer('createDeviceEnrollment', {}, { quiet: true });
-    if (identity !== adminAuthIdentity()) return;
-    if (!res || !res.success || !res.data || !res.data.link) {
-      global.alert((res && res.error) || t('enrollment.auth.operationFailed')); return;
-    }
-    var content = $('auth-device-content');
-    content.textContent = '';
-    showGeneratedSecret(t('enrollment.auth.shareDeviceLink'), res.data.link, content);
-    $('auth-device-modal').classList.add('open');
-    $('auth-device-close').focus();
-  }
-
   async function loadAudit() {
     var pane = $('admin-pane-audit');
     pane.innerHTML = '<div class="admin-loading">加载中…</div>';
@@ -1080,11 +1094,6 @@
     $('auth-menu-logout').addEventListener('click', doLogout);
     $('auth-menu-chpwd').addEventListener('click', openChpwd);
     $('auth-menu-admin').addEventListener('click', function() { openAdmin('users'); });
-    $('auth-menu-add-device').addEventListener('click', createDeviceEnrollment);
-    $('auth-device-close').addEventListener('click', closeDeviceModal);
-    $('auth-device-modal').addEventListener('click', function(e) { if (e.target === $('auth-device-modal')) closeDeviceModal(); });
-    $('auth-device-modal').addEventListener('keydown', function(e) { if (e.key === 'Escape') closeDeviceModal(); });
-
     // 修改密码弹窗
     $('chpwd-cancel').addEventListener('click', closeChpwd);
     $('chpwd-close-x').addEventListener('click', closeChpwd);

@@ -12,6 +12,7 @@ function createEnrollmentController(options) {
   const active = new Map();
   const previewEpoch = new Map();
   const now = options.now || Date.now;
+  const devicePlatform = ({ win32: 'Windows', darwin: 'macOS', linux: 'Linux' })[process.platform] || 'Desktop';
   let incoming = '';
 
   function captureIncoming(value) {
@@ -86,7 +87,8 @@ function createEnrollmentController(options) {
       const current = await options.settings.readServerSettings();
       const priorToken = accountToken(current);
       const link = { host: current.ip, httpPort: current.httpPort, wsPort: current.wsPort, dapChildWsPort: current.dapChildWsPort, certificateFingerprints: current.certificateFingerprints || [] };
-      const result = await request(link, { action: 'login', identity: payload.identity, password: payload.password });
+      const result = await request(link, { action: 'login', identity: payload.identity, password: payload.password,
+        deviceName: 'BOBOCLOUD desktop', devicePlatform });
       if (authStorageKey(current) !== authStorageKey(await options.settings.readServerSettings())) throw new Error('enrollment.error.serverChanged');
       if (accountToken(current) !== priorToken) throw new Error('enrollment.error.serverChanged');
       const expiresAt = validateAuthResult(result);
@@ -140,7 +142,8 @@ function createEnrollmentController(options) {
       if (authStorageKey(before) !== authStorageKey(settingsForLink(grant.link))) throw new Error('enrollment.error.serverChanged');
       const priorToken = accountToken(before);
       const allowed = ['identity', 'password', 'username', 'email'];
-      const body = { action: grant.link.kind === 'register' ? 'register' : 'login', enrollmentToken: grant.link.token };
+      const body = { action: grant.link.kind === 'register' ? 'register' : 'login', enrollmentToken: grant.link.token,
+        deviceName: 'BOBOCLOUD desktop', devicePlatform };
       for (const key of allowed) {
         const value = payload[key];
         if (value !== undefined && (typeof value !== 'string' || value.length > 4096)) throw new Error('enrollment.error.invalidResponse');

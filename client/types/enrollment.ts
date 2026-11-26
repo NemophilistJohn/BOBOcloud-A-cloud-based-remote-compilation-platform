@@ -7,6 +7,7 @@ export interface EnrollmentPreview {
   readonly version: string;
   readonly expiresAt: string;
   readonly syncMode: string;
+  readonly requiresPasswordSetup?: boolean;
 }
 
 export interface EnrollmentAuthentication {

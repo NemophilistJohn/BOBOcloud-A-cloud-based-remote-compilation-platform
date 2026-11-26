@@ -7,6 +7,7 @@
 import { DisposableStore, toDisposable } from '../renderer/core/disposable.js';
 import type {
   AccountProfileActivityDayWireDto,
+  AccountProfileDeviceWireDto,
   AccountProfileAuthPort,
   AccountProfileCollaborationPort,
   AccountProfileConfirmPort,
@@ -76,6 +77,11 @@ export function createAccountProfileService(
   let activityOwner = '';
   let activityLoadingOwner = '';
   let activityRequestGeneration = 0;
+  let deviceRequestGeneration = 0;
+  let deviceViewGeneration = 0;
+  let deviceOwner = '';
+  let deviceLoadingOwner = '';
+  let devices: AccountProfileDeviceWireDto[] = [];
   let profileSaveGeneration = 0;
   let profileDraftRevision = 0;
   let avatarLoadGeneration = 0;
@@ -212,6 +218,44 @@ export function createAccountProfileService(
     const element = $('account-activity-status');
     element.textContent = message ? t(message) : '';
     element.classList.toggle('error', Boolean(error));
+  }
+
+  function setDeviceStatus(message: string, error: boolean): void {
+    const element = document.getElementById('account-devices-status');
+    if (!element) return;
+    element.textContent = message ? t(message) : '';
+    element.classList.toggle('error', Boolean(error));
+  }
+
+  function deviceIdentifier(device: AccountProfileDeviceWireDto): string {
+    return stringValue(device.deviceId || device.id);
+  }
+
+  function deviceDate(value: unknown): string {
+    if (!value) return t('Not available');
+    const date = dateValue(value);
+    if (!Number.isFinite(date.getTime())) return t('Not available');
+    return date.toLocaleString(activeLocale(), { dateStyle: 'medium', timeStyle: 'short' });
+  }
+
+  function deviceLabel(device: AccountProfileDeviceWireDto): string {
+    return stringValue(device.name || device.label || device.browser || device.platform, t('Unnamed device'));
+  }
+
+  function deviceMeta(device: AccountProfileDeviceWireDto): string[] {
+    const values: string[] = [];
+    const platform = stringValue(device.platform);
+    const browser = stringValue(device.browser);
+    if (platform) values.push(platform);
+    if (browser && browser !== platform) values.push(browser);
+    const createdAt = device.createdAt || device.created_at;
+    const expiresAt = device.expiresAt || device.expires_at;
+    const lastSeen = device.lastSeenAt || device.last_seen_at;
+    if (createdAt) values.push(t('Added: {date}', { date: deviceDate(createdAt) }));
+    if (expiresAt) values.push(t('Expires: {date}', { date: deviceDate(expiresAt) }));
+    if (lastSeen) values.push(t('Last active: {date}', { date: deviceDate(lastSeen) }));
+    if (!createdAt && !expiresAt && !lastSeen) values.push(t('Last active: {date}', { date: deviceDate(lastSeen) }));
+    return values;
   }
 
   function utcDate(date: Date): string {
@@ -381,13 +425,140 @@ export function createAccountProfileService(
     }
   }
 
+  function renderDeviceInvite(link = '', expiresAt = ''): void {
+    const container = document.getElementById('account-device-invite');
+    if (!container) return;
+    container.hidden = !link;
+    container.dataset.expiresAt = expiresAt;
+    const field = $('profile-device-link') as HTMLTextAreaElement;
+    field.value = link;
+    $('account-device-invite-expiry').textContent = expiresAt
+      ? t('This link expires {date}.', { date: deviceDate(expiresAt) })
+      : t('Open this link on the new device before it expires.');
+  }
+
+  function renderDevices(): void {
+    const list = document.getElementById('account-devices-list');
+    const template = document.getElementById('account-device-row-template') as HTMLTemplateElement | null;
+    if (!list || !template) return;
+    list.replaceChildren();
+    if (!devices.length) {
+      const empty = document.createElement('div');
+      empty.className = 'account-device-empty';
+      empty.textContent = t('No authorized devices yet.');
+      list.appendChild(empty);
+      return;
+    }
+    for (const device of devices) {
+      const fragment = template.content.cloneNode(true) as DocumentFragment;
+      const row = fragment.querySelector<HTMLElement>('.account-device-row')!;
+      const current = device.current === true;
+      row.classList.toggle('is-current', current);
+      row.querySelector<HTMLElement>('[data-device-name]')!.textContent = deviceLabel(device);
+      if (!current) row.querySelector('.account-device-current')!.remove();
+      const revoke = row.querySelector<HTMLButtonElement>('.device-revoke')!;
+      if (current) revoke.remove();
+      else revoke.dataset.deviceId = deviceIdentifier(device);
+      const meta = row.querySelector('.account-device-meta')!;
+      for (const item of deviceMeta(device)) {
+        const field = document.createElement('span');
+        field.textContent = item;
+        meta.appendChild(field);
+      }
+      list.appendChild(fragment);
+    }
+  }
+
+  function extractDevices(result: unknown): AccountProfileDeviceWireDto[] {
+    if (!isRecord(result)) return [];
+    const direct = result.devices;
+    const nested = isRecord(result.data) ? result.data.devices : null;
+    const value = Array.isArray(direct) ? direct : Array.isArray(nested) ? nested : [];
+    return value.filter(isRecord) as AccountProfileDeviceWireDto[];
+  }
+
+  async function loadDevices(): Promise<void> {
+    if (disposed) return;
+    const owner = currentOwner();
+    if (!owner || owner !== deviceOwner || deviceLoadingOwner === owner) return;
+    const generation = ++deviceRequestGeneration;
+    deviceLoadingOwner = owner;
+    setDeviceStatus('Loading devices...', false);
+    try {
+      const result = await dependencies.sendToServer('listDevices', {}, { quiet: true });
+      if (generation !== deviceRequestGeneration || owner !== deviceOwner || owner !== currentOwner()) return;
+      if (!result || !result.success) throw new Error(errorMessage(result.error, t('Devices are unavailable')));
+      devices = extractDevices(result);
+      renderDevices();
+      setDeviceStatus('', false);
+    } catch (error) {
+      if (generation !== deviceRequestGeneration || owner !== deviceOwner || owner !== currentOwner()) return;
+      devices = [];
+      renderDevices();
+      setDeviceStatus(errorMessage(error, t('Devices are unavailable')), true);
+    } finally {
+      if (generation === deviceRequestGeneration) deviceLoadingOwner = '';
+    }
+  }
+
+  async function createDeviceLink(): Promise<void> {
+    if (disposed) return;
+    const owner = currentOwner();
+    const view = deviceViewGeneration;
+    const add = $('profile-add-device') as HTMLButtonElement;
+    if (add.disabled) return;
+    add.disabled = true;
+    setDeviceStatus('Creating device link...', false);
+    try {
+      const result = await dependencies.sendToServer('createDeviceEnrollment', {}, { quiet: true });
+      if (view !== deviceViewGeneration || owner !== currentOwner()) return;
+      if (!result || !result.success) throw new Error(errorMessage(result?.error, t('Could not create device link')));
+      const data = isRecord(result.data) ? result.data : {};
+      const link = stringValue(result.link || data.link);
+      if (!link) throw new Error(t('Could not create device link'));
+      renderDeviceInvite(link, stringValue(result.expiresAt || data.expiresAt));
+      setDeviceStatus('', false);
+    } catch (error) {
+      if (view === deviceViewGeneration && owner === currentOwner()) setDeviceStatus(errorMessage(error, t('Could not create device link')), true);
+    } finally {
+      if (view === deviceViewGeneration) add.disabled = false;
+    }
+  }
+
+  async function revokeDevice(deviceId: string): Promise<void> {
+    if (!deviceId) return;
+    const owner = currentOwner();
+    const view = deviceViewGeneration;
+    const confirm = dependencies.getConfirm();
+    const approved = confirm ? await confirm({
+      title: t('Revoke this device?'),
+      message: t('This device will need a new sign-in link to access the server.'),
+      confirmLabel: t('Revoke device'),
+      cancelLabel: t('Keep device'),
+      danger: true
+    }) : false;
+    if (!approved || view !== deviceViewGeneration || owner !== currentOwner()) return;
+    setDeviceStatus('Revoking device...', false);
+    try {
+      const result = await dependencies.sendToServer('revokeDevice', { deviceId }, { quiet: true });
+      if (view !== deviceViewGeneration || owner !== currentOwner()) return;
+      if (!result || !result.success) throw new Error(errorMessage(result?.error, t('Could not revoke device')));
+      devices = devices.filter((device) => deviceIdentifier(device) !== deviceId);
+      renderDevices();
+      setDeviceStatus('', false);
+    } catch (error) {
+      if (view === deviceViewGeneration && owner === currentOwner()) setDeviceStatus(errorMessage(error, t('Could not revoke device')), true);
+    }
+  }
+
   function switchTab(tab: AccountProfileTabDto): void {
     if (disposed) return;
-    const activeTab = tab === 'activity' ? 'activity' : 'profile';
+    const activeTab = tab === 'activity' || tab === 'devices' ? tab : 'profile';
     document.querySelectorAll<HTMLElement>('[data-account-tab]').forEach((button) => {
       const active = button.dataset.accountTab === activeTab;
       button.classList.toggle('active', active);
       button.setAttribute('aria-selected', active ? 'true' : 'false');
+      button.tabIndex = active ? 0 : -1;
     });
     document.querySelectorAll<HTMLElement>('[data-account-pane]').forEach((pane) => {
       pane.classList.toggle('active', pane.dataset.accountPane === activeTab);
@@ -395,6 +566,7 @@ export function createAccountProfileService(
     ($('profile-save') as HTMLElement).style.visibility = activeTab === 'profile' ? '' : 'hidden';
     setStatus('', false);
     if (activeTab === 'activity') void loadActivity();
+    if (activeTab === 'devices') void loadDevices();
   }
 
   function open(tab?: AccountProfileTabDto): void {
@@ -408,7 +580,8 @@ export function createAccountProfileService(
     const owner = currentOwner();
     const modal = $('profile-modal');
     if (modal.classList.contains('open') && owner === activityOwner) {
-      switchTab(tab || 'profile');
+      const selected = document.querySelector<HTMLElement>('[data-account-tab][aria-selected="true"]');
+      switchTab(tab || selected?.dataset.accountTab || 'profile');
       return;
     }
     if (owner !== activityOwner) {
@@ -420,11 +593,13 @@ export function createAccountProfileService(
       profileDraftRevision = 0;
       avatarLoadGeneration++;
       setProfileSaving(false);
+      deviceOwner = owner;
+      clearDevices();
     }
     previousFocus = document.activeElement as FocusableElement | null;
     renderProfile();
     renderActivity();
-    const requestedTab = tab === 'activity' ? 'activity' : 'profile';
+    const requestedTab = tab === 'activity' || tab === 'devices' ? tab : 'profile';
     switchTab(requestedTab);
     modal.classList.add('open');
     schedule(() => {
@@ -436,7 +611,20 @@ export function createAccountProfileService(
     void loadActivity();
   }
 
+  function clearDevices(): void {
+    deviceViewGeneration++;
+    deviceRequestGeneration++;
+    deviceLoadingOwner = '';
+    devices = [];
+    renderDeviceInvite();
+    document.getElementById('account-devices-list')?.replaceChildren();
+    setDeviceStatus('', false);
+    const add = document.getElementById('profile-add-device') as HTMLButtonElement | null;
+    if (add) add.disabled = false;
+  }
+
   function closeImmediate(): void {
+    clearDevices();
     const modal = document.getElementById('profile-modal');
     if (modal) modal.classList.remove('open');
     if (document.getElementById('profile-save-status')) setStatus('', false);
@@ -475,6 +663,10 @@ export function createAccountProfileService(
     activityDays = [];
     activityOwner = '';
     activityLoadingOwner = '';
+    deviceRequestGeneration++;
+    devices = [];
+    deviceOwner = '';
+    deviceLoadingOwner = '';
     chosenAvatar = 'graphite';
     initialAvatar = 'graphite';
     initialName = '';
@@ -631,6 +823,44 @@ export function createAccountProfileService(
     });
     document.querySelectorAll<HTMLElement>('[data-account-tab]').forEach((button) => {
       listen(button, 'click', () => switchTab(button.dataset.accountTab || 'profile'));
+      listen(button, 'keydown', (event) => {
+        const keyboardEvent = event as KeyboardEvent;
+        const tabs = Array.from(document.querySelectorAll<HTMLElement>('[data-account-tab]'));
+        const index = tabs.indexOf(button);
+        if (index < 0 || !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(keyboardEvent.key)) return;
+        keyboardEvent.preventDefault();
+        const next = keyboardEvent.key === 'Home' ? 0 : keyboardEvent.key === 'End'
+          ? tabs.length - 1
+          : (index + (keyboardEvent.key === 'ArrowDown' || keyboardEvent.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
+        tabs[next]?.focus();
+        switchTab(tabs[next]?.dataset.accountTab || 'profile');
+      });
+    });
+    const addDevice = document.getElementById('profile-add-device');
+    if (addDevice) listen(addDevice, 'click', () => { void createDeviceLink(); });
+    const refreshDevices = document.getElementById('profile-refresh-devices');
+    if (refreshDevices) listen(refreshDevices, 'click', () => {
+      deviceLoadingOwner = '';
+      void loadDevices();
+    });
+    const deviceList = document.getElementById('account-devices-list');
+    if (deviceList) listen(deviceList, 'click', (event) => {
+      const target = event.target as Element | null;
+      const button = target?.closest<HTMLButtonElement>('[data-device-id]');
+      if (button) void revokeDevice(button.dataset.deviceId || '');
+    });
+    const deviceInvite = document.getElementById('account-device-invite');
+    if (deviceInvite) listen(deviceInvite, 'click', async (event) => {
+      const target = event.target as Element | null;
+      if (!target?.closest('#profile-copy-device-link')) return;
+      try {
+        const link = (document.getElementById('profile-device-link') as HTMLTextAreaElement | null)?.value || '';
+        if (!dependencies.clipboard) throw new Error('Clipboard unavailable');
+        await dependencies.clipboard.writeText(link);
+        notify('Device link copied', 'success');
+      } catch (_) {
+        notify('Copy failed', 'error');
+      }
     });
     const modal = document.getElementById('profile-modal');
     if (modal) {
@@ -660,6 +890,24 @@ export function createAccountProfileService(
         if (disposed || !document.getElementById('profile-modal')?.classList.contains('open')) return;
         renderSummary();
         renderActivity();
+        renderDevices();
+        const invite = document.getElementById('profile-device-link') as HTMLTextAreaElement | null;
+        if (invite) {
+          const container = document.getElementById('account-device-invite');
+          renderDeviceInvite(invite.value, container?.dataset.expiresAt || '');
+        }
+        const nav = document.querySelector<HTMLElement>('.account-profile-nav');
+        if (nav) nav.setAttribute('aria-label', t('Account sections'));
+        const copyUid = document.getElementById('profile-copy-uid');
+        if (copyUid) {
+          copyUid.setAttribute('title', t('Copy user ID'));
+          copyUid.setAttribute('aria-label', t('Copy user ID'));
+        }
+        const refreshDevices = document.getElementById('profile-refresh-devices');
+        if (refreshDevices) {
+          refreshDevices.setAttribute('title', t('Refresh devices'));
+          refreshDevices.setAttribute('aria-label', t('Refresh devices'));
+        }
       });
       lifecycle.add(toDisposable(unsubscribe));
     }

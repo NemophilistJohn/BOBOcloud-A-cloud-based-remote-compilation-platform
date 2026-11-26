@@ -40,12 +40,13 @@ type UserConfig struct {
 	DiskQuotaMB    int    `json:"disk_quota_mb"`   // 磁盘配额（MB），0=不限
 }
 
-// RootUserConfig 是 root 管理员的种子配置（仅多人模式首次启动时生效）
+// RootUserConfig stores the initial root identity. Password remains a legacy
+// decode field only; first-run credentials are set through the claim link.
 type RootUserConfig struct {
 	Username string `json:"username"` // 默认 "root"
 	Email    string `json:"email"`
 	Name     string `json:"name"`     // 显示名，默认 "Root Admin"
-	Password string `json:"password"` // 留空则自动生成并打印到日志（仅首次）
+	Password string `json:"password"` // deprecated; retained to read older config files
 }
 
 // PackageSourceConfig is an administrator-controlled package source. CatalogURL
@@ -1073,9 +1074,6 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("BOBOCLOUD_AUTH_MODE"); v == "single" || v == "multi" {
 		cfg.AuthMode = v
-	}
-	if v := os.Getenv("BOBOCLOUD_ROOT_PASSWORD"); v != "" {
-		cfg.RootUser.Password = v
 	}
 	if v := os.Getenv("BOBOCLOUD_ADMIN_API_KEY"); v != "" {
 		cfg.AdminAPIKey = v

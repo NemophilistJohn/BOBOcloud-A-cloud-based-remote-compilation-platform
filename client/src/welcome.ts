@@ -1,6 +1,6 @@
 export const WELCOME_SERVICE_ID = 'workbench.welcome';
 
-interface Preview { id: string; kind: string; host: string; httpPort: number; certificateFingerprint: string; version: string; expiresAt: string; syncMode: string }
+interface Preview { id: string; kind: string; host: string; httpPort: number; certificateFingerprint: string; version: string; expiresAt: string; syncMode: string; requiresPasswordSetup?: boolean }
 interface WelcomePorts {
   document: Document;
   host: { enrollmentPreview(link: string): Promise<Preview>; enrollmentActivate(id: string): Promise<Record<string, unknown>>; enrollmentIncoming(): Promise<string>; onEnrollmentOpen(callback: () => void): () => void; writeServerSettings(settings: unknown): Promise<unknown>; commitServerSettings(): Promise<unknown> };
@@ -8,7 +8,7 @@ interface WelcomePorts {
   locale(): string; setLocale(id: string): Promise<unknown>;
   beforeServerChange(): Promise<boolean>;
   applySettings(settings: Record<string, unknown>): void;
-  authenticate(kind: string, id: string): void;
+  authenticate(kind: string, id: string, requiresPasswordSetup?: boolean): void;
   completeLocal(): Promise<void>;
 }
 
@@ -27,7 +27,7 @@ export function createWelcome(ports: WelcomePorts) {
     for (const node of page.querySelectorAll<HTMLElement>('[data-welcome-i18n]')) node.textContent = ports.t(node.dataset.welcomeI18n || '');
     const language = d.getElementById('welcome-language') as HTMLSelectElement | null;
     if (language) language.value = ports.locale();
-    if (preview) text('welcome-kind', ports.t('enrollment.kind.' + preview.kind));
+    if (preview) text('welcome-kind', ports.t(preview.requiresPasswordSetup ? 'enrollment.kind.rootSetup' : 'enrollment.kind.' + preview.kind));
   }
   function close() { if (page) page.hidden = true; d.getElementById('editor')?.classList.remove('welcome-open'); d.getElementById('welcome-editor-tab')?.remove(); }
   function open() {
@@ -63,7 +63,7 @@ export function createWelcome(ports: WelcomePorts) {
       const result = await ports.host.enrollmentPreview((d.getElementById('welcome-link') as HTMLTextAreaElement).value);
       if (disposed || request !== revision) return;
       preview = result;
-      text('welcome-server', result.host + ':' + result.httpPort); text('welcome-kind', ports.t('enrollment.kind.' + result.kind)); text('welcome-version', result.version);
+      text('welcome-server', result.host + ':' + result.httpPort); text('welcome-kind', ports.t(result.requiresPasswordSetup ? 'enrollment.kind.rootSetup' : 'enrollment.kind.' + result.kind)); text('welcome-version', result.version);
       text('welcome-expiry', result.expiresAt ? new Date(result.expiresAt).toLocaleString(ports.locale()) : '—'); text('welcome-pin', result.certificateFingerprint.match(/.{2}/g)?.join(':') || '');
       const overview = d.getElementById('welcome-overview'); if (overview) overview.hidden = false;
       text('welcome-status', ports.t('enrollment.ready'));
@@ -80,7 +80,7 @@ export function createWelcome(ports: WelcomePorts) {
       page?.classList.add('arriving');
       await new Promise(resolve => setTimeout(resolve, matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 750));
       page?.classList.remove('arriving'); close();
-      ports.authenticate(selected.kind, selected.id);
+      ports.authenticate(selected.kind, selected.id, selected.requiresPasswordSetup);
       (d.getElementById('welcome-link') as HTMLTextAreaElement).value = ''; preview = null;
     } catch (error) { text('welcome-status', ports.t(error instanceof Error ? error.message : 'enrollment.error.rejected')); }
     finally { button.disabled = false; }

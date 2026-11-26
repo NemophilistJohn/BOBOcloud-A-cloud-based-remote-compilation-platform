@@ -28,6 +28,7 @@ import (
 	"bobocloud-server/internal/config"
 	"bobocloud-server/internal/enrollment"
 	"bobocloud-server/internal/handler"
+	"bobocloud-server/internal/rootbootstrap"
 	"bobocloud-server/internal/serverruntime"
 	"bobocloud-server/internal/syncsftp"
 )
@@ -178,7 +179,6 @@ func configureEnrollment(cfg *config.Config, h *handler.HTTPHandler, store auth.
 	if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
 		return nil, stateErr
 	}
-	firstEnrollmentStartup := errors.Is(stateErr, os.ErrNotExist)
 	descriptor := enrollment.Descriptor{Host: host, HTTPPort: cfg.HTTPPort, WSPort: cfg.WSPort, DAPChildWSPort: cfg.DAPChildWSPort, CertificateFingerprints: []string{strings.ToUpper(hex.EncodeToString(pin[:]))}}
 	mgr, err := enrollment.NewManager(statePath, descriptor, rootSSH)
 	if err != nil {
@@ -216,7 +216,7 @@ func configureEnrollment(cfg *config.Config, h *handler.HTTPHandler, store auth.
 		if err := os.Remove(output); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		return nil
+		return rootbootstrap.RemoveCredentialFile(cfg.DataDir)
 	}
 	users, err := store.List()
 	if err != nil {
@@ -234,7 +234,7 @@ func configureEnrollment(cfg *config.Config, h *handler.HTTPHandler, store auth.
 	if root == nil {
 		return nil, errors.New("root account is unavailable")
 	}
-	if firstEnrollmentStartup || mgr.RootClaimRequired(root.ID) {
+	if root.PasswordHash == "" || mgr.RootClaimRequired(root.ID) {
 		if err := ensureRootClaimFile(mgr, descriptor, root.ID, output, rootSSH != nil); err != nil {
 			_ = sftpServer.Close()
 			return nil, err

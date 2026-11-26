@@ -92,6 +92,7 @@
 .auth-field input:focus + .auth-field-icon,
 .auth-field input:not(:placeholder-shown) ~ .auth-field-icon { color: var(--blue); }
 .auth-field.invalid input { border-color: var(--red); }
+.auth-notice-copy { margin: 0 0 var(--space-1); color: var(--text-secondary); font-size: var(--text-sm); line-height: var(--leading-normal); }
 
 /* ── 错误提示条 ── */
 .auth-error {
