@@ -177,6 +177,30 @@
 .account-heatmap-cell:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
 .account-heatmap-legend { display: flex; justify-content: flex-end; align-items: center; gap: 4px; color: var(--text-muted); font-size: 9px; }
 .account-heatmap-legend i { width: 10px; height: 10px; }
+.account-run-history { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border-primary); }
+.account-run-history-head { min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.account-run-history-head h3 { margin: 0; color: var(--text-primary); font-size: 13px; letter-spacing: 0; }
+.account-run-history-head > span { color: var(--text-muted); font-size: 10px; }
+.account-run-history-head > span.error { color: var(--red); }
+.account-run-history-scroll { max-height: min(40vh, 360px); overflow: auto; border: 1px solid var(--border-primary); border-radius: 6px; background: var(--bg-secondary); }
+.account-run-history-table { width: 100%; min-width: 620px; border-collapse: separate; border-spacing: 0; color: var(--text-secondary); font-size: 10px; }
+.account-run-history-table th { position: sticky; top: 0; z-index: 1; padding: 8px 10px; border-bottom: 1px solid var(--border-primary); color: var(--text-muted); background: var(--bg-secondary); font-size: 9px; font-weight: 650; text-align: left; }
+.account-run-history-table td { padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, var(--border-primary) 65%, transparent); vertical-align: middle; }
+.account-run-history-table tr:last-child td { border-bottom: 0; }
+.account-run-history-row:hover td { background: color-mix(in srgb, var(--bg-hover) 72%, transparent); }
+.account-run-history-target { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-run-history-row td:nth-child(2), .account-run-history-row td:nth-child(4) { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.account-run-history-toggle { width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid var(--border-primary); border-radius: 4px; color: var(--text-secondary); background: transparent; font: 15px/1 var(--font-ui); }
+.account-run-history-toggle:hover { border-color: var(--brand); color: var(--text-primary); background: var(--bg-hover); }
+.account-run-history-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.account-run-history-detail-row td { padding: 0; background: var(--bg-primary); }
+.account-run-history-detail-row[hidden] { display: none; }
+.account-run-history-detail { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(240px, 1.2fr) auto; align-items: start; gap: 12px; padding: 12px; }
+.account-run-history-metadata { color: var(--text-muted); font-size: 9px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.account-run-history-output { max-height: 130px; overflow: auto; margin: 0; padding: 8px; border: 1px solid var(--border-primary); border-radius: 4px; color: var(--text-secondary); background: var(--bg-secondary); font: 9px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.account-run-history-copy { min-height: 26px; padding-inline: 8px; font-size: 9px; }
+.account-run-history-empty { padding: 22px; color: var(--text-muted); text-align: center; font-size: 10px; }
+.account-run-history-empty[hidden] { display: none; }
 
 .avatar-ocean { background: #247ba0; }
 .avatar-forest { background: #2d7d5a; }
@@ -196,6 +220,7 @@
   .account-profile-nav { grid-column: 1 / -1; grid-row: 5; grid-template-columns: 1fr 1.3fr 1fr; gap: 4px; margin-top: 10px; padding-top: 10px; }
   .account-profile-nav button { min-width: 0; justify-content: center; padding: 2px 4px; gap: 5px; font-size: 11px; line-height: 1.2; }
   .account-profile-nav button span { white-space: normal; }
+  .account-run-history-detail { grid-template-columns: minmax(0,1fr); }
   .account-device-hero { grid-template-columns: 86px minmax(0,1fr); gap: 12px; padding: 12px; }
   .account-device-hero-art svg { width: 86px; }
   .account-device-row { grid-template-columns: 32px minmax(0,1fr); }

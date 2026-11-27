@@ -114,6 +114,10 @@ function createDiagnosticsHost(host: NativeHost): Readonly<DiagnosticsHost> {
 
 function createEnrollmentHost(host: NativeHost): Readonly<EnrollmentHostPort> {
   return Object.freeze({
+    accountsList: () => host.accountsList(),
+    accountsSwitch: (id: string) => host.accountsSwitch(id),
+    accountsLogout: () => host.accountsLogout(),
+    accountsRemove: (id: string) => host.accountsRemove(id),
     enrollmentPreview: (link: string) => host.enrollmentPreview(link),
     enrollmentActivate: (id: string) => host.enrollmentActivate(id),
     enrollmentAuthenticate: (payload: EnrollmentAuthentication) => host.enrollmentAuthenticate(payload),

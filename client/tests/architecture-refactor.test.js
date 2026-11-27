@@ -13,6 +13,7 @@ const MAIN_DIRECTORY = path.join(ROOT, 'main');
 const RENDERER_OUTPUT = path.join(ROOT, 'renderer-dist');
 
 const EXPECTED_IPC = new Map([
+  ...['accounts:list','accounts:switch','accounts:logout','accounts:remove'].map(channel => [channel, 'handle']),
   ...['enrollment:preview','enrollment:activate','enrollment:authenticate','enrollment:login','enrollment:refresh-sync','enrollment:incoming'].map(channel => [channel, 'handle']),
   ['views:capture-split-preview', 'handle'],
   ...['realtime:prepare-transition','realtime:connect','realtime:send','realtime:close','realtime:materialize','realtime:drafts','realtime:recover'].map(channel => [channel, 'handle']),

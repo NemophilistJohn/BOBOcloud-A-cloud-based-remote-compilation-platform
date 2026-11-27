@@ -13,7 +13,7 @@ type HostWindow = Window & { BOBO: {
   auth: { openEnrollment(kind: string, id: string, requiresPasswordSetup?: boolean): void };
   workspace: { canLeaveWorkspace(options: Record<string, unknown>): Promise<boolean>; closeWorkspace(options: Record<string, unknown>): Promise<unknown> };
   welcome?: ReturnType<typeof createWelcome>;
-  enrollmentHost?: Readonly<Pick<EnrollmentHostPort, 'enrollmentAuthenticate' | 'enrollmentLogin' | 'enrollmentRefreshSync' | 'readServerSettings'>>;
+  enrollmentHost?: Readonly<Pick<EnrollmentHostPort, 'enrollmentAuthenticate' | 'enrollmentLogin' | 'enrollmentRefreshSync' | 'readServerSettings' | 'accountsList'>>;
 } };
 const host = window as unknown as HostWindow;
 const enrollmentHost = rendererPlatform.services.require(ENROLLMENT_HOST_SERVICE_ID);
@@ -21,7 +21,8 @@ host.BOBO.enrollmentHost = Object.freeze({
   enrollmentAuthenticate: enrollmentHost.enrollmentAuthenticate,
   enrollmentLogin: enrollmentHost.enrollmentLogin,
   enrollmentRefreshSync: enrollmentHost.enrollmentRefreshSync,
-  readServerSettings: enrollmentHost.readServerSettings
+  readServerSettings: enrollmentHost.readServerSettings,
+  accountsList: enrollmentHost.accountsList
 });
 const service = createWelcome({ document, host: enrollmentHost, t: (key, params) => host.BOBO.i18n.t(key, params), locale: () => host.BOBO.i18n.getActive(),
   setLocale: id => host.BOBO.i18n.setLocale(id),

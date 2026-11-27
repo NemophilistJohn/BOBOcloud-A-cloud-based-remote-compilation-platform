@@ -1,0 +1,418 @@
+.invitation-center-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 5px 0 18px;
+}
+.invitation-center-head h2 {
+  margin: 0;
+  font-size: 17px;
+  color: var(--text-primary);
+}
+.invitation-center-head p {
+  margin: 6px 0 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.invitation-icon {
+  width: 30px;
+  height: 30px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 30px;
+  border: 1px solid var(--border-default);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.invitation-icon svg {
+  width: 16px;
+  height: 16px;
+}
+.invitation-icon:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.invitation-icon.danger:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+.invitation-icon:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+.invitation-create {
+  padding: 16px;
+  border: 1px solid var(--border-default);
+  border-radius: 11px;
+  background: var(--bg-surface);
+}
+.invitation-create-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 14px;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.invitation-mark {
+  width: 25px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  color: var(--brand);
+  background: var(--brand-muted);
+  border-radius: 7px;
+  font-size: 18px;
+}
+.invitation-mark svg,
+#invite-create svg {
+  width: 16px;
+  height: 16px;
+}
+.invitation-form {
+  display: grid;
+  grid-template-columns: 1.15fr 0.8fr 1.2fr 0.8fr auto;
+  gap: 9px;
+  align-items: end;
+}
+.invitation-form label {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+.invitation-form label > span {
+  font-size: 9px;
+  color: var(--text-tertiary);
+}
+.invitation-center input,
+.invitation-center select {
+  height: 32px;
+  min-width: 0;
+  width: 100%;
+  padding: 0 8px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  font: 10px var(--font-ui);
+}
+.invitation-center input:focus,
+.invitation-center select:focus {
+  outline: 1px solid var(--brand);
+}
+#invite-create {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 11px;
+  border: 1px solid var(--brand-border);
+  border-radius: 6px;
+  background: var(--brand-muted);
+  color: var(--brand);
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#invite-create > span:first-child {
+  font-size: 17px;
+}
+#invite-create:hover {
+  background: var(--brand);
+  color: var(--bg-deep);
+}
+#invite-create:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.invitation-share:empty {
+  display: none;
+}
+.invitation-share {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--brand-border);
+  border-radius: 10px;
+  background: var(--brand-muted);
+  animation: account-manager-enter 0.25s ease;
+}
+.invitation-share strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.invitation-share small {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+.invitation-share .invitation-expiry-note {
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.invitation-copy {
+  align-self: start;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--brand-border);
+  border-radius: 6px;
+  color: var(--brand);
+  background: var(--bg-surface);
+  font-size: 10px;
+  cursor: pointer;
+}
+.invitation-copy svg {
+  width: 15px;
+  height: 15px;
+}
+.invitation-share details {
+  grid-column: 1/-1;
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+.invitation-share details summary {
+  cursor: pointer;
+  max-width: max-content;
+}
+.invitation-share code {
+  display: block;
+  max-height: 78px;
+  overflow: auto;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  word-break: break-all;
+  background: var(--bg-deep);
+  font: 9px/1.5 var(--font-mono);
+}
+.invitation-tools {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 20px 0 12px;
+}
+.invitation-filters {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  margin-right: auto;
+}
+.invitation-filters button {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  cursor: pointer;
+}
+.invitation-filters button.active {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+.invitation-filters b {
+  padding: 0 5px;
+  border-radius: 4px;
+  font-weight: 500;
+  color: var(--brand);
+  background: var(--brand-muted);
+}
+#invite-kind {
+  width: 125px;
+}
+#invite-search {
+  width: 100%;
+  padding-left: 30px;
+}
+.invitation-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 160px;
+}
+.invitation-search > span {
+  position: absolute;
+  left: 9px;
+  width: 15px;
+  height: 15px;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+.invitation-search svg {
+  width: 100%;
+  height: 100%;
+}
+.invitation-list {
+  overflow: auto;
+  border: 1px solid var(--border-default);
+  border-radius: 9px;
+  max-height: 350px;
+}
+.invitation-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+  min-width: 620px;
+}
+.invitation-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 10px;
+  text-align: left;
+  color: var(--text-tertiary);
+  background: var(--bg-surface);
+  font-size: 9px;
+  font-weight: 500;
+}
+.invitation-table td {
+  padding: 12px 10px;
+  border-top: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  vertical-align: middle;
+}
+.invitation-table td:first-child strong {
+  font-size: 11px;
+  color: var(--text-primary);
+  font-weight: 550;
+}
+.invitation-table td small {
+  display: block;
+  margin-top: 4px;
+  font-size: 9px;
+  color: var(--text-tertiary);
+}
+.invitation-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+.invitation-table td:last-child {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.invitation-state {
+  display: inline-block;
+  padding: 4px 7px;
+  border-radius: 5px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  font-size: 9px;
+  white-space: nowrap;
+}
+.invitation-state[data-state="available"] {
+  background: var(--green-muted);
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 30%, transparent);
+}
+.invitation-state[data-state="used"] {
+  color: var(--brand);
+  background: var(--brand-muted);
+}
+.invitation-expiry {
+  font-variant-numeric: tabular-nums;
+  font-size: 9px;
+  white-space: nowrap;
+}
+.invitation-record-details {
+  max-width: 220px;
+  font-size: 9px;
+  line-height: 1.7;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.invitation-table summary {
+  list-style: none;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  border-radius: 6px;
+  font-size: 18px;
+}
+.invitation-table summary:hover {
+  background: var(--bg-active);
+}
+.invitation-table summary svg {
+  width: 17px;
+  height: 17px;
+}
+.invitation-table details[open] {
+  max-width: 220px;
+}
+.invitation-access small.danger {
+  color: var(--red);
+}
+.invitation-empty {
+  padding: 40px 20px;
+  color: var(--text-tertiary);
+  text-align: center;
+  font-size: 11px;
+}
+#invite-status {
+  margin: 10px 0 0;
+  min-height: 16px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+#invite-status.error {
+  color: var(--red);
+}
+@media (max-width: 850px) {
+  .invitation-form {
+    grid-template-columns: 1fr 1fr;
+  }
+  .invitation-form label:first-child {
+    grid-column: 1/-1;
+  }
+  #invite-create {
+    justify-content: center;
+  }
+}
+@media (max-width: 550px) {
+  .invitation-share {
+    grid-template-columns: 1fr;
+  }
+  .invitation-copy {
+    min-height: 32px;
+    justify-content: center;
+  }
+  .invitation-form {
+    grid-template-columns: 1fr 1fr;
+  }
+  .invitation-center-head p {
+    max-width: 240px;
+  }
+  .invitation-tools {
+    gap: 6px;
+  }
+  #invite-kind,
+  .invitation-search {
+    width: calc(50% - 3px);
+  }
+  .invitation-filters {
+    width: 100%;
+    justify-content: center;
+  }
+  .invitation-table {
+    min-width: 580px;
+  }
+}

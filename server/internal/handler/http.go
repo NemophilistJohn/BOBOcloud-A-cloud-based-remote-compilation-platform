@@ -266,6 +266,9 @@ func (h *HTTPHandler) handleAuthenticatedRequest(w http.ResponseWriter, r *http.
 	case "inspectEnrollment":
 		h.handleInspectEnrollment(w, r, req)
 		return
+	case "resumeDevice", "forgetDevice":
+		h.handleTrustedDeviceAuth(w, r, req)
+		return
 	}
 
 	// ---- 认证 ----
@@ -479,7 +482,7 @@ func (h *HTTPHandler) routeRequest(w http.ResponseWriter, r *http.Request, req *
 		writeJSON(w, http.StatusGone, model.Response{Success: false, Error: "Invite codes have been replaced by enrollment links"})
 	case "revokeInvite":
 		writeJSON(w, http.StatusGone, model.Response{Success: false, Error: "Invite codes have been replaced by enrollment links"})
-	case "createEnrollment", "createDeviceEnrollment", "listEnrollments", "revokeEnrollment", "getSyncCredential", "listDevices", "revokeDevice":
+	case "createEnrollment", "createDeviceEnrollment", "listEnrollments", "revokeEnrollment", "getSyncCredential", "listDevices", "revokeDevice", "trustCurrentDevice":
 		h.handleEnrollment(w, r, req)
 	case "listUsers":
 		h.handleListUsers(w, r)

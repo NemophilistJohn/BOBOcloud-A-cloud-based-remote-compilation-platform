@@ -21,17 +21,21 @@ export function createWelcome(ports: WelcomePorts) {
   let revision = 0;
   let disposeIncoming: (() => void) | undefined;
   let disposed = false;
+  let expectedKind: 'device' | 'register' | undefined;
   function text(id: string, value: string) { const element = d.getElementById(id); if (element) element.textContent = value; }
   function render() {
     if (!page) return;
     for (const node of page.querySelectorAll<HTMLElement>('[data-welcome-i18n]')) node.textContent = ports.t(node.dataset.welcomeI18n || '');
+    if(expectedKind){text('welcome-title',ports.t(expectedKind==='device'?'accounts.addExisting':'accounts.addNew'));text('welcome-status',ports.t(expectedKind==='device'?'accounts.deviceLinkHelp':'accounts.registrationLinkHelp'));}
     const language = d.getElementById('welcome-language') as HTMLSelectElement | null;
     if (language) language.value = ports.locale();
     if (preview) text('welcome-kind', ports.t(preview.requiresPasswordSetup ? 'enrollment.kind.rootSetup' : 'enrollment.kind.' + preview.kind));
   }
   function close() { if (page) page.hidden = true; d.getElementById('editor')?.classList.remove('welcome-open'); d.getElementById('welcome-editor-tab')?.remove(); }
-  function open() {
+  function open(kind?: 'device' | 'register') {
     if (disposed) return;
+    expectedKind=kind;
+    revision++;preview=null;
     if (!page) {
       page = d.createElement('section'); page.id = 'welcome-page'; page.className = 'welcome-page'; page.setAttribute('aria-labelledby', 'welcome-title');
       page.innerHTML = `<div class="welcome-content"><header class="welcome-top"><span class="welcome-wordmark">BOBOCLOUD <span>3.0</span></span><label class="welcome-language"><span data-welcome-i18n="enrollment.language"></span><select id="welcome-language" aria-label="Language"><option value="zh-CN">简体中文</option><option value="en">English</option><option value="ja">日本語</option></select></label></header>
@@ -47,6 +51,7 @@ export function createWelcome(ports: WelcomePorts) {
       d.getElementById('welcome-link')?.addEventListener('input', () => { revision++; preview = null; const overview = d.getElementById('welcome-overview'); if (overview) overview.hidden = true; });
     }
     page.hidden = false;
+    const overview=d.getElementById('welcome-overview');if(overview)overview.hidden=true;
     d.getElementById('editor')?.classList.add('welcome-open');
     if (!d.getElementById('welcome-editor-tab')) {
       const tab = d.createElement('button'); tab.id = 'welcome-editor-tab'; tab.className = 'tab active'; tab.type = 'button'; tab.setAttribute('role','tab'); tab.setAttribute('aria-selected','true');
@@ -62,6 +67,7 @@ export function createWelcome(ports: WelcomePorts) {
     try {
       const result = await ports.host.enrollmentPreview((d.getElementById('welcome-link') as HTMLTextAreaElement).value);
       if (disposed || request !== revision) return;
+      if(expectedKind && result.kind!==expectedKind)throw new Error(expectedKind==='device'?'accounts.error.deviceLinkRequired':'accounts.error.registerLinkRequired');
       preview = result;
       text('welcome-server', result.host + ':' + result.httpPort); text('welcome-kind', ports.t(result.requiresPasswordSetup ? 'enrollment.kind.rootSetup' : 'enrollment.kind.' + result.kind)); text('welcome-version', result.version);
       text('welcome-expiry', result.expiresAt ? new Date(result.expiresAt).toLocaleString(ports.locale()) : '—'); text('welcome-pin', result.certificateFingerprint.match(/.{2}/g)?.join(':') || '');
@@ -74,9 +80,9 @@ export function createWelcome(ports: WelcomePorts) {
     const selected = preview; if (!selected) return;
     const button = d.getElementById('welcome-connect') as HTMLButtonElement; button.disabled = true;
     try {
-      if (!await ports.beforeServerChange()) return;
-      const settings = await ports.host.enrollmentActivate(selected.id); ports.applySettings(settings);
-      await ports.host.commitServerSettings();
+      await ports.host.enrollmentActivate(selected.id);
+      // Activation stages the invitation; the active account changes only
+      // after successful authentication in the main process.
       page?.classList.add('arriving');
       await new Promise(resolve => setTimeout(resolve, matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 750));
       page?.classList.remove('arriving'); close();

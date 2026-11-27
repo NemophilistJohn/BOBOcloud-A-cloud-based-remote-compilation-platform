@@ -155,10 +155,18 @@
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: 3px;
   min-width: 0;
   -webkit-app-region: no-drag;
 }
+
+.titlebar-actions > .layout-menu-wrap { order: 0; }
+.titlebar-actions > .debug-control-group,
+.titlebar-actions > #debug-config-menu { order: 1; }
+.titlebar-actions > .run-control-group,
+.titlebar-actions > #run-target-menu { order: 2; }
+.titlebar-actions > #runtime-selector { order: 3; }
+.titlebar-actions > #cloud-sync-btn { order: 4; }
 
 #titlebar .topbar-button,
 #titlebar .topbar-icon-button,
@@ -202,7 +210,8 @@
 #titlebar .run-control-group button:first-child { border-left: 0; }
 #titlebar .run-control-group #run-code {
   height: 28px;
-  padding: 0 var(--space-3);
+  width: 30px;
+  padding: 0;
   background: var(--brand);
   color: var(--bg-deep);
   font-weight: var(--weight-semibold);
@@ -715,8 +724,7 @@
   .titlebar-context { display: none; }
   #cloud-sync-btn span,
   .run-control-group #run-code span { display: none; }
-  #titlebar .run-control-group #run-code { width: 32px; padding: 0; }
-  #history-btn { display: none !important; }
+  #titlebar .run-control-group #run-code { width: 30px; padding: 0; }
   .command-center { flex-basis: 160px; }
   #statusbar .status-sep { display: none; }
 }

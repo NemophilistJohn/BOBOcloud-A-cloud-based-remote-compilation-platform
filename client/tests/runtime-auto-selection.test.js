@@ -180,6 +180,26 @@ test('the legacy global runtime is retained as the first preference for its own 
   assert.equal(fixture.notifications.length, 0);
 });
 
+test('runtime initialization refreshes the catalog after authentication has populated server settings', async () => {
+  let calls = 0;
+  const fixture = loadRuntime({
+    serverIp: 'compiler.example',
+    availableRuntimes: [],
+    sendToServer(action) {
+      assert.equal(action, 'listRuntimes');
+      calls += 1;
+      return Promise.resolve({ success: true, runtimes });
+    }
+  });
+
+  fixture.BOBO.runtime.init();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(calls, 1);
+  assert.ok(fixture.state.availableRuntimes.length > 0);
+  assert.ok(fixture.state.groupedRuntimes.python.length > 0);
+});
+
 test('a delayed runtime catalog reconciles the already-active source file', async () => {
   const fixture = loadRuntime({
     selectedRuntime: 'python:3.10',

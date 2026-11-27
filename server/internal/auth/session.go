@@ -17,14 +17,15 @@ import (
 
 // AuthSession 是一条已签发的登录会话
 type AuthSession struct {
-	ID             string    `json:"id,omitempty"`
-	Token          string    `json:"token"`
-	UserID         string    `json:"user_id"`
-	DeviceName     string    `json:"device_name,omitempty"`
-	DevicePlatform string    `json:"device_platform,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	LastSeenAt     time.Time `json:"last_seen_at,omitempty"`
-	ExpiresAt      time.Time `json:"expires_at"`
+	ID              string    `json:"id,omitempty"`
+	TrustedDeviceID string    `json:"trusted_device_id,omitempty"`
+	Token           string    `json:"token"`
+	UserID          string    `json:"user_id"`
+	DeviceName      string    `json:"device_name,omitempty"`
+	DevicePlatform  string    `json:"device_platform,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	LastSeenAt      time.Time `json:"last_seen_at,omitempty"`
+	ExpiresAt       time.Time `json:"expires_at"`
 }
 
 // AuthSessionStore 会话 token 存储接口
@@ -60,13 +61,17 @@ func GenerateSessionToken() (string, error) {
 
 // MemoryAuthSessionStore 是 AuthSessionStore 的内存实现
 type MemoryAuthSessionStore struct {
-	mu       sync.Mutex
-	sessions map[string]*AuthSession
+	trustedOperations
+	mu             sync.Mutex
+	sessions       map[string]*AuthSession
+	trustedDevices map[string]TrustedDevice
 }
 
 // NewMemoryAuthSessionStore 创建内存会话存储
 func NewMemoryAuthSessionStore() *MemoryAuthSessionStore {
-	return &MemoryAuthSessionStore{sessions: make(map[string]*AuthSession)}
+	s := &MemoryAuthSessionStore{sessions: make(map[string]*AuthSession), trustedDevices: make(map[string]TrustedDevice)}
+	s.trustedOperations.transaction = s.trustedTransaction
+	return s
 }
 
 func (s *MemoryAuthSessionStore) Create(userID string, ttl time.Duration) (*AuthSession, error) {
@@ -172,15 +177,29 @@ func (s *MemoryAuthSessionStore) DeleteByUser(userID string) error {
 			delete(s.sessions, t)
 		}
 	}
+	for id, d := range s.trustedDevices {
+		if d.UserID == userID {
+			delete(s.trustedDevices, id)
+		}
+	}
 	s.mu.Unlock()
 	return nil
 }
 
 func (s *MemoryAuthSessionStore) DeleteByUserExcept(userID, keepToken string) error {
 	s.mu.Lock()
+	keepID := ""
+	if sess := s.sessions[keepToken]; sess != nil && sess.UserID == userID {
+		keepID = sess.TrustedDeviceID
+	}
 	for t, sess := range s.sessions {
 		if sess.UserID == userID && t != keepToken {
 			delete(s.sessions, t)
+		}
+	}
+	for id, d := range s.trustedDevices {
+		if d.UserID == userID && id != keepID {
+			delete(s.trustedDevices, id)
 		}
 	}
 	s.mu.Unlock()

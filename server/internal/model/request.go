@@ -39,6 +39,8 @@ type Request struct {
 	DeviceName             string `json:"deviceName,omitempty"`
 	DevicePlatform         string `json:"devicePlatform,omitempty"`
 	DeviceID               string `json:"deviceId,omitempty"`
+	DeviceSecret           string `json:"deviceSecret,omitempty"`
+	Label                  string `json:"label,omitempty"`
 	OldPassword            string `json:"oldPassword,omitempty"` // changePassword
 	NewPassword            string `json:"newPassword,omitempty"` // changePassword / resetUserPassword
 	InviteCode             string `json:"inviteCode,omitempty"`  // register / revokeInvite

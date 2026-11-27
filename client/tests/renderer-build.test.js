@@ -87,6 +87,8 @@ const EXPECTED_MODULES = [
   './compat/social-adapter.ts',
   './compat/account-profile-adapter.ts',
   './compat/welcome-adapter.ts',
+  './compat/account-manager-adapter.ts',
+  './compat/admin-invitations-adapter.ts',
   './compat/ai-settings-schema-adapter.ts',
   './compat/ai-prompts-adapter.ts',
   './compat/ai-service-adapter.ts',

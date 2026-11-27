@@ -5,6 +5,7 @@ const {
   rcloneConnectionIdentity,
   serverTransportIdentity
 } = require('./server-identity');
+const { rememberAccount } = require('./account-vault');
 
 function rendererServerSettings(value) {
   const settings = Object.assign({}, value || {});
@@ -86,6 +87,7 @@ function createAuthController(options) {
       const previous = credentialForServer(data, serverSettings).credential;
       const next = Object.assign({}, payload.credential, { savedAt: Date.now() });
       data.servers[authStorageKey(serverSettings)] = next;
+      if (next.user && next.token) rememberAccount(data,serverSettings,next);
       for (const key of legacyAuthStorageKeys(serverSettings)) delete data.servers[key];
       const wrote = settings.writeAuth(data);
       if (wrote && (!previous || previous.token !== next.token ||
@@ -103,6 +105,9 @@ function createAuthController(options) {
       for (const key of legacyAuthStorageKeys(serverSettings)) delete data.servers[key];
       const wrote = settings.writeAuth(data);
       if (wrote && found.credential) {
+        if(serverSettings.syncManaged) {
+          await applyServerSettings({ ...serverSettings, user:'', pass:'', apiKey:'', syncManaged:false },'credential-cleared',false,authStorageKey(serverSettings));
+        }
         await Promise.resolve(disposeLsp('credential-cleared'));
         await Promise.resolve(onCredentialChanged({ type: 'clear', serverSettings }));
       }

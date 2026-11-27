@@ -263,6 +263,17 @@ func (h *HTTPHandler) handleLogin(w http.ResponseWriter, r *http.Request, req *m
 		writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "Administrator enrollment is required"})
 		return
 	}
+	if req.EnrollmentToken == "" && h.trustedStore() != nil {
+		devices, listErr := h.trustedStore().ListTrusted(user.ID)
+		if listErr != nil {
+			writeJSON(w, http.StatusServiceUnavailable, model.Response{Success: false, Error: "accounts.error.unavailable"})
+			return
+		}
+		if len(devices) > 0 && (req.DeviceID == "" || req.DeviceSecret == "") {
+			writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "accounts.error.authorizationRequired"})
+			return
+		}
+	}
 
 	var sess *auth.AuthSession
 	rootClaimed := false
@@ -319,7 +330,7 @@ func (h *HTTPHandler) handleLogin(w http.ResponseWriter, r *http.Request, req *m
 		Token:     sess.Token,
 		ExpiresAt: &sess.ExpiresAt,
 		User:      sanitizeUser(user),
-		Data:      h.syncResponse(r, user, sess.Token),
+		Data:      h.sessionResponseData(r, user, sess),
 	})
 }
 
@@ -332,7 +343,22 @@ func createDeviceSession(h *HTTPHandler, userID string, req *model.Request) (*au
 		name = "BOBOCLOUD desktop"
 	}
 	platform := cleanDeviceLabel(req.DevicePlatform, 40)
-	return h.AuthSessions.CreateForDevice(userID, name, platform, h.Config.SessionTokenTTL())
+	sess, err := h.AuthSessions.CreateForDevice(userID, name, platform, h.Config.SessionTokenTTL())
+	if err != nil || req.DeviceSecret == "" {
+		return sess, err
+	}
+	store := h.trustedStore()
+	if store == nil {
+		_ = h.AuthSessions.Delete(sess.Token)
+		return nil, auth.ErrDeviceAuthorization
+	}
+	device, err := store.TrustSession(sess.Token, req.DeviceID, req.DeviceSecret)
+	if err != nil {
+		_ = h.AuthSessions.Delete(sess.Token)
+		return nil, err
+	}
+	sess.TrustedDeviceID = device.ID
+	return sess, nil
 }
 
 func cleanDeviceLabel(value string, limit int) string {
@@ -479,7 +505,7 @@ func (h *HTTPHandler) handleRegister(w http.ResponseWriter, r *http.Request, req
 		Token:     sess.Token,
 		ExpiresAt: &sess.ExpiresAt,
 		User:      sanitizeUser(user),
-		Data:      h.syncResponse(r, user, sess.Token),
+		Data:      h.sessionResponseData(r, user, sess),
 	})
 }
 

@@ -16,10 +16,14 @@ export function runHistoryTime(value?: string): string {
   return value ? new Date(value).toLocaleString() : '';
 }
 
+export function runHistoryStatus(t: Translate, status: string): string {
+  return t(statuses[status as keyof typeof statuses] || status || 'Failed');
+}
+
 export function renderRunHistorySummary(
   row: HTMLElement, t: Translate, target: string, status: string, metadata: string[]
 ): void {
-  const text = [t(statuses[status as keyof typeof statuses] || status || 'Failed'), ...metadata.filter(Boolean)].join(' · ');
+  const text = [runHistoryStatus(t, status), ...metadata.filter(Boolean)].join(' · ');
   const key = JSON.stringify([target, status, text]);
   if (summaries.get(row) === key) return;
   summaries.set(row, key);

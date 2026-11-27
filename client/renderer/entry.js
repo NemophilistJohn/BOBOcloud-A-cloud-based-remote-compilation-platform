@@ -80,6 +80,8 @@ import './compat/realtime-adapter.ts';
 import './compat/social-adapter.ts';
 import './compat/account-profile-adapter.ts';
 import './compat/welcome-adapter.ts';
+import './compat/account-manager-adapter.ts';
+import './compat/admin-invitations-adapter.ts';
 
 // AI modules.
 import './compat/ai-settings-schema-adapter.ts';

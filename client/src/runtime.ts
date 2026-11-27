@@ -478,6 +478,9 @@ export function createRuntimeService(dependencies: RuntimeDependencies): Runtime
     }
     updateRuntimeButtonLabel();
     buildRuntimeMenu();
+    // Auth can finish before the runtime service is initialized. Re-fetch now
+    // so a valid saved session cannot leave the selector stuck in Local mode.
+    if (state.serverSettings?.ip) void fetchRuntimes();
   }
 
   function dispose(): void {

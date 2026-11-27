@@ -277,6 +277,10 @@ export interface NativeHost {
   authGet: Invoke<'auth-get'>;
   authSet(credential: unknown): Promise<unknown>;
   authClear: Invoke<'auth-clear'>;
+  accountsList: Invoke<'accounts:list'>;
+  accountsSwitch: Invoke<'accounts:switch'>;
+  accountsLogout: Invoke<'accounts:logout'>;
+  accountsRemove: Invoke<'accounts:remove'>;
   enrollmentPreview: Invoke<'enrollment:preview'>;
   enrollmentActivate: Invoke<'enrollment:activate'>;
   enrollmentAuthenticate: Invoke<'enrollment:authenticate'>;

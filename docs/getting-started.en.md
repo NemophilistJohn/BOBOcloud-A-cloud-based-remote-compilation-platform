@@ -79,7 +79,7 @@ Installing a library with desktop `pip` does not install it into a selected clou
 
 ## 7. Inspect a run record
 
-Use the clock-shaped **Run history** button in the title bar. Select your `main.py` record to see its run ID, runtime, target, workspace, timing, result, arguments when present, and retained output. Copy the output for a bug report. Long output may have an explicit omission marker; history is bounded, not an unlimited log archive or source-code backup.
+Open **Personal center** from the account menu and choose **History** to inspect recent runs. Select your `main.py` record to see its run ID, runtime, target, workspace, timing, result, arguments when present, and retained output. Copy the output for a bug report. Long output may have an explicit omission marker; history is bounded, not an unlimited log archive or source-code backup.
 
 ## 8. Debug the same project
 

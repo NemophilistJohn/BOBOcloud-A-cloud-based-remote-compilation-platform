@@ -9,7 +9,7 @@ const { createAiController } = require('./main/ai');
 const { createAgentPlatformBroker } = require('./main/agent-platform');
 const { createLspController } = require('./main/lsp');
 const { createAuthController } = require('./main/auth');
-const { registerEnrollment } = require('./main/enrollment-registration');
+const { registerAccounts } = require('./main/accounts-registration');
 const { registerDiagnosticsIpc } = require('./main/diagnostics');
 const { registerRcloneIpc } = require('./main/rclone-ipc');
 const { registerInboxDownload } = require('./main/inbox-download');
@@ -118,12 +118,12 @@ const auth = createAuthController({ ipcMain, settings, disposeLsp: disposeRemote
   },
   onCredentialChanged: () => { inboxDownload?.cancel(); notebookKernels.closeAll(); realtime.close(); return rcloneService.cancelAll('credential-changed'); }
 });
-const enrollment = registerEnrollment({ app, ipcMain, settings, auth, getWindow, session: electronSession,
+const enrollment = registerAccounts({ app, ipcMain, settings, auth, getWindow, session: electronSession,
   fetch: (...args) => electronSession.defaultSession.fetch(...args),
-  notify: () => rendererEvents.send('enrollment:open')
+  notify: () => rendererEvents.send('enrollment:open'),
+  credentialsChanged: async () => { await disposeRemoteEditorServices('account-change'); inboxDownload?.cancel(); notebookKernels.closeAll(); realtime.close(); await rcloneService.cancelAll('account-change'); }
 });
-menu = createMenuController({ Menu, dialog, getWindow, sendToRenderer: rendererEvents.send, languagePacks, getAuthState: auth.getState,
-  pickAndOpenWorkspace: workspace.pickAndOpenWorkspace });
+menu = createMenuController({ Menu, dialog, getWindow, sendToRenderer: rendererEvents.send, languagePacks, getAuthState: auth.getState, pickAndOpenWorkspace: workspace.pickAndOpenWorkspace });
 const tasks = createTasksController({ ipcMain, getWindow, getWorkspaceIdentity: workspace.getIdentity });
 dap = createDapController({ ipcMain, getWindow, sendToRenderer: rendererEvents.send, getWorkspaceIdentity: workspace.getIdentity,
   runWorkspaceMutation: workspace.runMutation, settings });

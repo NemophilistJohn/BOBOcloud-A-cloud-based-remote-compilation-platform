@@ -41,6 +41,7 @@ func (h *HTTPHandler) handleInspectEnrollment(w http.ResponseWriter, r *http.Req
 	}
 	writeJSON(w, http.StatusOK, model.Response{Success: true, Data: map[string]any{
 		"kind": record.Kind, "syncMode": record.SyncMode, "expiresAt": record.ExpiresAt,
+		"targetUserId":          record.TargetUserID,
 		"requiresPasswordSetup": requiresPasswordSetup, "version": h.Version,
 	}})
 }
@@ -74,10 +75,39 @@ func (h *HTTPHandler) handleEnrollment(w http.ResponseWriter, r *http.Request, r
 	}
 	session, _ := r.Context().Value(contextKeySessionToken).(string)
 	switch req.Action {
+	case "trustCurrentDevice":
+		store := h.trustedStore()
+		if session == "" || store == nil {
+			writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "accounts.error.authorizationRequired"})
+			return
+		}
+		device, err := store.TrustSession(session, req.DeviceID, req.DeviceSecret)
+		if err != nil {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, model.Response{Success: true, Data: map[string]any{"deviceId": device.ID}})
 	case "listDevices":
 		if session == "" || h.AuthSessions == nil {
 			writeJSON(w, http.StatusForbidden, model.Response{Success: false, Error: "A user session is required"})
 			return
+		}
+		current, _ := h.AuthSessions.Validate(session, h.Config.SessionTokenTTL())
+		if store := h.trustedStore(); store != nil {
+			trusted, err := store.ListTrusted(user.ID)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, model.Response{Success: false, Error: "Could not load authorized devices"})
+				return
+			}
+			if len(trusted) > 0 {
+				devices := make([]map[string]any, 0, len(trusted))
+				for _, d := range trusted {
+					devices = append(devices, map[string]any{"id": d.ID, "deviceId": d.ID, "name": d.Name, "platform": d.Platform, "createdAt": d.CreatedAt, "lastSeenAt": d.LastSeenAt, "current": current != nil && current.TrustedDeviceID == d.ID})
+				}
+				sort.Slice(devices, func(i, j int) bool { return devices[i]["current"] == true && devices[j]["current"] != true })
+				writeJSON(w, http.StatusOK, model.Response{Success: true, Data: map[string]any{"devices": devices}})
+				return
+			}
 		}
 		items, err := h.AuthSessions.ListByUser(user.ID)
 		if err != nil {
@@ -116,8 +146,15 @@ func (h *HTTPHandler) handleEnrollment(w http.ResponseWriter, r *http.Request, r
 			writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: "Device ID is required"})
 			return
 		}
-		if err := h.AuthSessions.RevokeDevice(user.ID, req.DeviceID, session); err != nil {
-			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: err.Error()})
+		var revokeErr error
+		current, _ := h.AuthSessions.Validate(session, h.Config.SessionTokenTTL())
+		if store := h.trustedStore(); store != nil && current != nil && current.TrustedDeviceID != "" {
+			revokeErr = store.RevokeTrusted(user.ID, req.DeviceID, current.TrustedDeviceID)
+		} else {
+			revokeErr = h.AuthSessions.RevokeDevice(user.ID, req.DeviceID, session)
+		}
+		if revokeErr != nil {
+			writeJSON(w, http.StatusConflict, model.Response{Success: false, Error: revokeErr.Error()})
 			return
 		}
 		h.auditEvent(r, user.ID, user.Username, "revokeDevice", req.DeviceID, "", true)
@@ -156,7 +193,7 @@ func (h *HTTPHandler) handleEnrollment(w http.ResponseWriter, r *http.Request, r
 		if req.ExpiresInHours > 0 && req.ExpiresInHours <= 24 {
 			ttl = time.Duration(req.ExpiresInHours) * time.Hour
 		}
-		link, record, err := h.Enrollment.Create(kind, target, mode, role, ttl)
+		link, record, err := h.Enrollment.CreateFor(kind, target, mode, role, ttl, user.ID, cleanDeviceLabel(req.Label, 80))
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, model.Response{Success: false, Error: err.Error()})
 			return

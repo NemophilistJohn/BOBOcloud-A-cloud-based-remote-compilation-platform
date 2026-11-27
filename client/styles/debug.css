@@ -28,6 +28,7 @@
 #run-code:disabled, #run-target-btn:disabled { opacity: .45; cursor: default; filter: saturate(.35); }
 .debug-control-group svg { width: 15px; height: 15px; }
 #debug-config-button { width: 25px; padding: 0; }
+#titlebar .debug-control-group #debug-start { width: 30px; padding: 0; }
 
 .debug-config-menu {
   position: fixed;

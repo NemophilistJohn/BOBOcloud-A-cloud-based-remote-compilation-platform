@@ -22,6 +22,7 @@ import (
 	"bobocloud-server/internal/auth"
 	"bobocloud-server/internal/config"
 	"bobocloud-server/internal/handler"
+	"bobocloud-server/internal/rootbootstrap"
 	"bobocloud-server/internal/serverruntime"
 )
 
@@ -298,6 +299,27 @@ func TestConfigureEnrollmentKeepsExistingRootPasswordOnUpgrade(t *testing.T) {
 	if err := users.Create(root); err != nil {
 		t.Fatal(err)
 	}
+	statePath := filepath.Join(cfg.DataDir, "enrollment", "state.json")
+	legacyManager, err := enrollment.NewManager(statePath, enrollment.Descriptor{
+		Host: "127.0.0.1", CertificateFingerprints: []string{"LEGACY"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyLink, _, err := legacyManager.Create("root", root.ID, "restricted", auth.RoleRoot, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(cfg.EnrollmentFile, []byte(legacyLink), 0600); err != nil {
+		t.Fatal(err)
+	}
+	legacyCredential := rootbootstrap.CredentialPath(cfg.DataDir)
+	if err = os.MkdirAll(filepath.Dir(legacyCredential), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(legacyCredential, []byte("legacy bootstrap material"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	sessions := auth.NewMemoryAuthSessionStore()
 	h := &handler.HTTPHandler{Config: cfg, UserStore: users, AuthSessions: sessions}
 	sftp, err := configureEnrollment(cfg, h, users, sessions, serverruntime.New(context.Background()), cfg.DataDir)
@@ -309,7 +331,10 @@ func TestConfigureEnrollmentKeepsExistingRootPasswordOnUpgrade(t *testing.T) {
 		t.Fatal("upgrade unexpectedly marked the existing root account unclaimed")
 	}
 	if _, err := os.Stat(cfg.EnrollmentFile); !os.IsNotExist(err) {
-		t.Fatalf("upgrade unexpectedly created a claim link: %v", err)
+		t.Fatalf("upgrade retained a stale claim link: %v", err)
+	}
+	if _, err := os.Stat(legacyCredential); !os.IsNotExist(err) {
+		t.Fatalf("upgrade retained old bootstrap credentials: %v", err)
 	}
 	stored, err := users.Get(root.ID)
 	if err != nil || stored.PasswordHash != hash || !auth.CheckPassword(stored.PasswordHash, "existing-password") {

@@ -56,6 +56,7 @@
   }
   function dropCredential() {
     if (BOBO.accountProfile && BOBO.accountProfile.reset) BOBO.accountProfile.reset();
+    if (BOBO.invitations && BOBO.invitations.reset) BOBO.invitations.reset();
     S.auth.token = '';
     S.auth.expiresAt = 0;
     S.auth.user = null;
@@ -151,15 +152,6 @@
     if (S.auth.modalOpen) closeAuthModal();
     closeAdmin();
     closeMenu();
-    dropCredential();
-    S.auth.mode = 'unknown';
-    S.auth.serverVersion = '';
-    if (BOBO.serverCapabilities && typeof BOBO.serverCapabilities.clear === 'function') {
-      BOBO.serverCapabilities.clear('enrollment-server-change');
-    } else {
-      S.serverCapabilities = null;
-    }
-    renderChip();
     pendingEnrollment = { kind: kind, id: id };
     rootPasswordSetup = kind === 'root' && requiresPasswordSetup === true;
     S.auth.modalOpen = true;
@@ -188,6 +180,7 @@
       if (newPassword !== confirmPassword) { showError(t('enrollment.auth.passwordMismatch')); return; }
       setSubmitting(true);
       try {
+        if (!await prepareAccountTransition()) return;
         var claimResult = await BOBO.enrollmentHost.enrollmentAuthenticate({ id: pendingEnrollment.id, password: newPassword });
         if (!claimResult || !claimResult.success) {
           showError((claimResult && claimResult.error) || t('enrollment.auth.loginFailed'));
@@ -206,6 +199,7 @@
     if (!identity || !password) { showError(t('enrollment.auth.loginRequired')); return; }
     setSubmitting(true);
     try {
+      if (!await prepareAccountTransition()) return;
       var res = pendingEnrollment
         ? await BOBO.enrollmentHost.enrollmentAuthenticate({ id: pendingEnrollment.id, identity: identity, password: password })
         : await BOBO.enrollmentHost.enrollmentLogin({ identity: identity, password: password });
@@ -231,6 +225,7 @@
     if (password !== password2) { showError(t('enrollment.auth.passwordMismatch')); return; }
     setSubmitting(true);
     try {
+      if (!await prepareAccountTransition()) return;
       var res = await BOBO.enrollmentHost.enrollmentAuthenticate({ id: pendingEnrollment.id, username: username, email: email, password: password });
       if (!res || !res.success) {
         showError((res && res.error) || t('enrollment.auth.registerFailed'));
@@ -272,6 +267,28 @@
     if (res.syncReady === false) BOBO.updateRunOutput(t('enrollment.auth.syncRefreshFailed'));
     // 登录后补齐运行时列表（此前 401 拿不到）
     if (BOBO.runtime && BOBO.runtime.fetchRuntimes) BOBO.runtime.fetchRuntimes();
+    if (BOBO.enrollmentHost && typeof BOBO.enrollmentHost.accountsList === 'function') {
+      try { await BOBO.enrollmentHost.accountsList(); } catch (_) { BOBO.updateRunOutput(t('accounts.error.migration')); }
+    }
+  }
+
+  async function prepareAccountTransition() {
+    if (BOBO.workspace && BOBO.workspace.canLeaveWorkspace && !await BOBO.workspace.canLeaveWorkspace({reason:'account-switch'})) return false;
+    if (BOBO.runner && BOBO.runner.invalidateRunIdentity) await BOBO.runner.invalidateRunIdentity();
+    if (BOBO.terminal && BOBO.terminal.close) await BOBO.terminal.close('account-switch');
+    if (BOBO.dap && BOBO.dap.abort) await BOBO.dap.abort('account-switch');
+    if (BOBO.collaboration && BOBO.collaboration.releaseForLogout) await BOBO.collaboration.releaseForLogout();
+    if (BOBO.workspace && BOBO.workspace.closeWorkspace) await BOBO.workspace.closeWorkspace({approved:true,reason:'account-switch'});
+    if (BOBO.collaboration && BOBO.collaboration.clearCurrent) BOBO.collaboration.clearCurrent();
+    return true;
+  }
+
+  function accountLoggedOut() {
+    dropCredential();
+    if (BOBO.lsp && BOBO.lsp.identityChanged) BOBO.lsp.identityChanged();
+    if (BOBO.serverCapabilities && BOBO.serverCapabilities.clear) BOBO.serverCapabilities.clear('account-logout');
+    S.auth.mode='multi';
+    renderChip();
   }
 
   // ──── 凭证过期 / 被吊销 ────
@@ -332,8 +349,8 @@
       chip.title = 'Cloud account: ' + (user.email || user.username || '');
     } else {
       chip.classList.add('auth-chip-offline');
-      chip.innerHTML = '<span class="auth-chip-dot"></span><span>登录</span>';
-      chip.title = '未登录 — 点击登录云编译账户（本地编辑不受影响）';
+      chip.innerHTML = '<span class="auth-chip-dot"></span><span>' + esc(t('accounts.title')) + '</span>';
+      chip.title = t('accounts.title');
     }
   }
 
@@ -345,7 +362,7 @@
   function toggleMenu() {
     var menu = $('auth-menu');
     if (!(S.auth.user && S.auth.token)) {
-      openAuthModal();
+      if (BOBO.accountManager) BOBO.accountManager.open(); else openAuthModal();
       return;
     }
     if (menu.style.display === 'block') { closeMenu(); return; }
@@ -370,36 +387,6 @@
     if (menu.contains(e.target) || $('auth-chip').contains(e.target)) return;
     closeMenu();
   });
-
-  // ──── 退出登录 ────
-  async function doLogout() {
-    closeMenu();
-    closeAdmin();
-    if (BOBO.workspace && BOBO.workspace.canLeaveWorkspace) {
-      var allowed = await BOBO.workspace.canLeaveWorkspace({ reason: 'logout' });
-      if (!allowed) return false;
-    }
-    if (BOBO.terminal && typeof BOBO.terminal.close === 'function') await BOBO.terminal.close('logout');
-    if (BOBO.dap && typeof BOBO.dap.abort === 'function') await BOBO.dap.abort('logout');
-	if (BOBO.collaboration && BOBO.collaboration.releaseForLogout) {
-	  await BOBO.collaboration.releaseForLogout();
-	}
-    if (S.auth.token) {
-      await BOBO.sendToServer('logout', {}, { quiet: true });
-    }
-    dropCredential();
-    if (BOBO.lsp && typeof BOBO.lsp.identityChanged === 'function') BOBO.lsp.identityChanged();
-    if (S.serverSettings.ip) await clearCredential();
-    renderChip();
-    // Close the open project folder so auto-sync doesn't push files to the
-    // server under the wrong account after an account switch.
-    if (BOBO.workspace && BOBO.workspace.closeWorkspace) {
-      try { await BOBO.workspace.closeWorkspace({ approved: true, reason: 'logout' }); } catch (e) { console.error('closeWorkspace:', e); }
-    }
-	if (BOBO.collaboration && BOBO.collaboration.clearCurrent) BOBO.collaboration.clearCurrent();
-    BOBO.updateRunOutput('Logged out. Local editing is unaffected; cloud compile requires login.');
-    return true;
-  }
 
   // ──── 修改密码 ────
   function openChpwd() {
@@ -449,6 +436,7 @@
     adminUsersLoadVersion += 1;
     closeAdminActionMenus();
     $('admin-modal').classList.remove('open');
+    if (BOBO.invitations) BOBO.invitations.reset();
   }
 
   function switchAdminTab(name) {
@@ -852,68 +840,7 @@
   }
 
   async function loadInvites() {
-    var list = $('invite-list');
-    var identity = adminAuthIdentity();
-    list.innerHTML = '<div class="admin-loading">' + esc(t('Loading...')) + '</div>';
-    var res = await BOBO.sendToServer('listEnrollments', {}, { quiet: true });
-    if (identity !== adminAuthIdentity() || !$('admin-modal').classList.contains('open')) return;
-    if (!res || !res.success) {
-      list.innerHTML = '<div class="admin-empty">' + esc((res && res.error) || t('Load failed')) + '</div>';
-      return;
-    }
-    var invites = res.data && res.data.enrollments || [];
-    if (invites.length === 0) {
-      list.innerHTML = '<div class="admin-empty">' + esc(t('enrollment.auth.noLinks')) + '</div>';
-      return;
-    }
-    invites.sort(function(a, b) { return new Date(b.createdAt) - new Date(a.createdAt); });
-    var html = '<table class="admin-table"><thead><tr>' +
-      '<th>' + esc(t('enrollment.auth.type')) + '</th><th>' + esc(t('enrollment.auth.access')) + '</th><th>' + esc(t('enrollment.auth.status')) + '</th><th>' + esc(t('enrollment.auth.expires')) + '</th><th>' + esc(t('Actions')) + '</th>' +
-      '</tr></thead><tbody>';
-    invites.forEach(function(inv) {
-      var status = new Date(inv.expiresAt) < new Date() && inv.state === 'available' ? 'expired' : inv.state;
-      if (['available', 'expired', 'used', 'reserved', 'revoked'].indexOf(status) < 0) status = 'unknown';
-      var kind = ['root', 'device', 'register'].indexOf(inv.kind) >= 0 ? inv.kind : 'unknown';
-      var kindKeys = { root: 'enrollment.auth.kind.root', device: 'enrollment.auth.kind.device', register: 'enrollment.auth.kind.register', unknown: 'enrollment.auth.kind.unknown' };
-      var stateKeys = { available: 'enrollment.auth.state.available', expired: 'enrollment.auth.state.expired', used: 'enrollment.auth.state.used', reserved: 'enrollment.auth.state.reserved', revoked: 'enrollment.auth.state.revoked', unknown: 'enrollment.auth.state.unknown' };
-      html += '<tr>' +
-        '<td>' + esc(t(kindKeys[kind])) + '</td>' +
-        '<td>' + esc(t(inv.syncMode === 'root' ? 'enrollment.auth.rootAccess' : 'enrollment.auth.restricted')) + '</td>' +
-        '<td>' + esc(t(stateKeys[status])) + '</td>' +
-        '<td>' + esc(new Date(inv.expiresAt).toLocaleString()) + '</td>' +
-        '<td><button class="admin-mini-btn danger" data-enrollment-id="' + esc(inv.id) + '">' + esc(t('enrollment.auth.revoke')) + '</button></td>' +
-      '</tr>';
-    });
-    html += '</tbody></table>';
-    list.innerHTML = html;
-    list.querySelectorAll('button[data-enrollment-id]').forEach(function(btn) {
-      btn.addEventListener('click', async function() {
-        btn.disabled = true;
-        var result = await BOBO.sendToServer('revokeEnrollment', { enrollmentId: btn.dataset.enrollmentId }, { quiet: true });
-        if (!result || !result.success) global.alert((result && result.error) || t('enrollment.auth.operationFailed'));
-        await loadInvites();
-      });
-    });
-  }
-
-  async function createInvite() {
-    var role = $('invite-role').value;
-    var mode = $('invite-sync-mode').value;
-    if (mode === 'root') {
-      var approved = await BOBO.confirm({ title: t('enrollment.auth.rootConfirmTitle'), message: t('enrollment.auth.rootConfirmMessage'), confirmLabel: t('enrollment.auth.rootConfirmButton'), danger: true });
-      if (!approved) return;
-    }
-    var hours = Math.min(24, Math.max(1, parseInt($('invite-hours').value, 10) || 1));
-    var res = await BOBO.sendToServer('createEnrollment', {
-      role: role, syncMode: mode, expiresInHours: hours
-    }, { quiet: true });
-    if (!res || !res.success) {
-      global.alert((res && res.error) || t('enrollment.auth.operationFailed'));
-      return;
-    }
-    if (!res.data || !res.data.link) { global.alert(t('enrollment.auth.operationFailed')); return; }
-    showGeneratedSecret(t('enrollment.auth.shareLink'), res.data.link, $('admin-pane-invites'));
-    loadInvites();
+    if (BOBO.invitations) await BOBO.invitations.load();
   }
 
   async function loadAudit() {
@@ -1029,6 +956,9 @@
         }
         // 免登自动登录成功后补齐运行时列表（multi 模式下需要 token 才能拿到）
         if (BOBO.runtime && BOBO.runtime.fetchRuntimes) BOBO.runtime.fetchRuntimes();
+        if (BOBO.enrollmentHost && typeof BOBO.enrollmentHost.accountsList==='function') {
+          try { await BOBO.enrollmentHost.accountsList(); } catch (_) {}
+        }
       } else if (who && who.status === 401) {
         handleAuthExpired();
       }
@@ -1070,7 +1000,10 @@
     uiBound = true;
 
     $('auth-tab-login').addEventListener('click', function() { switchTab('login'); });
-    $('auth-tab-register').addEventListener('click', function() { switchTab('register'); });
+    $('auth-tab-register').addEventListener('click', function() {
+        if (!pendingEnrollment) { closeAuthModal(); BOBO.welcome.open('register'); return; }
+        switchTab('register');
+      });
     $('auth-submit').addEventListener('click', function() {
       if (currentTab === 'login') submitLogin(); else submitRegister();
     });
@@ -1091,7 +1024,7 @@
       e.stopPropagation();
       toggleMenu();
     });
-    $('auth-menu-logout').addEventListener('click', doLogout);
+    $('auth-menu-accounts').addEventListener('click', function() { closeMenu(); BOBO.accountManager.open(); });
     $('auth-menu-chpwd').addEventListener('click', openChpwd);
     $('auth-menu-admin').addEventListener('click', function() { openAdmin('users'); });
     // 修改密码弹窗
@@ -1129,16 +1062,16 @@
       var activeTab = $('admin-modal').querySelector('.admin-tab.active');
       switchAdminTab(activeTab ? activeTab.dataset.pane : 'users');
     });
-    $('invite-create').addEventListener('click', createInvite);
 
     // 顶部菜单 Account → Login / Register（选了"暂不登录"后也可从这里进入）
     if (global.api && typeof global.api.onOpenAuthLogin === 'function') {
       global.api.onOpenAuthLogin(function() {
+        if (BOBO.accountManager) { BOBO.accountManager.open(); return; }
         if (S.auth.mode === 'multi') {
           if (S.auth.user && S.auth.token) {
             toggleMenu(); // 已登录 → 打开用户菜单
           } else {
-            openAuthModal();
+            if (BOBO.accountManager) BOBO.accountManager.open(); else openAuthModal();
           }
         } else if (S.auth.mode === 'single') {
           BOBO.updateRunOutput(t('Server is in single-user mode — no login required.'));
@@ -1150,7 +1083,7 @@
     // 顶部菜单 Account → Logout
     if (global.api && typeof global.api.onAuthLogoutRequest === 'function') {
       global.api.onAuthLogoutRequest(function() {
-        if (S.auth.user && S.auth.token) doLogout();
+        if (BOBO.accountManager) BOBO.accountManager.open();
       });
     }
     // 顶部"管理"菜单 -> 打开管理面板并切换到指定标签（仅管理员可见该菜单）
@@ -1175,6 +1108,9 @@
     handleAuthExpired: handleAuthExpired,
     openAuthModal: openAuthModal,
     openEnrollment: openEnrollment,
-    renderChip: renderChip
+    renderChip: renderChip,
+    prepareAccountTransition: prepareAccountTransition,
+    completeAccountTransition: onAuthSuccess,
+    accountLoggedOut: accountLoggedOut
   };
 })(window);

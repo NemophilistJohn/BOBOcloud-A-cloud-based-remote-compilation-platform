@@ -45,6 +45,30 @@ export interface AccountProfileActivityDataWireDto {
   readonly [key: string]: unknown;
 }
 
+export interface AccountProfileRunHistoryWireDto {
+  readonly run_id?: unknown;
+  readonly folder_name?: unknown;
+  readonly file_path?: unknown;
+  readonly target_type?: unknown;
+  readonly task_label?: unknown;
+  readonly task_kind?: unknown;
+  readonly runtime?: unknown;
+  readonly language?: unknown;
+  readonly build_target?: unknown;
+  readonly branch?: unknown;
+  readonly compile_args?: unknown;
+  readonly run_args?: unknown;
+  readonly status?: unknown;
+  readonly exit_code?: unknown;
+  readonly duration_ms?: unknown;
+  readonly created_at?: unknown;
+  readonly started_at?: unknown;
+  readonly completed_at?: unknown;
+  readonly output_summary?: unknown;
+  readonly output_truncated?: unknown;
+  readonly [key: string]: unknown;
+}
+
 export interface AccountProfileDeviceWireDto {
   readonly id?: unknown;
   readonly deviceId?: unknown;
@@ -74,6 +98,7 @@ export interface AccountProfileResponseWireDto {
 
 export interface AccountProfileServerRequestMap {
   readonly getCompileActivity: Record<string, never>;
+  readonly listRunHistory: Record<string, never>;
   readonly updateProfile: Readonly<{ name: string; avatar: string }>;
   readonly listDevices: Record<string, never>;
   readonly createDeviceEnrollment: Record<string, never>;
@@ -82,6 +107,7 @@ export interface AccountProfileServerRequestMap {
 
 export interface AccountProfileServerResponseMap {
   readonly getCompileActivity: AccountProfileResponseWireDto;
+  readonly listRunHistory: AccountProfileResponseWireDto;
   readonly updateProfile: AccountProfileResponseWireDto;
   readonly listDevices: AccountProfileResponseWireDto;
   readonly createDeviceEnrollment: AccountProfileResponseWireDto;

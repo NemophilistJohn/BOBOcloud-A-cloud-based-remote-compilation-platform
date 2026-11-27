@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -36,14 +37,18 @@ type Credential struct {
 }
 
 type Record struct {
-	ID           string    `json:"id"`
-	Kind         string    `json:"kind"`
-	TargetUserID string    `json:"targetUserId,omitempty"`
-	SyncMode     string    `json:"syncMode"`
-	Role         string    `json:"role,omitempty"`
-	CreatedAt    time.Time `json:"createdAt"`
-	ExpiresAt    time.Time `json:"expiresAt"`
-	State        string    `json:"state"`
+	ID           string     `json:"id"`
+	Kind         string     `json:"kind"`
+	TargetUserID string     `json:"targetUserId,omitempty"`
+	SyncMode     string     `json:"syncMode"`
+	Role         string     `json:"role,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	ExpiresAt    time.Time  `json:"expiresAt"`
+	State        string     `json:"state"`
+	Label        string     `json:"label,omitempty"`
+	CreatedBy    string     `json:"createdBy,omitempty"`
+	ClaimedBy    string     `json:"claimedBy,omitempty"`
+	ClaimedAt    *time.Time `json:"claimedAt,omitempty"`
 }
 
 type state struct {
@@ -138,6 +143,10 @@ func (m *Manager) persist() error {
 }
 
 func (m *Manager) Create(kind, targetUserID, syncMode, role string, ttl time.Duration) (string, Record, error) {
+	return m.CreateFor(kind, targetUserID, syncMode, role, ttl, "", "")
+}
+
+func (m *Manager) CreateFor(kind, targetUserID, syncMode, role string, ttl time.Duration, creator, label string) (string, Record, error) {
 	if kind != "root" && kind != "register" && kind != "device" {
 		return "", Record{}, errors.New("invalid enrollment kind")
 	}
@@ -164,6 +173,7 @@ func (m *Manager) Create(kind, targetUserID, syncMode, role string, ttl time.Dur
 	id := tokenHash(token)
 	now := time.Now().UTC()
 	rec := Record{ID: id, Kind: kind, TargetUserID: targetUserID, SyncMode: syncMode, Role: role, CreatedAt: now, ExpiresAt: now.Add(ttl), State: "available"}
+	rec.CreatedBy, rec.Label = creator, label
 	payload := struct {
 		V int `json:"v"`
 		Descriptor
@@ -176,6 +186,15 @@ func (m *Manager) Create(kind, targetUserID, syncMode, role string, ttl time.Dur
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	previousRecords := make(map[string]Record, len(m.state.Records))
+	for key, value := range m.state.Records {
+		previousRecords[key] = value
+	}
+	m.pruneLocked(now)
+	if len(m.state.Records) >= 2000 {
+		m.state.Records = previousRecords
+		return "", Record{}, errors.New("enrollment.error.tooMany")
+	}
 	previousRoot := m.state.RootPending
 	invalidated := make(map[string]Record)
 	if kind == "root" {
@@ -190,7 +209,7 @@ func (m *Manager) Create(kind, targetUserID, syncMode, role string, ttl time.Dur
 	}
 	m.state.Records[id] = rec
 	if err = m.persist(); err != nil {
-		delete(m.state.Records, id)
+		m.state.Records = previousRecords
 		m.state.RootPending = previousRoot
 		for priorID, prior := range invalidated {
 			m.state.Records[priorID] = prior
@@ -246,6 +265,8 @@ func (m *Manager) Claim(token, kind, userID string, fn func(Record) error) (Reco
 		return Record{}, err
 	}
 	rec.State = "used"
+	claimedAt := time.Now().UTC()
+	rec.ClaimedBy, rec.ClaimedAt = userID, &claimedAt
 	m.state.Records[rec.ID] = rec
 	previous, hadPrevious := m.state.Modes[userID]
 	previousRoot := m.state.RootPending
@@ -275,6 +296,39 @@ func (m *Manager) RootClaimRequired(userID string) bool {
 	return userID != "" && m.state.RootPending == userID
 }
 
+// ReconcileRootClaim clears a stale first-run marker when an existing root
+// account already has a password. This is required for upgrades from the
+// initial enrollment release, where the marker could survive a restart even
+// though the administrator account was already configured.
+func (m *Manager) ReconcileRootClaim(userID string, passwordConfigured bool) error {
+	if userID == "" || !passwordConfigured {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state.RootPending != userID {
+		return nil
+	}
+	previousPending := m.state.RootPending
+	previous := make(map[string]Record)
+	for id, record := range m.state.Records {
+		if record.Kind == "root" && record.TargetUserID == userID && record.State == "available" {
+			previous[id] = record
+			record.State = "revoked"
+			m.state.Records[id] = record
+		}
+	}
+	m.state.RootPending = ""
+	if err := m.persist(); err != nil {
+		m.state.RootPending = previousPending
+		for id, record := range previous {
+			m.state.Records[id] = record
+		}
+		return err
+	}
+	return nil
+}
+
 func (m *Manager) ModeForUser(userID string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -298,6 +352,24 @@ func (m *Manager) List() []Record {
 	return out
 }
 
+// Keep recent terminal history bounded; live invitations are never pruned.
+func (m *Manager) pruneLocked(now time.Time) {
+	terminal := []Record{}
+	for id, r := range m.state.Records {
+		if r.State == "used" || r.State == "revoked" || (r.State == "available" && !now.Before(r.ExpiresAt)) {
+			if now.Sub(r.ExpiresAt) > 30*24*time.Hour {
+				delete(m.state.Records, id)
+			} else {
+				terminal = append(terminal, r)
+			}
+		}
+	}
+	sort.Slice(terminal, func(i, j int) bool { return terminal[i].CreatedAt.After(terminal[j].CreatedAt) })
+	for i := 500; i < len(terminal); i++ {
+		delete(m.state.Records, terminal[i].ID)
+	}
+}
+
 func (m *Manager) Revoke(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -308,8 +380,11 @@ func (m *Manager) Revoke(id string) error {
 	if !ok {
 		return errors.New("enrollment not found")
 	}
+	if old.State == "revoked" {
+		return nil
+	}
 	if old.State != "available" || !time.Now().Before(old.ExpiresAt) {
-		return errors.New("enrollment is no longer available")
+		return errors.New("enrollment.error.noLongerAvailable")
 	}
 	original := old
 	old.State = "revoked"

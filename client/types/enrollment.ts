@@ -28,6 +28,10 @@ export interface EnrollmentAuthResult {
 
 /** Main-owned enrollment APIs exposed only to the host workbench. */
 export interface EnrollmentHostPort {
+  accountsList(): Promise<SavedAccount[]>;
+  accountsSwitch(id: string): Promise<EnrollmentAuthResult | { unchanged: true }>;
+  accountsLogout(): Promise<void>;
+  accountsRemove(id: string): Promise<boolean>;
   enrollmentPreview(link: string): Promise<EnrollmentPreview>;
   enrollmentActivate(id: string): Promise<Record<string, unknown>>;
   enrollmentAuthenticate(payload: EnrollmentAuthentication): Promise<EnrollmentAuthResult>;
@@ -38,4 +42,18 @@ export interface EnrollmentHostPort {
   readServerSettings(): Promise<Record<string, unknown>>;
   writeServerSettings(settings: unknown): Promise<unknown>;
   commitServerSettings(): Promise<unknown>;
+}
+
+export interface SavedAccount {
+  readonly id: string;
+  readonly username: string;
+  readonly userId: string;
+  readonly uid: string;
+  readonly name: string;
+  readonly avatar: string;
+  readonly role: string;
+  readonly server: string;
+  readonly online: boolean;
+  readonly authorized: boolean;
+  readonly savedAt: number;
 }

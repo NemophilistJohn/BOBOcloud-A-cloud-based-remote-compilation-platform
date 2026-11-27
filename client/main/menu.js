@@ -61,8 +61,7 @@ function createMenuController(options) {
       {
         label: t('Account'),
         submenu: [
-          { label: t('Login / Register...'), accelerator: 'CommandOrControl+L', click: () => send('open-auth-login') },
-          { label: t('Logout'), click: () => send('auth-logout-request') }
+          { label: t('accounts.title'), accelerator: 'CommandOrControl+L', click: () => send('open-auth-login') }
         ]
       }
     ];

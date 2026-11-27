@@ -25,9 +25,11 @@ test('welcome verifies a self-signed invitation before registration and keeps SS
         const value=JSON.parse(body);received.push(value);
         const syncCredential={mode:'restricted',host:'127.0.0.1',port:3103,user:'bobocloud',password:'only-main-sees-this',hostKey};
         let response={success:true};
-        if(value.action==='inspectEnrollment')response.data={kind:value.enrollmentToken==='r'.repeat(43)?'root':'register',requiresPasswordSetup:value.enrollmentToken==='r'.repeat(43),expiresAt:new Date(Date.now()+600000).toISOString(),version:'3.0.1'};
-        if(value.action==='register')response={success:true,token:'bobsess_welcome',expiresAt:new Date(Date.now()+3600000).toISOString(),user,data:{syncCredential}};
-        if(value.action==='login')response={success:true,token:'bobsess_root',expiresAt:new Date(Date.now()+3600000).toISOString(),user:rootUser,data:{syncCredential}};
+        if(value.action==='inspectEnrollment')response.data={kind:value.enrollmentToken==='r'.repeat(43)?'root':value.enrollmentToken==='d'.repeat(43)?'device':'register',requiresPasswordSetup:value.enrollmentToken==='r'.repeat(43),targetUserId:value.enrollmentToken==='d'.repeat(43)?user.id:'',expiresAt:new Date(Date.now()+600000).toISOString(),version:'3.0.2'};
+        if(value.action==='register')response={success:true,token:'bobsess_welcome',expiresAt:new Date(Date.now()+3600000).toISOString(),user,data:{syncCredential,deviceId:'welcome-device'}};
+        if(value.action==='login')response={success:true,token:'bobsess_root',expiresAt:new Date(Date.now()+3600000).toISOString(),user:rootUser,data:{syncCredential,deviceId:'root-device'}};
+        if(value.action==='login' && value.enrollmentToken==='d'.repeat(43))response={success:true,token:'bobsess_device',expiresAt:new Date(Date.now()+3600000).toISOString(),user,data:{syncCredential,deviceId:'welcome-device'}};
+        if(value.action==='trustCurrentDevice')response.data={deviceId:'welcome-device'};
         if(value.action==='whoami')response={success:true,user:req.headers.authorization==='Bearer bobsess_root'?rootUser:user};
         if(value.action==='getSyncCredential')response.data={syncCredential};
         if(value.action==='serverInfo')response={success:true,authMode:'multi',version:'3.0.1'};
@@ -37,6 +39,7 @@ test('welcome verifies a self-signed invitation before registration and keeps SS
     await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
     app=await electron.launch({args:['.','--user-data-dir='+path.join(root,'chromium')],env:{...process.env,APPDATA:path.join(root,'appdata'),HOME:path.join(root,'home'),USERPROFILE:path.join(root,'home'),BOBO_FORCE_FIRST_RUN:'1',ELECTRON_DISABLE_SECURITY_WARNINGS:'true'}});
     const page=await app.firstWindow();await page.waitForFunction(()=>document.documentElement.dataset.boboReady==='true');
+    expect(await page.evaluate(() => typeof window.BOBO.enrollmentHost.accountsList)).toBe('function');
     await expect(page.locator('#welcome-page')).toBeVisible();
     await expect(page.locator('#empty-state')).toBeHidden();
     await expect(page.locator('#settings-modal')).toBeHidden();
@@ -80,6 +83,34 @@ test('welcome verifies a self-signed invitation before registration and keeps SS
     expect(claim.enrollmentToken).toBe('r'.repeat(43));
     expect(claim.deviceName).toBe('BOBOCLOUD desktop');
     expect(claim.devicePlatform).toBe(process.platform==='win32'?'Windows':process.platform==='darwin'?'macOS':process.platform==='linux'?'Linux':'Desktop');
+
+    // Adding an account must preserve the active identity through preview,
+    // cancellation and invalid link types, then replace it only on login.
+    await page.evaluate(() => window.BOBO.welcome.open('device'));
+    await page.fill('#welcome-link',link(descriptor));
+    await page.click('#welcome-preview');
+    await expect(page.locator('#welcome-status')).toContainText('device authorization link');
+    await expect(page.locator('#welcome-overview')).toBeHidden();
+    expect(await page.evaluate(() => window.BOBO.state.auth.user.id)).toBe('root');
+    await page.evaluate(() => window.BOBO.welcome.close());
+    expect(await page.evaluate(() => window.BOBO.state.auth.user.id)).toBe('root');
+
+    await page.evaluate(() => window.BOBO.welcome.open('device'));
+    await page.fill('#welcome-link',link({...descriptor,kind:'device',token:'d'.repeat(43)}));
+    await page.click('#welcome-preview');
+    await expect(page.locator('#welcome-overview')).toBeVisible();
+    await page.click('#welcome-connect');
+    await expect(page.locator('#auth-form-login')).toBeVisible();
+    expect(await page.evaluate(() => window.BOBO.state.auth.user.id)).toBe('root');
+    await page.fill('#auth-login-identity','welcome');
+    await page.fill('#auth-login-password','Welcome-password!');
+    await page.click('#auth-submit');
+    await expect(page.locator('#auth-overlay')).toBeHidden();
+    const savedAccounts=await page.evaluate(() => window.api.accountsList());
+    expect(savedAccounts).toHaveLength(2);
+    expect(savedAccounts.find(account=>account.online).username).toBe('welcome');
+    expect(savedAccounts.every(account=>account.authorized)).toBe(true);
+    expect(JSON.stringify(savedAccounts)).not.toContain('deviceSecret');
   } finally {
     if(app) {try {await app.close();}catch{try {await app.evaluate(({app})=>app.exit(0));}catch{}}}
     if(server) {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}

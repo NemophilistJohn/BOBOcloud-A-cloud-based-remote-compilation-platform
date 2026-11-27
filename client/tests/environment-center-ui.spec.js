@@ -353,12 +353,20 @@ test('environment view switches, persists, localizes, and fits at 180px', async 
           }]
         };
       };
+      window.BOBO.state.auth.mode = 'multi';
+      window.BOBO.state.auth.token = 'history-test-token';
+      window.BOBO.state.auth.user = {
+        id: 'history-user', uid: 'history-user', username: 'history-user',
+        email: 'history@example.com', name: 'History User', role: 'member'
+      };
+      window.BOBO.accountProfile.open('activity');
     });
-    await page.locator('#history-btn').click();
-    await expect(page.locator('#history-modal')).toBeVisible();
-    await page.locator('.history-row').click();
-    await expect(page.locator('#history-detail-output')).toHaveText('Earlier output was not retained.\n\nnewest output');
-    await page.locator('#history-close').click();
+    await expect(page.locator('#profile-modal')).toBeVisible();
+    await expect(page.locator('[data-account-tab="activity"]')).toHaveClass(/active/);
+    await page.locator('[data-toggle-run="truncated-fixture"]').click();
+    await expect(page.locator('[data-detail-run-id="truncated-fixture"] .account-run-history-output'))
+      .toHaveText('Earlier output was not retained.\n\nnewest output');
+    await page.locator('#profile-close-x').click();
 
     for (const locale of ['en', 'zh-CN', 'ja']) {
       const copy = await page.evaluate(async (nextLocale) => {

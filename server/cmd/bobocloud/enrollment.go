@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/url"
@@ -234,6 +235,15 @@ func configureEnrollment(cfg *config.Config, h *handler.HTTPHandler, store auth.
 	if root == nil {
 		return nil, errors.New("root account is unavailable")
 	}
+	if err := mgr.ReconcileRootClaim(root.ID, root.PasswordHash != ""); err != nil {
+		_ = sftpServer.Close()
+		return nil, err
+	}
+	if root.PasswordHash != "" && !mgr.RootClaimRequired(root.ID) {
+		if err := removeRootClaimArtifacts(cfg.DataDir, output); err != nil {
+			slog.Warn("Stale root enrollment artifact cleanup failed", "error", err)
+		}
+	}
 	if root.PasswordHash == "" || mgr.RootClaimRequired(root.ID) {
 		if err := ensureRootClaimFile(mgr, descriptor, root.ID, output, rootSSH != nil); err != nil {
 			_ = sftpServer.Close()
@@ -245,6 +255,19 @@ func configureEnrollment(cfg *config.Config, h *handler.HTTPHandler, store auth.
 		return nil, err
 	}
 	return sftpServer, nil
+}
+
+func removeRootClaimArtifacts(dataDir, output string) error {
+	var cleanupErr error
+	if output != "" {
+		if err := os.Remove(output); err != nil && !errors.Is(err, os.ErrNotExist) {
+			cleanupErr = err
+		}
+	}
+	if err := rootbootstrap.RemoveCredentialFile(dataDir); err != nil && cleanupErr == nil {
+		cleanupErr = err
+	}
+	return cleanupErr
 }
 
 // The file is a privileged bearer credential. Reissue stale or missing links

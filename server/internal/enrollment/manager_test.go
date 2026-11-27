@@ -154,7 +154,27 @@ func TestListReportsExpiredAndRevokedEnrollmentStates(t *testing.T) {
 	if _, err := m.Inspect(tokenFromLink(t, revokedLink)); err == nil {
 		t.Fatal("revoked link remained usable")
 	}
-	if err := m.Revoke(revoked.ID); err == nil {
-		t.Fatal("used status transition was revocable again")
+	if err := m.Revoke(revoked.ID); err != nil {
+		t.Fatalf("repeated revocation should be idempotent: %v", err)
+	}
+}
+
+func TestReconcileRootClaimClearsOnlyConfiguredLegacyRoot(t *testing.T) {
+	m, _ := newTestManager(t)
+	link, _, err := m.Create("root", "root-id", "root", "root", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.RootClaimRequired("root-id") {
+		t.Fatal("root claim was not pending")
+	}
+	if err := m.ReconcileRootClaim("root-id", true); err != nil {
+		t.Fatal(err)
+	}
+	if m.RootClaimRequired("root-id") {
+		t.Fatal("configured root claim remained pending")
+	}
+	if _, err := m.Inspect(tokenFromLink(t, link)); err == nil {
+		t.Fatal("legacy root link remained usable")
 	}
 }

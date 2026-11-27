@@ -5,9 +5,11 @@
 // compatibility adapter is the only place that projects legacy globals.
 
 import { DisposableStore, toDisposable } from '../renderer/core/disposable.js';
+import { runHistoryStatus, runHistoryTarget, runHistoryTime } from './run-history';
 import type {
   AccountProfileActivityDayWireDto,
   AccountProfileDeviceWireDto,
+  AccountProfileRunHistoryWireDto,
   AccountProfileAuthPort,
   AccountProfileCollaborationPort,
   AccountProfileConfirmPort,
@@ -74,9 +76,12 @@ export function createAccountProfileService(
   let initialAvatar = 'graphite';
   let previousFocus: FocusableElement | null = null;
   let activityDays: AccountProfileActivityDayWireDto[] = [];
+  let runHistory: AccountProfileRunHistoryWireDto[] = [];
   let activityOwner = '';
   let activityLoadingOwner = '';
   let activityRequestGeneration = 0;
+  let historyLoadingOwner = '';
+  let historyRequestGeneration = 0;
   let deviceRequestGeneration = 0;
   let deviceViewGeneration = 0;
   let deviceOwner = '';
@@ -216,6 +221,13 @@ export function createAccountProfileService(
 
   function setActivityStatus(message: string, error: boolean): void {
     const element = $('account-activity-status');
+    element.textContent = message ? t(message) : '';
+    element.classList.toggle('error', Boolean(error));
+  }
+
+  function setHistoryStatus(message: string, error: boolean): void {
+    const element = document.getElementById('account-run-history-status');
+    if (!element) return;
     element.textContent = message ? t(message) : '';
     element.classList.toggle('error', Boolean(error));
   }
@@ -425,6 +437,130 @@ export function createAccountProfileService(
     }
   }
 
+  function runHistoryText(source: string, params?: Readonly<Record<string, unknown>>): string {
+    return t(source, params);
+  }
+
+  function renderRunHistory(): void {
+    const list = document.getElementById('account-run-history-list');
+    const empty = document.getElementById('account-run-history-empty');
+    if (!list || !empty) return;
+    list.replaceChildren();
+    empty.hidden = runHistory.length > 0;
+    if (!runHistory.length) return;
+
+    runHistory.forEach((record, index) => {
+      const runId = stringValue(record.run_id, String(index));
+      const target = runHistoryTarget(
+        runHistoryText,
+        stringValue(record.file_path),
+        stringValue(record.target_type) === 'task' ? stringValue(record.task_label) : '',
+        stringValue(record.task_kind)
+      );
+      const mainRow = document.createElement('tr');
+      mainRow.className = 'account-run-history-row';
+      mainRow.dataset.runId = runId;
+      const targetCell = document.createElement('td');
+      targetCell.className = 'account-run-history-target';
+      targetCell.textContent = target;
+      targetCell.title = target;
+      mainRow.appendChild(targetCell);
+
+      const runtimeCell = document.createElement('td');
+      runtimeCell.textContent = stringValue(record.runtime) || 'local';
+      mainRow.appendChild(runtimeCell);
+      const statusCell = document.createElement('td');
+      const status = document.createElement('span');
+      status.className = 'history-row-status-text';
+      status.dataset.status = stringValue(record.status);
+      status.textContent = runHistoryStatus(runHistoryText, stringValue(record.status));
+      statusCell.appendChild(status);
+      mainRow.appendChild(statusCell);
+      const timeCell = document.createElement('td');
+      timeCell.textContent = runHistoryTime(stringValue(record.created_at));
+      mainRow.appendChild(timeCell);
+      const actionCell = document.createElement('td');
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'account-run-history-toggle';
+      toggle.dataset.toggleRun = runId;
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.setAttribute('aria-label', runHistoryText('Show run details'));
+      toggle.title = runHistoryText('Show run details');
+      toggle.textContent = '+';
+      actionCell.appendChild(toggle);
+      mainRow.appendChild(actionCell);
+      list.appendChild(mainRow);
+
+      const detailRow = document.createElement('tr');
+      detailRow.className = 'account-run-history-detail-row';
+      detailRow.dataset.detailRunId = runId;
+      detailRow.hidden = true;
+      const detailCell = document.createElement('td');
+      detailCell.colSpan = 5;
+      const detail = document.createElement('div');
+      detail.className = 'account-run-history-detail';
+      const details = [
+        runHistoryText('Run ID: {id}', { id: runId }),
+        runHistoryText('Workspace: {value}', { value: stringValue(record.folder_name) || '?' }),
+        runHistoryText('Language: {value}', { value: stringValue(record.language) || '?' }),
+        stringValue(record.branch) ? runHistoryText('Branch: {value}', { value: stringValue(record.branch) }) : '',
+        Array.isArray(record.compile_args) && record.compile_args.length
+          ? runHistoryText('Compile arguments: {value}', { value: record.compile_args.join(' ') }) : '',
+        Array.isArray(record.run_args) && record.run_args.length
+          ? runHistoryText('Run arguments: {value}', { value: record.run_args.join(' ') }) : '',
+        runHistoryText('Started: {value}', { value: record.started_at ? new Date(String(record.started_at)).toLocaleString(activeLocale()) : '?' }),
+        runHistoryText('Completed: {value}', { value: record.completed_at ? new Date(String(record.completed_at)).toLocaleString(activeLocale()) : '?' })
+      ].filter(Boolean);
+      const metadataNode = document.createElement('div');
+      metadataNode.className = 'account-run-history-metadata';
+      metadataNode.textContent = details.join('\n');
+      detail.appendChild(metadataNode);
+      const output = document.createElement('pre');
+      output.className = 'account-run-history-output';
+      let outputText = stringValue(record.output_summary) || runHistoryText('No output captured');
+      if (record.output_truncated) outputText = runHistoryText('Earlier output was not retained.') + '\n\n' + outputText;
+      output.textContent = outputText;
+      detail.appendChild(output);
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'ss-btn ss-btn-ghost account-run-history-copy';
+      copy.dataset.copyRunOutput = runId;
+      copy.textContent = runHistoryText('Copy');
+      detail.appendChild(copy);
+      detailCell.appendChild(detail);
+      detailRow.appendChild(detailCell);
+      list.appendChild(detailRow);
+    });
+  }
+
+  async function loadRunHistory(): Promise<void> {
+    if (disposed) return;
+    const owner = currentOwner();
+    if (!owner || owner !== activityOwner || historyLoadingOwner === owner) return;
+    const generation = ++historyRequestGeneration;
+    historyLoadingOwner = owner;
+    setHistoryStatus('Loading...', false);
+    try {
+      const result = await dependencies.sendToServer('listRunHistory', {}, { quiet: true });
+      if (generation !== historyRequestGeneration || owner !== activityOwner || owner !== currentOwner()) return;
+      if (!result || !result.success) throw new Error(errorMessage(result.error, t('Run history is unavailable')));
+      const history = Array.isArray(result.history)
+        ? result.history
+        : isRecord(result.data) && Array.isArray(result.data.history) ? result.data.history : [];
+      runHistory = history.filter(isRecord) as AccountProfileRunHistoryWireDto[];
+      renderRunHistory();
+      setHistoryStatus('', false);
+    } catch (error) {
+      if (generation !== historyRequestGeneration || owner !== activityOwner || owner !== currentOwner()) return;
+      runHistory = [];
+      renderRunHistory();
+      setHistoryStatus(errorMessage(error, t('Run history is unavailable')), true);
+    } finally {
+      if (generation === historyRequestGeneration) historyLoadingOwner = '';
+    }
+  }
+
   function renderDeviceInvite(link = '', expiresAt = ''): void {
     const container = document.getElementById('account-device-invite');
     if (!container) return;
@@ -565,7 +701,10 @@ export function createAccountProfileService(
     });
     ($('profile-save') as HTMLElement).style.visibility = activeTab === 'profile' ? '' : 'hidden';
     setStatus('', false);
-    if (activeTab === 'activity') void loadActivity();
+    if (activeTab === 'activity') {
+      void loadActivity();
+      void loadRunHistory();
+    }
     if (activeTab === 'devices') void loadDevices();
   }
 
@@ -589,6 +728,9 @@ export function createAccountProfileService(
       activityDays = [];
       activityLoadingOwner = '';
       activityRequestGeneration++;
+      historyRequestGeneration++;
+      historyLoadingOwner = '';
+      runHistory = [];
       profileSaveGeneration++;
       profileDraftRevision = 0;
       avatarLoadGeneration++;
@@ -596,6 +738,7 @@ export function createAccountProfileService(
       deviceOwner = owner;
       clearDevices();
     }
+    renderRunHistory();
     previousFocus = document.activeElement as FocusableElement | null;
     renderProfile();
     renderActivity();
@@ -657,12 +800,16 @@ export function createAccountProfileService(
   function reset(): void {
     if (disposed) return;
     activityRequestGeneration++;
+    historyRequestGeneration++;
     profileSaveGeneration++;
     profileDraftRevision = 0;
     avatarLoadGeneration++;
     activityDays = [];
+    runHistory = [];
     activityOwner = '';
     activityLoadingOwner = '';
+    historyLoadingOwner = '';
+    renderRunHistory();
     deviceRequestGeneration++;
     devices = [];
     deviceOwner = '';
@@ -836,6 +983,38 @@ export function createAccountProfileService(
         switchTab(tabs[next]?.dataset.accountTab || 'profile');
       });
     });
+    const historyList = document.getElementById('account-run-history-list');
+    if (historyList) listen(historyList, 'click', async (event) => {
+      const target = event.target as Element | null;
+      const toggle = target?.closest<HTMLButtonElement>('[data-toggle-run]');
+      if (toggle) {
+        const runId = toggle.dataset.toggleRun || '';
+        const detailRow = Array.from(historyList.querySelectorAll<HTMLTableRowElement>('[data-detail-run-id]'))
+          .find((row) => row.dataset.detailRunId === runId);
+        if (!detailRow) return;
+        const expanded = detailRow.hidden;
+        detailRow.hidden = !expanded;
+        toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        toggle.setAttribute('aria-label', t(expanded ? 'Hide run details' : 'Show run details'));
+        toggle.title = t(expanded ? 'Hide run details' : 'Show run details');
+        toggle.textContent = expanded ? '-' : '+';
+        return;
+      }
+      const copy = target?.closest<HTMLButtonElement>('[data-copy-run-output]');
+      if (!copy) return;
+      const runId = copy.dataset.copyRunOutput || '';
+      const record = runHistory.find((item, index) => stringValue(item.run_id, String(index)) === runId);
+      if (!record) return;
+      let output = stringValue(record.output_summary) || t('No output captured');
+      if (record.output_truncated) output = t('Earlier output was not retained.') + '\n\n' + output;
+      try {
+        if (!dependencies.clipboard) throw new Error('Clipboard unavailable');
+        await dependencies.clipboard.writeText(output);
+        notify('Output copied', 'success');
+      } catch (_) {
+        notify('Copy failed', 'error');
+      }
+    });
     const addDevice = document.getElementById('profile-add-device');
     if (addDevice) listen(addDevice, 'click', () => { void createDeviceLink(); });
     const refreshDevices = document.getElementById('profile-refresh-devices');
@@ -890,6 +1069,7 @@ export function createAccountProfileService(
         if (disposed || !document.getElementById('profile-modal')?.classList.contains('open')) return;
         renderSummary();
         renderActivity();
+        renderRunHistory();
         renderDevices();
         const invite = document.getElementById('profile-device-link') as HTMLTextAreaElement | null;
         if (invite) {
@@ -932,10 +1112,13 @@ export function createAccountProfileService(
     collaborationOwner = null;
     previousCollaborationOpenProfile = undefined;
     activityRequestGeneration++;
+    historyRequestGeneration++;
     profileSaveGeneration++;
     activityDays = [];
+    runHistory = [];
     activityOwner = '';
     activityLoadingOwner = '';
+    historyLoadingOwner = '';
     profileSaving = false;
     closeImmediate();
     previousFocus = null;

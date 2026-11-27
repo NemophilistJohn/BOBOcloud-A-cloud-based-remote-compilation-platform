@@ -19,6 +19,7 @@ const sessionLastSeenWriteInterval = 5 * time.Minute
 
 // BoltAuthSessionStore 基于 BoltDB 的登录会话存储
 type BoltAuthSessionStore struct {
+	trustedOperations
 	db *bolt.DB
 }
 
@@ -26,12 +27,18 @@ type BoltAuthSessionStore struct {
 func NewBoltAuthSessionStore(db *bolt.DB) *BoltAuthSessionStore {
 	err := db.Update(func(tx *bolt.Tx) error {
 		_, err := tx.CreateBucketIfNotExists(authSessionsBucket)
+		if err != nil {
+			return err
+		}
+		_, err = tx.CreateBucketIfNotExists(trustedDevicesBucket)
 		return err
 	})
 	if err != nil {
 		slog.Error("Failed to create auth_sessions bucket", "error", err)
 	}
-	return &BoltAuthSessionStore{db: db}
+	s := &BoltAuthSessionStore{db: db}
+	s.trustedOperations.transaction = s.trustedTransaction
+	return s
 }
 
 func (s *BoltAuthSessionStore) Create(userID string, ttl time.Duration) (*AuthSession, error) {
@@ -180,6 +187,11 @@ func (s *BoltAuthSessionStore) DeleteByUserExcept(userID, keepToken string) erro
 func (s *BoltAuthSessionStore) deleteByUser(userID, keepToken string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(authSessionsBucket)
+		keepID := ""
+		var kept AuthSession
+		if raw := b.Get([]byte(keepToken)); raw != nil && json.Unmarshal(raw, &kept) == nil && kept.UserID == userID {
+			keepID = kept.TrustedDeviceID
+		}
 		var keys [][]byte
 		c := b.Cursor()
 		for k, v := c.First(); k != nil; k, v = c.Next() {
@@ -197,6 +209,19 @@ func (s *BoltAuthSessionStore) deleteByUser(userID, keepToken string) error {
 		}
 		for _, k := range keys {
 			b.Delete(k)
+		}
+		devices := tx.Bucket(trustedDevicesBucket)
+		cursor := devices.Cursor()
+		for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
+			var d TrustedDevice
+			if json.Unmarshal(v, &d) != nil {
+				return fmt.Errorf("corrupt device authorization")
+			}
+			if d.UserID == userID && d.ID != keepID {
+				if err := cursor.Delete(); err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	})

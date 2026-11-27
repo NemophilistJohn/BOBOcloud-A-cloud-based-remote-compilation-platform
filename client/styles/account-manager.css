@@ -1,0 +1,442 @@
+#auth-menu button.auth-menu-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font-family: inherit;
+}
+#auth-menu button.auth-menu-item:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -3px;
+}
+.account-manager-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 4550;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--bg-deep) 76%, transparent);
+  backdrop-filter: blur(12px);
+}
+.account-manager-overlay[hidden] {
+  display: none;
+}
+.account-manager-overlay.is-closing {
+  animation: account-manager-leave 0.16s ease-in both;
+  pointer-events: none;
+}
+.account-manager-overlay.is-closing .account-manager-card {
+  animation: account-manager-card-leave 0.16s ease-in both;
+}
+.account-manager-card {
+  width: min(548px, 100%);
+  max-height: min(780px, 90vh);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  background: var(--bg-elevated);
+  box-shadow: 0 24px 80px #0007;
+  overflow: hidden;
+  animation: account-manager-enter 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.account-manager-card > header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 24px 20px;
+  border-bottom: 1px solid var(--border-default);
+}
+.account-manager-symbol {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: var(--brand-muted);
+  color: var(--brand);
+  border: 1px solid var(--brand-border);
+}
+.account-manager-symbol svg {
+  width: 24px;
+  height: 24px;
+}
+.account-manager-card h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 19px;
+  font-weight: 650;
+}
+.account-manager-card header p {
+  margin: 5px 0 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.account-manager-close {
+  margin-left: auto;
+  align-self: flex-start;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 23px;
+  line-height: 1;
+  cursor: pointer;
+}
+.account-manager-close:hover {
+  background: var(--bg-hover);
+}
+.account-manager-list {
+  padding: 18px;
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+}
+.managed-account {
+  position: relative;
+  isolation: isolate;
+  border-radius: 12px;
+  background: var(--bg-deep);
+  border: 1px solid var(--border-default);
+  overflow: hidden;
+  min-height: 108px;
+}
+.managed-account.is-online {
+  border-color: var(--brand-border);
+  box-shadow: inset 3px 0 var(--brand);
+}
+.account-row-main {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  min-height: 108px;
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding: 18px;
+  text-align: left;
+  border: 0;
+  border-radius: 11px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition:
+    transform 0.36s cubic-bezier(0.16, 1, 0.3, 1),
+    width 0.36s cubic-bezier(0.16, 1, 0.3, 1),
+    background 0.2s;
+}
+.managed-account:hover .account-row-main,
+.managed-account:focus-within .account-row-main {
+  width: calc(100% - 94px);
+  transform: translateX(-14px);
+  background: var(--bg-hover);
+}
+.managed-account.is-online:hover .account-row-main,
+.managed-account.is-online:focus-within .account-row-main {
+  width: calc(100% - 44px);
+}
+.managed-account-avatar {
+  width: 52px;
+  height: 52px;
+  flex: 0 0 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 17px;
+  background: var(--brand-muted);
+  color: var(--brand);
+  font-size: 17px;
+  font-weight: 650;
+  overflow: hidden;
+}
+.managed-account-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.managed-account-avatar[data-preset="coral"] {
+  background: #763b44;
+  color: #ffbac1;
+}
+.managed-account-avatar[data-preset="ocean"] {
+  background: #244b65;
+  color: #a2d8ff;
+}
+.managed-account-avatar[data-preset="violet"] {
+  background: #493960;
+  color: #dec6ff;
+}
+.managed-account-avatar[data-preset="amber"] {
+  background: #67502b;
+  color: #ffe1a4;
+}
+.managed-account-info {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.managed-account-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.managed-account-heading strong {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-presence {
+  color: var(--text-tertiary);
+  font-size: 9px;
+  white-space: nowrap;
+}
+.is-online .account-presence {
+  color: var(--green);
+}
+.is-online .account-presence::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 7px var(--green);
+}
+.managed-account-id {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.managed-account-info code {
+  color: var(--text-tertiary);
+  font: 9px var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.managed-account-info small {
+  color: var(--text-tertiary);
+  font-size: 9px;
+}
+.account-row-actions {
+  position: absolute;
+  right: 9px;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  z-index: 1;
+}
+.account-action {
+  width: 40px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-default);
+  border-radius: 9px;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  cursor: pointer;
+  transition:
+    color 0.2s,
+    border-color 0.2s,
+    background 0.2s;
+}
+.account-action svg {
+  width: 19px;
+  height: 19px;
+}
+.account-action.switch:hover {
+  color: var(--brand);
+  border-color: var(--brand);
+  background: var(--brand-muted);
+}
+.account-action.delete:hover,
+.account-action.logout:hover {
+  color: var(--red);
+  border-color: var(--red);
+}
+.account-add-row {
+  position: relative;
+  height: 100px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg-surface);
+  isolation: isolate;
+}
+.account-add-plus {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-tertiary);
+  transition:
+    opacity 0.2s,
+    transform 0.4s;
+}
+.account-add-plus svg {
+  width: 28px;
+  height: 28px;
+  stroke: currentColor;
+  stroke-width: 1.35;
+  stroke-linecap: round;
+}
+.account-add-half {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  opacity: 0;
+  cursor: pointer;
+  transition:
+    opacity 0.3s,
+    transform 0.45s cubic-bezier(0.16, 1, 0.3, 1),
+    background 0.2s;
+}
+.account-add-half svg {
+  width: 22px;
+  height: 22px;
+}
+.account-add-half span {
+  font-size: 12px;
+}
+.account-add-half.existing {
+  clip-path: polygon(0 0, 61% 0, 39% 100%, 0 100%);
+  padding-right: 50%;
+  transform: translateX(-18px);
+  background: var(--brand-muted);
+  color: var(--brand);
+}
+.account-add-half.register {
+  clip-path: polygon(61% 0, 100% 0, 100% 100%, 39% 100%);
+  padding-left: 50%;
+  transform: translateX(18px);
+}
+.account-add-row:hover .account-add-half,
+.account-add-row:focus-within .account-add-half {
+  opacity: 1;
+  transform: translateX(0);
+}
+.account-add-row:hover .account-add-plus,
+.account-add-row:focus-within .account-add-plus {
+  opacity: 0;
+  transform: rotate(90deg) scale(0.8);
+}
+.account-add-half:hover {
+  background: var(--bg-active);
+}
+.account-manager-card > footer {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 11px 24px;
+  border-top: 1px solid var(--border-default);
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.account-status-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--brand);
+  flex: 0 0 4px;
+}
+.account-manager-card [data-account-status].is-error {
+  color: var(--red);
+}
+.account-manager-card button:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -3px;
+}
+.account-manager-card button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+.managed-account-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 340px;
+}
+@keyframes account-manager-enter {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes account-manager-leave {
+  to { opacity: 0; }
+}
+@keyframes account-manager-card-leave {
+  to { transform: translateY(8px) scale(0.985); }
+}
+@media (hover: none) {
+  .managed-account .account-row-main {
+    width: calc(100% - 108px);
+  }
+  .managed-account.is-online .account-row-main {
+    width: calc(100% - 58px);
+  }
+  .managed-account:hover .account-row-main,
+  .managed-account:focus-within .account-row-main {
+    transform: none;
+  }
+  .account-add-half {
+    opacity: 1;
+    transform: none;
+  }
+  .account-add-plus {
+    display: none;
+  }
+}
+@media (max-width: 560px) {
+  .account-manager-overlay {
+    padding: 12px;
+  }
+  .account-manager-card > header {
+    padding: 18px;
+  }
+  .account-manager-list {
+    padding: 12px;
+  }
+  .managed-account-avatar {
+    width: 42px;
+    height: 42px;
+    flex-basis: 42px;
+  }
+  .account-row-main {
+    gap: 11px;
+    padding: 14px;
+  }
+  .account-manager-card header p {
+    max-width: 240px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .account-manager-overlay,
+  .account-manager-card,
+  .account-row-main,
+  .account-add-half,
+  .account-add-plus {
+    animation: none;
+    transition: none;
+  }
+}

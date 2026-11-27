@@ -1,5 +1,3 @@
-import { renderRunHistorySummary, runHistoryTarget, runHistoryTime } from './run-history';
-
 // src/app.js - Main entry point, wires everything together.
 // CRITICAL: language preference and require.config must resolve before Monaco.
 (async function bootstrap() {
@@ -161,80 +159,6 @@ import { renderRunHistorySummary, runHistoryTarget, runHistoryTime } from './run
   document.getElementById('stop-code').addEventListener('click', function() {
     try { BOBO.runner.stopActiveRun(); } catch (e) { console.error('stop:', e); }
   });
-
-  // History button + modal
-  document.getElementById('history-btn').addEventListener('click', function() {
-    try { loadAndShowHistory(); } catch (e) { console.error('history:', e); }
-  });
-  document.getElementById('history-close').addEventListener('click', function() {
-    document.getElementById('history-modal').style.display = 'none';
-  });
-
-  async function loadAndShowHistory() {
-    var modal = document.getElementById('history-modal');
-    var list = document.getElementById('history-list');
-    var detail = document.getElementById('history-detail');
-    var detailRunId = document.getElementById('history-detail-run-id');
-    var detailMetadata = document.getElementById('history-detail-metadata');
-    var detailCopy = document.getElementById('history-detail-copy');
-    var selectedOutput = '';
-    list.innerHTML = '<div class="history-empty">Loading...</div>';
-    detail.style.display = 'none';
-    modal.style.display = 'flex';
-    var res = await BOBO.sendToServer('listRunHistory');
-    if (!res || !res.success || !res.history || res.history.length === 0) {
-      list.innerHTML = '<div class="history-empty">No run history yet.</div>';
-      return;
-    }
-    list.innerHTML = '';
-    function historyText(source, replacements) {
-      return BOBO.i18n && BOBO.i18n.t ? BOBO.i18n.t(source, replacements) : source.replace(/\{([^}]+)\}/g, function(match, key) {
-        return replacements && replacements[key] !== undefined ? replacements[key] : match;
-      });
-    }
-    res.history.forEach(function(rec) {
-      var row = document.createElement('div');
-      row.className = 'history-row';
-      row.setAttribute('data-run-id', rec.run_id || '');
-      renderRunHistorySummary(row, historyText,
-        runHistoryTarget(historyText, rec.file_path, rec.target_type === 'task' ? rec.task_label : '', rec.task_kind),
-        rec.status, ['[' + (rec.runtime || 'local') + ']', 'rc=' + rec.exit_code + ' ' + (rec.duration_ms || 0) + 'ms ' + runHistoryTime(rec.created_at),
-          historyText('Run ID: {id}', { id: rec.run_id || '?' })]);
-      row.onclick = function() {
-        var output = rec.output_summary || historyText('No output captured');
-        if (rec.output_truncated) {
-          output = historyText('Earlier output was not retained.') + '\n\n' + output;
-        }
-        selectedOutput = output;
-        document.getElementById('history-detail-output').textContent = output;
-        if (detailRunId) detailRunId.textContent = historyText('Run ID: {id}', { id: rec.run_id || '?' });
-        if (detailMetadata) {
-          var contextLines = [
-            historyText('Runtime: {value}', { value: rec.runtime || 'local' }),
-            historyText('Language: {value}', { value: rec.language || '?' }),
-            historyText('Workspace: {value}', { value: rec.folder_name || '?' }),
-            rec.branch ? historyText('Branch: {value}', { value: rec.branch }) : '',
-            rec.compile_args && rec.compile_args.length ? historyText('Compile arguments: {value}', { value: rec.compile_args.join(' ') }) : '',
-            rec.run_args && rec.run_args.length ? historyText('Run arguments: {value}', { value: rec.run_args.join(' ') }) : '',
-            historyText('Started: {value}', { value: rec.started_at ? new Date(rec.started_at).toLocaleString() : '?' }),
-            historyText('Completed: {value}', { value: rec.completed_at ? new Date(rec.completed_at).toLocaleString() : '?' })
-          ].filter(Boolean);
-          detailMetadata.textContent = contextLines.join('\n');
-        }
-        detail.style.display = 'block';
-      };
-      list.appendChild(row);
-    });
-    if (detailCopy) detailCopy.onclick = async function() {
-      if (!selectedOutput) return;
-      try {
-        await navigator.clipboard.writeText(selectedOutput);
-        if (BOBO.toast) BOBO.toast.success(historyText('Output copied'));
-      } catch (_) {
-        if (BOBO.toast) BOBO.toast.error(historyText('Copy failed'));
-      }
-    };
-  }
 
   // ── IPC events ──
 
@@ -483,7 +407,10 @@ import { renderRunHistorySummary, runHistoryTarget, runHistoryTime } from './run
       BOBO.runner.stopActiveRun();
     });
     BOBO.commands.register('history', 'Run History', '', 'Run', function() {
-      loadAndShowHistory();
+      if (BOBO.accountProfile) BOBO.accountProfile.open('activity');
+    });
+    BOBO.commands.register('accounts', 'accounts.title', '', 'Account', function() {
+      if (BOBO.accountManager) BOBO.accountManager.open();
     });
     BOBO.commands.register('settings-local', 'Local Settings', 'Ctrl+,', 'Settings', function() {
       BOBO.settings.open('local');

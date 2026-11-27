@@ -65,6 +65,13 @@ test('account center previews profile drafts and renders a stable 53 week activi
         if (action === 'getCompileActivity') return { success: true, data: { timezone: 'UTC', days: [
           { date: iso(0), count: 9 }, { date: iso(-1), count: 4 }, { date: iso(-29), count: 2 }, { date: iso(-45), count: 1 }
         ] } };
+        if (action === 'listRunHistory') return { success: true, history: [{
+          run_id: 'recent-run', file_path: 'src/main.py', folder_name: 'sample-project',
+          runtime: 'python:3.12', language: 'python', status: 'completed', exit_code: 0,
+          duration_ms: 42, created_at: new Date().toISOString(),
+          started_at: new Date().toISOString(), completed_at: new Date().toISOString(),
+          output_summary: 'Run completed successfully', output_truncated: false
+        }] };
         if (action === 'updateProfile') return { success: false, error: 'Mock save failure' };
         if (action === 'listDevices') return { success: true, data: { devices: [
           { id: 'device-current', label: 'Studio PC', platform: 'Windows', createdAt: iso(-12), lastSeenAt: iso(0), current: true },
@@ -104,6 +111,14 @@ test('account center previews profile drafts and renders a stable 53 week activi
     await expect(page.locator('#account-activity-today')).toHaveText('9');
     await expect(page.locator('#account-activity-month')).toHaveText('15');
     await expect(page.locator('#account-activity-days')).toHaveText('4');
+    await expect(page.locator('.account-run-history-row')).toHaveCount(1);
+    await expect(page.locator('.account-run-history-target')).toHaveText('src/main.py');
+    await expect(page.locator('.account-run-history-row .history-row-status-text')).toHaveText('Completed');
+    await page.locator('[data-toggle-run="recent-run"]').click();
+    await expect(page.locator('[data-detail-run-id="recent-run"]')).toBeVisible();
+    await expect(page.locator('[data-detail-run-id="recent-run"] .account-run-history-output'))
+      .toHaveText('Run completed successfully');
+    await expect(page.locator('[data-toggle-run="recent-run"]')).toHaveAttribute('aria-expanded', 'true');
     const geometry = await page.evaluate(() => {
       const shell = document.querySelector('.account-profile-shell').getBoundingClientRect();
       const header = document.querySelector('.account-profile-head').getBoundingClientRect();
