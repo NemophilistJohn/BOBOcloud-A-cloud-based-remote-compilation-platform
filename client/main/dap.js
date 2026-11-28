@@ -5,6 +5,8 @@ const path = require('path');
 const { DapTransport } = require('../dap-transport');
 const { endpoint: serverEndpoint } = require('./server-transport');
 const { credentialForServer } = require('./server-identity');
+const { createCloudWebSocketFactory, createCloudPeerVerifier } = require('./cloud-websocket');
+const { configuredFingerprints } = require('./secure-transport');
 const {
   readLaunchConfigurations,
   resolveLaunchConfiguration
@@ -57,6 +59,8 @@ function createDapController(options) {
     : createTrustedRendererSender({ getWindow }).send;
   if (typeof runWorkspaceMutation !== 'function') throw new TypeError('DAP requires the workspace mutation coordinator');
   let transport = null;
+  let transportTrust = '';
+  let transportConfigured = false;
   let sessionContext = null;
 
   async function currentCredential() {
@@ -80,9 +84,25 @@ function createDapController(options) {
     sendToRenderer('dap:' + channel, Object.assign(value, { context: boundContext }));
   }
 
-  function ensureTransport() {
+  function ensureTransport(serverSettings) {
+    if (serverSettings) {
+      const trust = JSON.stringify([
+        serverEndpoint(serverSettings, 'http'),
+        Number(serverSettings.dapChildWsPort) || 3102,
+        configuredFingerprints(serverSettings)
+      ]);
+      if (transport && (!transportConfigured || transportTrust !== trust)) {
+        transport.dispose();
+        transport = null;
+      }
+      transportTrust = trust;
+      transportConfigured = true;
+    }
     if (transport) return transport;
+    const hasPinnedCertificate = Boolean(serverSettings && configuredFingerprints(serverSettings).length);
     transport = new DapTransport({
+      webSocketFactory: hasPinnedCertificate ? createCloudWebSocketFactory(serverSettings) : undefined,
+      verifyPeer: serverSettings ? createCloudPeerVerifier(serverSettings) : undefined,
       getCredential: currentCredential,
       emit: (channel, payload) => {
         if (channel === 'message') send('message', sanitizeRendererMessage(payload));
@@ -152,7 +172,7 @@ function createDapController(options) {
       };
       sessionContext = localContext;
       try {
-        const status = await ensureTransport().start({
+        const status = await ensureTransport(serverSettings).start({
           serverHost: serverEndpoint(serverSettings, 'http'),
           childPort: serverSettings.dapChildWsPort || 3102,
           languageId: value.languageId,
@@ -226,6 +246,8 @@ function createDapController(options) {
   async function dispose() {
     if (transport) await transport.dispose();
     transport = null;
+    transportTrust = '';
+    transportConfigured = false;
     sessionContext = null;
   }
 

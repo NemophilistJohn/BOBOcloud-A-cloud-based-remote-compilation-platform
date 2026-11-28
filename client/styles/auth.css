@@ -31,6 +31,14 @@
   from { opacity: 0; transform: translateY(14px) scale(0.97); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
+#auth-overlay[data-enrollment-kind="register"].open .auth-card,
+#auth-overlay[data-enrollment-kind="root"].open .auth-card { animation: authEnrollmentWelcome var(--dur-slow) cubic-bezier(.18,.72,.24,1); }
+#auth-overlay[data-enrollment-kind="device"].open .auth-card { animation: authDeviceWelcome var(--dur-base) var(--ease-out); }
+@keyframes authEnrollmentWelcome { from { opacity:0; transform:translateY(24px) scale(.94); } 70% { transform:translateY(-2px) scale(1.01); } to { opacity:1; transform:translateY(0) scale(1); } }
+@keyframes authDeviceWelcome { from { opacity:0; transform:translateX(18px) scale(.98); } to { opacity:1; transform:translateX(0) scale(1); } }
+@media (prefers-reduced-motion: reduce) {
+  #auth-overlay.open .auth-card { animation:none; }
+}
 
 /* ── 品牌区 ── */
 .auth-brand {

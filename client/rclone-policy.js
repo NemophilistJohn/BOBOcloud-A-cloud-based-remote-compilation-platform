@@ -5,6 +5,8 @@ const RCLONE_IGNORED_DIRECTORIES = Object.freeze([
 ]);
 
 const DEFAULT_EXCLUDES = Object.freeze([
+  '.git',
+  '.git/**',
   '**/target/**',
   '**/.git/**',
   '**/node_modules/**',

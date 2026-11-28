@@ -45,6 +45,27 @@ func TestRuntimeDrainsSFTPBeforeWaitingForServe(t *testing.T) {
 	}
 }
 
+func TestHostKeyPublicIsASingleAuthorizedKeyLine(t *testing.T) {
+	server, err := New(Config{
+		HostKeyPath:  filepath.Join(t.TempDir(), "host.key"),
+		Authenticate: func(context.Context, string, string) (string, error) { return "test", nil },
+		Authorize: func(context.Context, string, string, bool) (RootAccess, error) {
+			return RootAccess{}, errors.New("denied")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	public := server.HostKeyPublic()
+	if strings.ContainsAny(public, "\r\n") {
+		t.Fatalf("host key contains a line break: %q", public)
+	}
+	if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(public)); err != nil {
+		t.Fatalf("host key is not a valid authorized key: %v", err)
+	}
+}
+
 func TestTransportAndRevocation(t *testing.T) {
 	root := t.TempDir()
 	key := filepath.Join(t.TempDir(), "hostkey")

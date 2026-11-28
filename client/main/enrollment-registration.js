@@ -8,12 +8,13 @@ function registerEnrollment(options) {
     applySettings: auth.applyServerSettings,
     installSyncCredential: async (credential, previous) => {
       const host = String(credential.host || previous.ip).toLowerCase();
+      const hostKey = typeof credential.hostKey === 'string' ? credential.hostKey.trim() : '';
       if (host !== String(previous.ip).toLowerCase() || !['root', 'restricted'].includes(credential.mode) ||
           !Number.isInteger(credential.port) || credential.port < 1 || credential.port > 65535 ||
           !/^[^\s\0\r\n]{1,128}$/.test(credential.user || '') || typeof credential.password !== 'string' || !credential.password ||
-          !/^(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp\d+) [A-Za-z0-9+/=]+$/.test(credential.hostKey || '')) throw new Error('enrollment.error.invalidSyncCredential');
+          !/^(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp\d+) [A-Za-z0-9+/=]+$/.test(hostKey)) throw new Error('enrollment.error.invalidSyncCredential');
       const updated = await auth.applyServerSettings(Object.assign({}, previous, { user: credential.user, pass: credential.password,
-        sshPort: credential.port, sshHostKey: credential.hostKey, syncMode: credential.mode, syncManaged: true }), 'sync-credential-updated', false, authStorageKey(previous));
+        sshPort: credential.port, sshHostKey: hostKey, syncMode: credential.mode, syncManaged: true }), 'sync-credential-updated', false, authStorageKey(previous));
       if (!updated) throw new Error('enrollment.error.save');
     }
   }));

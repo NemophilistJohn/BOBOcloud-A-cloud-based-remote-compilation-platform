@@ -11,6 +11,7 @@ declare module '../../types/renderer-platform' {
 type HostWindow = Window & { BOBO: {
   i18n: I18nService; state: { serverSettings: Record<string, unknown> };
   auth: { openEnrollment(kind: string, id: string, requiresPasswordSetup?: boolean): void };
+  workbench: { getState(): { panelVisible: boolean }; setPanelVisible(visible: boolean): void };
   workspace: { canLeaveWorkspace(options: Record<string, unknown>): Promise<boolean>; closeWorkspace(options: Record<string, unknown>): Promise<unknown> };
   welcome?: ReturnType<typeof createWelcome>;
   enrollmentHost?: Readonly<Pick<EnrollmentHostPort, 'enrollmentAuthenticate' | 'enrollmentLogin' | 'enrollmentRefreshSync' | 'readServerSettings' | 'accountsList'>>;
@@ -31,6 +32,7 @@ const service = createWelcome({ document, host: enrollmentHost, t: (key, params)
     await host.BOBO.workspace.closeWorkspace({ approved: true, reason: 'server-change' }); return true;
   },
   applySettings: value => { host.BOBO.state.serverSettings = value; },
+  workbench: host.BOBO.workbench,
   authenticate: (kind,id,requiresPasswordSetup) => host.BOBO.auth.openEnrollment(kind,id,requiresPasswordSetup),
   completeLocal: async () => {
     const settings = Object.assign({},host.BOBO.state.serverSettings,{setupCompleted:true,firstRunRequired:false});
@@ -39,5 +41,8 @@ const service = createWelcome({ document, host: enrollmentHost, t: (key, params)
 });
 rendererPlatform.lifecycle.add(rendererPlatform.services.register(WELCOME_SERVICE_ID,service,{owner:'core.welcome',exposeToPlugins:false}));
 rendererPlatform.lifecycle.add({ dispose: host.BOBO.i18n.onChange(() => service.render()) });
+const enrollmentDismissed = (event: Event) => service.finishAuthentication((event as CustomEvent<{ success?: boolean }>).detail?.success === true);
+window.addEventListener('bobo:enrollment-dismissed', enrollmentDismissed);
+rendererPlatform.lifecycle.add({ dispose: () => window.removeEventListener('bobo:enrollment-dismissed', enrollmentDismissed) });
 window.addEventListener('bobo:workspace-changed', () => service.close());
 host.BOBO.welcome = service;

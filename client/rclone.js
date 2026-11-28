@@ -146,10 +146,15 @@ async function ensureConfig(settings, executablePath, configPath, options) {
     if (settings.sshHostKey) {
       var hostKey = safeConfigValue(settings.sshHostKey, 'SSH host key', 8192);
       if (!/^(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp\d+) [A-Za-z0-9+/=]+$/.test(hostKey)) throw new Error('Invalid SSH host key');
+      var hostKeyType = hostKey.split(' ', 1)[0];
+      var hostKeyAlgorithms = hostKeyType === 'ssh-rsa'
+        ? 'rsa-sha2-512 rsa-sha2-256 ssh-rsa'
+        : hostKeyType;
       var digest = require('node:crypto').createHash('sha256').update(host + ':' + port + hostKey).digest('hex');
       var knownHostsPath = path.join(path.dirname(configPath), 'host-trust-' + digest + '.known_hosts');
       writeFileAtomicSync(knownHostsPath, (port === 22 ? host : '[' + host + ']:' + port) + ' ' + hostKey + '\n', { mode: 0o600, maxBytes: 16384 });
       trust.push('known_hosts_file = ' + knownHostsPath);
+      trust.push('host_key_algorithms = ' + hostKeyAlgorithms);
     } else if (settings.syncManaged) throw new Error('Managed SFTP requires a verified host key');
     var protectedPassword = await obscurePassword(rcloneExecutable, pass, options);
     if (!protectedPassword.success) return protectedPassword;

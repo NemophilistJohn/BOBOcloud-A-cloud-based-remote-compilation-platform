@@ -131,6 +131,7 @@
     S.auth.modalOpen = true;
     clearMessages();
     if (noticeMsg) showNotice(noticeMsg);
+    $('auth-overlay').removeAttribute('data-enrollment-kind');
     $('auth-server-hint').textContent = S.serverSettings.ip
       ? ('Server: ' + S.serverSettings.ip) : 'No server configured - set it in Settings -> Server Settings first';
     $('auth-overlay').classList.add('open');
@@ -139,22 +140,28 @@
     switchTab('login');
   }
 
-  function closeAuthModal() {
+  function closeAuthModal(outcome, suppressEnrollmentEvent) {
+    var wasEnrollment = Boolean(pendingEnrollment);
     S.auth.modalOpen = false;
     $('auth-overlay').classList.remove('open');
     pendingEnrollment = null;
     rootPasswordSetup = false;
+    $('auth-overlay').removeAttribute('data-enrollment-kind');
+    if (wasEnrollment && !suppressEnrollmentEvent && typeof global.dispatchEvent === 'function' && typeof global.CustomEvent === 'function') {
+      global.dispatchEvent(new global.CustomEvent('bobo:enrollment-dismissed', { detail: { success: outcome === 'success' } }));
+    }
   }
 
   function openEnrollment(kind, id, requiresPasswordSetup) {
     if (!id || ['root', 'register', 'device'].indexOf(kind) < 0) throw new Error('Invalid enrollment');
     bindUI();
-    if (S.auth.modalOpen) closeAuthModal();
+    if (S.auth.modalOpen) closeAuthModal('replaced', true);
     closeAdmin();
     closeMenu();
     pendingEnrollment = { kind: kind, id: id };
     rootPasswordSetup = kind === 'root' && requiresPasswordSetup === true;
     S.auth.modalOpen = true;
+    $('auth-overlay').dataset.enrollmentKind = kind;
     $('auth-overlay').classList.add('open');
     $('auth-server-hint').textContent = S.serverSettings.ip ? t('enrollment.auth.server') + ': ' + S.serverSettings.ip : '';
     clearRegisterForm();
@@ -249,7 +256,7 @@
     var expiresAt = res.expiresAt ? new Date(res.expiresAt).getTime() : (Date.now() + 30 * 24 * 3600 * 1000);
     applyCredential({ token: res.token, expiresAt: expiresAt, user: res.user });
     await saveCredential(res.token, expiresAt, res.user);
-    closeAuthModal();
+    closeAuthModal('success');
     renderChip();
     // Resolve the new server's capabilities and refresh the main-owned sync
     // credential before advertising the account as ready to other services.

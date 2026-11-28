@@ -8,6 +8,7 @@ interface WelcomePorts {
   locale(): string; setLocale(id: string): Promise<unknown>;
   beforeServerChange(): Promise<boolean>;
   applySettings(settings: Record<string, unknown>): void;
+  workbench: { getState(): { panelVisible: boolean }; setPanelVisible(visible: boolean): void };
   authenticate(kind: string, id: string, requiresPasswordSetup?: boolean): void;
   completeLocal(): Promise<void>;
 }
@@ -22,7 +23,52 @@ export function createWelcome(ports: WelcomePorts) {
   let disposeIncoming: (() => void) | undefined;
   let disposed = false;
   let expectedKind: 'device' | 'register' | undefined;
+  let panelVisibleBeforeWelcome: boolean | null = null;
+  let authenticationPending = false;
   function text(id: string, value: string) { const element = d.getElementById(id); if (element) element.textContent = value; }
+  function hidePanelForWelcome() {
+    if (panelVisibleBeforeWelcome === null) panelVisibleBeforeWelcome = ports.workbench.getState().panelVisible;
+    ports.workbench.setPanelVisible(false);
+  }
+  function restorePanel(authenticationSucceeded = false) {
+    const previousVisibility = panelVisibleBeforeWelcome;
+    panelVisibleBeforeWelcome = null;
+    ports.workbench.setPanelVisible(authenticationSucceeded ? true : previousVisibility === null ? false : previousVisibility);
+  }
+  function finishAuthentication(succeeded: boolean) {
+    if (!authenticationPending) return;
+    authenticationPending = false;
+    restorePanel(succeeded);
+  }
+  async function guideToOverview(request: number) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    if (disposed || request !== revision || !page) return;
+    const overview = d.getElementById('welcome-overview');
+    const view = d.defaultView;
+    if (!overview || !view) return;
+    page.classList.add('guiding-overview');
+    const start = page.scrollTop;
+    const target = Math.max(0, start + overview.getBoundingClientRect().top - page.getBoundingClientRect().top - 24);
+    if (view.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      page.scrollTop = target;
+      page.classList.remove('guiding-overview');
+      return;
+    }
+    const began = view.performance.now();
+    const duration = 720;
+    await new Promise<void>(resolve => {
+      const frame = (now: number) => {
+        if (disposed || request !== revision || !page) { resolve(); return; }
+        const progress = Math.min(1, (now - began) / duration);
+        const eased = progress * progress * (3 - 2 * progress);
+        page.scrollTop = start + (target - start) * eased;
+        if (progress < 1) view.requestAnimationFrame(frame);
+        else resolve();
+      };
+      view.requestAnimationFrame(frame);
+    });
+    if (request === revision) page?.classList.remove('guiding-overview');
+  }
   function render() {
     if (!page) return;
     for (const node of page.querySelectorAll<HTMLElement>('[data-welcome-i18n]')) node.textContent = ports.t(node.dataset.welcomeI18n || '');
@@ -31,9 +77,16 @@ export function createWelcome(ports: WelcomePorts) {
     if (language) language.value = ports.locale();
     if (preview) text('welcome-kind', ports.t(preview.requiresPasswordSetup ? 'enrollment.kind.rootSetup' : 'enrollment.kind.' + preview.kind));
   }
-  function close() { if (page) page.hidden = true; d.getElementById('editor')?.classList.remove('welcome-open'); d.getElementById('welcome-editor-tab')?.remove(); }
+  function close() {
+    revision++;
+    if (page) page.hidden = true;
+    d.getElementById('editor')?.classList.remove('welcome-open');
+    d.getElementById('welcome-editor-tab')?.remove();
+    if (!authenticationPending && panelVisibleBeforeWelcome !== null) restorePanel();
+  }
   function open(kind?: 'device' | 'register') {
     if (disposed) return;
+    hidePanelForWelcome();
     expectedKind=kind;
     revision++;preview=null;
     if (!page) {
@@ -41,8 +94,8 @@ export function createWelcome(ports: WelcomePorts) {
       page.innerHTML = `<div class="welcome-content"><header class="welcome-top"><span class="welcome-wordmark">BOBOCLOUD <span>3.0</span></span><label class="welcome-language"><span data-welcome-i18n="enrollment.language"></span><select id="welcome-language" aria-label="Language"><option value="zh-CN">简体中文</option><option value="en">English</option><option value="ja">日本語</option></select></label></header>
       <div class="welcome-hero"><div class="welcome-art" aria-hidden="true"><svg viewBox="0 0 320 170" fill="none"><path class="welcome-orbit" d="M22 114C60 28 259 11 298 96S69 188 22 114Z"/><path class="welcome-orbit secondary" d="M30 64C114 5 302 93 274 135S25 131 30 64Z"/><path class="welcome-cloud" d="M104 105a23 23 0 0 1 0-46 41 41 0 0 1 78-12 29 29 0 0 1 9 58H104Z"/><path class="welcome-code" d="m135 70-11 10 11 10m27-20 11 10-11 10m-13-25-7 30"/><circle class="welcome-node" cx="44" cy="78" r="6"/><circle class="welcome-node" cx="266" cy="115" r="5"/><path class="welcome-spark" d="M246 37v14m-7-7h14M78 128v10m-5-5h10"/></svg></div><div class="welcome-kicker" data-welcome-i18n="enrollment.kicker"></div><h1 id="welcome-title" data-welcome-i18n="enrollment.title"></h1><p data-welcome-i18n="enrollment.subtitle"></p></div>
       <form id="welcome-form" class="welcome-connect"><div class="welcome-step"><span>01</span><label for="welcome-link" data-welcome-i18n="enrollment.linkLabel"></label></div><textarea id="welcome-link" rows="3" spellcheck="false" autocomplete="off" placeholder="bobocloud://enroll#…"></textarea><div class="welcome-form-foot"><span data-welcome-i18n="enrollment.linkHelp"></span><button id="welcome-preview" type="submit" class="welcome-primary" data-welcome-i18n="enrollment.inspect"></button></div></form>
-      <section id="welcome-overview" class="welcome-overview" hidden><div class="welcome-step"><span>02</span><h2 data-welcome-i18n="enrollment.serverOverview"></h2><span class="welcome-verified" data-welcome-i18n="enrollment.verified"></span></div><dl><div><dt data-welcome-i18n="enrollment.server"></dt><dd id="welcome-server"></dd></div><div><dt data-welcome-i18n="enrollment.kind"></dt><dd id="welcome-kind"></dd></div><div><dt data-welcome-i18n="enrollment.version"></dt><dd id="welcome-version"></dd></div><div><dt data-welcome-i18n="enrollment.expiry"></dt><dd id="welcome-expiry"></dd></div></dl><details><summary data-welcome-i18n="enrollment.certificate"></summary><code id="welcome-pin"></code></details><button id="welcome-connect" class="welcome-primary" type="button" data-welcome-i18n="enrollment.connect"></button></section>
-      <p id="welcome-status" class="welcome-status" role="status" aria-live="polite"></p><footer class="welcome-bottom"><button id="welcome-local" class="welcome-text-button" type="button" data-welcome-i18n="enrollment.local"></button><span data-welcome-i18n="enrollment.privacy"></span></footer><div class="welcome-arrival" aria-hidden="true"><div class="welcome-arrival-ring"></div><strong data-welcome-i18n="enrollment.connected"></strong></div></div>`;
+      <section id="welcome-overview" class="welcome-overview" hidden><div class="welcome-step"><span>02</span><h2 data-welcome-i18n="enrollment.serverOverview"></h2><span class="welcome-proof-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle class="welcome-proof-orbit" cx="12" cy="12" r="9"/><path class="welcome-proof-check" d="m7.5 12.2 3 3 6-6.3"/></svg></span><span class="welcome-verified" data-welcome-i18n="enrollment.verified"></span></div><dl><div><dt data-welcome-i18n="enrollment.server"></dt><dd id="welcome-server"></dd></div><div><dt data-welcome-i18n="enrollment.kind"></dt><dd id="welcome-kind"></dd></div><div><dt data-welcome-i18n="enrollment.version"></dt><dd id="welcome-version"></dd></div><div><dt data-welcome-i18n="enrollment.expiry"></dt><dd id="welcome-expiry"></dd></div></dl><details><summary data-welcome-i18n="enrollment.certificate"></summary><code id="welcome-pin"></code></details><button id="welcome-connect" class="welcome-primary" type="button" data-welcome-i18n="enrollment.connect"></button></section>
+      <p id="welcome-status" class="welcome-status" role="status" aria-live="polite"></p><footer class="welcome-bottom"><button id="welcome-local" class="welcome-text-button" type="button" data-welcome-i18n="enrollment.local"></button><span data-welcome-i18n="enrollment.privacy"></span></footer><div class="welcome-arrival" aria-hidden="true"><div class="welcome-arrival-ring"><svg viewBox="0 0 28 28" fill="none"><path class="welcome-arrival-symbol" d="m6.5 14.5 5 5L22 9"/></svg></div><strong data-welcome-i18n="enrollment.connected"></strong></div></div>`;
       d.getElementById('editor')?.appendChild(page);
       d.getElementById('welcome-form')?.addEventListener('submit', inspect);
       d.getElementById('welcome-connect')?.addEventListener('click', connect);
@@ -51,6 +104,8 @@ export function createWelcome(ports: WelcomePorts) {
       d.getElementById('welcome-link')?.addEventListener('input', () => { revision++; preview = null; const overview = d.getElementById('welcome-overview'); if (overview) overview.hidden = true; });
     }
     page.hidden = false;
+    page.dataset.flowKind = kind || '';
+    page.classList.toggle('welcome-device-flow', kind === 'device');
     const overview=d.getElementById('welcome-overview');if(overview)overview.hidden=true;
     d.getElementById('editor')?.classList.add('welcome-open');
     if (!d.getElementById('welcome-editor-tab')) {
@@ -69,10 +124,21 @@ export function createWelcome(ports: WelcomePorts) {
       if (disposed || request !== revision) return;
       if(expectedKind && result.kind!==expectedKind)throw new Error(expectedKind==='device'?'accounts.error.deviceLinkRequired':'accounts.error.registerLinkRequired');
       preview = result;
+      if (page) {
+        page.dataset.flowKind = result.kind;
+        page.classList.toggle('welcome-device-flow', result.kind === 'device');
+      }
       text('welcome-server', result.host + ':' + result.httpPort); text('welcome-kind', ports.t(result.requiresPasswordSetup ? 'enrollment.kind.rootSetup' : 'enrollment.kind.' + result.kind)); text('welcome-version', result.version);
       text('welcome-expiry', result.expiresAt ? new Date(result.expiresAt).toLocaleString(ports.locale()) : '—'); text('welcome-pin', result.certificateFingerprint.match(/.{2}/g)?.join(':') || '');
-      const overview = d.getElementById('welcome-overview'); if (overview) overview.hidden = false;
+      const overview = d.getElementById('welcome-overview');
+      if (overview) {
+        overview.hidden = false;
+        overview.classList.remove('is-revealing');
+        void overview.offsetWidth;
+        overview.classList.add('is-revealing');
+      }
       text('welcome-status', ports.t('enrollment.ready'));
+      await guideToOverview(request);
     } catch (error) { if (request === revision) text('welcome-status', ports.t(error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': Error: /,'') : 'enrollment.error.rejected')); }
     finally { button.disabled = false; }
   }
@@ -83,15 +149,21 @@ export function createWelcome(ports: WelcomePorts) {
       await ports.host.enrollmentActivate(selected.id);
       // Activation stages the invitation; the active account changes only
       // after successful authentication in the main process.
-      page?.classList.add('arriving');
+      const arrivalKind = selected.kind === 'device' ? 'device' : 'register';
+      page?.classList.add('arriving', 'arriving-' + arrivalKind);
       await new Promise(resolve => setTimeout(resolve, matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 750));
-      page?.classList.remove('arriving'); close();
+      page?.classList.remove('arriving', 'arriving-register', 'arriving-device');
+      authenticationPending = true;
+      close();
       ports.authenticate(selected.kind, selected.id, selected.requiresPasswordSetup);
       (d.getElementById('welcome-link') as HTMLTextAreaElement).value = ''; preview = null;
-    } catch (error) { text('welcome-status', ports.t(error instanceof Error ? error.message : 'enrollment.error.rejected')); }
+    } catch (error) {
+      if (authenticationPending) finishAuthentication(false);
+      text('welcome-status', ports.t(error instanceof Error ? error.message : 'enrollment.error.rejected'));
+    }
     finally { button.disabled = false; }
   }
   async function receive() { const link = await ports.host.enrollmentIncoming(); if (link) { open(); (d.getElementById('welcome-link') as HTMLTextAreaElement).value = link; await inspect(); } }
   function init(firstRun: boolean) { disposeIncoming = ports.host.onEnrollmentOpen(() => { void receive(); }); if (firstRun) open(); void receive(); }
-  return { init, open, close, render, dispose() { disposed = true; revision++; disposeIncoming?.(); page?.remove(); page = null; } };
+  return { init, open, close, render, finishAuthentication, dispose() { disposed = true; revision++; disposeIncoming?.(); page?.remove(); page = null; } };
 }

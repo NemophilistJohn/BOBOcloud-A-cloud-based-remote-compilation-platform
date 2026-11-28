@@ -8,6 +8,41 @@ import (
 	"testing"
 )
 
+func TestOpenCheckedFallbackWalksWithoutOpenat2(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dir", "file.txt"), []byte("ok"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := openCheckedFallback(root, filepath.Join("dir", "file.txt"), os.O_RDONLY, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	value := make([]byte, 2)
+	if n, readErr := f.ReadAt(value, 0); readErr != nil || n != len(value) || string(value) != "ok" {
+		t.Fatalf("fallback opened unexpected content %q (%d, %v)", value, n, readErr)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "dir", "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openCheckedFallback(root, filepath.Join("dir", "link.txt"), os.O_RDONLY, 0, false); err == nil {
+		t.Fatal("fallback followed a symlink")
+	}
+	for _, rel := range []string{"../outside.txt", filepath.Join("dir", "..", "..", "outside.txt"), filepath.Join(string(filepath.Separator), "outside.txt")} {
+		if _, err := openCheckedFallback(root, rel, os.O_RDONLY, 0, false); err == nil {
+			t.Fatalf("fallback accepted path outside root: %q", rel)
+		}
+	}
+}
+
 func TestNoFollowAndHardlinkBeforeTruncate(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()

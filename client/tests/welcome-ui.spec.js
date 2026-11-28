@@ -39,8 +39,10 @@ test('welcome verifies a self-signed invitation before registration and keeps SS
     await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
     app=await electron.launch({args:['.','--user-data-dir='+path.join(root,'chromium')],env:{...process.env,APPDATA:path.join(root,'appdata'),HOME:path.join(root,'home'),USERPROFILE:path.join(root,'home'),BOBO_FORCE_FIRST_RUN:'1',ELECTRON_DISABLE_SECURITY_WARNINGS:'true'}});
     const page=await app.firstWindow();await page.waitForFunction(()=>document.documentElement.dataset.boboReady==='true');
+    await page.setViewportSize({width:1100,height:600});
     expect(await page.evaluate(() => typeof window.BOBO.enrollmentHost.accountsList)).toBe('function');
     await expect(page.locator('#welcome-page')).toBeVisible();
+    await expect(page.locator('#layout')).toHaveClass(/panel-hidden/);
     await expect(page.locator('#empty-state')).toBeHidden();
     await expect(page.locator('#settings-modal')).toBeHidden();
     await page.selectOption('#welcome-language','zh-CN');
@@ -57,12 +59,16 @@ test('welcome verifies a self-signed invitation before registration and keeps SS
     expect(received).toEqual([]);
     await page.fill('#welcome-link',link(descriptor));await page.click('#welcome-preview');
     await expect(page.locator('#welcome-overview')).toBeVisible();
+    await expect.poll(() => page.locator('#welcome-page').evaluate(element => element.scrollTop)).toBeGreaterThan(120);
+    await expect.poll(() => page.locator('#welcome-overview').evaluate(element => element.getBoundingClientRect().bottom)).toBeLessThan(600);
     expect(received.map(x=>x.action)).toEqual(['inspectEnrollment']);
     await page.screenshot({path:path.join(process.cwd(),'test-results','welcome-verified.png')});
     await page.click('#welcome-connect');await expect(page.locator('#auth-overlay')).toBeVisible();
+    await expect(page.locator('#auth-overlay')).toHaveAttribute('data-enrollment-kind','register');
     await expect(page.locator('#auth-form-register')).toBeVisible();
     await page.fill('#auth-reg-username','welcome');await page.fill('#auth-reg-email','welcome@example.com');await page.fill('#auth-reg-password','Welcome-password!');await page.fill('#auth-reg-password2','Welcome-password!');
     await page.click('#auth-submit');await expect(page.locator('#auth-overlay')).toBeHidden();
+    await expect(page.locator('#layout')).not.toHaveClass(/panel-hidden/);
     const settings=await page.evaluate(()=>window.api.readServerSettings());
     expect(settings.pass).toBe('');expect(settings.passConfigured).toBe(true);expect(settings.sshPort).toBe(3103);
     expect(await page.locator('body').innerText()).not.toContain('only-main-sees-this');
@@ -74,6 +80,7 @@ test('welcome verifies a self-signed invitation before registration and keeps SS
     await expect(page.locator('#welcome-kind')).toHaveText('First administrator setup');
     await page.click('#welcome-connect');
     await expect(page.locator('#auth-form-root-setup')).toBeVisible();
+    await expect(page.locator('#auth-overlay')).toHaveAttribute('data-enrollment-kind','root');
     await page.fill('#auth-root-password','New-root-password!');
     await page.fill('#auth-root-password2','New-root-password!');
     await page.click('#auth-submit');await expect(page.locator('#auth-overlay')).toBeHidden();
@@ -95,12 +102,23 @@ test('welcome verifies a self-signed invitation before registration and keeps SS
     await page.evaluate(() => window.BOBO.welcome.close());
     expect(await page.evaluate(() => window.BOBO.state.auth.user.id)).toBe('root');
 
+    await page.evaluate(() => window.BOBO.workbench.setPanelVisible(false));
+    await page.evaluate(() => window.BOBO.welcome.open('device'));
+    await page.fill('#welcome-link',link({...descriptor,kind:'device',token:'d'.repeat(43)}));
+    await page.click('#welcome-preview');
+    await page.click('#welcome-connect');
+    await expect(page.locator('#auth-overlay')).toBeVisible();
+    await page.click('#auth-skip');
+    await expect(page.locator('#auth-overlay')).toBeHidden();
+    await expect(page.locator('#layout')).toHaveClass(/panel-hidden/);
+
     await page.evaluate(() => window.BOBO.welcome.open('device'));
     await page.fill('#welcome-link',link({...descriptor,kind:'device',token:'d'.repeat(43)}));
     await page.click('#welcome-preview');
     await expect(page.locator('#welcome-overview')).toBeVisible();
     await page.click('#welcome-connect');
     await expect(page.locator('#auth-form-login')).toBeVisible();
+    await expect(page.locator('#auth-overlay')).toHaveAttribute('data-enrollment-kind','device');
     expect(await page.evaluate(() => window.BOBO.state.auth.user.id)).toBe('root');
     await page.fill('#auth-login-identity','welcome');
     await page.fill('#auth-login-password','Welcome-password!');

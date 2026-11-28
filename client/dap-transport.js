@@ -135,6 +135,12 @@ class DapChildChannel {
       }, parent.connectTimeoutMs);
       const onOpen = async () => {
         try {
+          const url = normalizeDapChildUrl(config.serverHost, config.childPort);
+          if (typeof parent.verifyPeer === 'function') await parent.verifyPeer(socket, url);
+          if (this.closed || generation !== parent.generation || socket !== this.socket) {
+            finish(parent._cancelledStartError());
+            return;
+          }
           const token = await parent.getCredential(config.serverHost);
           if (this.closed || generation !== parent.generation || socket !== this.socket) {
             finish(parent._cancelledStartError());
@@ -285,6 +291,7 @@ class DapChildChannel {
 class DapTransport {
   constructor(options = {}) {
     this.webSocketFactory = options.webSocketFactory || ((url) => new WebSocket(url));
+    this.verifyPeer = options.verifyPeer || (() => {});
     this.getCredential = options.getCredential || (() => '');
     this.emit = options.emit || (() => {});
     this.setTimer = options.setTimer || setTimeout;
@@ -392,6 +399,8 @@ class DapTransport {
       const onOpen = async () => {
         if (generation !== this.generation || socket !== this.socket) return;
         try {
+          this.verifyPeer(socket, normalizeDapUrl(this.config.serverHost));
+          if (generation !== this.generation || socket !== this.socket) return;
           const token = await this.getCredential(this.config.serverHost);
           if (generation !== this.generation || socket !== this.socket) return;
           this._sendRaw({

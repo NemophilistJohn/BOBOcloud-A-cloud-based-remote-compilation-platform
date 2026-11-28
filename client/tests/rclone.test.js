@@ -120,10 +120,22 @@ test('managed SFTP pins the supplied SSH host key and port and refuses missing t
   assert.equal((await rclone.ensureConfig(settings, process.execPath, configPath, { checkVersion, execFile })).success, true);
   const content = fs.readFileSync(configPath, 'utf8');
   assert.match(content, /(?:^|\n)port = 4022(?:\n|$)/);
+  assert.match(content, /(?:^|\n)host_key_algorithms = ssh-ed25519(?:\n|$)/);
   const trust = content.match(/(?:^|\n)known_hosts_file = ([^\r\n]+)/);
   assert.ok(trust, 'managed connection must configure a known-hosts file');
   assert.equal(fs.readFileSync(trust[1], 'utf8'), '[compiler.example]:4022 ' + settings.sshHostKey + '\n');
   assert.doesNotMatch(content, /secret/);
+
+  const algorithmCases = [
+    { key: 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQAB', expected: 'rsa-sha2-512 rsa-sha2-256 ssh-rsa' },
+    { key: 'ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBB', expected: 'ecdsa-sha2-nistp256' }
+  ];
+  for (const [index, item] of algorithmCases.entries()) {
+    const target = path.join(root, 'algorithm-' + index + '.conf');
+    const result = await rclone.ensureConfig({ ...settings, sshHostKey: item.key }, process.execPath, target, { checkVersion, execFile });
+    assert.equal(result.success, true);
+    assert.match(fs.readFileSync(target, 'utf8'), new RegExp('(?:^|\\n)host_key_algorithms = ' + item.expected.replace(/ /g, ' ') + '(?:\\n|$)'));
+  }
 
   for (const invalid of [
     { sshHostKey: '' }, { sshHostKey: 'ssh-ed25519 AAAA\nmalicious' }, { sshPort: 65536 }
@@ -198,6 +210,8 @@ test('core default exclusions cannot be disabled with an empty array', async (t)
     if (args[index] === '--exclude') exclusions.push(args[index + 1]);
   }
   assert.deepEqual(exclusions, rclone.DEFAULT_EXCLUDES);
+  assert.ok(exclusions.includes('.git'));
+  assert.ok(exclusions.includes('.git/**'));
 });
 
 test('abort waits for graceful termination and escalates to a confirmed force kill', async (t) => {

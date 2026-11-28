@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -15,7 +16,13 @@ const resolveRoot = unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS
 const resolveChild = unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_XDEV
 
 func rootFD(root string) (int, error) {
-	return unix.Openat2(unix.AT_FDCWD, root, &unix.OpenHow{Flags: unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC, Resolve: resolveRoot})
+	fd, err := unix.Openat2(unix.AT_FDCWD, root, &unix.OpenHow{Flags: unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC, Resolve: resolveRoot})
+	if err == nil || !errors.Is(err, unix.ENOSYS) {
+		return fd, err
+	}
+	// Debian installations with an older kernel may not expose openat2. The
+	// fallback keeps each path component beneath an O_NOFOLLOW directory fd.
+	return unix.Open(root, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 }
 func openChecked(root, rel string, flags int, mode os.FileMode) (*os.File, error) {
 	fd, e := rootFD(root)
@@ -30,6 +37,9 @@ func openChecked(root, rel string, flags int, mode os.FileMode) (*os.File, error
 		mode = 0
 	}
 	child, e := unix.Openat2(fd, rel, &unix.OpenHow{Flags: uint64(flags | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK), Mode: uint64(mode.Perm()), Resolve: resolveChild})
+	if errors.Is(e, unix.ENOSYS) {
+		return openCheckedFallback(root, rel, flags, mode, trunc)
+	}
 	if e != nil {
 		return nil, e
 	}
@@ -51,6 +61,88 @@ func openChecked(root, rel string, flags int, mode os.FileMode) (*os.File, error
 		}
 	}
 	return f, nil
+}
+
+func openCheckedFallback(root, rel string, flags int, mode os.FileMode, trunc bool) (*os.File, error) {
+	fd, err := unix.Open(root, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	var rootStat unix.Stat_t
+	if err = unix.Fstat(fd, &rootStat); err != nil {
+		unix.Close(fd)
+		return nil, err
+	}
+	clean := filepath.Clean(rel)
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		unix.Close(fd)
+		return nil, denied
+	}
+	if clean == "." {
+		return os.NewFile(uintptr(fd), rel), nil
+	}
+	parts := strings.Split(filepath.ToSlash(clean), "/")
+	current := fd
+	for index, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		last := index == len(parts)-1
+		if !last {
+			next, openErr := unix.Openat(current, part, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+			if openErr != nil {
+				unix.Close(current)
+				return nil, openErr
+			}
+			var nextStat unix.Stat_t
+			if openErr = unix.Fstat(next, &nextStat); openErr != nil || nextStat.Dev != rootStat.Dev {
+				unix.Close(next)
+				unix.Close(current)
+				if openErr != nil {
+					return nil, openErr
+				}
+				return nil, denied
+			}
+			unix.Close(current)
+			current = next
+			continue
+		}
+
+		child, openErr := unix.Openat(current, part, flags|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, uint32(mode.Perm()))
+		unix.Close(current)
+		if openErr != nil {
+			return nil, openErr
+		}
+		f := os.NewFile(uintptr(child), rel)
+		st, statErr := f.Stat()
+		if statErr != nil || (!st.Mode().IsRegular() && !st.IsDir()) {
+			f.Close()
+			if statErr != nil {
+				return nil, statErr
+			}
+			return nil, denied
+		}
+		var stat unix.Stat_t
+		if statErr = unix.Fstat(child, &stat); statErr != nil || (st.Mode().IsRegular() && stat.Nlink != 1) {
+			f.Close()
+			if statErr != nil {
+				return nil, statErr
+			}
+			return nil, denied
+		}
+		if stat.Dev != rootStat.Dev {
+			f.Close()
+			return nil, denied
+		}
+		if trunc {
+			if statErr = f.Truncate(0); statErr != nil {
+				f.Close()
+				return nil, statErr
+			}
+		}
+		return f, nil
+	}
+	return os.NewFile(uintptr(current), rel), nil
 }
 func parent(root, rel string) (*os.File, string, error) {
 	name := filepath.Base(rel)

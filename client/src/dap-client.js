@@ -7,7 +7,12 @@
   var initialized = false;
   var disposers = [];
   var breakpointDecorations = null;
+  var breakpointDecorationBindings = [];
+  var breakpointDecorationModel = null;
+  var breakpointPreviewDecorations = null;
   var currentLineDecorations = null;
+  var breakpointPreviewRelative = '';
+  var breakpointPreviewLine = 0;
   var configurationSet = { configurations: [], warnings: [], sources: [] };
   var catalog = { loaded: false, error: '', adapters: [] };
   var refreshGeneration = 0;
@@ -224,6 +229,8 @@
     if (toolbar) toolbar.hidden = phase === 'idle' || phase === 'error';
     var editorHost = document.getElementById('editor');
     if (editorHost) editorHost.classList.toggle('debug-session', phase !== 'idle' && phase !== 'error');
+    var monacoNode = S.editor && typeof S.editor.getDomNode === 'function' ? S.editor.getDomNode() : null;
+    if (monacoNode) monacoNode.classList.toggle('dap-session-paused', phase === 'stopped');
     var status = document.getElementById('debug-toolbar-status');
     var statusKeys = {
       preparing: 'Debug session is starting...',
@@ -447,23 +454,26 @@
 
   function reconcileTrackedBreakpointLines() {
     if (!breakpointDecorations || !activeDecorationRelative || typeof breakpointDecorations.getRange !== 'function') return;
-    var items = S.dap.breakpoints.get(activeDecorationRelative) || [];
+    if (!S.editor || S.editor.getModel() !== breakpointDecorationModel) return;
+    var items = new Set(S.dap.breakpoints.get(activeDecorationRelative) || []);
     var changed = false;
-    items.forEach(function(item, index) {
+    // Collection indices belong to the last render, not the mutable sorted
+    // breakpoint list. Keep each tracked range bound to its original object.
+    breakpointDecorationBindings.forEach(function(binding, index) {
+      var item = binding.item;
+      if (!items.has(item)) return;
       var range = breakpointDecorations.getRange(index);
       if (!range) return;
-      var displayLine = Number.isSafeInteger(item.actualLine) && item.actualLine > 0 ? item.actualLine : item.line;
-      var displayColumn = Number.isSafeInteger(item.actualColumn) && item.actualColumn > 0
-        ? item.actualColumn
-        : (Number.isSafeInteger(item.column) && item.column > 0 ? item.column : 1);
-      var lineDelta = range.startLineNumber - displayLine;
-      var columnDelta = range.startColumn - displayColumn;
+      var lineDelta = range.startLineNumber - binding.line;
+      var columnDelta = range.startColumn - binding.column;
       if (lineDelta || columnDelta) {
         item.line = Math.max(1, item.line + lineDelta);
         if (Number.isSafeInteger(item.actualLine) && item.actualLine > 0) item.actualLine = Math.max(1, item.actualLine + lineDelta);
         if (Number.isSafeInteger(item.column) && item.column > 0) item.column = Math.max(1, item.column + columnDelta);
         if (Number.isSafeInteger(item.actualColumn) && item.actualColumn > 0) item.actualColumn = Math.max(1, item.actualColumn + columnDelta);
         item.verified = isActive() ? false : item.verified;
+        binding.line = range.startLineNumber;
+        binding.column = range.startColumn;
         changed = true;
       }
     });
@@ -541,7 +551,11 @@
     var model = S.editor.getModel();
     var relative = model && model.uri ? relativeWorkspacePath(model.uri.fsPath) : '';
     var items = relative ? (S.dap.breakpoints.get(relative) || []) : [];
-    breakpointDecorations.set(items.map(function(item) {
+    var bindings = items.map(function(item) {
+      return { item: item, line: actualBreakpointLine(item), column: actualBreakpointColumn(item) };
+    });
+    breakpointDecorations.set(bindings.map(function(binding) {
+      var item = binding.item;
       var capabilityProblem = breakpointCapabilityProblem(item);
       var className = item.enabled === false || capabilityProblem
         ? 'dap-breakpoint-disabled'
@@ -562,11 +576,45 @@
         });
       }
       return {
-        range: new monacoRef.Range(actualBreakpointLine(item), actualBreakpointColumn(item), actualBreakpointLine(item), actualBreakpointColumn(item)),
+        range: new monacoRef.Range(binding.line, binding.column, binding.line, binding.column),
         options: { isWholeLine: false, glyphMarginClassName: className, glyphMarginHoverMessage: { value: title } }
       };
     }));
+    breakpointDecorationBindings = bindings;
+    breakpointDecorationModel = model;
     activeDecorationRelative = relative;
+  }
+
+  function clearBreakpointPreview() {
+    breakpointPreviewRelative = '';
+    breakpointPreviewLine = 0;
+    if (breakpointPreviewDecorations) breakpointPreviewDecorations.clear();
+  }
+
+  function updateBreakpointPreview(event) {
+    if (!breakpointPreviewDecorations || !monacoRef || !S.editor) return;
+    var target = event && event.target;
+    if (!target || target.type !== monacoRef.editor.MouseTargetType.GUTTER_GLYPH_MARGIN || !target.position) {
+      clearBreakpointPreview();
+      return;
+    }
+    var model = S.editor.getModel();
+    if (!model || !model.uri) { clearBreakpointPreview(); return; }
+    var relative = relativeWorkspacePath(model.uri.fsPath);
+    var line = Number(target.position.lineNumber) || 0;
+    if (!relative || line < 1) { clearBreakpointPreview(); return; }
+    var items = S.dap.breakpoints.get(relative) || [];
+    if (items.some(function(item) { return actualBreakpointLine(item) === line; })) {
+      clearBreakpointPreview();
+      return;
+    }
+    if (breakpointPreviewRelative === relative && breakpointPreviewLine === line) return;
+    breakpointPreviewRelative = relative;
+    breakpointPreviewLine = line;
+    breakpointPreviewDecorations.set([{
+      range: new monacoRef.Range(line, 1, line, 1),
+      options: { glyphMarginClassName: 'dap-breakpoint-preview' }
+    }]);
   }
 
   function toggleBreakpoint(filePath, line) {
@@ -2413,8 +2461,14 @@
     if (!S.editor) return;
     S.editor.updateOptions({ glyphMargin: true });
     breakpointDecorations = S.editor.createDecorationsCollection();
+    breakpointPreviewDecorations = S.editor.createDecorationsCollection();
     currentLineDecorations = S.editor.createDecorationsCollection();
-    disposers.push(S.editor.onDidChangeModel(refreshBreakpointDecorations));
+    disposers.push(S.editor.onDidChangeModel(function() {
+      clearBreakpointPreview();
+      refreshBreakpointDecorations();
+    }));
+    disposers.push(S.editor.onMouseMove(updateBreakpointPreview));
+    disposers.push(S.editor.onMouseLeave(clearBreakpointPreview));
     disposers.push(S.editor.onDidChangeModelContent(function() {
       reconcileTrackedBreakpointLines();
       if (!isActive() || !activeDecorationRelative) return;
@@ -2443,6 +2497,7 @@
       var mouse = event.event || {};
       var browserEvent = mouse.browserEvent || {};
       var rightButton = mouse.rightButton === true || browserEvent.button === 2;
+      clearBreakpointPreview();
       if (rightButton) {
         if (typeof mouse.preventDefault === 'function') mouse.preventDefault();
         if (typeof mouse.stopPropagation === 'function') mouse.stopPropagation();

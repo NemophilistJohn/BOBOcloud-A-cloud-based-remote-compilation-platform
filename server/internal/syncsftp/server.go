@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -121,7 +122,7 @@ func hostKey(path string) (ssh.Signer, error) {
 }
 func (s *Server) HostKeyFingerprint() string { return ssh.FingerprintSHA256(s.signer.PublicKey()) }
 func (s *Server) HostKeyPublic() string {
-	return string(ssh.MarshalAuthorizedKey(s.signer.PublicKey()))
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(s.signer.PublicKey())))
 }
 func (s *Server) Serve(l net.Listener) error {
 	s.mu.Lock()

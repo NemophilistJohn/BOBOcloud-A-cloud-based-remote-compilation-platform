@@ -39,7 +39,9 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
   fs.mkdirSync(path.join(workspace, '.vscode'), { recursive: true });
   fs.mkdirSync(home, { recursive: true });
   const sourceFile = path.join(workspace, 'main.py');
+  const otherSourceFile = path.join(workspace, 'other.py');
   fs.writeFileSync(sourceFile, 'value = 7\nmarker = True\nprint(value)\nprint("done")\n', 'utf8');
+  fs.writeFileSync(otherSourceFile, 'first = 1\nsecond = 2\nthird = 3\nfourth = 4\nfifth = 5\nprint(first)\n', 'utf8');
   fs.writeFileSync(path.join(workspace, '.vscode', 'launch.json'), `{
     // VS Code JSONC
     "version": "0.2.0",
@@ -243,14 +245,90 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
     await expect(page.locator('.debug-config-item').first()).toBeEnabled();
     await page.locator('.debug-config-item', { hasText: 'Debug project' }).click();
 
+    async function clickGutterLine(line) {
+      const box = await page.locator('#container .monaco-editor').boundingBox();
+      const position = await page.evaluate(lineNumber => window.BOBO.state.editor.getScrolledVisiblePosition({ lineNumber, column: 1 }), line);
+      await page.mouse.click(box.x + 8, box.y + position.top + position.height / 2);
+    }
+    async function expectBreakpointLines(lines) {
+      await expect.poll(() => page.evaluate(() => window.BOBO.dap.getBreakpoints()
+        .flatMap(source => source.breakpoints.map(item => item.line)))).toEqual(lines);
+      await expect(page.locator('#container .dap-breakpoint')).toHaveCount(lines.length);
+    }
+    // Inserting before an existing breakpoint must not reuse its tracked line.
+    for (const line of [4, 3, 2, 1]) {
+      await clickGutterLine(line);
+      await expectBreakpointLines(Array.from({ length: 5 - line }, (_, index) => line + index));
+    }
+    // Removing the first marker must not shift surviving markers onto old indices.
+    for (const line of [1, 2, 3, 4]) {
+      await clickGutterLine(line);
+      await expectBreakpointLines(Array.from({ length: 4 - line }, (_, index) => line + index + 1));
+    }
+    const expectedLines = [];
+    for (const line of [1, 4, 2, 3]) {
+      await clickGutterLine(line);
+      expectedLines.push(line);
+      expectedLines.sort((left, right) => left - right);
+      await expectBreakpointLines(expectedLines);
+    }
+    for (const line of [2, 4, 1, 3]) {
+      await clickGutterLine(line);
+      expectedLines.splice(expectedLines.indexOf(line), 1);
+      await expectBreakpointLines(expectedLines);
+    }
+    // Text edits move each surviving breakpoint once, independently of insertion order.
+    await clickGutterLine(4);
+    await clickGutterLine(2);
+    await page.evaluate(() => window.BOBO.state.editor.executeEdits('dap-tracking-test', [{
+      range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 },
+      text: '# inserted before breakpoints\n', forceMoveMarkers: true
+    }]));
+    await expectBreakpointLines([3, 5]);
+    await clickGutterLine(3);
+    await expectBreakpointLines([5]);
+    await page.evaluate(() => window.BOBO.state.editor.executeEdits('dap-tracking-test', [{
+      range: { startLineNumber: 1, startColumn: 1, endLineNumber: 2, endColumn: 1 },
+      text: '', forceMoveMarkers: true
+    }]));
+    await expectBreakpointLines([4]);
+    await clickGutterLine(4);
+    await expectBreakpointLines([]);
+    await page.evaluate(() => window.BOBO.workspace.saveAllTabs());
+
+    await clickGutterLine(4);
+    await clickGutterLine(2);
+    await page.evaluate(filePath => window.BOBO.workspace.openFile(filePath, 'other.py'), otherSourceFile);
+    await clickGutterLine(6);
+    expect(await page.evaluate(() => window.BOBO.dap.getBreakpoints().map(source => ({
+      path: source.path, lines: source.breakpoints.map(item => item.line)
+    })))).toEqual([{ path: 'main.py', lines: [2, 4] }, { path: 'other.py', lines: [6] }]);
+    await page.evaluate(filePath => window.BOBO.workspace.openFile(filePath, 'main.py'), sourceFile);
+    await clickGutterLine(2);
+    expect(await page.evaluate(() => window.BOBO.dap.getBreakpoints().map(source => ({
+      path: source.path, lines: source.breakpoints.map(item => item.line)
+    })))).toEqual([{ path: 'main.py', lines: [4] }, { path: 'other.py', lines: [6] }]);
+    await page.evaluate(filePath => window.BOBO.workspace.openFile(filePath, 'other.py'), otherSourceFile);
+    await clickGutterLine(6);
+    await page.evaluate(filePath => window.BOBO.workspace.openFile(filePath, 'main.py'), sourceFile);
+    await clickGutterLine(4);
+    await expectBreakpointLines([]);
+
     const editorBox = await page.locator('#container .monaco-editor').boundingBox();
     const linePosition = await page.evaluate(() => window.BOBO.state.editor.getScrolledVisiblePosition({ lineNumber: 2, column: 1 }));
     const unsupportedLinePosition = await page.evaluate(() => window.BOBO.state.editor.getScrolledVisiblePosition({ lineNumber: 3, column: 1 }));
     await page.mouse.click(editorBox.x + 8, editorBox.y + unsupportedLinePosition.top + 10, { button: 'right' });
     await expect(page.locator('.debug-breakpoint-menu-item')).toHaveText(['Add Breakpoint']);
     await page.keyboard.press('Escape');
+    await page.mouse.move(editorBox.x + 8, editorBox.y + linePosition.top + 10);
+    await expect(page.locator('.dap-breakpoint-preview')).toHaveCount(1);
+    const previewOpacity = await page.locator('.dap-breakpoint-preview').evaluate(element =>
+      Number(getComputedStyle(element, '::after').opacity));
+    expect(previewOpacity).toBeLessThan(1);
+    await page.screenshot({ path: evidencePath('cloud-dap-breakpoint-preview.png'), fullPage: false });
     await page.mouse.click(editorBox.x + 8, editorBox.y + linePosition.top + 10);
     await expect(page.locator('.dap-breakpoint')).toHaveCount(1);
+    await expect(page.locator('.dap-breakpoint-preview')).toHaveCount(0);
     expect(await page.evaluate(() => window.BOBO.dap.getBreakpoints())).toEqual([{ path: 'main.py', breakpoints: [{
       line: 2, enabled: true, verified: null, message: '', id: 0, condition: '', hitCondition: '', logMessage: ''
     }] }]);
@@ -261,6 +339,22 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
     expect(await app.evaluate(() => globalThis.__boboDapProbe.starts[0].message.setupCommands)).toEqual(['pip install -r requirements.txt']);
     await expect(page.locator('#debug-toolbar')).toBeVisible();
     await expect(page.locator('#debug-toolbar-status')).toContainText('Paused');
+    await expect(page.locator('.dap-current-line-glyph')).toHaveCount(1);
+    const pausedMarkerSize = await page.locator('.dap-current-line-glyph').evaluate(element => {
+      const marker = getComputedStyle(element, '::before');
+      return { width: parseFloat(marker.width), height: parseFloat(marker.height) };
+    });
+    expect(pausedMarkerSize.width).toBeGreaterThanOrEqual(8);
+    expect(pausedMarkerSize.width).toBeLessThanOrEqual(10);
+    expect(pausedMarkerSize.height).toBeGreaterThanOrEqual(8);
+    expect(pausedMarkerSize.height).toBeLessThanOrEqual(10);
+    const pausedLineHighlight = page.locator('.monaco-editor.dap-session-paused .view-overlays .current-line');
+    await expect(pausedLineHighlight).toHaveCount(1);
+    const pausedLineAlpha = await pausedLineHighlight.evaluate(element => {
+      const channels = getComputedStyle(element).backgroundColor.match(/\(([^)]+)\)/)[1].split(',');
+      return channels.length === 4 ? Number(channels[3]) : 1;
+    });
+    expect(pausedLineAlpha).toBeLessThan(0.1);
     await expect(page.locator('#panel-debug')).toHaveClass(/active/);
     await expect.poll(() => page.locator('#bottom-panel').evaluate((element) => element.getBoundingClientRect().height))
       .toBeGreaterThanOrEqual(280);
@@ -443,6 +537,7 @@ test('cloud DAP supports gutter breakpoints, paused inspection and debug control
 
     await page.locator('[data-debug-command="continue"]').click();
     await expect(page.locator('#debug-toolbar-status')).toContainText('running');
+    await expect(page.locator('.monaco-editor')).not.toHaveClass(/dap-session-paused/);
     await page.locator('[data-debug-command="pause"]').click();
     await expect(page.locator('#debug-toolbar-status')).toContainText('Paused');
     await page.locator('[data-debug-command="stop"]').click();

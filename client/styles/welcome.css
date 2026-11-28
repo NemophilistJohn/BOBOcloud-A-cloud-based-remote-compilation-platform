@@ -32,6 +32,17 @@
 .welcome-primary:disabled { opacity:.55; cursor:wait; }
 .welcome-overview { margin-top:12px; border-color:var(--brand-border); }
 .welcome-overview[hidden] { display:none; }
+.welcome-overview.is-revealing { animation:welcome-overview-in .48s cubic-bezier(.2,.75,.25,1) both; }
+@keyframes welcome-overview-in { from { opacity:0; transform:translateY(18px) scale(.99); } to { opacity:1; transform:translateY(0) scale(1); } }
+.welcome-device-flow .welcome-overview.is-revealing { animation:welcome-device-overview-in .36s ease-out both; }
+@keyframes welcome-device-overview-in { from { opacity:0; transform:translateX(12px); } to { opacity:1; transform:translateX(0); } }
+.welcome-proof-mark { display:inline-flex; width:19px; height:19px; color:var(--green); opacity:.8; }
+.welcome-proof-mark svg { width:100%; height:100%; overflow:visible; }
+.welcome-proof-orbit { stroke:currentColor; stroke-width:1.2; stroke-dasharray:57; stroke-dashoffset:57; }
+.welcome-proof-check { stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:14; stroke-dashoffset:14; }
+.guiding-overview .welcome-proof-orbit { animation:welcome-proof-draw .9s ease-out forwards; }
+.guiding-overview .welcome-proof-check { animation:welcome-proof-draw .42s .36s ease-out forwards; }
+@keyframes welcome-proof-draw { to { stroke-dashoffset:0; } }
 .welcome-step .welcome-verified { margin-left:auto; color:var(--green); font-size:10px; }
 .welcome-overview dl { display:grid; grid-template-columns:1fr 1fr; gap:14px 24px; margin:12px 0 18px; }
 .welcome-overview dt { font-size:10px; color:var(--text-tertiary); margin-bottom:5px; }
@@ -43,7 +54,14 @@
 .welcome-text-button { background:none; color:var(--text-secondary); border:0; padding:0; cursor:pointer; font:inherit; text-decoration:underline; text-underline-offset:4px; }
 .welcome-arrival { display:none; position:absolute; inset:0; align-items:center; justify-content:center; flex-direction:column; gap:25px; background:var(--bg-deep); color:var(--brand); }
 .arriving .welcome-arrival { display:flex; }
-.welcome-arrival-ring { width:52px; height:52px; border-radius:50%; border:1px solid var(--brand); box-shadow:0 0 0 12px var(--brand-muted),0 0 0 24px var(--brand-muted); animation:welcome-arrive .75s ease-out; }
+.welcome-arrival-ring { display:grid; width:58px; height:58px; place-items:center; border-radius:50%; border:1px solid var(--brand); box-shadow:0 0 0 12px var(--brand-muted),0 0 0 24px var(--brand-muted); animation:welcome-arrive .75s ease-out; }
+.welcome-arrival-ring svg { width:28px; height:28px; overflow:visible; }
+.welcome-arrival-symbol { fill:none; stroke:var(--brand); stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:38; stroke-dashoffset:38; animation:welcome-arrival-draw .5s .18s ease-out forwards; }
+.arriving-register .welcome-arrival-ring { animation:welcome-arrive-register .78s cubic-bezier(.18,.72,.24,1) both; }
+.arriving-device .welcome-arrival-ring { animation:welcome-arrive-device .58s cubic-bezier(.2,.75,.3,1) both; }
 @keyframes welcome-arrive { from { transform:scale(.3); opacity:0; } to { transform:scale(1); opacity:1; } }
-@media(prefers-reduced-motion:reduce) { .welcome-arrival-ring { animation:none; } }
+@keyframes welcome-arrive-register { 0% { transform:scale(.3) rotate(-12deg); opacity:0; } 72% { transform:scale(1.08) rotate(2deg); opacity:1; } 100% { transform:scale(1) rotate(0); opacity:1; } }
+@keyframes welcome-arrive-device { from { transform:translateX(-24px) scale(.92); opacity:0; } to { transform:translateX(0) scale(1); opacity:1; } }
+@keyframes welcome-arrival-draw { to { stroke-dashoffset:0; } }
+@media(prefers-reduced-motion:reduce) { .welcome-arrival-ring,.welcome-arrival-symbol,.welcome-overview.is-revealing,.guiding-overview .welcome-proof-orbit,.guiding-overview .welcome-proof-check { animation:none; stroke-dashoffset:0; } }
 @media(max-width:950px) { .welcome-content { padding:20px; } .welcome-art { height:100px; } .welcome-form-foot,.welcome-bottom { align-items:flex-start; } }
